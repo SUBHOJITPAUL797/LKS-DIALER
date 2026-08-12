@@ -757,5 +757,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 INSTANCE ?: WebRtcEngine(context.applicationContext).also { INSTANCE = it }
             }
         }
+        
+        fun getInstanceIfCreated(): WebRtcEngine? {
+            return INSTANCE
+        }
     }
 }

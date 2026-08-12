@@ -63,13 +63,16 @@ class CallMessagingService : FirebaseMessagingService() {
         callerProfilePic: String
     ) {
         // Prevent zombie notifications if Firestore already answered/declined the call via the active UI
-        val rtcState = com.example.webrtc.WebRtcEngine.getInstance(applicationContext).state.value
-        if (rtcState.activeCall?.callId == callId &&
-            rtcState.callStatus != com.example.data.model.CallStatus.CALLING &&
-            rtcState.callStatus != com.example.data.model.CallStatus.RINGING
-        ) {
-            Log.d("FCM", "Call already answered or ended locally. Skipping zombie notification.")
-            return
+        val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+        if (engine != null) {
+            val rtcState = engine.state.value
+            if (rtcState.activeCall?.callId == callId &&
+                rtcState.callStatus != com.example.data.model.CallStatus.CALLING &&
+                rtcState.callStatus != com.example.data.model.CallStatus.RINGING
+            ) {
+                Log.d("FCM", "Call already answered or ended locally. Skipping zombie notification.")
+                return
+            }
         }
 
         val notificationManager =
