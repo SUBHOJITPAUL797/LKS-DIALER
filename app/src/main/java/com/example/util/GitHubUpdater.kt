@@ -176,12 +176,17 @@ class GitHubUpdater(private val context: Context) {
     }
     
     private fun isVersionGreater(remote: String, local: String): Boolean {
-        // Very simplistic version comparison logic. Assumes format like v1.0.0
-        val cleanRemote = remote.replace("v", "").replace(".", "")
-        val cleanLocal = local.replace("v", "").replace(".", "")
-        
         return try {
-            cleanRemote.toInt() > cleanLocal.toInt()
+            val rParts = remote.replace("v", "").split(".").map { it.toIntOrNull() ?: 0 }
+            val lParts = local.replace("v", "").split(".").map { it.toIntOrNull() ?: 0 }
+            val maxLen = maxOf(rParts.size, lParts.size)
+            for (i in 0 until maxLen) {
+                val r = rParts.getOrElse(i) { 0 }
+                val l = lParts.getOrElse(i) { 0 }
+                if (r > l) return true
+                if (r < l) return false
+            }
+            false
         } catch (e: Exception) {
             false
         }
