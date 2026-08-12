@@ -30,7 +30,8 @@ data class WebRtcState(
     val connectionStatusText: String = "Idle",
     val localVideoTrack: VideoTrack? = null,
     val remoteVideoTrack: VideoTrack? = null,
-    val isVideoUpgradeRequested: Boolean = false
+    val isVideoUpgradeRequested: Boolean = false,
+    val didIRequestVideoUpgrade: Boolean = false
 )
 
 class WebRtcEngine private constructor(private val context: Context) {
@@ -443,15 +444,15 @@ class WebRtcEngine private constructor(private val context: Context) {
 
                         // Video Upgrade Logic
                         if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED) {
-                            if (!isCaller && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
-                                // If I am the callee and someone requested it
-                                _state.value = _state.value.copy(isVideoUpgradeRequested = true)
-                            } else if (isCaller && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
-                                // If I am the caller and the callee requested it
+                            if (!_state.value.didIRequestVideoUpgrade && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
+                                // If I didn't request it, someone else did, so I am being requested!
                                 _state.value = _state.value.copy(isVideoUpgradeRequested = true)
                             }
                         } else {
-                            _state.value = _state.value.copy(isVideoUpgradeRequested = false)
+                            _state.value = _state.value.copy(
+                                isVideoUpgradeRequested = false,
+                                didIRequestVideoUpgrade = false
+                            )
                         }
 
                         if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.ACCEPTED && _state.value.callType == CallType.AUDIO) {
@@ -521,6 +522,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun requestVideoUpgrade() {
         val currentCall = _state.value.activeCall ?: return
+        _state.value = _state.value.copy(didIRequestVideoUpgrade = true)
         firestore.collection("calls").document(currentCall.callId)
             .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.REQUESTED.name)
     }
