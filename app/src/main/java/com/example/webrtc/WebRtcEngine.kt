@@ -431,6 +431,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (call != null) {
                     val currentCall = _state.value.activeCall
                     if (currentCall?.callId == call.callId) {
+                        val oldCall = currentCall
                         _state.value = _state.value.copy(activeCall = call)
                         
                         if (isCaller && call.status == CallStatus.RINGING && _state.value.callStatus == CallStatus.CALLING) {
@@ -470,7 +471,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
                         }
 
-                        if (isCaller && call.answerSdp != null && call.answerSdp != _state.value.activeCall?.answerSdp) {
+                        if (isCaller && call.answerSdp != null && call.answerSdp != oldCall?.answerSdp) {
                             hasProcessedAnswer = true
                             val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
                             peerConnection?.setRemoteDescription(SimpleSdpObserver(), sessionDescription)
@@ -484,7 +485,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                         }
                         
-                        if (!isCaller && call.offerSdp != null && call.offerSdp != _state.value.activeCall?.offerSdp) {
+                        if (!isCaller && call.offerSdp != null && call.offerSdp != oldCall?.offerSdp) {
                             // New offer received (e.g. during video upgrade renegotiation)
                             if (_state.value.callStatus == CallStatus.ANSWERED) {
                                 val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, call.offerSdp)
