@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{phoneNumber} {
+      allow read, write: if true;
+      match /contacts/{contactId} {
+        allow read, write: if true;
+      }
+      // ✅ NEW: call logs are now per-user subcollection
+      match /callLogs/{logId} {
+        allow read, write: if true;
+      }
+    }
+    match /calls/{callId} {
+      allow read, write: if true;
+      
+      // ✅ FIXED: Allow WebRTC audio/video stream data sync
+      match /candidates/{candidateId} {
+        allow read, write: if true;
+      }
+    }
+  }
+}

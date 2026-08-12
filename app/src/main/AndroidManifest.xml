@@ -17,11 +17,16 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
-    <!-- System & Call Overlay -->
+    <!-- Notifications & Call Overlay (WhatsApp-style) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Hardware features -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -38,6 +43,7 @@
         android:theme="@style/Theme.MyApplication"
         android:usesCleartextTraffic="false">
 
+        <!-- Main Activity — show on lock screen during incoming call -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,13 +58,52 @@
             </intent-filter>
         </activity>
 
-            <service
+        <!-- Active Call Foreground Service -->
+        <service
+            android:name=".services.ActiveCallService"
+            android:foregroundServiceType="microphone|camera"
+            android:exported="false" />
+
+        <!-- FCM Service — receives push notifications for incoming calls -->
+        <service
             android:name=".services.CallMessagingService"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- Notification Action Receiver — handles Accept / Decline button taps -->
+        <receiver
+            android:name=".services.CallNotificationReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.ACTION_ACCEPT_CALL" />
+                <action android:name="com.example.ACTION_DECLINE_CALL" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Boot Receiver — wakes up the app after restart to ensure FCM works -->
+        <receiver
+            android:name=".services.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- FileProvider for APK Installation -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
+
     </application>
 
 </manifest>

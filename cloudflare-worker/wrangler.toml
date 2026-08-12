@@ -1,0 +1,6 @@
+name = "lks-dialer-call-notifier"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Environment variables are set via Cloudflare Dashboard or `wrangler secret put`
+# DO NOT put real secrets in this file — use `wrangler secret put` for private keys

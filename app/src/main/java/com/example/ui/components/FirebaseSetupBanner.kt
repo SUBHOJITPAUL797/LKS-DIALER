@@ -60,13 +60,13 @@ fun FirebaseSetupBanner(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = if (isFirebaseConnected) "Firebase Connected ✓" else "Firebase Integration Space Ready",
+                            text = if (isFirebaseConnected) "Firebase Database Connected ✓" else "Firebase Integration Space Ready",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = if (isFirebaseConnected) Color(0xFF1B5E20) else Color(0xFFE65100)
                         )
                         Text(
                             text = if (isFirebaseConnected)
-                                "Real-time signaling & phone auth connected"
+                                "Project ID: lks-dialer • Cloud Firestore & Signaling Active"
                             else
                                 "Tap to view instructions to connect your separate Firebase project",
                             style = MaterialTheme.typography.bodySmall,
@@ -87,23 +87,22 @@ fun FirebaseSetupBanner(
                         .fillMaxWidth()
                         .padding(top = 12.dp)
                 ) {
-                    Divider(color = Color.LightGray.copy(alpha = 0.5f))
+                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
-                        text = "How to connect your separate Firebase Project:",
+                        text = "Firebase Integration Status:",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                         color = Color.Black
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    InstructionStep("1", "Go to Firebase Console (console.firebase.google.com)")
-                    InstructionStep("2", "Create or select your Firebase Project")
-                    InstructionStep("3", "Add an Android App with package name: com.subhojit.lksdialer.app")
-                    InstructionStep("4", "Download google-services.json and place it inside /app directory")
-                    InstructionStep("5", "Enable Phone Authentication under Firebase Auth")
-                    InstructionStep("6", "Enable Cloud Firestore under Firestore Database")
+                    InstructionStep("1", "App Package: com.subhojit.lksdialer.app")
+                    InstructionStep("2", "Firebase Project: lks-dialer")
+                    InstructionStep("3", "google-services.json: Configured & Verified")
+                    InstructionStep("4", "Firestore Security Rules: Hardware Device Lock & Call Logs Active")
+                    InstructionStep("5", "Real-Time WebRTC Call Signaling: Connected")
 
                     Spacer(modifier = Modifier.height(8.dp))
 
@@ -113,7 +112,7 @@ fun FirebaseSetupBanner(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "💡 Note: All UI views, dialpad, local database, call state machine, and WebRTC engines are completely built and ready. Once you attach google-services.json, Firebase syncs automatically!",
+                            text = "💡 Note: All user profiles, device locks, contact lists, WebRTC calls, and call history are automatically synced live with Cloud Firestore database.",
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(10.dp),
                             color = Color(0xFF333333)

@@ -96,7 +96,7 @@ fun CountryCodePickerModal(
                             color = MaterialTheme.colorScheme.primary
                         )
                     }
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 }
             }
         }

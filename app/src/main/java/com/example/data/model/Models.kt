@@ -7,8 +7,8 @@ data class UserDto(
     val statusMessage: String = "Available on LKS DIALER",
     val fcmToken: String = "",
     val isOnline: Boolean = true,
-    val lastSeen: Long = System.currentTimeMillis(),
-    val createdAt: Long = System.currentTimeMillis(),
+    val lastSeen: Long = 0L,
+    val createdAt: Long = 0L,
     val privacyWhoCanCall: String = "EVERYONE",
     val registeredDeviceId: String = ""
 )
@@ -19,6 +19,10 @@ enum class CallType {
 
 enum class CallStatus {
     IDLE, CALLING, RINGING, ANSWERED, ENDED, DECLINED, MISSED, FAILED
+}
+
+enum class VideoUpgradeStatus {
+    REQUESTED, ACCEPTED, DECLINED, COMPLETED
 }
 
 data class CallDto(
@@ -33,11 +37,20 @@ data class CallDto(
     val status: CallStatus = CallStatus.CALLING,
     val offerSdp: String? = null,
     val answerSdp: String? = null,
-    val createdAt: Long = System.currentTimeMillis(),
+    val createdAt: Long = 0L,
     val answeredAt: Long? = null,
     val endedAt: Long? = null,
     val durationSeconds: Int = 0,
-    val endedBy: String? = null
+    val endedBy: String? = null,
+    val videoUpgradeStatus: VideoUpgradeStatus? = null
+)
+
+data class IceCandidateDto(
+    val serverUrl: String = "",
+    val sdpMid: String = "",
+    val sdpMLineIndex: Int = 0,
+    val sdpCandidate: String = "",
+    val type: String = "" // "offerCandidate" or "answerCandidate"
 )
 
 enum class CallDirection {
@@ -53,7 +66,7 @@ data class CallLogDto(
     val otherPartyProfilePic: String = "",
     val callType: CallType = CallType.AUDIO,
     val status: CallStatus = CallStatus.ANSWERED,
-    val startedAt: Long = System.currentTimeMillis(),
+    val startedAt: Long = 0L,
     val durationSeconds: Int = 0
 )
 

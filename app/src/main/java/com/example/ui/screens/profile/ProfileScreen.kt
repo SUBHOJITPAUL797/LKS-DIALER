@@ -11,7 +11,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -19,9 +18,15 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.layout.ContentScale
 import com.example.data.repository.FirebaseManager
 import com.example.ui.components.FirebaseSetupBanner
 import com.example.ui.theme.TealPrimary
+import com.example.util.ImageUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +41,27 @@ fun ProfileScreen(
     var isEditingName by remember { mutableStateOf(false) }
     var editedName by remember { mutableStateOf(currentUser?.displayName ?: "User") }
     var statusMsg by remember { mutableStateOf(currentUser?.statusMessage ?: "Available on LKS DIALER") }
+
+    LaunchedEffect(currentUser) {
+        currentUser?.let {
+            editedName = it.displayName
+            statusMsg = it.statusMessage
+        }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val base64Str = ImageUtils.compressUriToBase64(context, uri)
+            if (base64Str != null) {
+                firebaseManager.updateProfile(editedName, statusMsg, base64Str)
+                Toast.makeText(context, "Profile picture updated!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Failed to compress image", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -59,19 +85,35 @@ fun ProfileScreen(
         ) {
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Profile picture
+            // Profile picture avatar
             Surface(
-                modifier = Modifier.size(100.dp),
+                modifier = Modifier
+                    .size(100.dp)
+                    .clickable { imagePickerLauncher.launch("image/*") },
                 shape = CircleShape,
                 color = TealPrimary
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = (currentUser?.displayName ?: "U").take(1).uppercase(),
-                        fontSize = 42.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                val profilePicUrl = currentUser?.profilePictureUrl ?: ""
+                val decodedBitmap = remember(profilePicUrl) {
+                    if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
+                }
+                
+                if (decodedBitmap != null) {
+                    Image(
+                        bitmap = decodedBitmap,
+                        contentDescription = "Profile Picture",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
+                } else {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = (currentUser?.displayName ?: "U").take(1).uppercase(),
+                            fontSize = 42.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
             }
 
@@ -88,8 +130,9 @@ fun ProfileScreen(
                     )
                     IconButton(onClick = {
                         if (editedName.isNotBlank()) {
-                            currentUser?.let { firebaseManager.loginWithPhone(it.phoneNumber, editedName) }
+                            firebaseManager.updateProfile(editedName, statusMsg)
                             isEditingName = false
+                            Toast.makeText(context, "Profile name updated!", Toast.LENGTH_SHORT).show()
                         }
                     }) {
                         Icon(Icons.Default.Check, contentDescription = "Save", tint = TealPrimary)
@@ -107,11 +150,13 @@ fun ProfileScreen(
                 }
             }
 
-            // Fixed Phone Number Card
+            // Fixed Phone Number Card with Hardware Locking Info
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -145,14 +190,14 @@ fun ProfileScreen(
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
-                    Divider(color = Color.LightGray.copy(alpha = 0.4f))
+                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.4f))
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Lock, contentDescription = null, tint = TealPrimary, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Hardware Device Bound: ${currentUser?.registeredDeviceId?.ifBlank { "DEV-HARDWARE-LOCKED" } ?: "DEV-HARDWARE-LOCKED"}",
+                            text = "Hardware Bound: ${currentUser?.registeredDeviceId?.ifBlank { "DEV-HARDWARE-LOCKED" } ?: "DEV-HARDWARE-LOCKED"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = TealPrimary
                         )
@@ -161,14 +206,23 @@ fun ProfileScreen(
             }
 
             // Status message
-            OutlinedTextField(
-                value = statusMsg,
-                onValueChange = { statusMsg = it },
-                label = { Text("Status Message") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                shape = RoundedCornerShape(12.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = statusMsg,
+                    onValueChange = { statusMsg = it },
+                    label = { Text("Status Message") },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(onClick = {
+                    firebaseManager.updateProfile(editedName, statusMsg)
+                    Toast.makeText(context, "Status updated!", Toast.LENGTH_SHORT).show()
+                }) {
+                    Icon(Icons.Default.Save, contentDescription = "Save Status", tint = TealPrimary)
+                }
+            }
 
             Spacer(modifier = Modifier.height(24.dp))
 

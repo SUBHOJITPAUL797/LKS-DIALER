@@ -10,47 +10,80 @@ import android.media.RingtoneManager
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 import com.example.MainActivity
+import com.example.data.repository.FirebaseManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
 class CallMessagingService : FirebaseMessagingService() {
 
+    companion object {
+        const val CHANNEL_ID = "incoming_call_channel"
+        const val NOTIFICATION_ID = 1001
+    }
+
     override fun onNewToken(token: String) {
-        Log.d("FCM", "New token: $token")
-        // We should send this token to Firestore so the user can receive calls.
-        // But for now, we just log it. The user will need a cloud function anyway.
+        Log.d("FCM", "New FCM token received — syncing to Firestore")
+        FirebaseManager.getInstance(this).updateFcmToken(token)
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        Log.d("FCM", "From: ${remoteMessage.from}")
+        Log.d("FCM", "Message received from: ${remoteMessage.from}")
 
-        // Check if message contains a data payload.
         if (remoteMessage.data.isNotEmpty()) {
-            Log.d("FCM", "Message data payload: ${remoteMessage.data}")
-            
+            Log.d("FCM", "Data payload: ${remoteMessage.data}")
             val type = remoteMessage.data["type"]
             if (type == "incoming_call") {
-                val callerName = remoteMessage.data["callerName"] ?: "Unknown"
-                val callType = remoteMessage.data["callType"] ?: "AUDIO"
-                val callId = remoteMessage.data["callId"] ?: ""
-                showIncomingCallNotification(callerName, callType, callId)
+                val callerName   = remoteMessage.data["callerName"]   ?: "Unknown Caller"
+                val callerNumber = remoteMessage.data["callerNumber"] ?: ""
+                val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
+                val callId       = remoteMessage.data["callId"]       ?: return
+                val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
+                
+                // Let the caller know we've received the push and the phone is ringing
+                try {
+                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("calls").document(callId)
+                        .update("status", "RINGING")
+                } catch (e: Exception) {
+                    Log.e("FCM", "Failed to update call status to RINGING: ${e.message}")
+                }
+                
+                showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
             }
         }
     }
 
-    private fun showIncomingCallNotification(callerName: String, callType: String, callId: String) {
-        val channelId = "incoming_call_channel"
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private fun showIncomingCallNotification(
+        callerName: String,
+        callerNumber: String,
+        callType: String,
+        callId: String,
+        callerProfilePic: String
+    ) {
+        // Prevent zombie notifications if Firestore already answered/declined the call via the active UI
+        val rtcState = com.example.webrtc.WebRtcEngine.getInstance(applicationContext).state.value
+        if (rtcState.activeCall?.callId == callId &&
+            rtcState.callStatus != com.example.data.model.CallStatus.CALLING &&
+            rtcState.callStatus != com.example.data.model.CallStatus.RINGING
+        ) {
+            Log.d("FCM", "Call already answered or ended locally. Skipping zombie notification.")
+            return
+        }
 
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        // Create the notification channel with maximum importance + ringtone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
             val channel = NotificationChannel(
-                channelId,
+                CHANNEL_ID,
                 "Incoming Calls",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifications for incoming calls"
-                val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                description = "Incoming VoIP call alerts with Accept & Decline"
                 setSound(
                     ringtoneUri,
                     AudioAttributes.Builder()
@@ -59,31 +92,108 @@ class CallMessagingService : FirebaseMessagingService() {
                         .build()
                 )
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
             notificationManager.createNotificationChannel(channel)
         }
 
+        // ── Full-screen intent — opens MainActivity (call screen) when tapped ──
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("incoming_call", true)
             putExtra("call_id", callId)
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            fullScreenIntent,
+            this, 0, fullScreenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notificationBuilder = NotificationCompat.Builder(this, channelId)
+        // ── ACCEPT action — opens the app and auto-answers ──
+        val acceptIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("incoming_call", true)
+            putExtra("call_id", callId)
+            putExtra("auto_answer", true)
+        }
+        val acceptPendingIntent = PendingIntent.getActivity(
+            this, 1, acceptIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // ── DECLINE action — declines in Firestore without opening the app ──
+        val declineIntent = Intent(this, CallNotificationReceiver::class.java).apply {
+            action = CallNotificationReceiver.ACTION_DECLINE
+            putExtra("call_id", callId)
+        }
+        val declinePendingIntent = PendingIntent.getBroadcast(
+            this, 2, declineIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // ── Build the WhatsApp-style caller person for CallStyle notification ──
+        val callerBuilder = Person.Builder()
+            .setName(callerName)
+            .setImportant(true)
+            
+        // Download Profile Picture if available (runs on FCM background thread)
+        if (callerProfilePic.isNotEmpty()) {
+            try {
+                val url = java.net.URL(callerProfilePic)
+                val bitmap = android.graphics.BitmapFactory.decodeStream(url.openConnection().getInputStream())
+                if (bitmap != null) {
+                    callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
+                }
+            } catch (e: Exception) {
+                Log.e("FCM", "Failed to download profile picture for notification", e)
+            }
+        }
+        val caller = callerBuilder.build()
+
+        val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_call)
-            .setContentTitle("Incoming $callType call")
-            .setContentText(callerName)
+            .setContentTitle("Incoming $callTypeLabel Call")
+            .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)           // can't be swiped away — must tap Accept or Decline
+            .setAutoCancel(false)
+            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+            .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
             .setFullScreenIntent(fullScreenPendingIntent, true)
-            .setAutoCancel(true)
 
-        notificationManager.notify(1001, notificationBuilder.build())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Android 12+ Native Call Style Notification
+            builder.setStyle(
+                NotificationCompat.CallStyle.forIncomingCall(
+                    caller,
+                    declinePendingIntent,
+                    acceptPendingIntent
+                )
+            )
+            // CallStyle takes over the actions, so no need to add separate buttons
+        } else {
+            // Fallback for older Android versions
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    android.R.drawable.ic_menu_call,
+                    "Answer",
+                    acceptPendingIntent
+                ).build()
+            )
+            builder.addAction(
+                NotificationCompat.Action.Builder(
+                    android.R.drawable.ic_menu_close_clear_cancel,
+                    "Decline",
+                    declinePendingIntent
+                ).build()
+            )
+        }
+
+        notificationManager.notify(NOTIFICATION_ID, builder.build())
+        Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
     }
 }

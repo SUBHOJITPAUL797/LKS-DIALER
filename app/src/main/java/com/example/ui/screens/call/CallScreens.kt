@@ -16,6 +16,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.layout.ContentScale
+import com.example.util.ImageUtils
 import com.example.data.model.CallType
 import com.example.ui.theme.BackgroundDark
 import com.example.ui.theme.GreenCall
@@ -28,6 +33,7 @@ import com.example.webrtc.WebRtcState
 fun OutgoingCallScreen(
     calleeName: String,
     calleeNumber: String,
+    profilePicUrl: String,
     callType: CallType,
     statusText: String,
     onEndCall: () -> Unit
@@ -47,6 +53,21 @@ fun OutgoingCallScreen(
             .fillMaxSize()
             .background(BackgroundDark)
     ) {
+        val decodedBitmap = remember(profilePicUrl) {
+            if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
+        }
+        
+        if (decodedBitmap != null) {
+            Image(
+                bitmap = decodedBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            // Dim overlay so text stays readable
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -129,6 +150,7 @@ fun OutgoingCallScreen(
 fun IncomingCallOverlay(
     callerName: String,
     callerNumber: String,
+    profilePicUrl: String,
     callType: CallType,
     onAnswer: () -> Unit,
     onDecline: () -> Unit
@@ -138,6 +160,21 @@ fun IncomingCallOverlay(
             .fillMaxSize()
             .background(BackgroundDark)
     ) {
+        val decodedBitmap = remember(profilePicUrl) {
+            if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
+        }
+        
+        if (decodedBitmap != null) {
+            Image(
+                bitmap = decodedBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            // Dim overlay so text stays readable
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -236,16 +273,59 @@ fun IncomingCallOverlay(
 @Composable
 fun ActiveAudioCallScreen(
     state: WebRtcState,
+    profilePicUrl: String,
+    displayName: String,
+    displayNumber: String,
     webRtcEngine: WebRtcEngine,
     onEndCall: () -> Unit
 ) {
-    val activeCall = state.activeCall ?: return
+    // BUG-16 FIX: Never use early 'return' in a Composable — it violates Compose state contract.
+    // The calling site in MainActivity already guards this with 'if (activeCall != null)'
+    val activeCall = state.activeCall
+    if (activeCall == null) {
+        Box(modifier = androidx.compose.ui.Modifier.fillMaxSize().background(BackgroundDark))
+        return
+    }
+
+    if (state.isVideoUpgradeRequested) {
+        AlertDialog(
+            onDismissRequest = { webRtcEngine.declineVideoUpgrade() },
+            title = { Text("Video Call Request") },
+            text = { Text("The other person wants to switch to a video call. Do you accept?") },
+            confirmButton = {
+                TextButton(onClick = { webRtcEngine.acceptVideoUpgrade() }) {
+                    Text("Accept", color = TealPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { webRtcEngine.declineVideoUpgrade() }) {
+                    Text("Decline", color = RedEndCall)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundDark)
     ) {
+        val decodedBitmap = remember(profilePicUrl) {
+            if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
+        }
+        
+        if (decodedBitmap != null) {
+            Image(
+                bitmap = decodedBitmap,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            // Dim overlay so text stays readable
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -259,12 +339,13 @@ fun ActiveAudioCallScreen(
                 modifier = Modifier.padding(top = 24.dp)
             ) {
                 Text(
-                    text = activeCall.calleeName.ifBlank { activeCall.callerName },
+                    // BUG-26 FIX: Show the other party's name (passed from MainActivity based on direction)
+                    text = displayName.ifBlank { displayNumber },
                     style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                     color = Color.White
                 )
                 Text(
-                    text = activeCall.calleeNumber.ifBlank { activeCall.callerNumber },
+                    text = displayNumber,
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color.White.copy(alpha = 0.7f)
                 )
@@ -300,7 +381,8 @@ fun ActiveAudioCallScreen(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        text = (activeCall.calleeName.ifBlank { activeCall.callerName }).take(1).uppercase(),
+                        // Use displayName for avatar initial too
+                        text = displayName.take(1).uppercase().ifBlank { "?" },
                         fontSize = 56.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White
@@ -323,6 +405,14 @@ fun ActiveAudioCallScreen(
                         label = if (state.isMuted) "Muted" else "Mute",
                         isActive = state.isMuted,
                         onClick = { webRtcEngine.toggleMute() }
+                    )
+
+                    // Switch to Video Button
+                    InCallControlButton(
+                        icon = Icons.Default.Videocam,
+                        label = "Video",
+                        isActive = false,
+                        onClick = { webRtcEngine.requestVideoUpgrade() }
                     )
 
                     // Speakerphone Toggle
@@ -358,55 +448,72 @@ fun ActiveAudioCallScreen(
 @Composable
 fun ActiveVideoCallScreen(
     state: WebRtcState,
+    profilePicUrl: String,
+    displayName: String,
+    displayNumber: String,
     webRtcEngine: WebRtcEngine,
     onEndCall: () -> Unit
 ) {
-    val activeCall = state.activeCall ?: return
+    val activeCall = state.activeCall
+    if (activeCall == null) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        return
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Remote Video Preview Canvas Simulation
+        // Remote Video Preview
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF1C2826)),
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Default.Videocam,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.4f),
-                    modifier = Modifier.size(80.dp)
+            if (state.remoteVideoTrack != null) {
+                WebRtcVideoRenderer(
+                    videoTrack = state.remoteVideoTrack,
+                    eglBaseContext = webRtcEngine.eglBaseContext,
+                    modifier = Modifier.fillMaxSize(),
+                    mirror = false
                 )
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "HD Video Stream • VP8 Codec",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 14.sp
-                )
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Videocam,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(80.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Waiting for P2P Video...",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
 
-        // Draggable Local PiP Camera Overlay (Top Right)
-        Surface(
-            modifier = Modifier
-                .padding(16.dp)
-                .size(width = 110.dp, height = 150.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .align(Alignment.TopEnd),
-            color = Color.DarkGray,
-            border = CardDefaults.outlinedCardBorder()
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = if (state.isFrontCamera) "Front Cam" else "Rear Cam",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
+        // Local PiP Hardware Camera Preview (Top Right)
+        if (state.isCameraOn && state.localVideoTrack != null) {
+            Surface(
+                modifier = Modifier
+                    .padding(top = 80.dp, end = 16.dp)
+                    .size(width = 120.dp, height = 160.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .align(Alignment.TopEnd),
+                color = Color.Black,
+                border = CardDefaults.outlinedCardBorder()
+            ) {
+                WebRtcVideoRenderer(
+                    videoTrack = state.localVideoTrack,
+                    eglBaseContext = webRtcEngine.eglBaseContext,
+                    modifier = Modifier.fillMaxSize(),
+                    mirror = state.isFrontCamera,
+                    isOverlay = true
                 )
             }
         }
@@ -427,7 +534,7 @@ fun ActiveVideoCallScreen(
                     color = Color.White
                 )
                 Text(
-                    text = webRtcEngine.formatDuration(state.callDurationSeconds),
+                    text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
                     style = MaterialTheme.typography.bodyMedium,
                     color = GreenCall
                 )
@@ -443,12 +550,20 @@ fun ActiveVideoCallScreen(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Camera Flip
+            // Camera Flip (Front <-> Rear)
             InCallControlButton(
                 icon = Icons.Default.Cameraswitch,
-                label = "Flip",
+                label = if (state.isFrontCamera) "Front" else "Rear",
                 isActive = false,
-                onClick = { webRtcEngine.flipCamera() }
+                onClick = { webRtcEngine.switchCamera() }
+            )
+
+            // Camera On/Off Toggle
+            InCallControlButton(
+                icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                label = if (state.isCameraOn) "Cam On" else "Cam Off",
+                isActive = state.isCameraOn,
+                onClick = { webRtcEngine.toggleCamera() }
             )
 
             // Mute Mic
@@ -497,4 +612,45 @@ private fun InCallControlButton(
         Spacer(modifier = Modifier.height(6.dp))
         Text(text = label, color = Color.White, fontSize = 12.sp)
     }
+}
+
+@Composable
+fun WebRtcVideoRenderer(
+    videoTrack: org.webrtc.VideoTrack,
+    eglBaseContext: org.webrtc.EglBase.Context,
+    modifier: Modifier = Modifier,
+    mirror: Boolean = false,
+    isOverlay: Boolean = false
+) {
+    AndroidView(
+        factory = { context ->
+            org.webrtc.SurfaceViewRenderer(context).apply {
+                init(eglBaseContext, null)
+                setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                setEnableHardwareScaler(true)
+                setMirror(mirror)
+                if (isOverlay) {
+                    setZOrderMediaOverlay(true)
+                }
+                // Tag the view with the current track so we can clean it up in update
+                setTag(videoTrack)
+                videoTrack.addSink(this)
+            }
+        },
+        update = { view ->
+            view.setMirror(mirror)
+            val oldTrack = view.getTag() as? org.webrtc.VideoTrack
+            if (oldTrack != videoTrack) {
+                oldTrack?.removeSink(view)
+                view.setTag(videoTrack)
+                videoTrack.addSink(view)
+            }
+        },
+        onRelease = { view ->
+            val oldTrack = view.getTag() as? org.webrtc.VideoTrack
+            oldTrack?.removeSink(view)
+            view.release()
+        },
+        modifier = modifier
+    )
 }

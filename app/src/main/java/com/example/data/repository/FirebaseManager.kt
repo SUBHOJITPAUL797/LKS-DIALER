@@ -4,10 +4,13 @@ import android.content.Context
 import android.util.Log
 import com.example.data.model.*
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.Query
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 sealed class RegisterResult {
@@ -33,157 +36,382 @@ class FirebaseManager private constructor(private val context: Context) {
     private val _activeCall = MutableStateFlow<CallDto?>(null)
     val activeCall: StateFlow<CallDto?> = _activeCall.asStateFlow()
 
-    private val _registeredUsers = MutableStateFlow<Map<String, UserDto>>(emptyMap())
+    private val _registeredUsers = MutableStateFlow<List<UserDto>>(emptyList())
+    val registeredUsers: StateFlow<List<UserDto>> = _registeredUsers.asStateFlow()
+
+    private val _syncedContacts = MutableStateFlow<List<ContactDto>>(emptyList())
+    val syncedContacts: StateFlow<List<ContactDto>> = _syncedContacts.asStateFlow()
+
     private val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
 
+    private var contactsListener: ListenerRegistration? = null
+    private var callLogsListener: ListenerRegistration? = null
+    // BUG-14 FIX: Store reference so it can be removed if needed
+    private var usersListener: ListenerRegistration? = null
+
     init {
+        // Step 1: Check if Firebase is properly configured first
         checkFirebaseAvailability()
-        // mock data disabled
-        
-        // Restore user if exists
+
+        // Step 2: Restore the logged-in user from local storage
         val savedPhone = prefs.getString("user_phone", null)
         val savedName = prefs.getString("user_name", "")
         val savedDeviceId = prefs.getString("device_id", "")
+        val savedStatus = prefs.getString("user_status", "Available on LKS DIALER")
         if (savedPhone != null) {
-            _currentUser.value = UserDto(
+            val savedProfilePic = prefs.getString("user_profile_pic", "") ?: ""
+            val user = UserDto(
                 phoneNumber = savedPhone,
                 displayName = savedName ?: "",
-                registeredDeviceId = savedDeviceId ?: ""
+                statusMessage = savedStatus ?: "Available on LKS DIALER",
+                profilePictureUrl = savedProfilePic,
+                registeredDeviceId = savedDeviceId ?: "",
+                isOnline = true,
+                lastSeen = System.currentTimeMillis()
             )
+            _currentUser.value = user
+
+            if (_isFirebaseConfigured.value) {
+                // CRITICAL: Always attach listeners and write user to Firestore on startup.
+                // This ensures the user document exists in the DB so others can call them.
+                attachUserSpecificListeners(savedPhone)
+                Log.d(TAG, "Syncing restored user $savedPhone to Firestore on startup")
+                FirebaseFirestore.getInstance().collection("users")
+                    .document(savedPhone)
+                    .set(user)
+                    .addOnSuccessListener {
+                        Log.d(TAG, "User $savedPhone synced to Firestore successfully on startup")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Failed to sync restored user to Firestore (check Firestore rules!): ${e.message}")
+                    }
+            }
+            // Refresh FCM token so push notifications work
+            fetchAndUpdateFcmToken()
         }
     }
 
     private fun checkFirebaseAvailability() {
         try {
-            // Check if Firebase app is initialized (google-services.json present)
             val firestore = FirebaseFirestore.getInstance()
             _isFirebaseConfigured.value = firestore.app != null
-            Log.d("FirebaseManager", "Firebase configuration check: ${_isFirebaseConfigured.value}")
+            Log.d(TAG, "Firebase configuration check: ${_isFirebaseConfigured.value}")
 
             if (_isFirebaseConfigured.value) {
+                // Start listening to all registered users globally
                 listenToFirestoreUsers()
             }
         } catch (e: Exception) {
-            Log.w("FirebaseManager", "Firebase not initialized yet or google-services.json missing: ${e.message}")
+            Log.w(TAG, "Firebase not initialized yet or google-services.json missing: ${e.message}")
             _isFirebaseConfigured.value = false
         }
     }
 
     private fun listenToFirestoreUsers() {
-        FirebaseFirestore.getInstance().collection("users")
+        if (!_isFirebaseConfigured.value) return
+        usersListener?.remove()
+        usersListener = FirebaseFirestore.getInstance().collection("users")
             .addSnapshotListener { snapshot, e ->
-                if (e != null || snapshot == null) return@addSnapshotListener
-                val users = snapshot.toObjects(UserDto::class.java)
-                val newMap = _registeredUsers.value.toMutableMap()
-                for (user in users) {
-                    newMap[user.phoneNumber] = user
+                if (e != null || snapshot == null) {
+                    Log.e(TAG, "Listen to users failed", e)
+                    return@addSnapshotListener
                 }
-                _registeredUsers.value = newMap
+                val users = snapshot.toObjects(UserDto::class.java).filter { it.phoneNumber.isNotBlank() }
+                _registeredUsers.value = users
                 
                 // Update current user if it was updated remotely
                 _currentUser.value?.let { current ->
-                    newMap[current.phoneNumber]?.let { updated ->
+                    users.find { it.phoneNumber == current.phoneNumber }?.let { updated ->
                         _currentUser.value = updated
                     }
+                }
+                
+                // Sync with native device contacts
+                syncDeviceContactsWithUsers(users)
+            }
+    }
+    
+    private fun syncDeviceContactsWithUsers(firebaseUsers: List<UserDto>) {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                val localContacts = com.example.util.ContactsHelper.getLocalContacts(context)
+                
+                // For each firebase user, check if their normalized phone number matches any local contact
+                val syncedList = mutableListOf<ContactDto>()
+                
+                for (user in firebaseUsers) {
+                    if (user.phoneNumber == _currentUser.value?.phoneNumber) continue
+                    
+                    val normalizedUserNumber = com.example.util.ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+                    
+                    val matchingContact = localContacts.find { 
+                        it.normalizedNumber == normalizedUserNumber || 
+                        it.normalizedNumber.endsWith(normalizedUserNumber.takeLast(10)) 
+                    }
+                    
+                    if (matchingContact != null) {
+                        syncedList.add(
+                            ContactDto(
+                                id = user.phoneNumber, // Use phone number as unique ID
+                                name = matchingContact.name, // Display native contact name
+                                phoneNumber = user.phoneNumber, // The registered number
+                                profilePictureUrl = user.profilePictureUrl
+                            )
+                        )
+                    }
+                }
+                
+                _syncedContacts.value = syncedList.sortedBy { it.name }
+                Log.d(TAG, "Synced native contacts: ${syncedList.size}")
+            }
+        } else {
+            Log.w(TAG, "READ_CONTACTS permission not granted, cannot sync contacts.")
+        }
+    }
+
+    private fun attachUserSpecificListeners(phoneNumber: String) {
+        if (!_isFirebaseConfigured.value || phoneNumber.isBlank()) return
+        
+        val db = FirebaseFirestore.getInstance()
+
+        // 1. Sync Contacts for user
+        contactsListener?.remove()
+        contactsListener = db.collection("users").document(phoneNumber)
+            .collection("contacts")
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+                val fetchedContacts = snapshot.toObjects(ContactDto::class.java)
+                _contacts.value = fetchedContacts
+            }
+
+        // 2. Sync Call Logs — scoped to this user's own log collection
+        callLogsListener?.remove()
+        callLogsListener = db.collection("users").document(phoneNumber)
+            .collection("callLogs")
+            .orderBy("startedAt", Query.Direction.DESCENDING)
+            .limit(100)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+                val logs = snapshot.toObjects(CallLogDto::class.java)
+                _callLogs.value = logs
+
+                val prefs = context.getSharedPreferences("DialerPrefs", Context.MODE_PRIVATE)
+                val lastSeenMissedCallAt = prefs.getLong("lastSeenMissedCallAt", 0L)
+                var maxMissedCallAt = lastSeenMissedCallAt
+                
+                logs.filter { it.direction == CallDirection.MISSED && it.startedAt > lastSeenMissedCallAt }
+                    .forEach { missedCall ->
+                        if (missedCall.startedAt > maxMissedCallAt) {
+                            maxMissedCallAt = missedCall.startedAt
+                        }
+                        showMissedCallNotification(missedCall)
+                    }
+                
+                if (maxMissedCallAt > lastSeenMissedCallAt) {
+                    prefs.edit().putLong("lastSeenMissedCallAt", maxMissedCallAt).apply()
                 }
             }
     }
 
-    private fun seedMockData() {
-        // Mock data removed per user request
+    private fun showMissedCallNotification(missedCall: CallLogDto) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                "missed_call_channel",
+                "Missed Calls",
+                android.app.NotificationManager.IMPORTANCE_DEFAULT
+            )
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val intent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = android.app.PendingIntent.getActivity(
+            context, 0, intent, android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = androidx.core.app.NotificationCompat.Builder(context, "missed_call_channel")
+            .setSmallIcon(android.R.drawable.stat_notify_missed_call)
+            .setContentTitle("Missed Call")
+            .setContentText("Missed call from ${missedCall.otherPartyName.ifBlank { missedCall.otherPartyNumber }}")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(missedCall.callId.hashCode(), notification)
     }
 
     fun lookupUserByNumber(phoneNumber: String): UserDto? {
         val cleanNumber = phoneNumber.replace(" ", "").trim()
-        return _registeredUsers.value[cleanNumber] ?: _registeredUsers.value.values.find {
+        return _registeredUsers.value.find { it.phoneNumber == cleanNumber } ?: _registeredUsers.value.find {
             it.phoneNumber.endsWith(cleanNumber.takeLast(10))
         }
     }
 
-    /**
-     * Verifies if the phone number is registered to this device or another device.
-     * Prevents Person B from using Person A's registered number on another hardware device.
-     */
     fun verifyAndRegisterNumber(phoneNumber: String, currentDeviceId: String): RegisterResult {
+        // Check local in-memory map first (fast path)
         val existingUser = lookupUserByNumber(phoneNumber)
 
         return if (existingUser != null) {
             val registeredDev = existingUser.registeredDeviceId
             if (registeredDev.isBlank() || registeredDev == currentDeviceId) {
-                // Number belongs to this device (or unassigned mock) - Allow login!
-                val updatedUser = existingUser.copy(registeredDeviceId = currentDeviceId)
+                val updatedUser = existingUser.copy(
+                    registeredDeviceId = currentDeviceId,
+                    isOnline = true,
+                    lastSeen = System.currentTimeMillis()
+                )
                 _currentUser.value = updatedUser
-                val map = _registeredUsers.value.toMutableMap()
-                map[phoneNumber] = updatedUser
-                _registeredUsers.value = map
+                val list = _registeredUsers.value.toMutableList()
+                val index = list.indexOfFirst { it.phoneNumber == phoneNumber }
+                if (index != -1) {
+                    list[index] = updatedUser
+                } else {
+                    list.add(updatedUser)
+                }
+                _registeredUsers.value = list
+                // Also write update back to Firestore
+                if (_isFirebaseConfigured.value) {
+                    FirebaseFirestore.getInstance().collection("users")
+                        .document(phoneNumber)
+                        .set(updatedUser)
+                        .addOnFailureListener { e ->
+                            Log.e(TAG, "Failed to update existing user on login: ${e.message}")
+                        }
+                }
                 RegisterResult.Success(updatedUser)
             } else {
-                // Number is registered to ANOTHER physical device! BLOCK ACCESS!
                 RegisterResult.DeviceBlocked(phoneNumber, registeredDev)
             }
         } else {
-            // New user number -> Allow registration and bind to current device
+            // User not found in local map (Firestore listener may not have populated yet).
+            // Treat as new user so they can register — loginWithPhone will write to Firestore.
+            Log.d(TAG, "User $phoneNumber not in local map — treating as NewUser for registration")
             RegisterResult.NewUser(phoneNumber)
         }
     }
 
-    fun loginWithPhone(phoneNumber: String, name: String, deviceId: String = "") {
+    fun loginWithPhone(phoneNumber: String, name: String, deviceId: String = "", status: String = "") {
         val existing = lookupUserByNumber(phoneNumber)
         val finalDeviceId = deviceId.ifBlank { existing?.registeredDeviceId ?: "DEV-${UUID.randomUUID().toString().take(8)}" }
+        // BUG-24 FIX: Use the provided status, fall back to existing/default
+        val finalStatus = status.ifBlank { existing?.statusMessage ?: "Available on LKS DIALER" }
 
-        var user = UserDto(
+        val user = UserDto(
             phoneNumber = phoneNumber,
             displayName = name.ifBlank { existing?.displayName ?: "User ${phoneNumber.takeLast(4)}" },
-            statusMessage = existing?.statusMessage ?: "Available on LKS DIALER",
-            registeredDeviceId = finalDeviceId
+            statusMessage = finalStatus,
+            profilePictureUrl = existing?.profilePictureUrl ?: "",
+            registeredDeviceId = finalDeviceId,
+            isOnline = true,
+            lastSeen = System.currentTimeMillis(),
+            createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis()
         )
         _currentUser.value = user
         
         prefs.edit()
             .putString("user_phone", user.phoneNumber)
             .putString("user_name", user.displayName)
+            .putString("user_status", user.statusMessage)
+            .putString("user_profile_pic", user.profilePictureUrl)
             .putString("device_id", user.registeredDeviceId)
             .apply()
-            
-        // Try to get FCM Token to save with user profile
-        try {
-            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
-                user = user.copy(fcmToken = token)
-                _currentUser.value = user
-                
-                if (_isFirebaseConfigured.value) {
-                    FirebaseFirestore.getInstance().collection("users")
-                        .document(phoneNumber)
-                        .set(user)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("FirebaseManager", "Failed to get FCM token: ${e.message}")
+
+        // Attach listeners for this user
+        if (_isFirebaseConfigured.value) {
+            attachUserSpecificListeners(phoneNumber)
         }
 
-        
-        // Add to registered users
-        val currentMap = _registeredUsers.value.toMutableMap()
-        currentMap[phoneNumber] = user
-        _registeredUsers.value = currentMap
-
-        // Sync with Firestore if configured
+        // Sync with Firestore immediately
         if (_isFirebaseConfigured.value) {
             try {
                 FirebaseFirestore.getInstance().collection("users")
                     .document(phoneNumber)
                     .set(user)
                     .addOnSuccessListener {
-                        Log.d("FirebaseManager", "User successfully saved to Firestore.")
+                        Log.d(TAG, "User $phoneNumber saved to Firestore successfully.")
                     }
                     .addOnFailureListener { e ->
-                        Log.e("FirebaseManager", "Error saving user to Firestore: ${e.message}")
+                        Log.e(TAG, "Error saving user to Firestore: ${e.message}")
                     }
             } catch (e: Exception) {
-                Log.e("FirebaseManager", "Exception saving user to Firestore: ${e.message}")
+                Log.e(TAG, "Exception saving user to Firestore: ${e.message}")
             }
+        }
+
+        // Add to local registered users list
+        val currentList = _registeredUsers.value.toMutableList()
+        val index = currentList.indexOfFirst { it.phoneNumber == phoneNumber }
+        if (index != -1) {
+            currentList[index] = user
         } else {
-             Log.w("FirebaseManager", "Firebase not configured, cannot save user to Firestore.")
+            currentList.add(user)
+        }
+        _registeredUsers.value = currentList
+
+        // Fetch & update FCM token asynchronously
+        fetchAndUpdateFcmToken()
+    }
+
+    fun updateProfile(displayName: String, statusMessage: String, profilePicUrl: String = "") {
+        val current = _currentUser.value ?: return
+        val updated = current.copy(
+            displayName = displayName.ifBlank { current.displayName },
+            statusMessage = statusMessage.ifBlank { current.statusMessage },
+            profilePictureUrl = profilePicUrl.ifBlank { current.profilePictureUrl }
+        )
+        _currentUser.value = updated
+
+        prefs.edit()
+            .putString("user_name", updated.displayName)
+            .putString("user_status", updated.statusMessage)
+            .putString("user_profile_pic", updated.profilePictureUrl)
+            .apply()
+
+        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+            FirebaseFirestore.getInstance().collection("users")
+                .document(updated.phoneNumber)
+                .set(updated)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Profile successfully updated in Firestore.")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Failed to update profile in Firestore: ${e.message}")
+                }
+        }
+    }
+
+    fun updateFcmToken(token: String) {
+        val current = _currentUser.value ?: return
+        if (current.fcmToken == token) return
+        
+        val updated = current.copy(fcmToken = token)
+        _currentUser.value = updated
+
+        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+            // Use set with merge=true so this works even if the document doesn't exist yet
+            FirebaseFirestore.getInstance().collection("users")
+                .document(updated.phoneNumber)
+                .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.d(TAG, "FCM token updated in Firestore for ${updated.phoneNumber}")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Failed to update FCM token in Firestore: ${e.message}")
+                }
+        }
+    }
+
+    fun fetchAndUpdateFcmToken() {
+        if (_currentUser.value == null) return
+        try {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                updateFcmToken(token)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch FCM token: ${e.message}")
         }
     }
 
@@ -197,6 +425,21 @@ class FirebaseManager private constructor(private val context: Context) {
             statusMessage = if (registered) "Available" else "Not on LKS DIALER yet"
         )
         _contacts.value = _contacts.value + newContact
+
+        val myNum = _currentUser.value?.phoneNumber
+        if (_isFirebaseConfigured.value && !myNum.isNullOrBlank()) {
+            FirebaseFirestore.getInstance().collection("users")
+                .document(myNum)
+                .collection("contacts")
+                .document(newContact.id)
+                .set(newContact)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Contact added to Firestore.")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Failed to save contact to Firestore: ${e.message}")
+                }
+        }
     }
 
     fun logCall(
@@ -207,9 +450,12 @@ class FirebaseManager private constructor(private val context: Context) {
         status: CallStatus,
         durationSeconds: Int
     ) {
+        val logId = UUID.randomUUID().toString()
+        val userPhone = _currentUser.value?.phoneNumber ?: return
         val newLog = CallLogDto(
-            id = UUID.randomUUID().toString(),
-            callId = UUID.randomUUID().toString(),
+            id = logId,
+            // BUG-20 FIX: Use a deterministic ID derived from user + timestamp, not a random UUID
+            callId = "${userPhone}_${System.currentTimeMillis()}",
             direction = direction,
             otherPartyNumber = otherPartyNumber,
             otherPartyName = otherPartyName,
@@ -219,10 +465,66 @@ class FirebaseManager private constructor(private val context: Context) {
             durationSeconds = durationSeconds
         )
         _callLogs.value = listOf(newLog) + _callLogs.value
+
+        if (_isFirebaseConfigured.value) {
+            // BUG-05 FIX: Store call logs in user-scoped subcollection so each user only sees their own
+            FirebaseFirestore.getInstance()
+                .collection("users").document(userPhone)
+                .collection("callLogs").document(logId)
+                .set(newLog)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Call log saved to Firestore for user $userPhone.")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Error saving call log to Firestore: ${e.message}")
+                }
+        }
+    }
+
+    fun logMissedCallForOfflineUser(
+        calleeNumber: String,
+        callerNumber: String,
+        callerName: String,
+        callType: CallType
+    ) {
+        val logId = UUID.randomUUID().toString()
+        val newLog = CallLogDto(
+            id = logId,
+            callId = "${calleeNumber}_${System.currentTimeMillis()}",
+            direction = CallDirection.MISSED,
+            otherPartyNumber = callerNumber,
+            otherPartyName = callerName,
+            callType = callType,
+            status = CallStatus.MISSED,
+            startedAt = System.currentTimeMillis(),
+            durationSeconds = 0
+        )
+
+        if (_isFirebaseConfigured.value) {
+            FirebaseFirestore.getInstance()
+                .collection("users").document(calleeNumber)
+                .collection("callLogs").document(logId)
+                .set(newLog)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Offline missed call log saved for callee $calleeNumber.")
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Error saving offline missed call to Firestore: ${e.message}")
+                }
+        }
     }
 
     fun clearCallLogs() {
         _callLogs.value = emptyList()
+
+        if (_isFirebaseConfigured.value) {
+            val db = FirebaseFirestore.getInstance()
+            db.collection("callLogs").get().addOnSuccessListener { snapshot ->
+                for (doc in snapshot.documents) {
+                    doc.reference.delete()
+                }
+            }
+        }
     }
 
     companion object {

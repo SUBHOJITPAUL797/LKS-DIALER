@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "397514094733",
+    "firebase_url": "https://lks-dialer-default-rtdb.firebaseio.com",
+    "project_id": "lks-dialer",
+    "storage_bucket": "lks-dialer.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:397514094733:android:12d5fbab48d95ab3bbcac4",
+        "android_client_info": {
+          "package_name": "com.subhojit.lksdialer.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCk99eVOmbUUfQ-kLfU9b9eVVczqmUMljk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

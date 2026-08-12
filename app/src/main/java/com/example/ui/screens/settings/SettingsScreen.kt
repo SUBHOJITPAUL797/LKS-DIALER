@@ -77,7 +77,7 @@ fun SettingsScreen(
                         checked = isNoiseSuppressionOn,
                         onCheckedChange = { isNoiseSuppressionOn = it }
                     )
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                     SettingsSwitchTile(
                         title = "Acoustic Echo Cancellation",
                         subtitle = "Prevents speaker echo during speakerphone calls",
@@ -85,7 +85,7 @@ fun SettingsScreen(
                         checked = isEchoCancellationOn,
                         onCheckedChange = { isEchoCancellationOn = it }
                     )
-                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                     SettingsSwitchTile(
                         title = "Low Data Mode",
                         subtitle = "Limits Opus audio to 16kbps & video to 360p",

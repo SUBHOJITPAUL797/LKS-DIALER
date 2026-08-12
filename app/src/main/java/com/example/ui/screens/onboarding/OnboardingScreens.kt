@@ -407,7 +407,7 @@ fun PhoneInputScreen(
 fun ProfileSetupScreen(
     phoneNumber: String,
     deviceId: String,
-    onProfileComplete: (name: String) -> Unit
+    onProfileComplete: (name: String, status: String) -> Unit
 ) {
     var nameInput by remember { mutableStateOf("") }
     var statusMessageInput by remember { mutableStateOf("Available on LKS DIALER") }
@@ -478,7 +478,7 @@ fun ProfileSetupScreen(
         }
 
         Button(
-            onClick = { onProfileComplete(nameInput) },
+            onClick = { onProfileComplete(nameInput, statusMessageInput) },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(54.dp),
