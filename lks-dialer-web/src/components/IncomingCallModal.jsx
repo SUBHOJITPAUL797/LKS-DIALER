@@ -1,7 +1,15 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 
 export default function IncomingCallModal({ callData, onAccept, onDecline }) {
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.play().catch(e => console.warn("Ringtone autoplay blocked by browser:", e));
+    }
+  }, []);
+
   if (!callData) return null;
 
   const isVideoCall = callData.callType === 'VIDEO';
@@ -58,6 +66,7 @@ export default function IncomingCallModal({ callData, onAccept, onDecline }) {
         </div>
       </div>
       <audio 
+        ref={audioRef}
         src={localStorage.getItem('customRingtone') || "https://actions.google.com/sounds/v1/alarms/phone_ringing.ogg"} 
         autoPlay 
         loop 

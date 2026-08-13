@@ -460,16 +460,18 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
 
                         if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.DECLINED && _state.value.callType == CallType.AUDIO) {
-                            // Show a toast or update state so the requester knows it was declined
-                            _state.value = _state.value.copy(connectionStatusText = "Video Request Declined")
-                            scope.launch {
-                                delay(3000)
-                                if (_state.value.callStatus == CallStatus.ANSWERED) {
-                                    _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                            if (_state.value.didIRequestVideoUpgrade) {
+                                // Show a toast or update state so the requester knows it was declined
+                                _state.value = _state.value.copy(connectionStatusText = "Video Request Declined")
+                                scope.launch {
+                                    delay(3000)
+                                    if (_state.value.callStatus == CallStatus.ANSWERED) {
+                                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                                    }
                                 }
+                                // Reset the status so we can request again
+                                firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
                             }
-                            // Reset the status so we can request again
-                            firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
                         }
 
                         if (isCaller && call.answerSdp != null && call.answerSdp != oldCall?.answerSdp) {
@@ -599,9 +601,31 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun toggleSpeaker() {
         val newSpeaker = !_state.value.isSpeakerOn
-        // Note: Real app requires AudioManager routing
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-        am.isSpeakerphoneOn = newSpeaker
+        
+        if (newSpeaker) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice()
+            } else {
+                am.stopBluetoothSco()
+            }
+            am.isSpeakerphoneOn = true
+        } else {
+            am.isSpeakerphoneOn = false
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val devices = am.availableCommunicationDevices
+                val bluetoothDevice = devices.firstOrNull { 
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO || 
+                    it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET 
+                }
+                if (bluetoothDevice != null) {
+                    am.setCommunicationDevice(bluetoothDevice)
+                }
+            } else {
+                am.startBluetoothSco()
+            }
+        }
+        
         _state.value = _state.value.copy(isSpeakerOn = newSpeaker)
     }
 

@@ -398,9 +398,11 @@ class WebRtcEngine {
       }
 
       if (data.videoUpgradeStatus === 'DECLINED' && data.callType === 'AUDIO') {
-        if (this.onVideoUpgradeDeclined) this.onVideoUpgradeDeclined();
-        updateDoc(callDoc, { videoUpgradeStatus: null });
-        this.didIRequestVideoUpgrade = false;
+        if (this.didIRequestVideoUpgrade) {
+          if (this.onVideoUpgradeDeclined) this.onVideoUpgradeDeclined();
+          updateDoc(callDoc, { videoUpgradeStatus: null });
+          this.didIRequestVideoUpgrade = false;
+        }
       }
 
       const answerObj = data.answer || (data.answerSdp ? { type: 'answer', sdp: data.answerSdp } : null);
