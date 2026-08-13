@@ -34,11 +34,19 @@ class CallMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             Log.d("FCM", "Data payload: ${remoteMessage.data}")
             val type = remoteMessage.data["type"]
+            val callId = remoteMessage.data["callId"] ?: return
+            
+            if (type == "cancel_call") {
+                Log.d("FCM", "Received cancel_call for callId=$callId. Dismissing notification.")
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.cancel(NOTIFICATION_ID)
+                return
+            }
+            
             if (type == "incoming_call") {
                 val callerName   = remoteMessage.data["callerName"]   ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
-                val callId       = remoteMessage.data["callId"]       ?: return
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
                 
                 // Let the caller know we've received the push and the phone is ringing
@@ -143,7 +151,10 @@ class CallMessagingService : FirebaseMessagingService() {
         if (callerProfilePic.isNotEmpty()) {
             try {
                 val url = java.net.URL(callerProfilePic)
-                val bitmap = android.graphics.BitmapFactory.decodeStream(url.openConnection().getInputStream())
+                val connection = url.openConnection()
+                connection.connectTimeout = 2000 // 2 seconds
+                connection.readTimeout = 2000
+                val bitmap = android.graphics.BitmapFactory.decodeStream(connection.getInputStream())
                 if (bitmap != null) {
                     callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
                 }
@@ -167,34 +178,20 @@ class CallMessagingService : FirebaseMessagingService() {
             .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
             .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
             .setFullScreenIntent(fullScreenPendingIntent, true)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12+ Native Call Style Notification
-            builder.setStyle(
-                NotificationCompat.CallStyle.forIncomingCall(
-                    caller,
-                    declinePendingIntent,
-                    acceptPendingIntent
-                )
-            )
-            // CallStyle takes over the actions, so no need to add separate buttons
-        } else {
-            // Fallback for older Android versions
-            builder.addAction(
+            .addAction(
                 NotificationCompat.Action.Builder(
                     android.R.drawable.ic_menu_call,
                     "Answer",
                     acceptPendingIntent
                 ).build()
             )
-            builder.addAction(
+            .addAction(
                 NotificationCompat.Action.Builder(
                     android.R.drawable.ic_menu_close_clear_cancel,
                     "Decline",
                     declinePendingIntent
                 ).build()
             )
-        }
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")

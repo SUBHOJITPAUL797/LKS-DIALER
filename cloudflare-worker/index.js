@@ -4,28 +4,38 @@
 
 export default {
   async fetch(request, env) {
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, X-Worker-Secret",
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
     // Only allow POST requests
     if (request.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
+      return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
     }
 
     // Validate shared secret to prevent abuse
     const authHeader = request.headers.get("X-Worker-Secret");
     if (!authHeader || authHeader !== env.WORKER_SECRET) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response("Unauthorized", { status: 401, headers: corsHeaders });
     }
 
     let body;
     try {
       body = await request.json();
     } catch {
-      return new Response("Invalid JSON body", { status: 400 });
+      return new Response("Invalid JSON body", { status: 400, headers: corsHeaders });
     }
 
-    const { token, callerName, callerNumber, callType, callId } = body;
+    const { token, webToken, callerName, callerNumber, callType, callId, isCancel } = body;
 
-    if (!token || !callId) {
-      return new Response("Missing required fields: token, callId", { status: 400 });
+    if (!token && !webToken) {
+      return new Response("Missing required fields: token or webToken", { status: 400, headers: corsHeaders });
     }
 
     try {
@@ -38,54 +48,59 @@ export default {
       // Step 2: Send FCM push notification via v1 API
       const fcmUrl = `https://fcm.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/messages:send`;
 
-      const fcmPayload = {
-        message: {
-          token: token,
-          // Data-only payload so it works even when app is in background/killed
-          data: {
-            type: "incoming_call",
-            callId: callId,
-            callerName: callerName || "Unknown",
-            callerNumber: callerNumber || "",
-            callType: callType || "AUDIO",
+      const sendPush = async (targetToken) => {
+        if (!targetToken) return null;
+        const fcmPayload = {
+          message: {
+            token: targetToken,
+            data: {
+              type: isCancel ? "cancel_call" : "incoming_call",
+              callId: callId,
+              callerName: callerName || "Unknown",
+              callerNumber: callerNumber || "",
+              callType: callType || "AUDIO",
+            },
+            android: {
+              priority: "HIGH",
+              ttl: "30s",
+            },
+            webpush: {
+              headers: {
+                TTL: "30",
+                Urgency: "high"
+              }
+            }
           },
-          android: {
-            priority: "high",
-            ttl: "30s", // Call notification expires after 30 seconds
+        };
+
+        const fcmResponse = await fetch(fcmUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
           },
-        },
+          body: JSON.stringify(fcmPayload),
+        });
+        
+        return await fcmResponse.json();
       };
 
-      const fcmResponse = await fetch(fcmUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(fcmPayload),
-      });
+      const [androidResult, webResult] = await Promise.all([
+        sendPush(token),
+        sendPush(webToken)
+      ]);
 
-      const fcmResult = await fcmResponse.json();
-
-      if (!fcmResponse.ok) {
-        console.error("FCM Error:", JSON.stringify(fcmResult));
-        return new Response(
-          JSON.stringify({ success: false, error: fcmResult }),
-          { status: 500, headers: { "Content-Type": "application/json" } }
-        );
-      }
-
-      console.log("FCM notification sent. Message ID:", fcmResult.name);
+      console.log("FCM notifications processed.", { androidResult, webResult });
       return new Response(
-        JSON.stringify({ success: true, messageId: fcmResult.name }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        JSON.stringify({ success: true, androidResult, webResult }),
+        { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
 
     } catch (err) {
       console.error("Worker error:", err.message);
       return new Response(
         JSON.stringify({ success: false, error: err.message }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
   },
@@ -147,10 +162,11 @@ async function buildJWT(clientEmail, privateKeyPem) {
 }
 
 async function importPrivateKey(pem) {
-  // Strip PEM headers and whitespace
+  // Strip PEM headers and whitespace, including literal escaped newlines
   const pemContents = pem
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
+    .replace(/\\n/g, "")
     .replace(/\s+/g, "");
 
   const binaryDer = Uint8Array.from(atob(pemContents), (c) => c.charCodeAt(0));

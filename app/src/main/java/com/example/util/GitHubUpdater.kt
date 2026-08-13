@@ -11,11 +11,10 @@ import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -97,70 +96,72 @@ class GitHubUpdater(private val context: Context) {
     }
     
     fun downloadUpdate(url: String, version: String) {
-        try {
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val uri = Uri.parse(url)
-            val request = DownloadManager.Request(uri)
-                .setTitle("LKS Dialer Update")
-                .setDescription("Downloading version $version")
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-                .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "update_$version.apk")
-                .setAllowedOverMetered(true)
-                .setAllowedOverRoaming(true)
-            
-            downloadId = downloadManager.enqueue(request)
-            
-            _downloadState.value = DownloadState.Downloading(0f)
-            startProgressTracking(downloadManager)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start download", e)
-            _downloadState.value = DownloadState.Error(e.message ?: "Unknown error")
-        }
-    }
-    
-    private fun startProgressTracking(downloadManager: DownloadManager) {
-        Thread {
-            var downloading = true
-            while (downloading) {
-                val query = DownloadManager.Query().setFilterById(downloadId)
-                val cursor = downloadManager.query(query)
-                if (cursor.moveToFirst()) {
-                    val statusColumn = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-                    val status = if (statusColumn != -1) cursor.getInt(statusColumn) else DownloadManager.STATUS_FAILED
+        val fileName = "update_$version.apk"
+        val destinationFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
+        
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            try {
+                _downloadState.value = DownloadState.Downloading(0f)
+                
+                var downloadUrl = url
+                var connection = URL(downloadUrl).openConnection() as HttpURLConnection
+                connection.instanceFollowRedirects = true
+                
+                // Manually handle redirects if HttpURLConnection fails to do so for HTTPS to HTTPS cross-domain
+                var redirectCount = 0
+                var responseCode = connection.responseCode
+                while (responseCode / 100 == 3 && redirectCount < 5) {
+                    downloadUrl = connection.getHeaderField("Location")
+                    connection = URL(downloadUrl).openConnection() as HttpURLConnection
+                    responseCode = connection.responseCode
+                    redirectCount++
+                }
+
+                if (responseCode != HttpURLConnection.HTTP_OK) {
+                    _downloadState.value = DownloadState.Error("Server returned HTTP $responseCode")
+                    return@launch
+                }
+
+                val fileLength = connection.contentLength
+                val input = connection.inputStream
+                val output = java.io.FileOutputStream(destinationFile)
+                
+                val data = ByteArray(8192)
+                var total: Long = 0
+                var count: Int
+                
+                var lastUpdate = System.currentTimeMillis()
+                
+                while (input.read(data).also { count = it } != -1) {
+                    total += count
+                    output.write(data, 0, count)
                     
-                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                        downloading = false
-                        val uriStringColumn = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-                        if (uriStringColumn != -1) {
-                            val localUri = Uri.parse(cursor.getString(uriStringColumn))
-                            val file = File(localUri.path!!)
-                            // Use FileProvider to get a safe content URI
-                            val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                            _downloadState.value = DownloadState.Downloaded(contentUri)
-                            installApk(contentUri)
-                        }
-                    } else if (status == DownloadManager.STATUS_FAILED) {
-                        downloading = false
-                        _downloadState.value = DownloadState.Error("Download failed")
-                    } else {
-                        val bytesDownloadedColumn = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-                        val bytesTotalColumn = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-                        
-                        if (bytesDownloadedColumn != -1 && bytesTotalColumn != -1) {
-                            val bytesDownloaded = cursor.getInt(bytesDownloadedColumn)
-                            val bytesTotal = cursor.getInt(bytesTotalColumn)
-                            if (bytesTotal > 0) {
-                                val progress = bytesDownloaded.toFloat() / bytesTotal.toFloat()
-                                _downloadState.value = DownloadState.Downloading(progress)
-                            }
+                    if (fileLength > 0) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdate > 100) { // Throttle UI updates to every 100ms
+                            val progress = total.toFloat() / fileLength.toFloat()
+                            _downloadState.value = DownloadState.Downloading(progress)
+                            lastUpdate = now
                         }
                     }
                 }
-                cursor.close()
-                Thread.sleep(500)
+                
+                output.flush()
+                output.close()
+                input.close()
+                
+                val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", destinationFile)
+                _downloadState.value = DownloadState.Downloaded(contentUri)
+                
+                withContext(Dispatchers.Main) {
+                    installApk(contentUri)
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Download failed", e)
+                _downloadState.value = DownloadState.Error(e.message ?: "Download failed")
             }
-        }.start()
+        }
     }
     
     fun installApk(contentUri: Uri) {

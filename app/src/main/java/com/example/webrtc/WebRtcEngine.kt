@@ -248,7 +248,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         firestore.collection("calls").document(newCall.callId).set(newCall)
         
         // Trigger Push Notification via external Worker (Cloudflare / Vercel)
-        triggerPushNotification(calleeNumber, callerName, callType.name, newCall.callId)
+        triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
         
         com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
         
@@ -698,11 +698,13 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
     }
 
-    private fun triggerPushNotification(calleeNumber: String, callerName: String, callType: String, callId: String) {
+    private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String) {
         // Fetch the callee's FCM token from Firestore
         firestore.collection("users").document(calleeNumber).get().addOnSuccessListener { doc ->
-            val fcmToken = doc.getString("fcmToken")
-            if (!fcmToken.isNullOrEmpty()) {
+            val fcmToken = doc.getString("fcmToken") ?: ""
+            val webToken = doc.getString("webToken") ?: ""
+            
+            if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
                 val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
                 val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
                 
@@ -718,7 +720,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         val json = """
                             {
                                 "token": "$fcmToken",
+                                "webToken": "$webToken",
                                 "callerName": "$callerName",
+                                "callerNumber": "$callerNumber",
                                 "callType": "$callType",
                                 "callId": "$callId"
                             }
