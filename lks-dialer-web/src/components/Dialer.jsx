@@ -57,7 +57,7 @@ export default function Dialer({ onStartCall }) {
         />
       )}
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', width: '100%', alignItems: 'center', marginBottom: '24px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', width: '100%', alignItems: 'center', minHeight: '180px' }}>
         
         <div 
           className="neo-box"
@@ -74,30 +74,37 @@ export default function Dialer({ onStartCall }) {
         </div>
 
         <div style={{ 
-          fontSize: number.length > 10 ? '32px' : '48px', 
+          fontSize: number.length > 10 ? '32px' : '40px', 
           fontWeight: '900', 
-          minHeight: '60px',
+          height: '48px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           letterSpacing: '2px',
           textAlign: 'center',
-          color: number.length === 0 ? '#aaa' : '#000'
+          color: number.length === 0 ? '#aaa' : '#000',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden'
         }}>
           {number || "ENTER NUMBER"}
         </div>
 
-        {matchedUser && (
-          <div className="neo-box" style={{ 
-            marginTop: '12px', padding: '8px 16px', backgroundColor: 'var(--success)', 
-            display: 'flex', alignItems: 'center', gap: '8px' 
-          }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#000' }} />
-            <span style={{ fontWeight: '800' }}>{matchedUser.displayName}</span>
-          </div>
-        )}
+        <div style={{ height: '44px', marginTop: '8px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          {matchedUser && (
+            <div className="neo-box" style={{ 
+              padding: '6px 16px', backgroundColor: 'var(--success)', 
+              display: 'flex', alignItems: 'center', gap: '8px' 
+            }}>
+              <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#000' }} />
+              <span style={{ fontWeight: '800', fontSize: '14px' }}>{matchedUser.displayName}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={{ 
         display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', 
-        gap: '20px', width: '100%', maxWidth: '320px', marginBottom: '32px'
+        gap: '12px', width: '100%', maxWidth: '280px', marginBottom: '20px'
       }}>
         {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((btn) => (
           <div key={btn} style={{ display: 'flex', justifyContent: 'center' }}>
@@ -108,7 +115,7 @@ export default function Dialer({ onStartCall }) {
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: '16px', width: '100%', maxWidth: '320px', paddingBottom: '20px' }}>
+      <div style={{ display: 'flex', gap: '12px', width: '100%', maxWidth: '280px', paddingBottom: '10px' }}>
         <button 
           className="neo-btn accent" 
           style={{ flex: 1, padding: '12px' }}
