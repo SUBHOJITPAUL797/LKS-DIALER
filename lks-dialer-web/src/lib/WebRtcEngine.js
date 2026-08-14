@@ -237,7 +237,7 @@ class WebRtcEngine {
     return this.activeCallId;
   }
 
-  async triggerPushNotification(callee, callType, callId) {
+  async triggerPushNotification(callee, callType, callId, forceNotification = false) {
     try {
       const url = "https://lks-dialer-call-notifier.subhojit.workers.dev/call";
       await fetch(url, {
@@ -249,11 +249,12 @@ class WebRtcEngine {
           callType, 
           callId, 
           callerName: this.currentUser.displayName,
-          callerNumber: this.currentUser.phoneNumber
+          callerNumber: this.currentUser.phoneNumber,
+          type: forceNotification ? "cancel_call" : "incoming_call"
         })
       });
     } catch (e) {
-      console.error("Failed to trigger push", e);
+      console.error("Failed to send push notification:", e);
     }
   }
 
@@ -372,7 +373,25 @@ class WebRtcEngine {
     this.hasProcessedOffer = false;
     this.didIRequestVideoUpgrade = false;
     this.isVideoUpgradeRequested = false;
+    this.isUpgradingVideo = false;
+    this.pendingOffer = null;
     if (this.onCallStateChange) this.onCallStateChange(null);
+  }
+
+  async processOfferObj(offerObj) {
+    if (!this.activeCallId || !this.peerConnection) return;
+    try {
+      await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offerObj));
+      const answerDescription = await this.peerConnection.createAnswer();
+      await this.peerConnection.setLocalDescription(answerDescription);
+      const callDoc = doc(db, 'calls', this.activeCallId);
+      await updateDoc(callDoc, {
+        answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+        answerSdp: answerDescription.sdp
+      });
+    } catch (e) {
+      console.error("Error processing offer obj:", e);
+    }
   }
 
   listenToActiveCall(callDoc, isCaller = true) {
@@ -420,16 +439,11 @@ class WebRtcEngine {
       // Handle renegotiated offer if callee
       const offerObj = data.offer || (data.offerSdp ? { type: 'offer', sdp: data.offerSdp } : null);
       if (!isCaller && this.hasProcessedOffer && offerObj && this.peerConnection.signalingState === 'stable' && offerObj.sdp !== this.peerConnection.currentRemoteDescription?.sdp) {
-        this.peerConnection.setRemoteDescription(new RTCSessionDescription(offerObj)).then(() => {
-          return this.peerConnection.createAnswer();
-        }).then(answerDescription => {
-          return this.peerConnection.setLocalDescription(answerDescription).then(() => {
-            return updateDoc(callDoc, {
-              answer: { type: answerDescription.type, sdp: answerDescription.sdp },
-              answerSdp: answerDescription.sdp
-            });
-          });
-        });
+        if (this.isUpgradingVideo) {
+          this.pendingOffer = offerObj;
+        } else {
+          this.processOfferObj(offerObj);
+        }
       }
 
       if (data.status === 'ENDED' || data.status === 'DECLINED') {
@@ -496,6 +510,7 @@ class WebRtcEngine {
   async executeVideoUpgrade(isCaller) {
     if (!this.activeCallId) return;
 
+    this.isUpgradingVideo = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       const videoTrack = stream.getVideoTracks()[0];
@@ -538,7 +553,13 @@ class WebRtcEngine {
       }
     } catch (e) {
       console.error("Failed to upgrade to video:", e);
-      this.declineVideoUpgrade();
+      if (this.onCallStateChange) this.onCallStateChange("Video Error");
+    } finally {
+      this.isUpgradingVideo = false;
+      if (this.pendingOffer) {
+        this.processOfferObj(this.pendingOffer);
+        this.pendingOffer = null;
+      }
     }
   }
 }

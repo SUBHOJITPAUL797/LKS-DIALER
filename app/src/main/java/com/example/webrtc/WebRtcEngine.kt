@@ -450,9 +450,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                         } else {
                             _state.value = _state.value.copy(
-                                isVideoUpgradeRequested = false,
-                                didIRequestVideoUpgrade = false
+                                isVideoUpgradeRequested = false
                             )
+                            if (call.videoUpgradeStatus == null) {
+                                _state.value = _state.value.copy(
+                                    didIRequestVideoUpgrade = false
+                                )
+                            }
                         }
 
                         if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.ACCEPTED && _state.value.callType == CallType.AUDIO) {

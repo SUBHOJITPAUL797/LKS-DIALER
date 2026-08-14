@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 
@@ -11,12 +11,33 @@ export default function CallScreen({ callData, onEndCall }) {
   const [audioOutputs, setAudioOutputs] = useState([]);
   const [currentOutputIndex, setCurrentOutputIndex] = useState(0);
 
+  const isVideoCall = callData.callType === 'VIDEO';
+
+  const remoteVideoRefCb = useCallback((el) => {
+    remoteVideoRef.current = el;
+    if (el && webRtcEngine.remoteStream) {
+      el.srcObject = webRtcEngine.remoteStream;
+    }
+  }, [isVideoCall]);
+
+  const localVideoRefCb = useCallback((el) => {
+    localVideoRef.current = el;
+    if (el && webRtcEngine.localStream) {
+      el.srcObject = webRtcEngine.localStream;
+    }
+  }, [isVideoCall]);
+
   useEffect(() => {
     webRtcEngine.onLocalStream = (stream) => {
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
     };
     webRtcEngine.onRemoteStream = (stream) => {
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = stream;
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+        remoteVideoRef.current.srcObject = stream;
+      }
     };
 
     if (webRtcEngine.localStream && localVideoRef.current) {
@@ -67,8 +88,6 @@ export default function CallScreen({ callData, onEndCall }) {
     webRtcEngine.toggleVideo(!isVideoEnabled);
   };
 
-  const isVideoCall = callData.callType === 'VIDEO';
-
   const isMeCaller = callData.callerNumber === webRtcEngine.currentUser?.phoneNumber;
   const peerName = isMeCaller ? callData.calleeName : callData.callerName;
   const peerAvatar = isMeCaller ? callData.calleeProfilePic : callData.callerProfilePic;
@@ -79,7 +98,7 @@ export default function CallScreen({ callData, onEndCall }) {
       {/* Remote Video / Audio (Full Screen) */}
       {isVideoCall ? (
         <video
-          ref={remoteVideoRef}
+          ref={remoteVideoRefCb}
           autoPlay
           playsInline
           style={{
@@ -87,13 +106,16 @@ export default function CallScreen({ callData, onEndCall }) {
           }}
         />
       ) : (
-        <audio ref={remoteVideoRef} autoPlay />
+        <audio 
+          ref={remoteVideoRefCb} 
+          autoPlay 
+        />
       )}
 
       {/* Local Video (Floating Thumbnail) */}
       {isVideoCall && (
         <video
-          ref={localVideoRef}
+          ref={localVideoRefCb}
           autoPlay
           playsInline
           muted

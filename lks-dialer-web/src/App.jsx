@@ -17,6 +17,11 @@ function App() {
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
+    // Request browser notification permission
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
     // Check local storage for persistent login
     const savedUser = localStorage.getItem('lksDialerUser');
     if (savedUser) {
@@ -54,6 +59,18 @@ function App() {
       
       if (!isMeCaller && (callData.status === 'CALLING' || callData.status === 'RINGING')) {
         setIncomingCall(callData);
+        // Show browser notification if tab is in background
+        if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+          const notif = new Notification("Incoming Call", {
+            body: `${callData.callerName} is calling you.`,
+            icon: callData.callerProfilePic || '/logo192.png',
+            requireInteraction: true
+          });
+          notif.onclick = () => {
+            window.focus();
+            notif.close();
+          };
+        }
       } else {
         setIncomingCall(null);
         setActiveCall(callData);
