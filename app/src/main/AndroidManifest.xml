@@ -53,6 +53,8 @@
             android:theme="@style/Theme.MyApplication"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

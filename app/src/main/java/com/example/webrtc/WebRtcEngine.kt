@@ -152,7 +152,31 @@ class WebRtcEngine private constructor(private val context: Context) {
             override fun onSignalingChange(newState: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
                 if (newState == PeerConnection.IceConnectionState.CONNECTED) {
-                    _state.value = _state.value.copy(connectionStatusText = "P2P Connected • WebRTC")
+                    _state.value = _state.value.copy(connectionStatusText = "P2P Connected   WebRTC")
+                } else if (newState == PeerConnection.IceConnectionState.DISCONNECTED || newState == PeerConnection.IceConnectionState.FAILED) {
+                    _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
+                    // If we are the caller, we initiate the ICE restart
+                    if (isCaller) {
+                        scope.launch {
+                            try {
+                                peerConnection?.restartIce()
+                            } catch (e: Exception) {
+                                // Fallback for older WebRTC versions
+                            }
+                            val constraints = MediaConstraints()
+                            constraints.mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+                            
+                            peerConnection?.createOffer(object : SimpleSdpObserver() {
+                                override fun onCreateSuccess(desc: SessionDescription?) {
+                                    peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
+                                    desc?.let {
+                                        firestore.collection("calls").document(callId)
+                                            .update("offerSdp", it.description)
+                                    }
+                                }
+                            }, constraints)
+                        }
+                    }
                 }
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}

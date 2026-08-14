@@ -279,12 +279,35 @@ fun ActiveAudioCallScreen(
     webRtcEngine: WebRtcEngine,
     onEndCall: () -> Unit
 ) {
-    // BUG-16 FIX: Never use early 'return' in a Composable — it violates Compose state contract.
+    // BUG-16 FIX: Never use early 'return' in a Composable - it violates Compose state contract.
     // The calling site in MainActivity already guards this with 'if (activeCall != null)'
     val activeCall = state.activeCall
     if (activeCall == null) {
         Box(modifier = androidx.compose.ui.Modifier.fillMaxSize().background(BackgroundDark))
         return
+    }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    
+    // Proximity Sensor Logic for Screen Blackout
+    DisposableEffect(state.callStatus, state.callType) {
+        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        var wakeLock: android.os.PowerManager.WakeLock? = null
+        
+        // PROXIMITY_SCREEN_OFF_WAKE_LOCK is 32 (added in API 21)
+        val proximityLockLevel = 32
+        if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
+            wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:ProximitySensor")
+            if (state.callStatus == CallStatus.ANSWERED && state.callType == CallType.AUDIO) {
+                wakeLock.acquire(10 * 60 * 1000L /*10 minutes max*/)
+            }
+        }
+        
+        onDispose {
+            if (wakeLock?.isHeld == true) {
+                wakeLock.release()
+            }
+        }
     }
 
     if (state.isVideoUpgradeRequested) {
@@ -458,7 +481,10 @@ fun ActiveVideoCallScreen(
     if (activeCall == null) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black))
         return
-    }
+    }    val context = androidx.compose.ui.platform.LocalContext.current
+    val isPipMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        (context as? android.app.Activity)?.isInPictureInPictureMode == true
+    } else false
 
     Box(
         modifier = Modifier
@@ -497,91 +523,93 @@ fun ActiveVideoCallScreen(
             }
         }
 
-        // Local PiP Hardware Camera Preview (Top Right)
-        if (state.isCameraOn && state.localVideoTrack != null) {
-            Surface(
+        if (!isPipMode) {
+            // Local PiP Hardware Camera Preview (Top Right)
+            if (state.isCameraOn && state.localVideoTrack != null) {
+                Surface(
+                    modifier = Modifier
+                        .padding(top = 80.dp, end = 16.dp)
+                        .size(width = 120.dp, height = 160.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .align(Alignment.TopEnd),
+                    color = Color.Black,
+                    border = CardDefaults.outlinedCardBorder()
+                ) {
+                    WebRtcVideoRenderer(
+                        videoTrack = state.localVideoTrack,
+                        eglBaseContext = webRtcEngine.eglBaseContext,
+                        modifier = Modifier.fillMaxSize(),
+                        mirror = state.isFrontCamera,
+                        isOverlay = true
+                    )
+                }
+            }
+
+            // Top Overlay Header
+            Row(
                 modifier = Modifier
-                    .padding(top = 80.dp, end = 16.dp)
-                    .size(width = 120.dp, height = 160.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .align(Alignment.TopEnd),
-                color = Color.Black,
-                border = CardDefaults.outlinedCardBorder()
+                    .fillMaxWidth()
+                    .align(Alignment.TopStart)
+                    .padding(20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                WebRtcVideoRenderer(
-                    videoTrack = state.localVideoTrack,
-                    eglBaseContext = webRtcEngine.eglBaseContext,
-                    modifier = Modifier.fillMaxSize(),
-                    mirror = state.isFrontCamera,
-                    isOverlay = true
-                )
+                Column {
+                    Text(
+                        text = activeCall.calleeName.ifBlank { activeCall.callerName },
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = webRtcEngine.formatDuration(state.callDurationSeconds) + "   " + state.connectionStatusText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = GreenCall
+                    )
+                }
             }
-        }
 
-        // Top Overlay Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopStart)
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text(
-                    text = activeCall.calleeName.ifBlank { activeCall.callerName },
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
-                )
-                Text(
-                    text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = GreenCall
-                )
-            }
-        }
-
-        // Bottom Controls Overlay
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .padding(24.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Camera Flip (Front <-> Rear)
-            InCallControlButton(
-                icon = Icons.Default.Cameraswitch,
-                label = if (state.isFrontCamera) "Front" else "Rear",
-                isActive = false,
-                onClick = { webRtcEngine.switchCamera() }
-            )
-
-            // Camera On/Off Toggle
-            InCallControlButton(
-                icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
-                label = if (state.isCameraOn) "Cam On" else "Cam Off",
-                isActive = state.isCameraOn,
-                onClick = { webRtcEngine.toggleCamera() }
-            )
-
-            // Mute Mic
-            InCallControlButton(
-                icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                label = if (state.isMuted) "Muted" else "Mute",
-                isActive = state.isMuted,
-                onClick = { webRtcEngine.toggleMute() }
-            )
-
-            // Red End Call
-            Button(
-                onClick = onEndCall,
-                shape = CircleShape,
-                modifier = Modifier.size(68.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
+            // Bottom Controls Overlay
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(24.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White)
+                // Camera Flip (Front <-> Rear)
+                InCallControlButton(
+                    icon = Icons.Default.Cameraswitch,
+                    label = if (state.isFrontCamera) "Front" else "Rear",
+                    isActive = false,
+                    onClick = { webRtcEngine.switchCamera() }
+                )
+
+                // Camera On/Off Toggle
+                InCallControlButton(
+                    icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                    label = if (state.isCameraOn) "Cam On" else "Cam Off",
+                    isActive = state.isCameraOn,
+                    onClick = { webRtcEngine.toggleCamera() }
+                )
+
+                // Mute Mic
+                InCallControlButton(
+                    icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                    label = if (state.isMuted) "Muted" else "Mute",
+                    isActive = state.isMuted,
+                    onClick = { webRtcEngine.toggleMute() }
+                )
+
+                // Red End Call
+                Button(
+                    onClick = onEndCall,
+                    shape = CircleShape,
+                    modifier = Modifier.size(68.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
+                ) {
+                    Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White)
+                }
             }
         }
     }

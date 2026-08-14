@@ -52,7 +52,7 @@ class WebRtcEngine {
     }
   }
 
-  createPeerConnection() {
+  createPeerConnection(isCaller = false) {
     this.peerConnection = new RTCPeerConnection(servers);
     
     this.remoteStream = new MediaStream();
@@ -66,6 +66,28 @@ class WebRtcEngine {
       event.streams[0].getTracks().forEach((track) => {
         this.remoteStream.addTrack(track);
       });
+    };
+
+    this.peerConnection.oniceconnectionstatechange = async () => {
+      if (this.peerConnection.iceConnectionState === 'disconnected' || this.peerConnection.iceConnectionState === 'failed') {
+        if (this.onCallStateChange) this.onCallStateChange({ status: "Reconnecting..." });
+        
+        if (isCaller && this.activeCallId) {
+          try {
+            this.peerConnection.restartIce();
+            const offerDescription = await this.peerConnection.createOffer({ iceRestart: true });
+            await this.peerConnection.setLocalDescription(offerDescription);
+            await updateDoc(doc(db, 'calls', this.activeCallId), {
+              offer: { type: offerDescription.type, sdp: offerDescription.sdp },
+              offerSdp: offerDescription.sdp
+            });
+          } catch (e) {
+            console.error("ICE Restart failed:", e);
+          }
+        }
+      } else if (this.peerConnection.iceConnectionState === 'connected') {
+        if (this.onCallStateChange) this.onCallStateChange({ status: "ANSWERED" });
+      }
     };
   }
 
@@ -192,7 +214,7 @@ class WebRtcEngine {
     if (!callee) throw new Error("User not found on LKS-DIALER");
 
     await this.setupLocalStream(callType);
-    this.createPeerConnection();
+    this.createPeerConnection(true);
 
     this.activeCallId = crypto.randomUUID();
     const callDoc = doc(db, 'calls', this.activeCallId);
@@ -326,7 +348,8 @@ class WebRtcEngine {
     await updateDoc(callDoc, {
       answer: { type: answerDescription.type, sdp: answerDescription.sdp },
       answerSdp: answerDescription.sdp,
-      status: "ANSWERED"
+      status: "ANSWERED",
+      answeredAt: Date.now()
     });
 
     this.listenToActiveCall(callDoc, false);

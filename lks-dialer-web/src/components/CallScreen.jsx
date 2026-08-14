@@ -10,8 +10,26 @@ export default function CallScreen({ callData, onEndCall }) {
   const [videoUpgradeRequested, setVideoUpgradeRequested] = useState(false);
   const [audioOutputs, setAudioOutputs] = useState([]);
   const [currentOutputIndex, setCurrentOutputIndex] = useState(0);
+  const [durationStr, setDurationStr] = useState("");
 
   const isVideoCall = callData.callType === 'VIDEO';
+
+  useEffect(() => {
+    let interval = null;
+    if (callData.status === 'ANSWERED' && callData.answeredAt) {
+      interval = setInterval(() => {
+        const diffInSeconds = Math.floor((Date.now() - callData.answeredAt) / 1000);
+        const mins = Math.floor(diffInSeconds / 60).toString().padStart(2, '0');
+        const secs = (diffInSeconds % 60).toString().padStart(2, '0');
+        setDurationStr(`${mins}:${secs}`);
+      }, 1000);
+    } else {
+      setDurationStr("");
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [callData.status, callData.answeredAt]);
 
   const remoteVideoRefCb = useCallback((el) => {
     remoteVideoRef.current = el;
@@ -171,14 +189,14 @@ export default function CallScreen({ callData, onEndCall }) {
           <h2 style={{ fontSize: '40px', fontWeight: '900', marginBottom: '8px', textTransform: 'uppercase', textAlign: 'center' }}>
             {peerName}
           </h2>
-          <div style={{ 
-            padding: '8px 24px', backgroundColor: '#000', color: '#fff', 
-            borderRadius: '24px', fontWeight: '800', letterSpacing: '2px' 
-          }}>
-            {callData.status}
+            <div style={{ 
+              padding: '8px 24px', backgroundColor: '#000', color: '#fff', 
+              borderRadius: '24px', fontWeight: '800', letterSpacing: '2px' 
+            }}>
+              {callData.status === 'ANSWERED' && durationStr ? `${callData.status} • ${durationStr}` : callData.status}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Controls */}
       <div style={{

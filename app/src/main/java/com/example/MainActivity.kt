@@ -63,6 +63,20 @@ class MainActivity : ComponentActivity() {
         _incomingIntent.value = intent
     }
 
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val rtcState = com.example.webrtc.WebRtcEngine.getInstance(this).state.value
+        if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED && rtcState.callType == com.example.data.model.CallType.VIDEO) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
