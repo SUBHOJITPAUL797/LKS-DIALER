@@ -239,7 +239,7 @@ class WebRtcEngine {
     return this.activeCallId;
   }
 
-  async triggerPushNotification(callee, callType, callId, forceNotification = false) {
+  async triggerPushNotification(callee, callType, callId, notificationType = "incoming_call") {
     try {
       const url = "https://lks-dialer-call-notifier.subhojit.workers.dev/call";
       await fetch(url, {
@@ -252,7 +252,7 @@ class WebRtcEngine {
           callId, 
           callerName: this.currentUser.displayName,
           callerNumber: this.currentUser.phoneNumber,
-          type: forceNotification ? "cancel_call" : "incoming_call"
+          type: notificationType
         })
       });
     } catch (e) {
@@ -338,16 +338,19 @@ class WebRtcEngine {
       const callSnap = await getDoc(callDocRef);
       const callData = callSnap.data();
 
-      await updateDoc(callDocRef, { status: 'ENDED' });
+      const isUnanswered = callData && (callData.status === 'CALLING' || callData.status === 'RINGING');
+      const endStatus = isUnanswered ? 'MISSED' : 'ENDED';
+
+      await updateDoc(callDocRef, { status: endStatus, endedAt: Date.now() });
 
       // If we hung up before it was answered, send a push to silence the ringing on the other end
-      if (callData && callData.status !== 'ANSWERED') {
+      if (isUnanswered) {
         // Query the callee's fcm token
         const userQ = query(collection(db, 'users'), where('phoneNumber', '==', callData.calleeNumber));
         const userSnap = await getDocs(userQ);
         if (!userSnap.empty) {
           const calleeData = userSnap.docs[0].data();
-          this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, true);
+          this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'missed_call');
         }
       }
     }

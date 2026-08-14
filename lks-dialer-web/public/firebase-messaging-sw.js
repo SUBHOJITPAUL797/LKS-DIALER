@@ -28,9 +28,26 @@ messaging.onBackgroundMessage((payload) => {
     }
   };
 
-  // Only show notification if it's an incoming_call
+  // Only show notification if it's an incoming_call or missed_call
   if (payload.data?.type === "incoming_call") {
     return self.registration.showNotification(notificationTitle, notificationOptions);
+  } else if (payload.data?.type === "missed_call") {
+    const missedTitle = `Missed ${payload.data?.callType === 'VIDEO' ? 'Video' : 'Audio'} Call`;
+    const missedOptions = {
+      body: `You missed a call from ${payload.data?.callerName || 'Unknown'}`,
+      icon: '/icon-192.png',
+      data: { url: '/' }
+    };
+    return self.registration.showNotification(missedTitle, missedOptions);
+  } else if (payload.data?.type === "cancel_call") {
+    // Attempt to close existing incoming call notifications
+    self.registration.getNotifications().then(notifications => {
+      notifications.forEach(notification => {
+        if (notification.title.includes("Incoming")) {
+          notification.close();
+        }
+      });
+    });
   }
 });
 

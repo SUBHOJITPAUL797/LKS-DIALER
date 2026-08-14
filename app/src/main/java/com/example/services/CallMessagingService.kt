@@ -36,10 +36,25 @@ class CallMessagingService : FirebaseMessagingService() {
             val type = remoteMessage.data["type"]
             val callId = remoteMessage.data["callId"] ?: return
             
-            if (type == "cancel_call") {
-                Log.d("FCM", "Received cancel_call for callId=$callId. Dismissing notification.")
+            if (type == "cancel_call" || type == "missed_call") {
+                Log.d("FCM", "Received $type for callId=$callId. Dismissing incoming notification.")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
+                
+                if (type == "missed_call") {
+                    val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
+                    val callType = remoteMessage.data["callType"] ?: "AUDIO"
+                    val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
+                    
+                    val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setSmallIcon(android.R.drawable.sym_action_call)
+                        .setContentTitle("Missed $callTypeLabel Call")
+                        .setContentText("You missed a call from $callerName")
+                        .setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setAutoCancel(true)
+                        
+                    notificationManager.notify(callId.hashCode(), builder.build())
+                }
                 return
             }
             

@@ -24,7 +24,7 @@ export default function RecentCalls({ onStartCall }) {
   const getCallIcon = (call) => {
     const isCaller = call.callerNumber === webRtcEngine.currentUser?.phoneNumber;
     
-    if (call.status === 'DECLINED' || (call.status === 'CALLING' && !isCaller)) {
+    if (call.status === 'DECLINED' || call.status === 'MISSED' || (call.status === 'CALLING' && !isCaller)) {
       return <PhoneMissed size={20} color="var(--primary)" />;
     }
     if (isCaller) {
@@ -62,12 +62,12 @@ export default function RecentCalls({ onStartCall }) {
           
           return (
             <div key={call.id} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: 0 }}>
                 <div style={{ 
                   width: '48px', height: '48px', borderRadius: '50%', 
                   backgroundColor: 'var(--accent)', border: '3px solid #000',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontWeight: '900', fontSize: '20px', overflow: 'hidden'
+                  fontWeight: '900', fontSize: '20px', overflow: 'hidden', flexShrink: 0
                 }}>
                   {peerAvatar && (
                     <img 
@@ -84,12 +84,22 @@ export default function RecentCalls({ onStartCall }) {
                     {peerName?.[0]?.toUpperCase()}
                   </span>
                 </div>
-                <div>
-                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '800' }}>{peerName}</h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <h4 style={{ 
+                      margin: 0, fontSize: '18px', fontWeight: 'bold', 
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                      color: (call.status === 'MISSED' || call.status === 'DECLINED') && !isCaller ? 'var(--primary)' : 'inherit'
+                    }}>
+                      {peerName}
+                    </h4>
+                    {call.callType === 'VIDEO' && <Video size={16} color="#666" />}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#555', fontWeight: '600' }}>
                     {getCallIcon(call)}
-                    <span style={{ fontSize: '14px', fontWeight: '600', color: '#555' }}>
-                      {call.callType === 'VIDEO' ? 'Video' : 'Audio'} • {formatTime(call.createdAt)}
+                    <span>
+                      {isCaller ? 'Outgoing' : 'Incoming'} • {formatTime(call.createdAt)} 
+                      {(call.status === 'MISSED' || call.status === 'DECLINED') ? ` • ${call.status}` : ''}
                     </span>
                   </div>
                 </div>

@@ -665,6 +665,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callerName = call.callerName,
                     callType = call.callType
                 )
+                triggerPushNotification(
+                    calleeNumber = call.calleeNumber,
+                    callerName = call.callerName,
+                    callerNumber = call.callerNumber,
+                    callType = call.callType.name,
+                    callId = call.callId,
+                    type = "missed_call"
+                )
             }
         }
         endCallInternalLocal(CallStatus.ENDED)
@@ -726,7 +734,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
     }
 
-    private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String) {
+    private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {
         // Fetch the callee's FCM token from Firestore
         firestore.collection("users").document(calleeNumber).get().addOnSuccessListener { doc ->
             val fcmToken = doc.getString("fcmToken") ?: ""
@@ -752,7 +760,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 "callerName": "$callerName",
                                 "callerNumber": "$callerNumber",
                                 "callType": "$callType",
-                                "callId": "$callId"
+                                "callId": "$callId",
+                                "type": "$type"
                             }
                         """.trimIndent()
                         
