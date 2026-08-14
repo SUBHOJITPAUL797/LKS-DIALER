@@ -29,6 +29,16 @@ import com.example.ui.theme.TealPrimary
 import com.example.webrtc.WebRtcEngine
 import com.example.webrtc.WebRtcState
 
+import android.content.Context
+import android.content.ContextWrapper
+import android.app.Activity
+
+fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 @Composable
 fun OutgoingCallScreen(
     calleeName: String,
@@ -483,7 +493,7 @@ fun ActiveVideoCallScreen(
         return
     }    val context = androidx.compose.ui.platform.LocalContext.current
     val isPipMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-        (context as? android.app.Activity)?.isInPictureInPictureMode == true
+        context.findActivity()?.isInPictureInPictureMode == true
     } else false
 
     Box(
