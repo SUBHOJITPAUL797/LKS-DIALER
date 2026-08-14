@@ -19,6 +19,7 @@ class WebRtcEngine {
     this.remoteStream = new MediaStream();
     this.activeCallId = null;
     this.currentUser = null;
+    this.isFrontCamera = true;
     
     // Callbacks for UI updates
     this.onCallStateChange = null;
@@ -38,10 +39,11 @@ class WebRtcEngine {
     }
     
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
+      const constraints = {
         audio: true,
-        video: callType === 'VIDEO'
-      });
+        video: callType === 'VIDEO' ? { facingMode: this.isFrontCamera ? 'user' : 'environment' } : false
+      };
+      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
       if (this.onLocalStream) this.onLocalStream(this.localStream);
       return this.localStream;
     } catch (e) {
@@ -483,6 +485,43 @@ class WebRtcEngine {
     }
   }
 
+  async switchCamera() {
+    if (!this.localStream || !this.peerConnection) return;
+    
+    try {
+      this.isFrontCamera = !this.isFrontCamera;
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      
+      // Find old track
+      const oldVideoTrack = this.localStream.getVideoTracks()[0];
+      
+      // Replace in local stream
+      if (oldVideoTrack) {
+        this.localStream.removeTrack(oldVideoTrack);
+        oldVideoTrack.stop(); // release camera hardware
+      }
+      this.localStream.addTrack(newVideoTrack);
+      
+      // Update UI
+      if (this.onLocalStream) {
+        this.onLocalStream(this.localStream);
+      }
+      
+      // Replace in peer connection
+      const sender = this.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newVideoTrack);
+      }
+    } catch (e) {
+      console.error("Failed to switch camera:", e);
+      // Revert if failed
+      this.isFrontCamera = !this.isFrontCamera;
+    }
+  }
+
   async requestVideoUpgrade() {
     if (!this.activeCallId) return;
     this.didIRequestVideoUpgrade = true;
@@ -512,7 +551,10 @@ class WebRtcEngine {
 
     this.isUpgradingVideo = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }, 
+        audio: true 
+      });
       const videoTrack = stream.getVideoTracks()[0];
       
       // Update local stream
