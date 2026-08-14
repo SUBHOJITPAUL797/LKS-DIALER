@@ -124,23 +124,29 @@ class CallMessagingService : FirebaseMessagingService() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        // ── Full-screen intent — opens MainActivity (call screen) when tapped ──
+        // 🔲 Full-screen intent - opens MainActivity (call screen) when tapped 🔲
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("incoming_call", true)
             putExtra("call_id", callId)
+            putExtra("caller_name", callerName)
+            putExtra("caller_number", callerNumber)
+            putExtra("call_type", callType)
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this, 0, fullScreenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // ── ACCEPT action — opens the app and auto-answers ──
+        // 🟢 ACCEPT action - opens the app and auto-answers 🟢
         val acceptIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("incoming_call", true)
             putExtra("call_id", callId)
             putExtra("auto_answer", true)
+            putExtra("caller_name", callerName)
+            putExtra("caller_number", callerNumber)
+            putExtra("call_type", callType)
         }
         val acceptPendingIntent = PendingIntent.getActivity(
             this, 1, acceptIntent,
@@ -193,6 +199,7 @@ class CallMessagingService : FirebaseMessagingService() {
             .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
             .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
             .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
             .addAction(
                 NotificationCompat.Action.Builder(
                     android.R.drawable.ic_menu_call,

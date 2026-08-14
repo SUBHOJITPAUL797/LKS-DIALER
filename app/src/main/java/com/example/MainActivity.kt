@@ -155,6 +155,9 @@ class MainActivity : ComponentActivity() {
                     latestIntent?.let { incoming ->
                         val callId = incoming.getStringExtra("call_id")
                         val autoAnswer = incoming.getBooleanExtra("auto_answer", false)
+                        val callerName = incoming.getStringExtra("caller_name")
+                        val callerNumber = incoming.getStringExtra("caller_number")
+                        val callType = incoming.getStringExtra("call_type")
                         
                         if (autoAnswer) {
                             val notificationManager = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -166,7 +169,13 @@ class MainActivity : ComponentActivity() {
                         if (!callId.isNullOrBlank()) {
                             // Only auto-answer if the microphone permission is already granted, otherwise let the user see the incoming call screen and grant permission first
                             val safeAutoAnswer = autoAnswer && hasMicPermission
-                            webRtcEngine.attachToCall(callId, autoAnswer = safeAutoAnswer)
+                            webRtcEngine.attachToCall(
+                                callId = callId, 
+                                autoAnswer = safeAutoAnswer,
+                                callerName = callerName,
+                                callerNumber = callerNumber,
+                                callTypeStr = callType
+                            )
                         } else if (autoAnswer && rtcState.activeCall != null && hasMicPermission) {
                             webRtcEngine.answerCall()
                         }

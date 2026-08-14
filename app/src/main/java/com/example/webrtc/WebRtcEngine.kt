@@ -322,9 +322,33 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
     }
 
-    fun attachToCall(callId: String, autoAnswer: Boolean = false) {
+    fun attachToCall(
+        callId: String, 
+        autoAnswer: Boolean = false,
+        callerName: String? = null,
+        callerNumber: String? = null,
+        callTypeStr: String? = null
+    ) {
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        
+        // Optimistically show the call screen if we have the data
+        if (callerName != null && callerNumber != null && callTypeStr != null && _state.value.activeCall == null) {
+            val type = try { CallType.valueOf(callTypeStr) } catch(e: Exception) { CallType.AUDIO }
+            _state.value = WebRtcState(
+                activeCall = CallDto(
+                    callId = callId,
+                    callerName = callerName,
+                    callerNumber = callerNumber,
+                    callType = type,
+                    status = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING
+                ),
+                callStatus = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING,
+                callType = type,
+                connectionStatusText = if (autoAnswer) "Connecting..." else "Incoming Call"
+            )
+        }
+        
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
             val call = doc.toObject(CallDto::class.java)
             if (call != null) {
