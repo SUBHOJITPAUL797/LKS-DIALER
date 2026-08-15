@@ -20,11 +20,12 @@ class CallMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val CHANNEL_ID = "incoming_call_channel"
+        const val MISSED_CALL_CHANNEL_ID = "missed_call_channel"
         const val NOTIFICATION_ID = 1001
     }
 
     override fun onNewToken(token: String) {
-        Log.d("FCM", "New FCM token received — syncing to Firestore")
+        Log.d("FCM", "New FCM token received - syncing to Firestore")
         FirebaseManager.getInstance(this).updateFcmToken(token)
     }
 
@@ -41,16 +42,32 @@ class CallMessagingService : FirebaseMessagingService() {
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
                 
+                // Force end the call in WebRtcEngine to drop the ringing UI if it's open
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                engine?.forceEndCallFromPush(callId)
+                
                 if (type == "missed_call") {
+                    // Create silent channel for missed calls if not exists
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        val missedChannel = NotificationChannel(
+                            MISSED_CALL_CHANNEL_ID,
+                            "Missed Calls",
+                            NotificationManager.IMPORTANCE_DEFAULT
+                        ).apply {
+                            description = "Notifications for missed VoIP calls"
+                        }
+                        notificationManager.createNotificationChannel(missedChannel)
+                    }
+
                     val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                     val callType = remoteMessage.data["callType"] ?: "AUDIO"
                     val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
                     
-                    val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+                    val builder = NotificationCompat.Builder(this, MISSED_CALL_CHANNEL_ID)
                         .setSmallIcon(android.R.drawable.sym_action_call)
                         .setContentTitle("Missed $callTypeLabel Call")
                         .setContentText("You missed a call from $callerName")
-                        .setPriority(NotificationCompat.PRIORITY_HIGH)
+                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                         .setAutoCancel(true)
                         
                     notificationManager.notify(callId.hashCode(), builder.build())

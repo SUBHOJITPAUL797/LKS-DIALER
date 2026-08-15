@@ -726,6 +726,16 @@ class WebRtcEngine private constructor(private val context: Context) {
         endCallInternalLocal(CallStatus.ENDED)
     }
 
+    /**
+     * Forces the engine to end the call immediately when a 'cancel_call' or 'missed_call' push notification
+     * is received, preventing the UI from lingering in a ringing state.
+     */
+    fun forceEndCallFromPush(callId: String) {
+        if (_state.value.activeCall?.callId == callId) {
+            endCallInternalLocal(CallStatus.MISSED)
+        }
+    }
+
     private fun endCallInternalLocal(status: CallStatus) {
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return

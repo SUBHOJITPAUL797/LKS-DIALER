@@ -80,18 +80,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Wake up screen on incoming call
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-            )
-        }
-
         // Pass the launch intent in so the Compose side can read it
         _incomingIntent.value = intent
         enableEdgeToEdge()
@@ -104,6 +92,35 @@ class MainActivity : ComponentActivity() {
 
                 val currentUser by firebaseManager.currentUser.collectAsState()
                 val rtcState by webRtcEngine.state.collectAsState()
+                
+                LaunchedEffect(rtcState.callStatus) {
+                    val window = (context as? android.app.Activity)?.window
+                    if (rtcState.callStatus != com.example.data.model.CallStatus.IDLE && rtcState.callStatus != com.example.data.model.CallStatus.MISSED && rtcState.callStatus != com.example.data.model.CallStatus.ENDED) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            (context as? android.app.Activity)?.setShowWhenLocked(true)
+                            (context as? android.app.Activity)?.setTurnScreenOn(true)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            window?.addFlags(
+                                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                            )
+                        }
+                        window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            (context as? android.app.Activity)?.setShowWhenLocked(false)
+                            (context as? android.app.Activity)?.setTurnScreenOn(false)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            window?.clearFlags(
+                                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                            )
+                        }
+                        window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                }
                 
                 val gitHubUpdater = remember { GitHubUpdater(context) }
                 var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
