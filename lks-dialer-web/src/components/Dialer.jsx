@@ -57,13 +57,13 @@ export default function Dialer({ onStartCall }) {
         />
       )}
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', width: '100%', alignItems: 'center', minHeight: '180px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', width: '100%', alignItems: 'center', minHeight: '120px' }}>
         
         <div 
           className="neo-box"
           onClick={() => setShowCountryPicker(true)}
           style={{ 
-            padding: '8px 16px', marginBottom: '16px', cursor: 'pointer',
+            padding: '8px 16px', marginBottom: '12px', cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: '8px',
             backgroundColor: 'var(--card-bg)'
           }}
@@ -89,7 +89,7 @@ export default function Dialer({ onStartCall }) {
           {number || "ENTER NUMBER"}
         </div>
 
-        <div style={{ height: '44px', marginTop: '8px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <div style={{ height: '32px', marginTop: '4px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           {matchedUser && (
             <div className="neo-box" style={{ 
               padding: '6px 16px', backgroundColor: 'var(--success)', 
@@ -104,7 +104,7 @@ export default function Dialer({ onStartCall }) {
 
       <div style={{ 
         display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', 
-        gap: '12px', width: '100%', maxWidth: '280px', marginBottom: '20px'
+        gap: '12px', width: '100%', maxWidth: '280px', marginBottom: '16px'
       }}>
         {['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'].map((btn) => (
           <div key={btn} style={{ display: 'flex', justifyContent: 'center' }}>

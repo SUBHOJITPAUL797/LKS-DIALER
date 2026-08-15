@@ -199,4 +199,45 @@ body {
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
+  /* Hide scrollbar for Firefox/IE */
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Hide scrollbar for Chrome/Safari */
+.scrollable-content::-webkit-scrollbar {
+  display: none;
+}
+
+/* Responsive adjustments to perfectly fit on smaller screens without scrolling */
+@media (max-height: 750px) {
+  .keypad-btn {
+    width: 60px;
+    height: 60px;
+  }
+  .keypad-btn span.number {
+    font-size: 24px;
+  }
+  .keypad-btn span.letters {
+    font-size: 9px;
+  }
+  .scrollable-content {
+    padding: 10px 20px;
+  }
+}
+
+@media (max-height: 650px) {
+  .keypad-btn {
+    width: 50px;
+    height: 50px;
+  }
+  .keypad-btn span.number {
+    font-size: 20px;
+  }
+  .neo-btn {
+    padding: 10px 16px;
+  }
+  .bottom-nav {
+    padding: 8px 0 16px 0;
+  }
 }
