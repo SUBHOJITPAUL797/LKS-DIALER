@@ -83,14 +83,26 @@ class CallMessagingService : FirebaseMessagingService() {
                 
                 // Let the caller know we've received the push and the phone is ringing
                 try {
-                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                        .collection("calls").document(callId)
-                        .update("status", "RINGING")
+                    val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    val docRef = db.collection("calls").document(callId)
+                    
+                    // Fetch the current status synchronously since we are on a background thread
+                    val docSnapshot = com.google.android.gms.tasks.Tasks.await(docRef.get())
+                    val status = docSnapshot.getString("status")
+                    
+                    // If the call is already ended/missed by the time this push arrives, abort!
+                    if (status == "MISSED" || status == "ENDED" || status == "DECLINED") {
+                        Log.d("FCM", "Call $callId is already $status in Firestore. Ignoring incoming_call push to prevent zombie ring.")
+                        return
+                    }
+                    
+                    docRef.update("status", "RINGING")
+                    showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
                 } catch (e: Exception) {
-                    Log.e("FCM", "Failed to update call status to RINGING: ${e.message}")
+                    Log.e("FCM", "Failed to verify or update call status: ${e.message}")
+                    // Fallback to showing it if network fails, though they probably can't answer anyway
+                    showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
                 }
-                
-                showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
             }
         }
     }
