@@ -48,7 +48,23 @@ export default function Contacts({ onStartCall }) {
       </div>
 
       {loading ? (
-        <div style={{ padding: '20px', fontWeight: 'bold' }}>Loading...</div>
+        <>
+          {[1, 2, 3, 4].map(i => (
+            <div key={`skeleton-${i}`} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderColor: '#ccc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1 }}>
+                <div className="neo-skeleton-circle" style={{ width: '48px', height: '48px' }} />
+                <div style={{ flex: 1 }}>
+                  <div className="neo-skeleton" style={{ width: '60%', height: '24px', marginBottom: '8px' }} />
+                  <div className="neo-skeleton" style={{ width: '40%', height: '16px' }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', marginLeft: '16px' }}>
+                <div className="neo-skeleton" style={{ width: '40px', height: '40px' }} />
+                <div className="neo-skeleton" style={{ width: '40px', height: '40px' }} />
+              </div>
+            </div>
+          ))}
+        </>
       ) : filtered.length === 0 ? (
         <div className="neo-box" style={{ padding: '24px', textAlign: 'center' }}>
           <h3>No Contacts Found</h3>

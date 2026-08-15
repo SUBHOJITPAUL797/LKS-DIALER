@@ -39,17 +39,31 @@ export default function RecentCalls({ onStartCall }) {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  if (loading) {
-    return <div style={{ padding: '20px', fontWeight: 'bold' }}>Loading...</div>;
-  }
-
   return (
     <div className="scrollable-content" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <h2 style={{ fontSize: '32px', fontWeight: '900', borderBottom: '4px solid #000', paddingBottom: '8px' }}>
         RECENTS
       </h2>
       
-      {calls.length === 0 ? (
+      {loading ? (
+        <>
+          {[1, 2, 3, 4, 5].map(i => (
+            <div key={`skeleton-${i}`} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderColor: '#ccc' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1 }}>
+                <div className="neo-skeleton-circle" style={{ width: '48px', height: '48px', flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div className="neo-skeleton" style={{ width: '50%', height: '22px', marginBottom: '8px' }} />
+                  <div className="neo-skeleton" style={{ width: '70%', height: '14px' }} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', marginLeft: '16px' }}>
+                <div className="neo-skeleton" style={{ width: '40px', height: '40px' }} />
+                <div className="neo-skeleton" style={{ width: '40px', height: '40px' }} />
+              </div>
+            </div>
+          ))}
+        </>
+      ) : calls.length === 0 ? (
         <div className="neo-box" style={{ padding: '24px', textAlign: 'center' }}>
           <h3>No Recent Calls</h3>
         </div>

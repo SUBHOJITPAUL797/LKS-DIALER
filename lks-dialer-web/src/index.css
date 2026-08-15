@@ -241,3 +241,24 @@ body {
     padding: 8px 0 16px 0;
   }
 }
+
+/* 💀 Skeleton Loading Utilities */
+@keyframes neo-pulse {
+  0% { opacity: 0.5; transform: scale(0.99); }
+  50% { opacity: 0.8; transform: scale(1); }
+  100% { opacity: 0.5; transform: scale(0.99); }
+}
+
+.neo-skeleton {
+  background-color: #e0e0e0;
+  border: var(--border-width) dashed #000;
+  border-radius: var(--border-radius);
+  animation: neo-pulse 1.5s infinite ease-in-out;
+}
+
+.neo-skeleton-circle {
+  background-color: #e0e0e0;
+  border: var(--border-width) dashed #000;
+  border-radius: 50%;
+  animation: neo-pulse 1.5s infinite ease-in-out;
+}
