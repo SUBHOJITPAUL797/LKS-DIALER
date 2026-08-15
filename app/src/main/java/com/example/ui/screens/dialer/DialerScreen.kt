@@ -117,14 +117,14 @@ fun DialerScreen(
             }
         )
 
-        // Number Input Section - takes remaining space above keypad
+        Spacer(modifier = Modifier.weight(1f))
+
+        // Number Input Section - sits snugly above keypad
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
                 .padding(horizontal = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Bottom
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Country Code selector chip
             Surface(
@@ -149,22 +149,28 @@ fun DialerScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Large Phone Number Display (no backspace here anymore)
-            Text(
-                text = if (dialNumber.isEmpty()) "Enter number..." else dialNumber,
-                fontSize = when {
-                    dialNumber.length > 13 -> 24.sp
-                    dialNumber.length > 10 -> 28.sp
-                    else -> 34.sp
-                },
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                color = if (dialNumber.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth()
-            )
+            // Large Phone Number Display in fixed height Box to prevent layout shifts
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (dialNumber.isEmpty()) "Enter number..." else dialNumber,
+                    fontSize = when {
+                        dialNumber.length > 13 -> 24.sp
+                        dialNumber.length > 10 -> 28.sp
+                        else -> 34.sp
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (dialNumber.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
 
             // Matched User Inline Badge - compact, sits right below number
             AnimatedVisibility(
