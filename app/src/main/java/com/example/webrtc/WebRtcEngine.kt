@@ -17,12 +17,30 @@ import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.UUID
 
+enum class AudioDeviceType {
+    EARPIECE,
+    SPEAKERPHONE,
+    BLUETOOTH,
+    WIRED_HEADSET
+}
+
+data class AudioDeviceOption(
+    val id: String,
+    val name: String,
+    val type: AudioDeviceType,
+    val isSelected: Boolean = false,
+    val rawDevice: Any? = null
+)
+
 data class WebRtcState(
     val activeCall: CallDto? = null,
     val callStatus: CallStatus = CallStatus.IDLE,
     val callType: CallType = CallType.AUDIO,
     val isMuted: Boolean = false,
     val isSpeakerOn: Boolean = false,
+    val selectedAudioDevice: AudioDeviceType = AudioDeviceType.EARPIECE,
+    val activeAudioDeviceName: String = "Earpiece",
+    val availableAudioDevices: List<AudioDeviceOption> = emptyList(),
     val isCameraOn: Boolean = true,
     val isFrontCamera: Boolean = true,
     val callDurationSeconds: Int = 0,
@@ -44,6 +62,8 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private val _state = MutableStateFlow(WebRtcState())
     val state: StateFlow<WebRtcState> = _state.asStateFlow()
+    private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
+    private var headsetReceiver: android.content.BroadcastReceiver? = null
 
     private val firestore = FirebaseFirestore.getInstance()
     private var myPhoneNumber: String = ""
@@ -275,6 +295,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
         
         com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
+        configureAudio(callType)
         
         // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
         scope.launch {
@@ -451,7 +472,8 @@ class WebRtcEngine private constructor(private val context: Context) {
     private fun configureAudio(callType: CallType) {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
-        am.isSpeakerphoneOn = callType == CallType.VIDEO
+        
+        registerAudioDeviceListeners()
         
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
@@ -469,6 +491,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             @Suppress("DEPRECATION")
             am.requestAudioFocus(null, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         }
+
+        refreshAvailableAudioDevices(defaultCallType = callType)
     }
 
     private fun listenToActiveCall(callId: String, isCaller: Boolean) {
@@ -605,12 +629,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         
         // 2. Update UI state to video
-        _state.value = _state.value.copy(
-            callType = CallType.VIDEO,
-            isSpeakerOn = true
-        )
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-        am.isSpeakerphoneOn = true
+        _state.value = _state.value.copy(callType = CallType.VIDEO)
+        if (_state.value.selectedAudioDevice != AudioDeviceType.BLUETOOTH && _state.value.selectedAudioDevice != AudioDeviceType.WIRED_HEADSET) {
+            selectAudioDeviceType(AudioDeviceType.SPEAKERPHONE)
+        }
         
         // 3. Caller creates new offer for renegotiation
         if (isCaller) {
@@ -651,34 +673,370 @@ class WebRtcEngine private constructor(private val context: Context) {
         _state.value = _state.value.copy(isMuted = newMuted)
     }
 
-    fun toggleSpeaker() {
-        val newSpeaker = !_state.value.isSpeakerOn
+    private fun registerAudioDeviceListeners() {
+        unregisterAudioDeviceListeners()
         val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         
-        if (newSpeaker) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                am.clearCommunicationDevice()
-            } else {
-                am.stopBluetoothSco()
-            }
-            am.isSpeakerphoneOn = true
-        } else {
-            am.isSpeakerphoneOn = false
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                val devices = am.availableCommunicationDevices
-                val bluetoothDevice = devices.firstOrNull { 
-                    it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO || 
-                    it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET 
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val callback = object : android.media.AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                    scope.launch {
+                        delay(400)
+                        refreshAvailableAudioDevices()
+                    }
                 }
-                if (bluetoothDevice != null) {
-                    am.setCommunicationDevice(bluetoothDevice)
+                override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                    scope.launch {
+                        delay(400)
+                        refreshAvailableAudioDevices()
+                    }
                 }
-            } else {
-                am.startBluetoothSco()
             }
+            audioDeviceCallback = callback
+            am.registerAudioDeviceCallback(callback, android.os.Handler(android.os.Looper.getMainLooper()))
         }
         
-        _state.value = _state.value.copy(isSpeakerOn = newSpeaker)
+        try {
+            val filter = android.content.IntentFilter().apply {
+                addAction(android.bluetooth.BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(android.bluetooth.BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
+                addAction(android.media.AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+                addAction(android.content.Intent.ACTION_HEADSET_PLUG)
+            }
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: android.content.Intent?) {
+                    scope.launch {
+                        delay(400)
+                        refreshAvailableAudioDevices()
+                    }
+                }
+            }
+            headsetReceiver = receiver
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Failed to register headset receiver", e)
+        }
+    }
+
+    private fun unregisterAudioDeviceListeners() {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && audioDeviceCallback != null) {
+            try {
+                am.unregisterAudioDeviceCallback(audioDeviceCallback)
+            } catch (_: Exception) {}
+            audioDeviceCallback = null
+        }
+        if (headsetReceiver != null) {
+            try {
+                context.unregisterReceiver(headsetReceiver)
+            } catch (_: Exception) {}
+            headsetReceiver = null
+        }
+    }
+
+    @Synchronized
+    fun refreshAvailableAudioDevices(defaultCallType: CallType? = null) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val deviceList = mutableListOf<AudioDeviceOption>()
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val commDevices = am.availableCommunicationDevices
+            var hasEarpiece = false
+            var hasSpeaker = false
+            
+            for (dev in commDevices) {
+                when (dev.type) {
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                    android.media.AudioDeviceInfo.TYPE_HEARING_AID -> {
+                        val rawName = dev.productName?.toString()?.ifBlank { "Bluetooth" } ?: "Bluetooth"
+                        val name = if (rawName.startsWith("Bluetooth", ignoreCase = true)) rawName else "Bluetooth ($rawName)"
+                        deviceList.add(
+                            AudioDeviceOption(
+                                id = "bt_${dev.id}",
+                                name = name,
+                                type = AudioDeviceType.BLUETOOTH,
+                                rawDevice = dev
+                            )
+                        )
+                    }
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_USB_DEVICE -> {
+                        val name = dev.productName?.toString()?.ifBlank { "Wired Headset" } ?: "Wired Headset"
+                        deviceList.add(
+                            AudioDeviceOption(
+                                id = "wired_${dev.id}",
+                                name = name,
+                                type = AudioDeviceType.WIRED_HEADSET,
+                                rawDevice = dev
+                            )
+                        )
+                    }
+                    android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> {
+                        hasSpeaker = true
+                        deviceList.add(
+                            AudioDeviceOption(
+                                id = "speaker_${dev.id}",
+                                name = "Speaker",
+                                type = AudioDeviceType.SPEAKERPHONE,
+                                rawDevice = dev
+                            )
+                        )
+                    }
+                    android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> {
+                        hasEarpiece = true
+                        deviceList.add(
+                            AudioDeviceOption(
+                                id = "earpiece_${dev.id}",
+                                name = "Phone Earpiece",
+                                type = AudioDeviceType.EARPIECE,
+                                rawDevice = dev
+                            )
+                        )
+                    }
+                }
+            }
+            if (!hasSpeaker) {
+                deviceList.add(
+                    AudioDeviceOption(
+                        id = "speaker_default",
+                        name = "Speaker",
+                        type = AudioDeviceType.SPEAKERPHONE
+                    )
+                )
+            }
+            if (!hasEarpiece) {
+                deviceList.add(
+                    AudioDeviceOption(
+                        id = "earpiece_default",
+                        name = "Phone Earpiece",
+                        type = AudioDeviceType.EARPIECE
+                    )
+                )
+            }
+        } else {
+            // Legacy Android (< API 31)
+            var isBtConnected = false
+            try {
+                val btAdapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+                if (btAdapter != null && btAdapter.isEnabled) {
+                    val headsetState = btAdapter.getProfileConnectionState(android.bluetooth.BluetoothProfile.HEADSET)
+                    val a2dpState = btAdapter.getProfileConnectionState(android.bluetooth.BluetoothProfile.A2DP)
+                    if (headsetState == android.bluetooth.BluetoothProfile.STATE_CONNECTED ||
+                        a2dpState == android.bluetooth.BluetoothProfile.STATE_CONNECTED) {
+                        isBtConnected = true
+                    }
+                }
+            } catch (_: Exception) {}
+            
+            if (isBtConnected) {
+                deviceList.add(
+                    AudioDeviceOption(
+                        id = "bt_legacy",
+                        name = "Bluetooth Headset",
+                        type = AudioDeviceType.BLUETOOTH
+                    )
+                )
+            }
+            
+            @Suppress("DEPRECATION")
+            if (am.isWiredHeadsetOn) {
+                deviceList.add(
+                    AudioDeviceOption(
+                        id = "wired_legacy",
+                        name = "Wired Headset",
+                        type = AudioDeviceType.WIRED_HEADSET
+                    )
+                )
+            }
+            
+            deviceList.add(
+                AudioDeviceOption(
+                    id = "speaker_legacy",
+                    name = "Speaker",
+                    type = AudioDeviceType.SPEAKERPHONE
+                )
+            )
+            deviceList.add(
+                AudioDeviceOption(
+                    id = "earpiece_legacy",
+                    name = "Phone Earpiece",
+                    type = AudioDeviceType.EARPIECE
+                )
+            )
+        }
+
+        // Determine which device should be active
+        val currentSelected = _state.value.selectedAudioDevice
+        val targetDevice: AudioDeviceOption
+        
+        if (defaultCallType != null) {
+            val btOption = deviceList.firstOrNull { it.type == AudioDeviceType.BLUETOOTH }
+            val wiredOption = deviceList.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
+            val speakerOption = deviceList.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
+            val earpieceOption = deviceList.firstOrNull { it.type == AudioDeviceType.EARPIECE }
+            
+            targetDevice = when {
+                btOption != null -> btOption
+                wiredOption != null -> wiredOption
+                defaultCallType == CallType.VIDEO -> speakerOption ?: earpieceOption ?: deviceList.first()
+                else -> earpieceOption ?: speakerOption ?: deviceList.first()
+            }
+            selectAudioDevice(targetDevice, updateDeviceList = false)
+        } else {
+            val hadBluetoothBefore = _state.value.availableAudioDevices.any { it.type == AudioDeviceType.BLUETOOTH }
+            val hasBluetoothNow = deviceList.any { it.type == AudioDeviceType.BLUETOOTH }
+            val btOption = deviceList.firstOrNull { it.type == AudioDeviceType.BLUETOOTH }
+            
+            targetDevice = if (!hadBluetoothBefore && hasBluetoothNow && btOption != null) {
+                // Auto-switch to newly connected Bluetooth device
+                btOption
+            } else {
+                val matchedCurrent = deviceList.firstOrNull { it.type == currentSelected }
+                if (matchedCurrent != null) {
+                    matchedCurrent
+                } else {
+                    val wiredOption = deviceList.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
+                    val speakerOption = deviceList.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
+                    val earpieceOption = deviceList.firstOrNull { it.type == AudioDeviceType.EARPIECE }
+                    btOption ?: wiredOption ?: (if (_state.value.callType == CallType.VIDEO) speakerOption else earpieceOption) ?: deviceList.first()
+                }
+            }
+            selectAudioDevice(targetDevice, updateDeviceList = false)
+        }
+        
+        val updatedList = deviceList.map { 
+            it.copy(isSelected = it.id == targetDevice.id || it.type == targetDevice.type)
+        }
+        
+        _state.value = _state.value.copy(
+            availableAudioDevices = updatedList,
+            selectedAudioDevice = targetDevice.type,
+            activeAudioDeviceName = targetDevice.name,
+            isSpeakerOn = targetDevice.type == AudioDeviceType.SPEAKERPHONE
+        )
+    }
+
+    fun selectAudioDevice(device: AudioDeviceOption, updateDeviceList: Boolean = true) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                if (device.rawDevice is android.media.AudioDeviceInfo) {
+                    val success = am.setCommunicationDevice(device.rawDevice as android.media.AudioDeviceInfo)
+                    Log.d("WebRtcEngine", "setCommunicationDevice(${device.name}): $success")
+                    am.isSpeakerphoneOn = device.type == AudioDeviceType.SPEAKERPHONE
+                } else {
+                    val commDevices = am.availableCommunicationDevices
+                    val target = when (device.type) {
+                        AudioDeviceType.BLUETOOTH -> commDevices.firstOrNull { 
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO || 
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                        }
+                        AudioDeviceType.WIRED_HEADSET -> commDevices.firstOrNull {
+                            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                            it.type == android.media.AudioDeviceInfo.TYPE_USB_HEADSET
+                        }
+                        AudioDeviceType.SPEAKERPHONE -> commDevices.firstOrNull {
+                            it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                        }
+                        AudioDeviceType.EARPIECE -> commDevices.firstOrNull {
+                            it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                        }
+                    }
+                    if (target != null) {
+                        am.setCommunicationDevice(target)
+                    } else {
+                        if (device.type == AudioDeviceType.SPEAKERPHONE) {
+                            am.clearCommunicationDevice()
+                            am.isSpeakerphoneOn = true
+                        } else {
+                            am.clearCommunicationDevice()
+                            am.isSpeakerphoneOn = false
+                        }
+                    }
+                }
+            } else {
+                // Legacy Android (< API 31)
+                when (device.type) {
+                    AudioDeviceType.BLUETOOTH -> {
+                        am.isSpeakerphoneOn = false
+                        @Suppress("DEPRECATION")
+                        am.startBluetoothSco()
+                        @Suppress("DEPRECATION")
+                        am.isBluetoothScoOn = true
+                    }
+                    AudioDeviceType.SPEAKERPHONE -> {
+                        @Suppress("DEPRECATION")
+                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+                        am.isSpeakerphoneOn = true
+                    }
+                    AudioDeviceType.EARPIECE, AudioDeviceType.WIRED_HEADSET -> {
+                        @Suppress("DEPRECATION")
+                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+                        am.isSpeakerphoneOn = false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Error setting audio device: ${device.name}", e)
+        }
+
+        if (updateDeviceList) {
+            val updatedList = _state.value.availableAudioDevices.map { 
+                it.copy(isSelected = it.id == device.id || it.type == device.type)
+            }
+            _state.value = _state.value.copy(
+                selectedAudioDevice = device.type,
+                activeAudioDeviceName = device.name,
+                isSpeakerOn = device.type == AudioDeviceType.SPEAKERPHONE,
+                availableAudioDevices = updatedList
+            )
+        }
+    }
+
+    fun selectAudioDeviceType(type: AudioDeviceType) {
+        val target = _state.value.availableAudioDevices.firstOrNull { it.type == type }
+            ?: AudioDeviceOption(
+                id = "${type.name.lowercase()}_default",
+                name = when (type) {
+                    AudioDeviceType.BLUETOOTH -> "Bluetooth"
+                    AudioDeviceType.SPEAKERPHONE -> "Speaker"
+                    AudioDeviceType.WIRED_HEADSET -> "Wired Headset"
+                    AudioDeviceType.EARPIECE -> "Phone Earpiece"
+                },
+                type = type
+            )
+        selectAudioDevice(target)
+    }
+
+    fun toggleSpeaker() {
+        if (_state.value.availableAudioDevices.isEmpty()) {
+            refreshAvailableAudioDevices()
+        }
+        val current = _state.value.selectedAudioDevice
+        if (current == AudioDeviceType.SPEAKERPHONE) {
+            val target = _state.value.availableAudioDevices.firstOrNull { it.type == AudioDeviceType.BLUETOOTH }
+                ?: _state.value.availableAudioDevices.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
+                ?: _state.value.availableAudioDevices.firstOrNull { it.type == AudioDeviceType.EARPIECE }
+            if (target != null) {
+                selectAudioDevice(target)
+            }
+        } else {
+            val speaker = _state.value.availableAudioDevices.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
+                ?: AudioDeviceOption(id = "speaker_default", name = "Speaker", type = AudioDeviceType.SPEAKERPHONE)
+            selectAudioDevice(speaker)
+        }
     }
 
     fun toggleCamera() {
@@ -778,8 +1136,15 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         
         // Reset audio routing
+        unregisterAudioDeviceListeners()
         try {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                am.clearCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+            }
             am.mode = android.media.AudioManager.MODE_NORMAL
             am.isSpeakerphoneOn = false
         } catch (_: Exception) {}

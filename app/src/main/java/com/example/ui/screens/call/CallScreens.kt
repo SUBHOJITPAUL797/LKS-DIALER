@@ -423,6 +423,16 @@ fun ActiveAudioCallScreen(
                     )
                 }
             }
+            
+            var showAudioDialog by remember { mutableStateOf(false) }
+
+            if (showAudioDialog) {
+                AudioOutputSelectionDialog(
+                    state = state,
+                    onSelectDevice = { webRtcEngine.selectAudioDevice(it) },
+                    onDismiss = { showAudioDialog = false }
+                )
+            }
 
             // Bottom In-Call Controls Grid
             Column(
@@ -449,12 +459,31 @@ fun ActiveAudioCallScreen(
                         onClick = { webRtcEngine.requestVideoUpgrade() }
                     )
 
-                    // Speakerphone Toggle
+                    // Audio Output Switcher / Speakerphone Toggle
+                    val audioIcon = when (state.selectedAudioDevice) {
+                        com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+                        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+                        com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+                        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+                    }
+                    val audioLabel = when (state.selectedAudioDevice) {
+                        com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
+                        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
+                        com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
+                        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
+                    }
+
                     InCallControlButton(
-                        icon = if (state.isSpeakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown,
-                        label = if (state.isSpeakerOn) "Speaker" else "Earpiece",
-                        isActive = state.isSpeakerOn,
-                        onClick = { webRtcEngine.toggleSpeaker() }
+                        icon = audioIcon,
+                        label = audioLabel,
+                        isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH,
+                        onClick = {
+                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
+                                showAudioDialog = true
+                            } else {
+                                webRtcEngine.toggleSpeaker()
+                            }
+                        }
                     )
                 }
 
@@ -492,10 +521,21 @@ fun ActiveVideoCallScreen(
     if (activeCall == null) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black))
         return
-    }    val context = androidx.compose.ui.platform.LocalContext.current
+    }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val isPipMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
         context.findActivity()?.isInPictureInPictureMode == true
     } else false
+
+    var showAudioDialog by remember { mutableStateOf(false) }
+
+    if (showAudioDialog) {
+        AudioOutputSelectionDialog(
+            state = state,
+            onSelectDevice = { webRtcEngine.selectAudioDevice(it) },
+            onDismiss = { showAudioDialog = false }
+        )
+    }
 
     Box(
         modifier = Modifier
@@ -518,17 +558,25 @@ fun ActiveVideoCallScreen(
                 )
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.Videocam,
-                        contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.4f),
-                        modifier = Modifier.size(80.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Surface(
+                        modifier = Modifier.size(100.dp),
+                        shape = CircleShape,
+                        color = TealPrimary
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = displayName.take(1).uppercase().ifBlank { "?" },
+                                fontSize = 44.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Waiting for P2P Video...",
-                        color = Color.White.copy(alpha = 0.6f),
-                        fontSize = 14.sp
+                        text = "Connecting video...",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = Color.White.copy(alpha = 0.7f)
                     )
                 }
             }
@@ -539,12 +587,12 @@ fun ActiveVideoCallScreen(
             if (state.isCameraOn && state.localVideoTrack != null) {
                 Surface(
                     modifier = Modifier
-                        .padding(top = 80.dp, end = 16.dp)
-                        .size(width = 120.dp, height = 160.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .align(Alignment.TopEnd),
-                    color = Color.Black,
-                    border = CardDefaults.outlinedCardBorder()
+                        .size(width = 110.dp, height = 160.dp)
+                        .padding(12.dp)
+                        .align(Alignment.TopEnd)
+                        .clip(RoundedCornerShape(16.dp)),
+                    shadowElevation = 8.dp,
+                    color = Color.Black
                 ) {
                     WebRtcVideoRenderer(
                         videoTrack = state.localVideoTrack,
@@ -584,7 +632,7 @@ fun ActiveVideoCallScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .padding(24.dp),
+                    .padding(horizontal = 12.dp, vertical = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -593,6 +641,7 @@ fun ActiveVideoCallScreen(
                     icon = Icons.Default.Cameraswitch,
                     label = if (state.isFrontCamera) "Front" else "Rear",
                     isActive = false,
+                    size = 52.dp,
                     onClick = { webRtcEngine.switchCamera() }
                 )
 
@@ -601,6 +650,7 @@ fun ActiveVideoCallScreen(
                     icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
                     label = if (state.isCameraOn) "Cam On" else "Cam Off",
                     isActive = state.isCameraOn,
+                    size = 52.dp,
                     onClick = { webRtcEngine.toggleCamera() }
                 )
 
@@ -609,17 +659,47 @@ fun ActiveVideoCallScreen(
                     icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                     label = if (state.isMuted) "Muted" else "Mute",
                     isActive = state.isMuted,
+                    size = 52.dp,
                     onClick = { webRtcEngine.toggleMute() }
+                )
+
+                // Audio Output Switcher
+                val audioIcon = when (state.selectedAudioDevice) {
+                    com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+                    com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+                    com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+                    com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+                }
+                val audioLabel = when (state.selectedAudioDevice) {
+                    com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
+                    com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
+                    com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
+                    com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
+                }
+
+                InCallControlButton(
+                    icon = audioIcon,
+                    label = audioLabel,
+                    isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
+                    size = 52.dp,
+                    onClick = {
+                        if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
+                            showAudioDialog = true
+                        } else {
+                            webRtcEngine.toggleSpeaker()
+                        }
+                    }
                 )
 
                 // Red End Call
                 Button(
                     onClick = onEndCall,
                     shape = CircleShape,
-                    modifier = Modifier.size(68.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
+                    modifier = Modifier.size(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
+                    contentPadding = PaddingValues(0.dp)
                 ) {
-                    Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White)
+                    Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
             }
         }
@@ -627,17 +707,111 @@ fun ActiveVideoCallScreen(
 }
 
 @Composable
+fun AudioOutputSelectionDialog(
+    state: WebRtcState,
+    onSelectDevice: (com.example.webrtc.AudioDeviceOption) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Audio Output",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = Color.White
+            )
+        },
+        containerColor = Color(0xFF1E293B),
+        text = {
+            val devices = if (state.availableAudioDevices.isNotEmpty()) {
+                state.availableAudioDevices
+            } else {
+                listOf(
+                    com.example.webrtc.AudioDeviceOption(id = "speaker", name = "Speaker", type = com.example.webrtc.AudioDeviceType.SPEAKERPHONE),
+                    com.example.webrtc.AudioDeviceOption(id = "earpiece", name = "Phone Earpiece", type = com.example.webrtc.AudioDeviceType.EARPIECE)
+                )
+            }
+            Column(modifier = Modifier.fillMaxWidth()) {
+                devices.forEach { device ->
+                    val isSelected = device.isSelected || device.type == state.selectedAudioDevice
+                    val icon = when (device.type) {
+                        com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+                        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+                        com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+                        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+                    }
+
+                    Surface(
+                        onClick = {
+                            onSelectDevice(device)
+                            onDismiss()
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected) TealPrimary.copy(alpha = 0.25f) else Color.Transparent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = device.name,
+                                    tint = if (isSelected) GreenCall else Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(16.dp))
+                                Text(
+                                    text = device.name,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    color = if (isSelected) GreenCall else Color.White
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Selected",
+                                    tint = GreenCall,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = GreenCall)
+            }
+        }
+    )
+}
+
+@Composable
 private fun InCallControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     isActive: Boolean,
+    size: androidx.compose.ui.unit.Dp = 60.dp,
     onClick: () -> Unit
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         IconButton(
             onClick = onClick,
             modifier = Modifier
-                .size(60.dp)
+                .size(size)
                 .clip(CircleShape)
                 .background(if (isActive) GreenCall else Color.White.copy(alpha = 0.2f))
         ) {
@@ -645,7 +819,7 @@ private fun InCallControlButton(
                 imageVector = icon,
                 contentDescription = label,
                 tint = if (isActive) Color.Black else Color.White,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size((size.value * 0.46f).dp)
             )
         }
         Spacer(modifier = Modifier.height(6.dp))

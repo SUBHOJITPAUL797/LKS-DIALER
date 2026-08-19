@@ -133,6 +133,9 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_PHONE_STATE,
                     Manifest.permission.READ_PHONE_NUMBERS
                 )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     permissions.add(Manifest.permission.POST_NOTIFICATIONS)
                 }

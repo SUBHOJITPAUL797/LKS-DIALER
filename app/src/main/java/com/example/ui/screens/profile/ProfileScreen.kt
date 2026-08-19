@@ -34,7 +34,6 @@ fun ProfileScreen(
     firebaseManager: FirebaseManager
 ) {
     val currentUser by firebaseManager.currentUser.collectAsState()
-    val isFirebaseConnected by firebaseManager.isFirebaseConfigured.collectAsState()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
@@ -223,11 +222,6 @@ fun ProfileScreen(
                     Icon(Icons.Default.Save, contentDescription = "Save Status", tint = TealPrimary)
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Firebase setup banner
-            FirebaseSetupBanner(isFirebaseConnected = isFirebaseConnected)
         }
     }
 }
