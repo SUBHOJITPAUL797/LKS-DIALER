@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,8 +33,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.repository.FirebaseManager
+import com.example.ui.theme.AppThemeColor
 import com.example.ui.theme.GreenCall
-import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.LocalThemeColor
+import com.example.ui.theme.ThemeManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,6 +44,10 @@ fun SettingsScreen(
     firebaseManager: FirebaseManager,
     onBackClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    val themeManager = remember { ThemeManager.getInstance(context) }
+    val currentThemeColor = LocalThemeColor.current
+
     var isNoiseSuppressionOn by remember { mutableStateOf(true) }
     var isEchoCancellationOn by remember { mutableStateOf(true) }
     var isDataSaverOn by remember { mutableStateOf(false) }
@@ -66,7 +73,10 @@ fun SettingsScreen(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
             )
         }
     ) { innerPadding ->
@@ -77,6 +87,97 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
+            // App Theme & Appearance Section
+            SettingsSectionHeader("App Theme & Appearance")
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Palette,
+                            contentDescription = null,
+                            tint = currentThemeColor.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Theme Accent Color",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Choose your favorite app look & feel",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Horizontal scrolling list of theme swatches
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        AppThemeColor.entries.forEach { theme ->
+                            val isSelected = currentThemeColor == theme
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { themeManager.setTheme(theme) }
+                                    .padding(4.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = theme.previewColor,
+                                    modifier = Modifier
+                                        .size(46.dp)
+                                        .border(
+                                            width = if (isSelected) 3.dp else 1.dp,
+                                            color = if (isSelected) Color.White else Color.Transparent,
+                                            shape = CircleShape
+                                        )
+                                ) {
+                                    if (isSelected) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                Text(
+                                    text = theme.title.split(" ").last(),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    color = if (isSelected) theme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Developer Profile Highlight Card
             SettingsSectionHeader("Developer & Creator")
             Surface(
@@ -100,7 +201,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .size(64.dp)
                             .clip(CircleShape)
-                            .border(2.5.dp, TealPrimary, CircleShape)
+                            .border(2.5.dp, currentThemeColor.primary, CircleShape)
                     )
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
@@ -113,7 +214,7 @@ fun SettingsScreen(
                         Text(
                             text = "Creator & Lead Developer",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = TealPrimary
+                            color = currentThemeColor.primary
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -134,7 +235,7 @@ fun SettingsScreen(
                     Icon(
                         Icons.Default.ChevronRight,
                         contentDescription = "View Profile",
-                        tint = Color.Gray
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -206,7 +307,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Lock, contentDescription = null, tint = TealPrimary)
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = currentThemeColor.primary)
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
@@ -216,7 +317,7 @@ fun SettingsScreen(
                             Text(
                                 text = "All media packets are encrypted using DTLS-SRTP. Neither server nor relay can decrypt media.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -233,6 +334,7 @@ fun DeveloperProfileDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val currentThemeColor = LocalThemeColor.current
     val clipboardManager = LocalClipboardManager.current
     val websiteUrl = "https://subhojit-paul.pages.dev/"
 
@@ -250,7 +352,7 @@ fun DeveloperProfileDialog(
                 // Profile picture with glowing border
                 Surface(
                     shape = CircleShape,
-                    color = TealPrimary.copy(alpha = 0.2f),
+                    color = currentThemeColor.primary.copy(alpha = 0.2f),
                     modifier = Modifier.padding(4.dp)
                 ) {
                     Image(
@@ -260,7 +362,7 @@ fun DeveloperProfileDialog(
                         modifier = Modifier
                             .size(110.dp)
                             .clip(CircleShape)
-                            .border(3.dp, TealPrimary, CircleShape)
+                            .border(3.dp, currentThemeColor.primary, CircleShape)
                     )
                 }
 
@@ -275,13 +377,13 @@ fun DeveloperProfileDialog(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Surface(
-                    color = TealPrimary.copy(alpha = 0.15f),
+                    color = currentThemeColor.primary.copy(alpha = 0.15f),
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
                         text = "🚀 Creator & Lead Engineer • LKS DIALER",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                        color = TealPrimary,
+                        color = currentThemeColor.primary,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
@@ -343,7 +445,7 @@ fun DeveloperProfileDialog(
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(websiteUrl))
                         context.startActivity(intent)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
+                    colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -365,10 +467,11 @@ fun DeveloperProfileDialog(
 
 @Composable
 private fun SettingsSectionHeader(title: String) {
+    val themeColor = LocalThemeColor.current
     Text(
         text = title,
         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-        color = TealPrimary,
+        color = themeColor.primary,
         modifier = Modifier.padding(bottom = 8.dp, start = 4.dp)
     )
 }
@@ -381,6 +484,7 @@ private fun SettingsSwitchTile(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -392,7 +496,7 @@ private fun SettingsSwitchTile(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
         ) {
-            Icon(imageVector = icon, contentDescription = null, tint = TealPrimary)
+            Icon(imageVector = icon, contentDescription = null, tint = themeColor.primary)
             Spacer(modifier = Modifier.width(16.dp))
             Column {
                 Text(
@@ -402,14 +506,17 @@ private fun SettingsSwitchTile(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(checkedThumbColor = TealPrimary)
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = themeColor.primary
+            )
         )
     }
 }

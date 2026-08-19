@@ -5,48 +5,56 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
-
-private val DarkColorScheme = darkColorScheme(
-    primary = TealLight,
-    onPrimary = Color.White,
-    primaryContainer = TealPrimary,
-    onPrimaryContainer = Color.White,
-    secondary = GreenCall,
-    onSecondary = Color.Black,
-    background = BackgroundDark,
-    surface = SurfaceDark,
-    onBackground = OnSurfaceDark,
-    onSurface = OnSurfaceDark,
-    error = RedEndCall
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = TealPrimary,
-    onPrimary = Color.White,
-    primaryContainer = TealLight,
-    onPrimaryContainer = Color.White,
-    secondary = GreenCall,
-    onSecondary = Color.White,
-    background = BackgroundLight,
-    surface = SurfaceLight,
-    onBackground = OnSurfaceLight,
-    onSurface = OnSurfaceLight,
-    error = RedEndCall
-)
 
 @Composable
 fun LksDialerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    themeColor: AppThemeColor = AppThemeColor.PURPLE,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
+    val darkColorScheme = darkColorScheme(
+        primary = themeColor.primary,
+        onPrimary = Color.White,
+        primaryContainer = themeColor.primaryDark,
+        onPrimaryContainer = Color.White,
+        secondary = themeColor.accent,
+        onSecondary = Color.Black,
+        background = BackgroundDark,
+        surface = SurfaceDark,
+        surfaceVariant = SurfaceCardDark,
+        onBackground = OnSurfaceDark,
+        onSurface = OnSurfaceDark,
+        onSurfaceVariant = OnSurfaceSubtleDark,
+        error = RedEndCall
     )
+
+    val lightColorScheme = lightColorScheme(
+        primary = themeColor.primaryDark,
+        onPrimary = Color.White,
+        primaryContainer = themeColor.primary,
+        onPrimaryContainer = Color.White,
+        secondary = themeColor.accent,
+        onSecondary = Color.White,
+        background = BackgroundLight,
+        surface = SurfaceLight,
+        surfaceVariant = SurfaceCardLight,
+        onBackground = OnSurfaceLight,
+        onSurface = OnSurfaceLight,
+        onSurfaceVariant = OnSurfaceSubtleLight,
+        error = RedEndCall
+    )
+
+    val colorScheme = if (darkTheme) darkColorScheme else lightColorScheme
+
+    CompositionLocalProvider(LocalThemeColor provides themeColor) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
+    }
 }
 
 @Composable

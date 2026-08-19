@@ -1,7 +1,11 @@
 package com.example.ui.screens.profile
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,19 +16,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
-import androidx.compose.ui.layout.ContentScale
 import com.example.data.repository.FirebaseManager
-import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.LocalThemeColor
 import com.example.util.ImageUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -32,6 +32,7 @@ import com.example.util.ImageUtils
 fun ProfileScreen(
     firebaseManager: FirebaseManager
 ) {
+    val themeColor = LocalThemeColor.current
     val currentUser by firebaseManager.currentUser.collectAsState()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -72,7 +73,10 @@ fun ProfileScreen(
                     text = "My Account",
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
-            }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.background
+            )
         )
 
         Column(
@@ -86,10 +90,10 @@ fun ProfileScreen(
             // Profile picture avatar
             Surface(
                 modifier = Modifier
-                    .size(100.dp)
+                    .size(104.dp)
                     .clickable { imagePickerLauncher.launch("image/*") },
                 shape = CircleShape,
-                color = TealPrimary
+                color = themeColor.primary
             ) {
                 val profilePicUrl = currentUser?.profilePictureUrl ?: ""
                 val decodedBitmap = remember(profilePicUrl) {
@@ -124,7 +128,10 @@ fun ProfileScreen(
                         value = editedName,
                         onValueChange = { editedName = it },
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = themeColor.primary
+                        )
                     )
                     IconButton(onClick = {
                         if (editedName.isNotBlank()) {
@@ -133,7 +140,7 @@ fun ProfileScreen(
                             Toast.makeText(context, "Profile name updated!", Toast.LENGTH_SHORT).show()
                         }
                     }) {
-                        Icon(Icons.Default.Check, contentDescription = "Save", tint = TealPrimary)
+                        Icon(Icons.Default.Check, contentDescription = "Save", tint = themeColor.primary)
                     }
                 }
             } else {
@@ -143,7 +150,7 @@ fun ProfileScreen(
                         style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
                     )
                     IconButton(onClick = { isEditingName = true }) {
-                        Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = Color.Gray)
+                        Icon(Icons.Default.Edit, contentDescription = "Edit Name", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -166,7 +173,7 @@ fun ProfileScreen(
                             Text(
                                 text = "LKS DIALER Number",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = Color.Gray
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
                                 text = currentUser?.phoneNumber ?: "+91 98765 43210",
@@ -178,7 +185,7 @@ fun ProfileScreen(
                                 clipboardManager.setText(AnnotatedString(currentUser?.phoneNumber ?: ""))
                                 Toast.makeText(context, "Number copied to clipboard!", Toast.LENGTH_SHORT).show()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
+                            colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -188,16 +195,16 @@ fun ProfileScreen(
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
-                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.4f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Lock, contentDescription = null, tint = TealPrimary, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = themeColor.primary, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = "Hardware Bound: ${currentUser?.registeredDeviceId?.ifBlank { "DEV-HARDWARE-LOCKED" } ?: "DEV-HARDWARE-LOCKED"}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = TealPrimary
+                            color = themeColor.primary
                         )
                     }
                 }
@@ -211,14 +218,17 @@ fun ProfileScreen(
                     label = { Text("Status Message") },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = themeColor.primary
+                    )
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(onClick = {
                     firebaseManager.updateProfile(editedName, statusMsg)
                     Toast.makeText(context, "Status updated!", Toast.LENGTH_SHORT).show()
                 }) {
-                    Icon(Icons.Default.Save, contentDescription = "Save Status", tint = TealPrimary)
+                    Icon(Icons.Default.Save, contentDescription = "Save Status", tint = themeColor.primary)
                 }
             }
         }

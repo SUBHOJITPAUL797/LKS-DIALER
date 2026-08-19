@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -31,7 +32,7 @@ import com.example.data.model.UserDto
 import com.example.data.repository.FirebaseManager
 import com.example.ui.components.CountryCodePickerModal
 import com.example.ui.theme.GreenCall
-import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.LocalThemeColor
 import com.example.util.CountryCodes
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -41,6 +42,7 @@ fun DialerScreen(
     onStartCall: (number: String, name: String, callType: CallType) -> Unit,
     onNavigateToSettings: () -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     var dialNumber by remember { mutableStateOf("") }
     var selectedCountry by remember { mutableStateOf(CountryCodes.defaultCountry) }
     var showCountryPicker by remember { mutableStateOf(false) }
@@ -48,12 +50,17 @@ fun DialerScreen(
     val configuration = LocalConfiguration.current
     val screenHeight = configuration.screenHeightDp
 
-    // Adaptive sizing based on screen height
-    val keySize = if (screenHeight < 700) 56.dp else if (screenHeight < 800) 60.dp else 64.dp
-    val keyFontSize = if (screenHeight < 700) 22.sp else 24.sp
+    // Adaptive sizing for all Android device screen sizes
+    val keySize = when {
+        screenHeight < 620 -> 50.dp
+        screenHeight < 700 -> 56.dp
+        screenHeight < 800 -> 60.dp
+        else -> 64.dp
+    }
+    val keyFontSize = if (screenHeight < 700) 22.sp else 25.sp
     val keySubFontSize = if (screenHeight < 700) 8.sp else 9.sp
-    val keyRowPadding = if (screenHeight < 700) 1.dp else 2.dp
-    val callButtonSize = if (screenHeight < 700) 58.dp else 64.dp
+    val keyRowPadding = if (screenHeight < 700) 1.dp else 3.dp
+    val callButtonSize = if (screenHeight < 700) 54.dp else 62.dp
 
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
 
@@ -79,26 +86,40 @@ fun DialerScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Top App Bar
+        // WhatsApp-Style Top App Bar
         TopAppBar(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "LKS DIALER",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = TealPrimary
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp
+                        ),
+                        color = themeColor.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Surface(
-                        color = GreenCall.copy(alpha = 0.15f),
+                        color = themeColor.primary.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(
-                            text = "VoIP Active",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TealPrimary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(GreenCall)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "VoIP Ready",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = themeColor.primary
+                            )
+                        }
                     }
                 }
             },
@@ -106,26 +127,31 @@ fun DialerScreen(
                 IconButton(onClick = {
                     val clipStr = clipboardManager.getText()?.text?.toString()
                     if (!clipStr.isNullOrBlank()) {
-                        dialNumber = clipStr.filter { it.isDigit() }
+                        dialNumber = clipStr.filter { it.isDigit() || it == '+' }
                     }
                 }) {
-                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste number", tint = TealPrimary)
+                    Icon(Icons.Default.ContentPaste, contentDescription = "Paste number", tint = themeColor.primary)
                 }
                 IconButton(onClick = onNavigateToSettings) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TealPrimary)
+                    Icon(Icons.Default.Settings, contentDescription = "Settings", tint = themeColor.primary)
                 }
-            }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.background
+            )
         )
 
-        Spacer(modifier = Modifier.weight(1f))
-
-        // Number Input Section - sits snugly above keypad
+        // Center Column: Sits keypad & input centered with max-width for tablets & foldables
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .weight(1f)
+                .widthIn(max = 420.dp)
+                .align(Alignment.CenterHorizontally),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Spacer(modifier = Modifier.weight(1f))
+
             // Country Code selector chip
             Surface(
                 onClick = { showCountryPicker = true },
@@ -133,46 +159,87 @@ fun DialerScreen(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(text = selectedCountry.flagEmoji, fontSize = 16.sp)
-                    Spacer(modifier = Modifier.width(5.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = selectedCountry.dialCode,
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
-                    Spacer(modifier = Modifier.width(2.dp))
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-            // Large Phone Number Display in fixed height Box to prevent layout shifts
-            Box(
+            // Number Input Display Row with Dedicated Inline Backspace on the right
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp),
-                contentAlignment = Alignment.Center
+                    .height(52.dp)
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = if (dialNumber.isEmpty()) "Enter number..." else dialNumber,
-                    fontSize = when {
-                        dialNumber.length > 13 -> 24.sp
-                        dialNumber.length > 10 -> 28.sp
-                        else -> 34.sp
-                    },
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    color = if (dialNumber.isEmpty()) Color.LightGray else MaterialTheme.colorScheme.onBackground,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                // Left spacer to keep the digits perfectly centered
+                Spacer(modifier = Modifier.size(44.dp))
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = if (dialNumber.isEmpty()) "Enter number..." else dialNumber,
+                        fontSize = when {
+                            dialNumber.length > 13 -> 22.sp
+                            dialNumber.length > 10 -> 26.sp
+                            else -> 32.sp
+                        },
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (dialNumber.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f) else MaterialTheme.colorScheme.onBackground,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Dedicated Backspace button on the right
+                Box(
+                    modifier = Modifier.size(44.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (dialNumber.isNotEmpty()) {
+                        Surface(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .combinedClickable(
+                                    onClick = { if (dialNumber.isNotEmpty()) dialNumber = dialNumber.dropLast(1) },
+                                    onLongClick = { dialNumber = "" }
+                                ),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Backspace,
+                                    contentDescription = "Backspace",
+                                    tint = themeColor.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
-            // Matched User Inline Badge - compact, sits right below number
+            // Matched User Inline Badge
             AnimatedVisibility(
                 visible = matchedUser != null,
                 enter = fadeIn(),
@@ -198,7 +265,7 @@ fun DialerScreen(
                             Text(
                                 text = user.displayName,
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                color = TealPrimary
+                                color = themeColor.primary
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
@@ -211,114 +278,81 @@ fun DialerScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-        }
+            Spacer(modifier = Modifier.height(10.dp))
 
-        // 4x4 Keypad Grid - tighter spacing
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-        ) {
-            KeypadRow("1", "", "2", "ABC", "3", "DEF", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
-            KeypadRow("4", "GHI", "5", "JKL", "6", "MNO", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
-            KeypadRow("7", "PQRS", "8", "TUV", "9", "WXYZ", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
-            // Bottom row: *, 0, #, Backspace
-            Box(
+            // Clean 3-Column Keypad Grid (No overlaps)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
             ) {
-                // The *, 0, # keys perfectly aligned with the grid
+                KeypadRow("1", "", "2", "ABC", "3", "DEF", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
+                KeypadRow("4", "GHI", "5", "JKL", "6", "MNO", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
+                KeypadRow("7", "PQRS", "8", "TUV", "9", "WXYZ", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { dialNumber += it }
                 KeypadRow("*", "★", "0", "+", "#", "♯", keySize = keySize, keyFontSize = keyFontSize, keySubFontSize = keySubFontSize, rowPadding = keyRowPadding) { digit ->
                     if (digit == "+") dialNumber += "+" else dialNumber += digit
                 }
-                
-                // Backspace button positioned on the right side without disrupting the grid
-                Surface(
-                    modifier = Modifier
-                        .size(keySize)
-                        .clip(CircleShape)
-                        .align(Alignment.CenterEnd)
-                        .offset(x = 12.dp) // Push slightly into the padding so it doesn't overlap the # key
-                        .combinedClickable(
-                            onClick = { if (dialNumber.isNotEmpty()) dialNumber = dialNumber.dropLast(1) },
-                            onLongClick = { dialNumber = "" }
-                        ),
-                    shape = CircleShape,
-                    color = if (dialNumber.isNotEmpty()) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-                           else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Default.Backspace,
-                            contentDescription = "Backspace",
-                            tint = if (dialNumber.isNotEmpty()) MaterialTheme.colorScheme.error
-                                   else Color.Gray,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                }
             }
-        }
 
-        Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-        // Call Actions Row (Audio & Video Buttons)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Add Contact Quick Button
-            IconButton(
-                onClick = {
-                    if (dialNumber.isNotBlank()) {
-                        firebaseManager.addContact("Contact $dialNumber", dialNumber)
-                    }
-                },
+            // Call Actions Row
+            Row(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.PersonAdd, contentDescription = "Add Contact", tint = TealPrimary, modifier = Modifier.size(22.dp))
-            }
+                // Add Contact Quick Button
+                IconButton(
+                    onClick = {
+                        if (dialNumber.isNotBlank()) {
+                            firebaseManager.addContact("Contact $dialNumber", dialNumber)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = "Add Contact", tint = themeColor.primary, modifier = Modifier.size(22.dp))
+                }
 
-            // Green Audio Call Button
-            Button(
-                onClick = {
-                    if (dialNumber.isNotBlank()) {
-                        val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
-                        val calleeName = matchedUser?.displayName ?: fullNum
-                        onStartCall(fullNum, calleeName, CallType.AUDIO)
-                    }
-                },
-                enabled = dialNumber.isNotBlank(),
-                shape = CircleShape,
-                modifier = Modifier.size(callButtonSize),
-                colors = ButtonDefaults.buttonColors(containerColor = GreenCall)
-            ) {
-                Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = Color.White, modifier = Modifier.size(28.dp))
-            }
+                // Green Audio Call Button
+                Button(
+                    onClick = {
+                        if (dialNumber.isNotBlank()) {
+                            val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
+                            val calleeName = matchedUser?.displayName ?: fullNum
+                            onStartCall(fullNum, calleeName, CallType.AUDIO)
+                        }
+                    },
+                    enabled = dialNumber.isNotBlank(),
+                    shape = CircleShape,
+                    modifier = Modifier.size(callButtonSize),
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenCall)
+                ) {
+                    Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = Color.White, modifier = Modifier.size(28.dp))
+                }
 
-            // Teal Video Call Button
-            Button(
-                onClick = {
-                    if (dialNumber.isNotBlank()) {
-                        val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
-                        val calleeName = matchedUser?.displayName ?: fullNum
-                        onStartCall(fullNum, calleeName, CallType.VIDEO)
-                    }
-                },
-                enabled = dialNumber.isNotBlank(),
-                shape = CircleShape,
-                modifier = Modifier.size(callButtonSize),
-                colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
-            ) {
-                Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = Color.White, modifier = Modifier.size(28.dp))
+                // Theme Accent Video Call Button
+                Button(
+                    onClick = {
+                        if (dialNumber.isNotBlank()) {
+                            val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
+                            val calleeName = matchedUser?.displayName ?: fullNum
+                            onStartCall(fullNum, calleeName, CallType.VIDEO)
+                        }
+                    },
+                    enabled = dialNumber.isNotBlank(),
+                    shape = CircleShape,
+                    modifier = Modifier.size(callButtonSize),
+                    colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary)
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = Color.White, modifier = Modifier.size(28.dp))
+                }
             }
         }
     }
@@ -367,7 +401,7 @@ private fun KeypadButton(
                 onLongClick = onLongClick
             ),
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -383,8 +417,8 @@ private fun KeypadButton(
                 Text(
                     text = subText,
                     fontSize = keySubFontSize,
-                    color = Color.Gray,
-                    fontWeight = FontWeight.Bold
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }

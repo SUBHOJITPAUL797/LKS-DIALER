@@ -10,6 +10,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.CallMissed
+import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,8 +41,9 @@ fun CallHistoryScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     val callLogs by firebaseManager.callLogs.collectAsState()
-    var selectedFilter by remember { mutableStateOf("ALL") } // "ALL" or "MISSED"
+    var selectedFilter by remember { mutableStateOf("ALL") }
     var selectedLogForDetail by remember { mutableStateOf<CallLogDto?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -85,7 +89,7 @@ fun CallHistoryScreen(
                 Surface(
                     modifier = Modifier.size(72.dp),
                     shape = CircleShape,
-                    color = TealPrimary
+                    color = themeColor.primary
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
@@ -106,7 +110,7 @@ fun CallHistoryScreen(
                 Text(
                     text = log.otherPartyNumber,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.Gray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -121,7 +125,8 @@ fun CallHistoryScreen(
                             onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.AUDIO)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(Icons.Default.Call, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -133,8 +138,9 @@ fun CallHistoryScreen(
                             selectedLogForDetail = null
                             onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.VIDEO)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
-                        modifier = Modifier.weight(1f)
+                        colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(Icons.Default.Videocam, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
@@ -165,29 +171,35 @@ fun CallHistoryScreen(
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = MaterialTheme.colorScheme.background
             )
         )
 
-        // Filter chips
+        // Filter chips styled like WhatsApp
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.Start
         ) {
             FilterChip(
                 selected = selectedFilter == "ALL",
                 onClick = { selectedFilter = "ALL" },
-                label = { Text("All Calls (${callLogs.size})") }
+                label = { Text("All Calls (${callLogs.size})") },
+                shape = RoundedCornerShape(16.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = themeColor.primary.copy(alpha = 0.2f),
+                    selectedLabelColor = themeColor.primary
+                )
             )
             Spacer(modifier = Modifier.width(8.dp))
             FilterChip(
                 selected = selectedFilter == "MISSED",
                 onClick = { selectedFilter = "MISSED" },
                 label = { Text("Missed (${callLogs.count { it.direction == CallDirection.MISSED }})") },
+                shape = RoundedCornerShape(16.dp),
                 colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MissedCallRed.copy(alpha = 0.1f),
+                    selectedContainerColor = MissedCallRed.copy(alpha = 0.15f),
                     selectedLabelColor = MissedCallRed
                 )
             )
@@ -205,20 +217,20 @@ fun CallHistoryScreen(
                         Icons.Default.History,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = Color.LightGray
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = if (selectedFilter == "MISSED") "No missed calls" else "No recent call history",
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                contentPadding = PaddingValues(bottom = 16.dp)
             ) {
                 items(filteredLogs, key = { it.id }) { log ->
                     SwipeableCallLogItem(
@@ -251,16 +263,17 @@ private fun SwipeableCallLogItem(
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { dismissValue ->
             when (dismissValue) {
                 SwipeToDismissBoxValue.StartToEnd -> {
                     onAudioCall()
-                    false // Return to center
+                    false
                 }
                 SwipeToDismissBoxValue.EndToStart -> {
                     onVideoCall()
-                    false // Return to center
+                    false
                 }
                 else -> false
             }
@@ -274,8 +287,8 @@ private fun SwipeableCallLogItem(
             val direction = dismissState.dismissDirection
             val color by animateColorAsState(
                 when (dismissState.targetValue) {
-                    SwipeToDismissBoxValue.StartToEnd -> GreenCall.copy(alpha = 0.8f) // Right swipe = Audio
-                    SwipeToDismissBoxValue.EndToStart -> TealPrimary.copy(alpha = 0.8f) // Left swipe = Video
+                    SwipeToDismissBoxValue.StartToEnd -> GreenCall.copy(alpha = 0.8f)
+                    SwipeToDismissBoxValue.EndToStart -> themeColor.primary.copy(alpha = 0.8f)
                     SwipeToDismissBoxValue.Settled -> Color.Transparent
                 }, label = "color"
             )
@@ -324,6 +337,7 @@ private fun CallLogItemContent(
     log: CallLogDto,
     onItemClick: () -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     Surface(
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxWidth()
@@ -339,14 +353,14 @@ private fun CallLogItemContent(
             Surface(
                 modifier = Modifier.size(48.dp),
                 shape = CircleShape,
-                color = if (log.direction == CallDirection.MISSED) MissedCallRed.copy(alpha = 0.15f) else TealPrimary.copy(alpha = 0.15f)
+                color = if (log.direction == CallDirection.MISSED) MissedCallRed.copy(alpha = 0.15f) else themeColor.primary.copy(alpha = 0.15f)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = log.otherPartyName.take(1).uppercase(),
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (log.direction == CallDirection.MISSED) MissedCallRed else TealPrimary
+                        color = if (log.direction == CallDirection.MISSED) MissedCallRed else themeColor.primary
                     )
                 }
             }
@@ -367,9 +381,9 @@ private fun CallLogItemContent(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val icon = when (log.direction) {
-                        CallDirection.OUTGOING -> Icons.Default.CallMade
-                        CallDirection.INCOMING -> Icons.Default.CallReceived
-                        CallDirection.MISSED -> Icons.Default.CallMissed
+                        CallDirection.OUTGOING -> Icons.AutoMirrored.Filled.CallMade
+                        CallDirection.INCOMING -> Icons.AutoMirrored.Filled.CallReceived
+                        CallDirection.MISSED -> Icons.AutoMirrored.Filled.CallMissed
                     }
                     val tint = when (log.direction) {
                         CallDirection.OUTGOING -> OutgoingCallBlue
@@ -389,17 +403,17 @@ private fun CallLogItemContent(
                     Text(
                         text = "${formatTime(log.startedAt)} • ${if (log.durationSeconds > 0) formatDuration(log.durationSeconds) else "Missed"}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            // Quick Redial Action Button (Non-swipe alternative)
+            // Details Action Button
             IconButton(onClick = { onItemClick() }) {
                 Icon(
                     imageVector = Icons.Default.Info,
                     contentDescription = "Details",
-                    tint = Color.LightGray
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
         }
@@ -416,3 +430,4 @@ private fun formatDuration(seconds: Int): String {
     val secs = seconds % 60
     return String.format("%02d:%02d", mins, secs)
 }
+

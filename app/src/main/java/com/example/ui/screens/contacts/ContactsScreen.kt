@@ -3,6 +3,7 @@ package com.example.ui.screens.contacts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -24,7 +25,7 @@ import com.example.data.model.CallType
 import com.example.data.model.ContactDto
 import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.GreenCall
-import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.LocalThemeColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -34,6 +35,7 @@ fun ContactsScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     val syncedContacts by firebaseManager.syncedContacts.collectAsState()
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     var searchQuery by remember { mutableStateOf("") }
@@ -61,16 +63,16 @@ fun ContactsScreen(
                 )
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = MaterialTheme.colorScheme.background
             )
         )
 
-        // Search Bar
+        // Modern Search Bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
             placeholder = { Text("Search synced contacts...") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = themeColor.primary) },
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { searchQuery = "" }) {
@@ -80,11 +82,14 @@ fun ContactsScreen(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             shape = RoundedCornerShape(16.dp),
             singleLine = true,
             colors = OutlinedTextFieldDefaults.colors(
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                focusedBorderColor = themeColor.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
             )
         )
 
@@ -100,13 +105,13 @@ fun ContactsScreen(
                         Icons.Default.Contacts,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = Color.LightGray
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = if (searchQuery.isBlank()) "No LKS Dialer users found in your contacts" else "No matching contacts found",
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
@@ -114,7 +119,7 @@ fun ContactsScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                contentPadding = PaddingValues(bottom = 16.dp)
             ) {
                 items(filteredContacts, key = { it.phoneNumber }) { contact ->
                     val userInfo = registeredUsers.find { it.phoneNumber == contact.phoneNumber }
@@ -127,13 +132,13 @@ fun ContactsScreen(
                         isOnline = isOnline,
                         onAudioCall = {
                             coroutineScope.launch {
-                                delay(300) // allow animation to finish
+                                delay(300)
                                 onStartCall(contact.phoneNumber, contact.name, CallType.AUDIO)
                             }
                         },
                         onVideoCall = {
                             coroutineScope.launch {
-                                delay(300) // allow animation to finish
+                                delay(300)
                                 onStartCall(contact.phoneNumber, contact.name, CallType.VIDEO)
                             }
                         }
@@ -152,16 +157,17 @@ private fun SwipeableContactItem(
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { dismissValue ->
             when (dismissValue) {
                 SwipeToDismissBoxValue.StartToEnd -> {
                     onAudioCall()
-                    false // Don't actually dismiss the item
+                    false
                 }
                 SwipeToDismissBoxValue.EndToStart -> {
                     onVideoCall()
-                    false // Don't actually dismiss the item
+                    false
                 }
                 else -> false
             }
@@ -175,8 +181,8 @@ private fun SwipeableContactItem(
             val direction = dismissState.dismissDirection
             val color by animateColorAsState(
                 when (dismissState.targetValue) {
-                    SwipeToDismissBoxValue.StartToEnd -> GreenCall.copy(alpha = 0.8f) // Right swipe = Audio
-                    SwipeToDismissBoxValue.EndToStart -> TealPrimary.copy(alpha = 0.8f) // Left swipe = Video
+                    SwipeToDismissBoxValue.StartToEnd -> GreenCall.copy(alpha = 0.8f)
+                    SwipeToDismissBoxValue.EndToStart -> themeColor.primary.copy(alpha = 0.8f)
                     SwipeToDismissBoxValue.Settled -> Color.Transparent
                 }, label = "color"
             )
@@ -216,16 +222,23 @@ private fun SwipeableContactItem(
             }
         }
     ) {
-        // Foreground Content
-        ContactItemContent(contact, isOnline)
+        ContactItemContent(
+            contact = contact,
+            isOnline = isOnline,
+            onAudioCall = onAudioCall,
+            onVideoCall = onVideoCall
+        )
     }
 }
 
 @Composable
 private fun ContactItemContent(
     contact: ContactDto,
-    isOnline: Boolean
+    isOnline: Boolean,
+    onAudioCall: () -> Unit,
+    onVideoCall: () -> Unit
 ) {
+    val themeColor = LocalThemeColor.current
     Surface(
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxWidth()
@@ -238,23 +251,23 @@ private fun ContactItemContent(
         ) {
             Box {
                 Surface(
-                    modifier = Modifier.size(52.dp),
+                    modifier = Modifier.size(50.dp),
                     shape = CircleShape,
-                    color = TealPrimary.copy(alpha = 0.1f)
+                    color = themeColor.primary.copy(alpha = 0.15f)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
                             text = contact.name.take(1).uppercase(),
-                            fontSize = 22.sp,
+                            fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
-                            color = TealPrimary
+                            color = themeColor.primary
                         )
                     }
                 }
                 if (isOnline) {
                     Box(
                         modifier = Modifier
-                            .size(14.dp)
+                            .size(13.dp)
                             .clip(CircleShape)
                             .background(GreenCall)
                             .align(Alignment.BottomEnd)
@@ -262,7 +275,7 @@ private fun ContactItemContent(
                 }
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(14.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -272,23 +285,51 @@ private fun ContactItemContent(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = GreenCall.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(4.dp)
+                        color = themeColor.primary.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(6.dp)
                     ) {
                         Text(
                             text = "LKS",
                             fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
-                            color = TealPrimary,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                            color = themeColor.primary,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                     text = "${contact.phoneNumber} • ${contact.statusMessage}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            // Quick audio call shortcut
+            IconButton(
+                onClick = onAudioCall,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Call,
+                    contentDescription = "Audio Call",
+                    tint = GreenCall,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Quick video call shortcut
+            IconButton(
+                onClick = onVideoCall,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.Videocam,
+                    contentDescription = "Video Call",
+                    tint = themeColor.primary,
+                    modifier = Modifier.size(22.dp)
                 )
             }
         }
