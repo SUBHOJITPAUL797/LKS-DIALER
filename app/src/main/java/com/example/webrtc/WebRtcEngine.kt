@@ -339,12 +339,26 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun listenForIncomingCalls(phoneNumber: String) {
-        if (myPhoneNumber == phoneNumber) return
+        if (phoneNumber.isBlank()) return
         myPhoneNumber = phoneNumber
         incomingCallListener?.remove()
 
+        val variations = mutableListOf<String>()
+        variations.add(phoneNumber)
+        val cleanDigits = phoneNumber.replace(Regex("[^0-9]"), "")
+        if (cleanDigits.isNotBlank()) {
+            variations.add(cleanDigits)
+            if (cleanDigits.length > 10) {
+                variations.add(cleanDigits.takeLast(10))
+            }
+            if (!phoneNumber.startsWith("+")) {
+                variations.add("+$phoneNumber")
+            }
+        }
+        val distinctVariations = variations.distinct().take(10)
+
         incomingCallListener = firestore.collection("calls")
-            .whereEqualTo("calleeNumber", phoneNumber)
+            .whereIn("calleeNumber", distinctVariations)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) return@addSnapshotListener
                 val incomingCall = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) }
@@ -360,7 +374,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
                         callStatus = CallStatus.RINGING,
                         callType = incomingCall.callType,
-                        connectionStatusText = "Incoming  Call"
+                        connectionStatusText = "Incoming Call"
                     )
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                 }
@@ -1158,10 +1172,24 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {
-        // Fetch the callee's FCM token from Firestore
-        firestore.collection("users").document(calleeNumber).get().addOnSuccessListener { doc ->
-            val fcmToken = doc.getString("fcmToken") ?: ""
-            val webToken = doc.getString("webToken") ?: ""
+        val variations = mutableListOf<String>()
+        variations.add(calleeNumber)
+        val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
+        if (cleanDigits.isNotBlank()) {
+            variations.add(cleanDigits)
+            if (cleanDigits.length > 10) {
+                variations.add(cleanDigits.takeLast(10))
+            }
+            if (!calleeNumber.startsWith("+")) {
+                variations.add("+$calleeNumber")
+            }
+        }
+        val distinctVariations = variations.distinct().take(10)
+
+        firestore.collection("users").whereIn("phoneNumber", distinctVariations).get().addOnSuccessListener { querySnapshot ->
+            val userDoc = querySnapshot.documents.firstOrNull()
+            val fcmToken = userDoc?.getString("fcmToken") ?: ""
+            val webToken = userDoc?.getString("webToken") ?: ""
             
             if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
                 val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
@@ -1195,6 +1223,41 @@ class WebRtcEngine private constructor(private val context: Context) {
                         android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
                     }
                 }.start()
+            }
+        }.addOnFailureListener {
+            firestore.collection("users").document(calleeNumber).get().addOnSuccessListener { doc ->
+                val fcmToken = doc.getString("fcmToken") ?: ""
+                val webToken = doc.getString("webToken") ?: ""
+                if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
+                    val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+                    val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
+                    Thread {
+                        try {
+                            val url = java.net.URL(workerUrl)
+                            val conn = url.openConnection() as java.net.HttpURLConnection
+                            conn.requestMethod = "POST"
+                            conn.setRequestProperty("Content-Type", "application/json")
+                            conn.setRequestProperty("X-Worker-Secret", workerSecret)
+                            conn.doOutput = true
+                            val json = """
+                                {
+                                    "token": "$fcmToken",
+                                    "webToken": "$webToken",
+                                    "callerName": "$callerName",
+                                    "callerNumber": "$callerNumber",
+                                    "callType": "$callType",
+                                    "callId": "$callId",
+                                    "type": "$type"
+                                }
+                            """.trimIndent()
+                            conn.outputStream.write(json.toByteArray())
+                            val responseCode = conn.responseCode
+                            android.util.Log.d("WebRtcEngine", "Fallback Push Trigger Response: $responseCode")
+                        } catch (e: Exception) {
+                            android.util.Log.e("WebRtcEngine", "Failed to trigger fallback push", e)
+                        }
+                    }.start()
+                }
             }
         }
     }

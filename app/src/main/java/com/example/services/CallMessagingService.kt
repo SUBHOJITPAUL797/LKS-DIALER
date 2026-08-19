@@ -197,19 +197,24 @@ class CallMessagingService : FirebaseMessagingService() {
             .setName(callerName)
             .setImportant(true)
             
-        // Download Profile Picture if available (runs on FCM background thread)
+        // Load Profile Picture if available (supports Base64 and HTTP URL)
         if (callerProfilePic.isNotEmpty()) {
             try {
-                val url = java.net.URL(callerProfilePic)
-                val connection = url.openConnection()
-                connection.connectTimeout = 2000 // 2 seconds
-                connection.readTimeout = 2000
-                val bitmap = android.graphics.BitmapFactory.decodeStream(connection.getInputStream())
+                val bitmap = if (callerProfilePic.startsWith("http://") || callerProfilePic.startsWith("https://")) {
+                    val url = java.net.URL(callerProfilePic)
+                    val connection = url.openConnection()
+                    connection.connectTimeout = 2000
+                    connection.readTimeout = 2000
+                    android.graphics.BitmapFactory.decodeStream(connection.getInputStream())
+                } else {
+                    val decodedBytes = android.util.Base64.decode(callerProfilePic, android.util.Base64.DEFAULT)
+                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                }
                 if (bitmap != null) {
                     callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
                 }
             } catch (e: Exception) {
-                Log.e("FCM", "Failed to download profile picture for notification", e)
+                Log.e("FCM", "Failed to decode profile picture for notification", e)
             }
         }
         val caller = callerBuilder.build()
