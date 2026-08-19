@@ -29,7 +29,12 @@ object CountryCodes {
     )
 
     fun formatPhoneNumber(dialCode: String, number: String): String {
+        val cleanDialCodeDigits = dialCode.replace(Regex("[^0-9]"), "")
         val cleanNumber = number.replace(Regex("[^0-9]"), "")
-        return "$dialCode$cleanNumber"
+        return if (cleanNumber.startsWith(cleanDialCodeDigits)) {
+            "+$cleanNumber"
+        } else {
+            "$dialCode$cleanNumber"
+        }
     }
 }
