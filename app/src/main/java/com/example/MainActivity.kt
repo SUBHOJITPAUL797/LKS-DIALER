@@ -147,7 +147,9 @@ class MainActivity : ComponentActivity() {
 
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
-                ) { _ -> }
+                ) { _ -> 
+                    firebaseManager.syncNativeContacts()
+                }
 
                 LaunchedEffect(Unit) {
                     permissionLauncher.launch(permissions.toTypedArray())
@@ -264,6 +266,7 @@ class MainActivity : ComponentActivity() {
                         AppNavState.MAIN -> {
                             Scaffold(
                                 modifier = Modifier.fillMaxSize(),
+                                contentWindowInsets = WindowInsets(0, 0, 0, 0),
                                 bottomBar = {
                                     NavigationBar(
                                         containerColor = MaterialTheme.colorScheme.surface,
@@ -296,7 +299,7 @@ class MainActivity : ComponentActivity() {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .padding(mainPadding)
+                                        .padding(bottom = mainPadding.calculateBottomPadding())
                                 ) {
                                     when (selectedTab) {
                                         MainTab.DIALER -> DialerScreen(

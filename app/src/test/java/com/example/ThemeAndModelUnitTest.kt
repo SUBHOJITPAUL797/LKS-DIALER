@@ -1,8 +1,10 @@
 package com.example
 
 import com.example.ui.theme.AppThemeColor
+import com.example.util.ContactsHelper
 import com.example.util.CountryCodes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -38,5 +40,13 @@ class ThemeAndModelUnitTest {
         
         val alreadyFormatted = CountryCodes.formatPhoneNumber("+91", "+919876543210")
         assertEquals("+919876543210", alreadyFormatted)
+    }
+
+    @Test
+    fun numbers_match_handles_various_formats() {
+        assertTrue(ContactsHelper.numbersMatch("+919876543210", "9876543210"))
+        assertTrue(ContactsHelper.numbersMatch("09876543210", "+919876543210"))
+        assertTrue(ContactsHelper.numbersMatch("(987) 654-3210", "+19876543210"))
+        assertFalse(ContactsHelper.numbersMatch("9876543210", "1234567890"))
     }
 }

@@ -50,4 +50,18 @@ object ContactsHelper {
     fun normalizePhoneNumber(number: String): String {
         return number.replace(Regex("[^0-9+]"), "")
     }
+
+    /**
+     * Checks if two phone numbers match, handling differing country code prefixes or formatting.
+     */
+    fun numbersMatch(num1: String, num2: String): Boolean {
+        val clean1 = num1.replace(Regex("[^0-9]"), "")
+        val clean2 = num2.replace(Regex("[^0-9]"), "")
+        if (clean1.isBlank() || clean2.isBlank()) return false
+        if (clean1 == clean2) return true
+        if (clean1.length >= 10 && clean2.length >= 10) {
+            return clean1.takeLast(10) == clean2.takeLast(10)
+        }
+        return false
+    }
 }

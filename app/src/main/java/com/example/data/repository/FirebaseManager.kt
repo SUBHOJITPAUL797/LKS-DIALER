@@ -42,6 +42,9 @@ class FirebaseManager private constructor(private val context: Context) {
     private val _syncedContacts = MutableStateFlow<List<ContactDto>>(emptyList())
     val syncedContacts: StateFlow<List<ContactDto>> = _syncedContacts.asStateFlow()
 
+    private val _nonLksContacts = MutableStateFlow<List<com.example.util.LocalContact>>(emptyList())
+    val nonLksContacts: StateFlow<List<com.example.util.LocalContact>> = _nonLksContacts.asStateFlow()
+
     private val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
 
     private var contactsListener: ListenerRegistration? = null
@@ -130,39 +133,70 @@ class FirebaseManager private constructor(private val context: Context) {
                 syncDeviceContactsWithUsers(users)
             }
     }
+
+    fun syncNativeContacts() {
+        syncDeviceContactsWithUsers(_registeredUsers.value)
+    }
     
     private fun syncDeviceContactsWithUsers(firebaseUsers: List<UserDto>) {
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                val localContacts = com.example.util.ContactsHelper.getLocalContacts(context)
-                
-                // For each firebase user, check if their normalized phone number matches any local contact
-                val syncedList = mutableListOf<ContactDto>()
-                
-                for (user in firebaseUsers) {
-                    if (user.phoneNumber == _currentUser.value?.phoneNumber) continue
+                try {
+                    val localContacts = com.example.util.ContactsHelper.getLocalContacts(context)
+                    val currentPhone = _currentUser.value?.phoneNumber ?: ""
                     
-                    val normalizedUserNumber = com.example.util.ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+                    val syncedList = mutableListOf<ContactDto>()
+                    val nonLksList = mutableListOf<com.example.util.LocalContact>()
                     
-                    val matchingContact = localContacts.find { 
-                        it.normalizedNumber == normalizedUserNumber || 
-                        it.normalizedNumber.endsWith(normalizedUserNumber.takeLast(10)) 
-                    }
-                    
-                    if (matchingContact != null) {
-                        syncedList.add(
-                            ContactDto(
-                                id = user.phoneNumber, // Use phone number as unique ID
-                                name = matchingContact.name, // Display native contact name
-                                phoneNumber = user.phoneNumber, // The registered number
-                                profilePictureUrl = user.profilePictureUrl
+                    for (local in localContacts) {
+                        if (currentPhone.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, currentPhone)) {
+                            continue // Skip self
+                        }
+                        
+                        val matchingUser = firebaseUsers.find { user ->
+                            user.phoneNumber.isNotBlank() && 
+                            user.phoneNumber != currentPhone &&
+                            com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, user.phoneNumber)
+                        }
+                        
+                        if (matchingUser != null) {
+                            syncedList.add(
+                                ContactDto(
+                                    id = matchingUser.phoneNumber,
+                                    name = local.name.ifBlank { matchingUser.displayName },
+                                    phoneNumber = matchingUser.phoneNumber,
+                                    profilePictureUrl = matchingUser.profilePictureUrl,
+                                    statusMessage = matchingUser.statusMessage
+                                )
                             )
-                        )
+                        } else {
+                            nonLksList.add(local)
+                        }
                     }
+                    
+                    // Also include any registered LKS users that might not be saved in local phonebook (except self)
+                    for (user in firebaseUsers) {
+                        if (user.phoneNumber.isBlank() || user.phoneNumber == currentPhone) continue
+                        val alreadyInList = syncedList.any { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, user.phoneNumber) }
+                        if (!alreadyInList) {
+                            syncedList.add(
+                                ContactDto(
+                                    id = user.phoneNumber,
+                                    name = user.displayName.ifBlank { user.phoneNumber },
+                                    phoneNumber = user.phoneNumber,
+                                    profilePictureUrl = user.profilePictureUrl,
+                                    statusMessage = user.statusMessage
+                                )
+                            )
+                        }
+                    }
+                    
+                    _syncedContacts.value = syncedList.distinctBy { it.phoneNumber }.sortedBy { it.name.lowercase() }
+                    _nonLksContacts.value = nonLksList.distinctBy { it.normalizedNumber }.sortedBy { it.name.lowercase() }
+                    Log.d(TAG, "Synced contacts: ${syncedList.size} on LKS, ${nonLksList.size} to invite")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to sync device contacts", e)
                 }
-                
-                _syncedContacts.value = syncedList.sortedBy { it.name }
-                Log.d(TAG, "Synced native contacts: ${syncedList.size}")
             }
         } else {
             Log.w(TAG, "READ_CONTACTS permission not granted, cannot sync contacts.")
