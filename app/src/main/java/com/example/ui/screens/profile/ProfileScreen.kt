@@ -24,7 +24,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.layout.ContentScale
 import com.example.data.repository.FirebaseManager
-import com.example.ui.components.FirebaseSetupBanner
 import com.example.ui.theme.TealPrimary
 import com.example.util.ImageUtils
 
