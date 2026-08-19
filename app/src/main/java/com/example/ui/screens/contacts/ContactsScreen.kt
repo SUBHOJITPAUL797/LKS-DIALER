@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -255,7 +256,7 @@ fun ContactsScreen(
                         )
                     }
 
-                    items(filteredLksContacts, key = { "lks_${it.phoneNumber}" }) { contact ->
+                    itemsIndexed(filteredLksContacts, key = { index, it -> "lks_${it.phoneNumber}_$index" }) { _, contact ->
                         val userInfo = registeredUsers.find { it.phoneNumber == contact.phoneNumber }
                         val isOnline = userInfo?.isOnline == true
 
@@ -290,7 +291,7 @@ fun ContactsScreen(
                         )
                     }
 
-                    items(filteredNonLksContacts, key = { "nonlks_${it.normalizedNumber}_${it.name}" }) { contact ->
+                    itemsIndexed(filteredNonLksContacts, key = { index, it -> "nonlks_${it.normalizedNumber}_${it.name}_$index" }) { _, contact ->
                         InviteContactItem(
                             contact = contact,
                             onInvite = { shareInvite(contact) }
@@ -553,9 +554,7 @@ private fun InviteContactItem(
                 colors = ButtonDefaults.outlinedButtonColors(
                     contentColor = themeColor.primary
                 ),
-                border = ButtonDefaults.outlinedButtonBorder.copy(
-                    brush = androidx.compose.ui.graphics.SolidColor(themeColor.primary.copy(alpha = 0.6f))
-                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, themeColor.primary.copy(alpha = 0.6f)),
                 modifier = Modifier.height(34.dp)
             ) {
                 Icon(
