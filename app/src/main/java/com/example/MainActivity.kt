@@ -155,12 +155,17 @@ class MainActivity : ComponentActivity() {
                     permissionLauncher.launch(permissions.toTypedArray())
                     
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        val prefs = context.getSharedPreferences("lks_dialer_prefs", android.content.Context.MODE_PRIVATE)
+                        val hasPromptedFullScreen = prefs.getBoolean("full_screen_intent_prompted", false)
                         val notificationManager = context.getSystemService(android.app.NotificationManager::class.java)
-                        if (!notificationManager.canUseFullScreenIntent()) {
-                            val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
-                                data = android.net.Uri.parse("package:${context.packageName}")
-                            }
-                            context.startActivity(intent)
+                        if (!hasPromptedFullScreen && notificationManager != null && !notificationManager.canUseFullScreenIntent()) {
+                            prefs.edit().putBoolean("full_screen_intent_prompted", true).apply()
+                            try {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                                    data = android.net.Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
                         }
                     }
                     
