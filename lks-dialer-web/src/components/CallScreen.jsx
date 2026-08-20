@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, SwitchCamera } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, SwitchCamera, Headphones, Volume2, Check, X } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 
 export default function CallScreen({ callData, onEndCall }) {
@@ -9,7 +9,8 @@ export default function CallScreen({ callData, onEndCall }) {
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [videoUpgradeRequested, setVideoUpgradeRequested] = useState(false);
   const [audioOutputs, setAudioOutputs] = useState([]);
-  const [currentOutputIndex, setCurrentOutputIndex] = useState(0);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [durationStr, setDurationStr] = useState("");
 
   const isVideoCall = callData.callType === 'VIDEO';
@@ -36,14 +37,14 @@ export default function CallScreen({ callData, onEndCall }) {
     if (el && webRtcEngine.remoteStream) {
       el.srcObject = webRtcEngine.remoteStream;
     }
-  }, [isVideoCall]);
+  }, []);
 
   const localVideoRefCb = useCallback((el) => {
     localVideoRef.current = el;
     if (el && webRtcEngine.localStream) {
       el.srcObject = webRtcEngine.localStream;
     }
-  }, [isVideoCall]);
+  }, []);
 
   useEffect(() => {
     webRtcEngine.onLocalStream = (stream) => {
@@ -74,26 +75,49 @@ export default function CallScreen({ callData, onEndCall }) {
     };
   }, []);
 
-  useEffect(() => {
-    navigator.mediaDevices.enumerateDevices().then(devices => {
+  // Fetch and monitor audio output devices (Headphones, Bluetooth, Speakers)
+  const refreshAudioOutputs = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
       const outputs = devices.filter(d => d.kind === 'audiooutput');
       setAudioOutputs(outputs);
-    }).catch(e => console.error("Error enumerating devices:", e));
-  }, []);
+      if (outputs.length > 0 && !selectedDeviceId) {
+        setSelectedDeviceId(outputs[0].deviceId);
+      }
+    } catch (e) {
+      console.error("Error enumerating devices:", e);
+    }
+  }, [selectedDeviceId]);
 
-  const toggleSpeaker = async () => {
-    if (audioOutputs.length === 0) return;
-    const nextIndex = (currentOutputIndex + 1) % audioOutputs.length;
-    const deviceId = audioOutputs[nextIndex].deviceId;
-    
+  useEffect(() => {
+    refreshAudioOutputs();
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', refreshAudioOutputs);
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', refreshAudioOutputs);
+      };
+    }
+  }, [refreshAudioOutputs]);
+
+  const selectAudioDevice = async (deviceId) => {
+    setSelectedDeviceId(deviceId);
+    setShowDeviceModal(false);
     if (remoteVideoRef.current && typeof remoteVideoRef.current.setSinkId === 'function') {
       try {
         await remoteVideoRef.current.setSinkId(deviceId);
-        setCurrentOutputIndex(nextIndex);
       } catch (e) {
-        console.error("Error setting sink id", e);
+        console.error("Error setting sink id:", e);
       }
     }
+  };
+
+  const isHeadphoneActive = () => {
+    const current = audioOutputs.find(d => d.deviceId === selectedDeviceId);
+    if (!current) return false;
+    const label = current.label.toLowerCase();
+    return label.includes('headphone') || label.includes('earphone') || label.includes('headset') || 
+           label.includes('bluetooth') || label.includes('airpods') || label.includes('buds');
   };
 
   const toggleMute = () => {
@@ -164,45 +188,47 @@ export default function CallScreen({ callData, onEndCall }) {
           position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
         }}>
-            <div style={{
-              width: '160px', height: '160px', borderRadius: '50%',
-              backgroundColor: 'var(--accent)', border: '4px solid #000',
-              boxShadow: '8px 8px 0 #000', overflow: 'hidden',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', 
-              marginBottom: '40px'
-            }}>
-              {peerAvatar && (
-                <img 
-                  src={peerAvatar} 
-                  alt={peerName} 
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  onError={(e) => {
-                    e.target.style.display = 'none';
-                    if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
-                  }}
-                />
-              )}
-              <span style={{ display: peerAvatar ? 'none' : 'block', fontSize: '72px', fontWeight: '900', color: '#000' }}>
+          <div style={{
+            width: '160px', height: '160px', borderRadius: '50%',
+            backgroundColor: 'var(--accent)', border: '4px solid #000',
+            boxShadow: '8px 8px 0 #000', overflow: 'hidden',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', 
+            marginBottom: '40px'
+          }}>
+            {peerAvatar ? (
+              <img 
+                src={peerAvatar} 
+                alt={peerName} 
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                onError={(e) => {
+                  e.target.style.display = 'none';
+                  if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
+                }}
+              />
+            ) : (
+              <span style={{ fontSize: '72px', fontWeight: '900', color: '#000' }}>
                 {peerName?.[0]?.toUpperCase() || '?'}
               </span>
-            </div>
+            )}
+          </div>
           <h2 style={{ fontSize: '40px', fontWeight: '900', marginBottom: '8px', textTransform: 'uppercase', textAlign: 'center' }}>
             {peerName}
           </h2>
-            <div style={{ 
-              padding: '8px 24px', backgroundColor: '#000', color: '#fff', 
-              borderRadius: '24px', fontWeight: '800', letterSpacing: '2px' 
-            }}>
-              {callData.status === 'ANSWERED' && durationStr ? `${callData.status} • ${durationStr}` : callData.status}
-            </div>
+          <div style={{ 
+            padding: '8px 24px', backgroundColor: '#000', color: '#fff', 
+            borderRadius: '24px', fontWeight: '800', letterSpacing: '2px' 
+          }}>
+            {callData.status === 'ANSWERED' && durationStr ? `${callData.status} • ${durationStr}` : callData.status}
           </div>
-        )}
+        </div>
+      )}
 
       {/* Controls */}
       <div style={{
         position: 'absolute', bottom: '40px', left: '50%', transform: 'translateX(-50%)',
         display: 'flex', gap: '20px', zIndex: 20
       }}>
+        {/* Mute Button */}
         <button 
           className="neo-box" 
           style={{ 
@@ -211,33 +237,38 @@ export default function CallScreen({ callData, onEndCall }) {
             backgroundColor: isMuted ? 'var(--primary)' : '#fff'
           }} 
           onClick={toggleMute}
+          title={isMuted ? "Unmute" : "Mute"}
         >
           {isMuted ? <MicOff size={28} color="#000" /> : <Mic size={28} color="#000" />}
         </button>
 
-        {audioOutputs.length > 1 && (
+        {/* Audio Device (Headphone / Speaker) Button */}
+        {audioOutputs.length > 0 && (
           <button 
             className="neo-box" 
             style={{ 
               width: '64px', height: '64px', borderRadius: '50%', padding: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-              backgroundColor: currentOutputIndex !== 0 ? 'var(--accent)' : '#fff'
+              backgroundColor: isHeadphoneActive() ? 'var(--accent)' : '#fff'
             }} 
-            onClick={toggleSpeaker}
-            title="Switch Audio Output"
+            onClick={() => {
+              if (audioOutputs.length > 1) {
+                setShowDeviceModal(true);
+              } else {
+                refreshAudioOutputs();
+              }
+            }}
+            title="Audio Output Device (Headphones / Speaker)"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              {currentOutputIndex === 0 ? (
-                // Speaker/Loudspeaker Icon
-                <><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></>
-              ) : (
-                // Earpiece/Phone Icon
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
-              )}
-            </svg>
+            {isHeadphoneActive() ? (
+              <Headphones size={28} color="#000" />
+            ) : (
+              <Volume2 size={28} color="#000" />
+            )}
           </button>
         )}
 
+        {/* Video Camera Switch */}
         {isVideoCall && (
           <button 
             className="neo-box" 
@@ -253,6 +284,7 @@ export default function CallScreen({ callData, onEndCall }) {
           </button>
         )}
 
+        {/* Video Toggle / Upgrade */}
         {isVideoCall ? (
           <button 
             className="neo-box" 
@@ -262,6 +294,7 @@ export default function CallScreen({ callData, onEndCall }) {
               backgroundColor: !isVideoEnabled ? 'var(--primary)' : '#fff'
             }} 
             onClick={toggleVideo}
+            title={isVideoEnabled ? "Turn Off Video" : "Turn On Video"}
           >
             {!isVideoEnabled ? <VideoOff size={28} color="#000" /> : <Video size={28} color="#000" />}
           </button>
@@ -274,11 +307,13 @@ export default function CallScreen({ callData, onEndCall }) {
               backgroundColor: 'var(--secondary)'
             }} 
             onClick={() => webRtcEngine.requestVideoUpgrade()}
+            title="Request Video Call"
           >
             <Video size={28} color="#000" />
           </button>
         )}
 
+        {/* End Call Button */}
         <button 
           className="neo-box" 
           style={{ 
@@ -287,11 +322,73 @@ export default function CallScreen({ callData, onEndCall }) {
             backgroundColor: '#FF1744'
           }} 
           onClick={onEndCall}
+          title="End Call"
         >
           <PhoneOff size={28} color="#fff" />
         </button>
       </div>
 
+      {/* Audio Device Selector Modal (Headphones vs Speaker) */}
+      {showDeviceModal && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 100, padding: '20px'
+        }}>
+          <div className="neo-box" style={{ width: '100%', maxWidth: '380px', padding: '24px', backgroundColor: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Headphones size={24} color="#000" />
+                <h3 style={{ fontSize: '20px', fontWeight: '900', margin: 0 }}>Select Audio Output</h3>
+              </div>
+              <button 
+                onClick={() => setShowDeviceModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px' }}
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {audioOutputs.map((device, index) => {
+                const isSelected = (selectedDeviceId === device.deviceId) || (!selectedDeviceId && index === 0);
+                const label = device.label || `Audio Device ${index + 1}`;
+                const isHeadphone = label.toLowerCase().includes('headphone') || 
+                                    label.toLowerCase().includes('earphone') || 
+                                    label.toLowerCase().includes('headset') || 
+                                    label.toLowerCase().includes('bluetooth') ||
+                                    label.toLowerCase().includes('airpods') ||
+                                    label.toLowerCase().includes('buds');
+
+                return (
+                  <div
+                    key={device.deviceId || index}
+                    onClick={() => selectAudioDevice(device.deviceId)}
+                    className="neo-box"
+                    style={{
+                      padding: '12px 16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? 'var(--accent)' : '#fff',
+                      transition: 'background-color 0.2s ease'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      {isHeadphone ? <Headphones size={20} /> : <Volume2 size={20} />}
+                      <span style={{ fontWeight: '700', fontSize: '14px' }}>{label}</span>
+                    </div>
+                    {isSelected && <Check size={18} color="#000" />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Video Upgrade Modal */}
       {videoUpgradeRequested && (
         <div style={{
           position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
