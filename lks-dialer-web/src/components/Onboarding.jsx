@@ -31,14 +31,19 @@ export default function Onboarding({ onRegister }) {
       )}
 
       <div style={{ width: '100%', maxWidth: '480px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-        <div style={{ 
-          width: '80px', height: '80px', backgroundColor: 'var(--primary)', 
-          border: '4px solid #000', boxShadow: '4px 4px 0 #000',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          marginBottom: '24px', borderRadius: '16px'
-        }}>
-          <Phone size={40} color="#fff" />
-        </div>
+        <img 
+          src="/icon.png" 
+          alt="LKS Dialer Logo"
+          style={{ 
+            width: '84px', 
+            height: '84px', 
+            borderRadius: '20px',
+            border: '3px solid rgba(255,255,255,0.1)',
+            boxShadow: '0 8px 24px rgba(124, 58, 237, 0.35)',
+            marginBottom: '24px',
+            objectFit: 'cover'
+          }} 
+        />
         
         <h1 style={{ fontSize: '48px', fontWeight: '900', lineHeight: 1.1, marginBottom: '16px', textTransform: 'uppercase' }}>
           LKS<br/>DIALER<br/>WEB

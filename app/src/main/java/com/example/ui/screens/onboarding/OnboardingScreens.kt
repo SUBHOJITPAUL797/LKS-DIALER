@@ -33,6 +33,9 @@ import com.example.util.DeviceUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+
 @Composable
 fun WelcomeScreen(
     onGetStartedClick: () -> Unit
@@ -54,20 +57,13 @@ fun WelcomeScreen(
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Surface(
-                    modifier = Modifier.size(100.dp),
-                    shape = CircleShape,
-                    color = Color.White.copy(alpha = 0.15f)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Call,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(54.dp)
-                        )
-                    }
-                }
+                Image(
+                    painter = painterResource(id = com.example.R.drawable.app_logo),
+                    contentDescription = "LKS Dialer Logo",
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clip(CircleShape)
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
 

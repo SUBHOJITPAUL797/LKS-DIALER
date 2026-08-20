@@ -1,16 +1,28 @@
 {
   "name": "LKS Dialer",
-  "short_name": "LKS",
+  "short_name": "LKS Dialer",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#121212",
-  "theme_color": "#00E676",
+  "background_color": "#0D0A1A",
+  "theme_color": "#7C3AED",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/icon.jpg",
-      "sizes": "1024x1024",
-      "type": "image/jpeg",
+      "src": "/logo192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]
