@@ -92,10 +92,35 @@ class WebRtcEngine {
   }
 
   async lookupUser(phoneNumber) {
-    const q = query(collection(db, 'users'), where('phoneNumber', '==', phoneNumber));
-    const snapshot = await getDocs(q);
-    if (snapshot.empty) return null;
-    return snapshot.docs[0].data();
+    if (!phoneNumber) return null;
+    const variations = [phoneNumber];
+    const cleanDigits = phoneNumber.replace(/[^0-9]/g, '');
+    if (cleanDigits) {
+      variations.push(cleanDigits);
+      if (cleanDigits.length > 10) {
+        variations.push(cleanDigits.slice(-10));
+      }
+      if (!phoneNumber.startsWith('+')) {
+        variations.push('+' + phoneNumber);
+      }
+    }
+    const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
+
+    try {
+      const q = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) return snapshot.docs[0].data();
+    } catch (e) {
+      console.warn("Query by variations failed, falling back to direct get:", e);
+    }
+
+    try {
+      const docSnap = await getDoc(doc(db, 'users', phoneNumber));
+      if (docSnap.exists()) return docSnap.data();
+    } catch (e) {
+      console.warn("Direct lookup failed:", e);
+    }
+    return null;
   }
 
   async getRegisteredUsers() {
@@ -283,10 +308,24 @@ class WebRtcEngine {
   }
 
   listenForIncomingCalls() {
-    if (!this.currentUser) return;
+    if (!this.currentUser || !this.currentUser.phoneNumber) return;
+    const phone = this.currentUser.phoneNumber;
+    const variations = [phone];
+    const cleanDigits = phone.replace(/[^0-9]/g, '');
+    if (cleanDigits) {
+      variations.push(cleanDigits);
+      if (cleanDigits.length > 10) {
+        variations.push(cleanDigits.slice(-10));
+      }
+      if (!phone.startsWith('+')) {
+        variations.push('+' + phone);
+      }
+    }
+    const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
+
     const q = query(
       collection(db, 'calls'), 
-      where('calleeNumber', '==', this.currentUser.phoneNumber),
+      where('calleeNumber', 'in', distinctVariations),
       where('status', 'in', ['CALLING', 'RINGING'])
     );
     
