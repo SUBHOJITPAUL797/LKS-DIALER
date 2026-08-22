@@ -91,6 +91,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Register self-managed phone account for Bluetooth HFP call controls
+        try {
+            com.example.services.LksTelecomManager.registerPhoneAccount(this)
+        } catch (_: Exception) {}
+
         // Pass the launch intent in so the Compose side can read it
         _incomingIntent.value = intent
         enableEdgeToEdge()

@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
     <!-- Notifications & Call Overlay (WhatsApp-style) -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -67,6 +68,16 @@
             android:name=".services.ActiveCallService"
             android:foregroundServiceType="microphone|camera"
             android:exported="false" />
+
+        <!-- Telecom ConnectionService — enables Bluetooth Earbuds/Headset HFP call answer & hangup -->
+        <service
+            android:name=".services.LksConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
 
         <!-- FCM Service — receives push notifications for incoming calls -->
         <service

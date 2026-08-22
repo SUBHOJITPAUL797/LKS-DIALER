@@ -253,5 +253,9 @@ class CallMessagingService : FirebaseMessagingService() {
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
         try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
+        try {
+            val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+            LksTelecomManager.reportIncomingCall(this, callId, callerName, callerNumber, callTypeEnum)
+        } catch (_: Exception) {}
     }
 }

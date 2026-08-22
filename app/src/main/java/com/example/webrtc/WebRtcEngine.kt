@@ -297,6 +297,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
         headsetButtonManager.startListening()
+        try {
+            com.example.services.LksTelecomManager.reportOutgoingCall(context, newCall.callId, calleeName, calleeNumber, callType)
+        } catch (_: Exception) {}
         configureAudio(callType)
         
         // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
@@ -372,6 +375,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                     
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     headsetButtonManager.startListening()
+                    try {
+                        com.example.services.LksTelecomManager.reportIncomingCall(
+                            context,
+                            incomingCall.callId,
+                            incomingCall.callerName,
+                            incomingCall.callerNumber,
+                            incomingCall.callType
+                        )
+                    } catch (_: Exception) {}
                     
                     _state.value = WebRtcState(
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
@@ -450,6 +462,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         com.example.services.ActiveCallService.start(context, call.callId, call.callType.name)
         headsetButtonManager.startListening()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                com.example.services.LksConnectionService.setCallActive()
+            } catch (_: Exception) {}
+        }
         configureAudio(call.callType)
         
         firestore.collection("calls").document(call.callId).update(
@@ -1176,6 +1193,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         try {
             headsetButtonManager.stopListening()
         } catch (_: Exception) {}
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                com.example.services.LksConnectionService.disconnectCall()
+            } catch (_: Exception) {}
+        }
 
         com.example.services.ActiveCallService.stop(context)
     }
