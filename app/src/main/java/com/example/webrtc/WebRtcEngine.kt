@@ -64,6 +64,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     val state: StateFlow<WebRtcState> = _state.asStateFlow()
     private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
     private var headsetReceiver: android.content.BroadcastReceiver? = null
+    private val headsetButtonManager = com.example.services.HeadsetButtonManager(context)
 
     private val firestore = FirebaseFirestore.getInstance()
     private var myPhoneNumber: String = ""
@@ -295,6 +296,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
         
         com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
+        headsetButtonManager.startListening()
         configureAudio(callType)
         
         // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
@@ -369,6 +371,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     seenCallIds.add(incomingCall.callId)
                     
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
+                    headsetButtonManager.startListening()
                     
                     _state.value = WebRtcState(
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
@@ -406,6 +409,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 callType = type,
                 connectionStatusText = if (autoAnswer) "Connecting..." else "Incoming Call"
             )
+            headsetButtonManager.startListening()
         }
         
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
@@ -426,6 +430,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callStatus = resolvedStatus,
                     connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming  Call"
                 )
+                headsetButtonManager.startListening()
                 listenToActiveCall(callId, isCaller = false)
                 if (autoAnswer) answerCall()
             }
@@ -444,7 +449,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         notificationManager.cancel(1001)
         
         com.example.services.ActiveCallService.start(context, call.callId, call.callType.name)
-        
+        headsetButtonManager.startListening()
         configureAudio(call.callType)
         
         firestore.collection("calls").document(call.callId).update(
@@ -1168,6 +1173,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             notificationManager.cancel(1001)
         } catch (_: Exception) {}
         
+        try {
+            headsetButtonManager.stopListening()
+        } catch (_: Exception) {}
+
         com.example.services.ActiveCallService.stop(context)
     }
 

@@ -97,6 +97,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Headset Media Button Receiver — picks up and hangs up calls via Bluetooth / Wired headset buttons -->
+        <receiver
+            android:name=".services.HeadsetMediaButtonReceiver"
+            android:exported="true">
+            <intent-filter android:priority="2147483647">
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <!-- FileProvider for APK Installation -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -16,6 +16,8 @@ import com.example.MainActivity
 
 class ActiveCallService : Service() {
 
+    private var headsetButtonManager: HeadsetButtonManager? = null
+
     companion object {
         const val CHANNEL_ID = "active_call_channel"
         const val NOTIFICATION_ID = 2001
@@ -45,6 +47,12 @@ class ActiveCallService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val callId = intent?.getStringExtra("callId") ?: ""
         val callType = intent?.getStringExtra("callType") ?: "Audio"
+
+        if (headsetButtonManager == null) {
+            headsetButtonManager = HeadsetButtonManager(this).also { it.startListening() }
+        } else {
+            headsetButtonManager?.startListening()
+        }
 
         createNotificationChannel()
 
@@ -84,6 +92,14 @@ class ActiveCallService : Service() {
         }
 
         return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        try {
+            headsetButtonManager?.stopListening()
+            headsetButtonManager = null
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

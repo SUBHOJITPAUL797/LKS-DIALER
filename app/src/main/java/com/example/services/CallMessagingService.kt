@@ -38,9 +38,10 @@ class CallMessagingService : FirebaseMessagingService() {
             val callId = remoteMessage.data["callId"] ?: return
             
             if (type == "cancel_call" || type == "missed_call") {
-                Log.d("FCM", "Received $type for callId=$callId. Dismissing incoming notification.")
+                Log.d("FCM", "Received $type for callId: $callId, dismissing notification")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
+                try { HeadsetButtonManager(this).stopListening() } catch (_: Exception) {}
                 
                 // Force end the call in WebRtcEngine to drop the ringing UI if it's open
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
@@ -251,5 +252,6 @@ class CallMessagingService : FirebaseMessagingService() {
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
+        try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
     }
 }
