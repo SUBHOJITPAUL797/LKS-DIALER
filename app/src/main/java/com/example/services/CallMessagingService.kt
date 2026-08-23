@@ -264,19 +264,37 @@ class CallMessagingService : FirebaseMessagingService() {
 
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         val isLocked = keyguardManager?.isKeyguardLocked == true
+        val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        val targetChannelId = if (!isLocked && canDrawOverlays) {
+            // When unlocked and overlay is active, use low-importance channel so OS does NOT drop down a duplicate HUN card
+            "incoming_call_silent_channel"
+        } else {
+            CHANNEL_ID
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && targetChannelId == "incoming_call_silent_channel") {
+            val silentChannel = NotificationChannel(
+                "incoming_call_silent_channel",
+                "Incoming Calls (Floating Overlay)",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Silent background notification for floating call pill"
+                setShowBadge(false)
+            }
+            notificationManager.createNotificationChannel(silentChannel)
+        }
+
+        val builder = NotificationCompat.Builder(this, targetChannelId)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setPriority(if (!isLocked && canDrawOverlays) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)           // can't be swiped away — must tap Accept or Decline
             .setAutoCancel(false)
-            .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-            .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
             .setContentIntent(fullScreenPendingIntent)
             .addAction(
                 NotificationCompat.Action.Builder(
@@ -293,29 +311,34 @@ class CallMessagingService : FirebaseMessagingService() {
                 ).build()
             )
 
+        if (isLocked || !canDrawOverlays) {
+            builder.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+            builder.setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
+        }
+
         // Only attach fullScreenIntent on notification if locked to prevent forced full-screen takeover when unlocked
         if (isLocked) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
-        Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
+        Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
         
-        // 💡 Wake up CPU and turn screen ON on lockscreen / idle state
-        try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-            val wakeLock = powerManager?.newWakeLock(
-                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
-                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                android.os.PowerManager.ON_AFTER_RELEASE,
-                "lksdialer:incoming_call_wake"
-            )
-            wakeLock?.acquire(20000) // Keep screen awake for 20s while ringing
-        } catch (e: Exception) {
-            Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
-        }
-
         if (isLocked) {
+            // 💡 Wake up CPU and turn screen ON on lockscreen / idle state
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                val wakeLock = powerManager?.newWakeLock(
+                    android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    android.os.PowerManager.ON_AFTER_RELEASE,
+                    "lksdialer:incoming_call_wake"
+                )
+                wakeLock?.acquire(20000) // Keep screen awake for 20s while ringing
+            } catch (e: Exception) {
+                Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
+            }
+
             // 🚀 Phone is locked: Launch full screen incoming call activity directly over lockscreen
             try {
                 startActivity(fullScreenIntent)
@@ -323,7 +346,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.d("FCM", "Direct startActivity skipped or handled by fullScreenIntent: ${e.message}")
             }
         } else {
-            // 🚀 Phone is unlocked: Show sleek floating pill banner over current app
+            // 🚀 Phone is unlocked: Show ONLY sleek floating pill banner over current app
             FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
         }
 

@@ -12,6 +12,9 @@ import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -140,6 +143,7 @@ class FloatingCallBubbleService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var stateObserverJob: Job? = null
+    private var incomingRingtone: Ringtone? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -151,16 +155,47 @@ class FloatingCallBubbleService : Service() {
         observeEngineState()
     }
 
+    private fun startRinging() {
+        stopRinging()
+        try {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            incomingRingtone = RingtoneManager.getRingtone(applicationContext, uri)?.apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    isLooping = true
+                }
+                play()
+            }
+            Log.d(TAG, "Started playing incoming call ringtone")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to play incoming call ringtone: ${e.message}")
+        }
+    }
+
+    private fun stopRinging() {
+        try {
+            incomingRingtone?.stop()
+            incomingRingtone = null
+        } catch (_: Exception) {}
+    }
+
     private fun observeEngineState() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
             WebRtcEngine.getInstance(this@FloatingCallBubbleService).state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
                     CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
+                        stopRinging()
                         removeFloatingView()
                         stopSelf()
                     }
                     CallStatus.ANSWERED -> {
+                        stopRinging()
                         if (currentMode == ACTION_SHOW_INCOMING) {
                             showActiveCallPill()
                         }
@@ -175,6 +210,7 @@ class FloatingCallBubbleService : Service() {
         val action = intent?.action ?: return START_NOT_STICKY
 
         if (action == ACTION_HIDE) {
+            stopRinging()
             removeFloatingView()
             stopSelf()
             return START_NOT_STICKY
@@ -188,8 +224,10 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
+            startRinging()
             showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
+            stopRinging()
             showActiveCallPill()
         }
 
@@ -315,7 +353,10 @@ class FloatingCallBubbleService : Service() {
                 marginEnd = dpToPx(8f)
             }
             setOnClickListener {
+                stopRinging()
                 WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.cancel(1001)
                 removeFloatingView()
                 stopSelf()
             }
@@ -332,6 +373,9 @@ class FloatingCallBubbleService : Service() {
             setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
             setOnClickListener {
+                stopRinging()
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.cancel(1001)
                 // Answer directly via WebRtcEngine in background
                 val engine = WebRtcEngine.getInstance(this@FloatingCallBubbleService)
                 engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
@@ -376,6 +420,7 @@ class FloatingCallBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
+                        stopRinging()
                         // Tapping the card area opens full screen
                         openFullScreenCallActivity(callId, autoAnswer = false)
                     }
@@ -564,7 +609,10 @@ class FloatingCallBubbleService : Service() {
                 marginStart = dpToPx(8f)
             }
             setOnClickListener {
+                stopRinging()
                 WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                nm?.cancel(1001)
                 removeFloatingView()
                 stopSelf()
             }
@@ -607,6 +655,7 @@ class FloatingCallBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
+                        stopRinging()
                         openFullScreenCallActivity(callId, autoAnswer = false)
                     }
                     true
@@ -697,6 +746,7 @@ class FloatingCallBubbleService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopRinging()
         stateObserverJob?.cancel()
         removeFloatingView()
     }
