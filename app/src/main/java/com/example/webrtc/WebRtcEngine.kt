@@ -393,7 +393,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         connectionStatusText = "Incoming Call"
                     )
 
-                    // Wake screen and bring incoming call overlay to front if in background
+                    // Wake screen and route to lockscreen activity or floating pill if unlocked
                     try {
                         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
                         val wl = pm?.newWakeLock(
@@ -404,15 +404,28 @@ class WebRtcEngine private constructor(private val context: Context) {
                         )
                         wl?.acquire(15000)
 
-                        val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            putExtra("incoming_call", true)
-                            putExtra("call_id", incomingCall.callId)
-                            putExtra("caller_name", incomingCall.callerName)
-                            putExtra("caller_number", incomingCall.callerNumber)
-                            putExtra("call_type", incomingCall.callType.name)
+                        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                        val isLocked = km?.isKeyguardLocked == true
+
+                        if (isLocked) {
+                            val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                putExtra("incoming_call", true)
+                                putExtra("call_id", incomingCall.callId)
+                                putExtra("caller_name", incomingCall.callerName)
+                                putExtra("caller_number", incomingCall.callerNumber)
+                                putExtra("call_type", incomingCall.callType.name)
+                            }
+                            context.startActivity(launchIntent)
+                        } else {
+                            com.example.services.FloatingCallBubbleService.showIncoming(
+                                context,
+                                incomingCall.callId,
+                                incomingCall.callerName,
+                                incomingCall.callerNumber,
+                                incomingCall.callType
+                            )
                         }
-                        context.startActivity(launchIntent)
                     } catch (_: Exception) {}
 
                     listenToActiveCall(incomingCall.callId, isCaller = false)
@@ -1229,6 +1242,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
 
         com.example.services.ActiveCallService.stop(context)
+        com.example.services.FloatingCallBubbleService.hide(context)
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {

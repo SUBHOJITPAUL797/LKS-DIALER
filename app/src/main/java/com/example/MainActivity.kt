@@ -79,26 +79,44 @@ class MainActivity : ComponentActivity() {
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
             WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-            keyguardManager?.requestDismissKeyguard(this, null)
-        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Dismiss floating pill when user is viewing the full-screen MainActivity
+        com.example.services.FloatingCallBubbleService.hide(this)
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val rtcState = com.example.webrtc.WebRtcEngine.getInstance(this).state.value
-        if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED && rtcState.callType == com.example.data.model.CallType.VIDEO) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        val activeCall = rtcState.activeCall
+
+        if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED && activeCall != null) {
+            if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 try {
                     enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                } catch (_: Exception) {}
             }
+            // Show Draggable Active Call Pill over other apps
+            com.example.services.FloatingCallBubbleService.showActive(
+                this,
+                activeCall.callId,
+                activeCall.callerName,
+                activeCall.callerNumber,
+                activeCall.callType
+            )
+        } else if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && activeCall != null) {
+            // Show Incoming Call Pill over other apps if user backgrounds the app during ringing
+            com.example.services.FloatingCallBubbleService.showIncoming(
+                this,
+                activeCall.callId,
+                activeCall.callerName,
+                activeCall.callerNumber,
+                activeCall.callType
+            )
         }
     }
 
@@ -203,6 +221,21 @@ class MainActivity : ComponentActivity() {
                                 val intent = android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
                                     data = android.net.Uri.parse("package:${context.packageName}")
                                 }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        val prefs = context.getSharedPreferences("lks_dialer_prefs", android.content.Context.MODE_PRIVATE)
+                        val hasPromptedOverlay = prefs.getBoolean("overlay_permission_prompted", false)
+                        if (!hasPromptedOverlay && !android.provider.Settings.canDrawOverlays(context)) {
+                            prefs.edit().putBoolean("overlay_permission_prompted", true).apply()
+                            try {
+                                val intent = android.content.Intent(
+                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    android.net.Uri.parse("package:${context.packageName}")
+                                )
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
                         }

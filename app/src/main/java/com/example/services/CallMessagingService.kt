@@ -46,6 +46,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 // Force end the call in WebRtcEngine to drop the ringing UI if it's open
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
+                FloatingCallBubbleService.hide(this)
                 
                 val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
@@ -306,16 +307,24 @@ class CallMessagingService : FirebaseMessagingService() {
             Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
         }
 
-        // 🚀 Launch full screen incoming call screen directly over lockscreen
-        try {
-            startActivity(fullScreenIntent)
-        } catch (e: Exception) {
-            Log.d("FCM", "Direct startActivity skipped or handled by fullScreenIntent: ${e.message}")
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val isLocked = keyguardManager?.isKeyguardLocked == true
+        val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+
+        if (isLocked) {
+            // 🚀 Phone is locked: Launch full screen incoming call activity directly over lockscreen
+            try {
+                startActivity(fullScreenIntent)
+            } catch (e: Exception) {
+                Log.d("FCM", "Direct startActivity skipped or handled by fullScreenIntent: ${e.message}")
+            }
+        } else {
+            // 🚀 Phone is unlocked: Show sleek floating pill banner over current app
+            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
         }
 
         try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
         try {
-            val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
             LksTelecomManager.reportIncomingCall(this, callId, callerName, callerNumber, callTypeEnum)
         } catch (_: Exception) {}
     }

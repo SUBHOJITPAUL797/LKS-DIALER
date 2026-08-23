@@ -20,6 +20,7 @@
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
 
     <!-- Notifications & Call Overlay (WhatsApp-style) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -29,6 +30,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Hardware features -->
@@ -62,6 +64,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Floating Call Pill Overlay Service (Display Over Other Apps) -->
+        <service
+            android:name=".services.FloatingCallBubbleService"
+            android:foregroundServiceType="microphone|camera|phoneCall"
+            android:exported="false" />
 
         <!-- Active Call Foreground Service -->
         <service
