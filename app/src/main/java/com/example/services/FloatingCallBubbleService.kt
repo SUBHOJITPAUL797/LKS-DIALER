@@ -28,7 +28,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
-import com.example.R
 import com.example.data.model.CallStatus
 import com.example.data.model.CallType
 import com.example.webrtc.WebRtcEngine
@@ -40,9 +39,9 @@ import kotlinx.coroutines.launch
 
 /**
  * FloatingCallBubbleService
- * Renders a sleek floating pill overlay over other apps using WindowManager.
- * 1. MODE_INCOMING: Top pill banner with caller info and Accept (Green) / Decline (Red) buttons.
- * 2. MODE_ACTIVE: Draggable pill with live timer, Mute, Speaker, and Hangup controls.
+ * Renders a sleek, moveable floating pill overlay over other apps using WindowManager.
+ * 1. MODE_INCOMING: Moveable top pill with caller info, Green Answer (answers in background), Red Decline.
+ * 2. MODE_ACTIVE: Moveable pill with live timer, Mute, Speaker, and Hangup controls.
  */
 class FloatingCallBubbleService : Service() {
 
@@ -155,7 +154,7 @@ class FloatingCallBubbleService : Service() {
     private fun observeEngineState() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
-            WebRtcEngine.getInstanceIfCreated()?.state?.collectLatest { rtcState ->
+            WebRtcEngine.getInstance(this@FloatingCallBubbleService).state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
                     CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
                         removeFloatingView()
@@ -206,7 +205,7 @@ class FloatingCallBubbleService : Service() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // 1. INCOMING CALL PILL (Top Banner with Accept / Decline)
+    // 1. INCOMING CALL PILL (Draggable Top Banner with Accept & Decline)
     // ─────────────────────────────────────────────────────────────────────────────
     @SuppressLint("ClickableViewAccessibility")
     private fun showIncomingCallPill() {
@@ -221,41 +220,30 @@ class FloatingCallBubbleService : Service() {
         }
 
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dpToPx(24f)
-        }
-
-        // Root container with horizontal padding
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dpToPx(16f), 0, dpToPx(16f), 0)
+            x = 0
+            y = dpToPx(36f)
         }
 
         // Pill Card (Dark Teal Glassmorphism with rounded corners & elevation)
         val pill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dpToPx(16f), dpToPx(12f), dpToPx(16f), dpToPx(12f))
+            setPadding(dpToPx(14f), dpToPx(10f), dpToPx(14f), dpToPx(10f))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dpToPx(28f).toFloat()
                 colors = intArrayOf(0xFF1E293B.toInt(), 0xFF0F172A.toInt()) // Sleek Slate 900
                 setStroke(dpToPx(1.5f), 0xFF00ADB5.toInt()) // Teal border
             }
-            elevation = dpToPx(10f).toFloat()
-            isClickable = true
-            setOnClickListener {
-                openFullScreenCallActivity(callId, autoAnswer = false)
-            }
+            elevation = dpToPx(12f).toFloat()
         }
 
         // Avatar Icon Circle
@@ -266,32 +254,33 @@ class FloatingCallBubbleService : Service() {
                 shape = GradientDrawable.OVAL
                 setColor(0xFF00ADB5.toInt())
             }
-            setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
-            layoutParams = LinearLayout.LayoutParams(dpToPx(42f), dpToPx(42f))
+            setPadding(dpToPx(7f), dpToPx(7f), dpToPx(7f), dpToPx(7f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
         }
 
-        // Text Info Container
+        // Text Info Container (Tap to open full-screen call)
         val textContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dpToPx(12f)
-                marginEnd = dpToPx(12f)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dpToPx(10f)
+                marginEnd = dpToPx(14f)
             }
         }
 
         val nameView = TextView(this).apply {
-            text = callerName
+            text = callerName.ifBlank { "LKS Call" }
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             maxLines = 1
+            maxWidth = dpToPx(130f)
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
 
         val subTextView = TextView(this).apply {
-            text = "Incoming ${if (callType == CallType.VIDEO) "Video" else "Audio"} Call..."
+            text = "Incoming ${if (callType == CallType.VIDEO) "Video" else "Audio"}..."
             setTextColor(0xFF94A3B8.toInt()) // Slate 400
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
         }
 
         textContainer.addView(nameView)
@@ -311,18 +300,18 @@ class FloatingCallBubbleService : Service() {
                 shape = GradientDrawable.OVAL
                 setColor(0xFFEF4444.toInt()) // Bright Red
             }
-            setPadding(dpToPx(10f), dpToPx(10f), dpToPx(10f), dpToPx(10f))
-            layoutParams = LinearLayout.LayoutParams(dpToPx(42f), dpToPx(42f)).apply {
-                marginEnd = dpToPx(10f)
+            setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f)).apply {
+                marginEnd = dpToPx(8f)
             }
             setOnClickListener {
-                WebRtcEngine.getInstanceIfCreated()?.endCall()
+                WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
                 removeFloatingView()
                 stopSelf()
             }
         }
 
-        // Green Answer Button
+        // Green Answer Button - Answers directly in background without opening full screen!
         val answerBtn = ImageView(this).apply {
             setImageResource(android.R.drawable.ic_menu_call)
             setColorFilter(Color.WHITE)
@@ -330,10 +319,13 @@ class FloatingCallBubbleService : Service() {
                 shape = GradientDrawable.OVAL
                 setColor(0xFF10B981.toInt()) // Emerald Green
             }
-            setPadding(dpToPx(10f), dpToPx(10f), dpToPx(10f), dpToPx(10f))
-            layoutParams = LinearLayout.LayoutParams(dpToPx(42f), dpToPx(42f))
+            setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
             setOnClickListener {
-                openFullScreenCallActivity(callId, autoAnswer = true)
+                // Answer directly via WebRtcEngine in background
+                val engine = WebRtcEngine.getInstance(this@FloatingCallBubbleService)
+                engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
+                // Switch pill to active in-call pill
                 showActiveCallPill()
             }
         }
@@ -344,12 +336,50 @@ class FloatingCallBubbleService : Service() {
         pill.addView(avatar)
         pill.addView(textContainer)
         pill.addView(buttonsContainer)
-        root.addView(pill)
+
+        // 🎯 Touch & Drag Listener for Incoming Call Pill
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isDragging = false
+
+        pill.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = params.x
+                    initialY = params.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    isDragging = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - initialTouchX
+                    val dy = event.rawY - initialTouchY
+                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                        isDragging = true
+                        params.x = initialX + dx.toInt()
+                        params.y = initialY + dy.toInt()
+                        try { wm.updateViewLayout(pill, params) } catch (_: Exception) {}
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!isDragging) {
+                        // Tapping the card opens full screen
+                        openFullScreenCallActivity(callId, autoAnswer = false)
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
 
         try {
-            wm.addView(root, params)
-            floatingView = root
-            Log.d(TAG, "Incoming call pill attached to WindowManager successfully")
+            wm.addView(pill, params)
+            floatingView = pill
+            Log.d(TAG, "Draggable incoming call pill attached successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add incoming call pill to WindowManager", e)
         }
@@ -396,7 +426,7 @@ class FloatingCallBubbleService : Service() {
                 colors = intArrayOf(0xFF111827.toInt(), 0xFF1F2937.toInt()) // Gray 900 -> Gray 800
                 setStroke(dpToPx(1.5f), 0xFF10B981.toInt()) // Glowing Green active call border
             }
-            elevation = dpToPx(8f).toFloat()
+            elevation = dpToPx(12f).toFloat()
         }
 
         // Pulsing Green Indicator Dot
@@ -413,9 +443,6 @@ class FloatingCallBubbleService : Service() {
         // Name + Live Duration Timer
         val infoCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setOnClickListener {
-                openFullScreenCallActivity(callId, autoAnswer = false)
-            }
         }
 
         val nameView = TextView(this).apply {
@@ -466,7 +493,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 isMuted = !isMuted
-                WebRtcEngine.getInstanceIfCreated()?.toggleMute()
+                WebRtcEngine.getInstance(this@FloatingCallBubbleService).toggleMute()
                 setColorFilter(if (isMuted) 0xFFEF4444.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
@@ -490,7 +517,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 isSpeaker = !isSpeaker
-                WebRtcEngine.getInstanceIfCreated()?.toggleSpeaker()
+                WebRtcEngine.getInstance(this@FloatingCallBubbleService).toggleSpeaker()
                 setColorFilter(if (isSpeaker) 0xFF00ADB5.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
@@ -512,7 +539,7 @@ class FloatingCallBubbleService : Service() {
                 marginStart = dpToPx(8f)
             }
             setOnClickListener {
-                WebRtcEngine.getInstanceIfCreated()?.endCall()
+                WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
                 removeFloatingView()
                 stopSelf()
             }
@@ -531,7 +558,7 @@ class FloatingCallBubbleService : Service() {
         var initialTouchY = 0f
         var isDragging = false
 
-        pill.setOnTouchListener { v, event ->
+        pill.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
@@ -554,7 +581,6 @@ class FloatingCallBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
-                        v.performClick()
                         openFullScreenCallActivity(callId, autoAnswer = false)
                     }
                     true

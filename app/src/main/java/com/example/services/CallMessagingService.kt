@@ -262,6 +262,10 @@ class CallMessagingService : FirebaseMessagingService() {
 
         val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
 
+        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val isLocked = keyguardManager?.isKeyguardLocked == true
+        val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
@@ -273,7 +277,6 @@ class CallMessagingService : FirebaseMessagingService() {
             .setAutoCancel(false)
             .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
             .setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .setContentIntent(fullScreenPendingIntent)
             .addAction(
                 NotificationCompat.Action.Builder(
@@ -289,6 +292,11 @@ class CallMessagingService : FirebaseMessagingService() {
                     declinePendingIntent
                 ).build()
             )
+
+        // Only attach fullScreenIntent on notification if locked to prevent forced full-screen takeover when unlocked
+        if (isLocked) {
+            builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
@@ -306,10 +314,6 @@ class CallMessagingService : FirebaseMessagingService() {
         } catch (e: Exception) {
             Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
         }
-
-        val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-        val isLocked = keyguardManager?.isKeyguardLocked == true
-        val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
         if (isLocked) {
             // 🚀 Phone is locked: Launch full screen incoming call activity directly over lockscreen

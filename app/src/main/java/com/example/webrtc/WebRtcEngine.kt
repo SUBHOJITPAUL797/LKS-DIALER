@@ -1260,79 +1260,70 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         val distinctVariations = variations.distinct().take(10)
 
+        fun sendPush(fcmToken: String, webToken: String) {
+            val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+            val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
+            
+            Thread {
+                try {
+                    val url = java.net.URL(workerUrl)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("X-Worker-Secret", workerSecret)
+                    conn.doOutput = true
+                    
+                    val json = """
+                        {
+                            "token": "$fcmToken",
+                            "webToken": "$webToken",
+                            "callerName": "$callerName",
+                            "callerNumber": "$callerNumber",
+                            "callType": "$callType",
+                            "callId": "$callId",
+                            "type": "$type"
+                        }
+                    """.trimIndent()
+                    
+                    conn.outputStream.write(json.toByteArray())
+                    val responseCode = conn.responseCode
+                    android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode")
+                } catch (e: Exception) {
+                    android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
+                }
+            }.start()
+        }
+
+        fun tryDirectLookup(index: Int) {
+            if (index >= distinctVariations.size) return
+            val docId = distinctVariations[index]
+            firestore.collection("users").document(docId).get().addOnSuccessListener { doc ->
+                val fcmToken = doc.getString("fcmToken") ?: ""
+                val webToken = doc.getString("webToken") ?: ""
+                if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
+                    sendPush(fcmToken, webToken)
+                } else {
+                    tryDirectLookup(index + 1)
+                }
+            }.addOnFailureListener {
+                tryDirectLookup(index + 1)
+            }
+        }
+
         firestore.collection("users").whereIn("phoneNumber", distinctVariations).get().addOnSuccessListener { querySnapshot ->
-            val userDoc = querySnapshot.documents.firstOrNull()
+            val userDoc = querySnapshot.documents.firstOrNull { 
+                !it.getString("fcmToken").isNullOrEmpty() || !it.getString("webToken").isNullOrEmpty() 
+            }
             val fcmToken = userDoc?.getString("fcmToken") ?: ""
             val webToken = userDoc?.getString("webToken") ?: ""
             
             if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
-                val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
-                val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
-                
-                Thread {
-                    try {
-                        val url = java.net.URL(workerUrl)
-                        val conn = url.openConnection() as java.net.HttpURLConnection
-                        conn.requestMethod = "POST"
-                        conn.setRequestProperty("Content-Type", "application/json")
-                        conn.setRequestProperty("X-Worker-Secret", workerSecret)
-                        conn.doOutput = true
-                        
-                        val json = """
-                            {
-                                "token": "$fcmToken",
-                                "webToken": "$webToken",
-                                "callerName": "$callerName",
-                                "callerNumber": "$callerNumber",
-                                "callType": "$callType",
-                                "callId": "$callId",
-                                "type": "$type"
-                            }
-                        """.trimIndent()
-                        
-                        conn.outputStream.write(json.toByteArray())
-                        val responseCode = conn.responseCode
-                        android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode")
-                    } catch (e: Exception) {
-                        android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
-                    }
-                }.start()
+                sendPush(fcmToken, webToken)
+            } else {
+                tryDirectLookup(0)
             }
         }.addOnFailureListener {
-            firestore.collection("users").document(calleeNumber).get().addOnSuccessListener { doc ->
-                val fcmToken = doc.getString("fcmToken") ?: ""
-                val webToken = doc.getString("webToken") ?: ""
-                if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
-                    val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
-                    val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
-                    Thread {
-                        try {
-                            val url = java.net.URL(workerUrl)
-                            val conn = url.openConnection() as java.net.HttpURLConnection
-                            conn.requestMethod = "POST"
-                            conn.setRequestProperty("Content-Type", "application/json")
-                            conn.setRequestProperty("X-Worker-Secret", workerSecret)
-                            conn.doOutput = true
-                            val json = """
-                                {
-                                    "token": "$fcmToken",
-                                    "webToken": "$webToken",
-                                    "callerName": "$callerName",
-                                    "callerNumber": "$callerNumber",
-                                    "callType": "$callType",
-                                    "callId": "$callId",
-                                    "type": "$type"
-                                }
-                            """.trimIndent()
-                            conn.outputStream.write(json.toByteArray())
-                            val responseCode = conn.responseCode
-                            android.util.Log.d("WebRtcEngine", "Fallback Push Trigger Response: $responseCode")
-                        } catch (e: Exception) {
-                            android.util.Log.e("WebRtcEngine", "Failed to trigger fallback push", e)
-                        }
-                    }.start()
-                }
-            }
+            tryDirectLookup(0)
         }
     }
 
