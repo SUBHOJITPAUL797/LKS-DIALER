@@ -87,26 +87,9 @@ object LksTelecomManager {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         try {
             registerPhoneAccount(context)
-            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
-            val handle = getPhoneAccountHandle(context)
-
-            val extras = Bundle().apply {
-                putString("call_id", callId)
-                putString("callee_name", calleeName)
-                putString("callee_number", calleeNumber)
-                putString("call_type", callType.name)
-                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
-            }
-            val uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, calleeNumber.ifBlank { "LKS" }, null)
-            val outgoingExtras = Bundle().apply {
-                putParcelable(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, extras)
-                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
-            }
-
-            telecomManager.placeCall(uri, outgoingExtras)
-            Log.i(TAG, "Reported outgoing call to TelecomManager: callId=$callId, callee=$calleeName")
+            Log.i(TAG, "Outgoing self-managed call active for callId=$callId to $calleeName")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to placeCall to TelecomManager", e)
+            Log.w(TAG, "Failed to register PhoneAccount for outgoing call: ${e.message}")
         }
     }
 }

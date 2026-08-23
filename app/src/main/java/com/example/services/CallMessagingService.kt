@@ -82,28 +82,18 @@ class CallMessagingService : FirebaseMessagingService() {
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
                 
-                // Let the caller know we've received the push and the phone is ringing
+                // Immediately update Firestore status to RINGING so caller knows recipient device received it
                 try {
                     val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                     val docRef = db.collection("calls").document(callId)
-                    
-                    // Fetch the current status synchronously since we are on a background thread
-                    val docSnapshot = com.google.android.gms.tasks.Tasks.await(docRef.get())
-                    val status = docSnapshot.getString("status")
-                    
-                    // If the call is already ended/missed by the time this push arrives, abort!
-                    if (status == "MISSED" || status == "ENDED" || status == "DECLINED") {
-                        Log.d("FCM", "Call $callId is already $status in Firestore. Ignoring incoming_call push to prevent zombie ring.")
-                        return
+                    docRef.update("status", "RINGING").addOnFailureListener {
+                        docRef.set(mapOf("status" to "RINGING"), com.google.firebase.firestore.SetOptions.merge())
                     }
-                    
-                    docRef.update("status", "RINGING")
-                    showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
                 } catch (e: Exception) {
-                    Log.e("FCM", "Failed to verify or update call status: ${e.message}")
-                    // Fallback to showing it if network fails, though they probably can't answer anyway
-                    showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
+                    Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
                 }
+                
+                showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
             }
         }
     }

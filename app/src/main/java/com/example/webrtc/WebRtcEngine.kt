@@ -305,7 +305,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
         scope.launch {
-            delay(15000) // Wait 15 seconds for RINGING
+            delay(30000) // Wait 30 seconds for recipient device to wake up and acknowledge RINGING
             if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
                 _state.value = _state.value.copy(connectionStatusText = "User Offline / Unavailable")
                 delay(2000)

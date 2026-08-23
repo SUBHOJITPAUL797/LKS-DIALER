@@ -252,15 +252,22 @@ class MainActivity : ComponentActivity() {
                         val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
                         
                         if (!callId.isNullOrBlank()) {
-                            // Only auto-answer if the microphone permission is already granted, otherwise let the user see the incoming call screen and grant permission first
-                            val safeAutoAnswer = autoAnswer && hasMicPermission
-                            webRtcEngine.attachToCall(
-                                callId = callId, 
-                                autoAnswer = safeAutoAnswer,
-                                callerName = callerName,
-                                callerNumber = callerNumber,
-                                callTypeStr = callType
-                            )
+                            // If engine is already attached to this exact call, only auto-answer if requested
+                            if (rtcState.activeCall?.callId == callId) {
+                                if (autoAnswer && hasMicPermission && rtcState.callStatus != CallStatus.ANSWERED) {
+                                    webRtcEngine.answerCall()
+                                }
+                            } else {
+                                // Only auto-answer if the microphone permission is already granted
+                                val safeAutoAnswer = autoAnswer && hasMicPermission
+                                webRtcEngine.attachToCall(
+                                    callId = callId, 
+                                    autoAnswer = safeAutoAnswer,
+                                    callerName = callerName,
+                                    callerNumber = callerNumber,
+                                    callTypeStr = callType
+                                )
+                            }
                         } else if (autoAnswer && rtcState.activeCall != null && hasMicPermission) {
                             webRtcEngine.answerCall()
                         }
