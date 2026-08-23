@@ -267,25 +267,42 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        val targetChannelId = "incoming_call_silent_channel"
+        // Use HIGH importance (no sound) for locked so setFullScreenIntent works.
+        // Use LOW importance for unlocked so no heads-up card appears.
+        val targetChannelId = if (isLocked) "incoming_call_locked_channel" else "incoming_call_silent_channel"
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && targetChannelId == "incoming_call_silent_channel") {
-            val silentChannel = NotificationChannel(
-                "incoming_call_silent_channel",
-                "Incoming Calls (Floating Overlay)",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Silent background notification for floating call pill"
-                setShowBadge(false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (isLocked) {
+                val lockedChannel = NotificationChannel(
+                    "incoming_call_locked_channel",
+                    "Incoming Calls (Locked Screen)",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "High-priority silent channel for locked screen full-screen intent"
+                    setSound(null, null) // No sound — ringtone managed by FloatingCallBubbleService
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                }
+                notificationManager.createNotificationChannel(lockedChannel)
+            } else {
+                val silentChannel = NotificationChannel(
+                    "incoming_call_silent_channel",
+                    "Incoming Calls (Floating Overlay)",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Silent background notification for floating call pill"
+                    setShowBadge(false)
+                }
+                notificationManager.createNotificationChannel(silentChannel)
             }
-            notificationManager.createNotificationChannel(silentChannel)
         }
 
         val builder = NotificationCompat.Builder(this, targetChannelId)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(if (isLocked) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)           // can't be swiped away — must tap Accept or Decline

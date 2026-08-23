@@ -77,9 +77,9 @@ class FloatingCallBubbleService : Service() {
             callType: CallType
         ) {
             if (isShowingPill) return  // Prevent duplicate pill
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-                return
-            }
+            // NOTE: Don't block on canDrawOverlays here — the service must start
+            // for ringtone playback even without overlay permission. The pill UI
+            // rendering is gated inside onStartCommand.
             val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
                 action = ACTION_SHOW_INCOMING
                 putExtra(EXTRA_CALL_ID, callId)
@@ -258,7 +258,11 @@ class FloatingCallBubbleService : Service() {
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
             startRinging()
-            showIncomingCallPill()
+            // Only show the pill UI if we have overlay permission
+            val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
+            if (canOverlay) {
+                showIncomingCallPill()
+            }
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
             showActiveCallPill()
@@ -389,7 +393,7 @@ class FloatingCallBubbleService : Service() {
                 stopRinging()
                 WebRtcEngine.getInstanceIfCreated()?.endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                nm?.cancel(1001)
+                nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 removeFloatingView()
                 stopSelf()
             }
@@ -408,7 +412,7 @@ class FloatingCallBubbleService : Service() {
             setOnClickListener {
                 stopRinging()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                nm?.cancel(1001)
+                nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 // Answer directly via WebRtcEngine in background
                 val engine = WebRtcEngine.getInstanceIfCreated()
                 engine?.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
@@ -651,7 +655,7 @@ class FloatingCallBubbleService : Service() {
                 stopRinging()
                 WebRtcEngine.getInstanceIfCreated()?.endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-                nm?.cancel(1001)
+                nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 removeFloatingView()
                 stopSelf()
             }

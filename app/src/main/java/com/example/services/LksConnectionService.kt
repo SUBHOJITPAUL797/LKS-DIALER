@@ -154,7 +154,10 @@ class LksCallConnection(
         val km = context.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         val isLocked = km?.isKeyguardLocked == true
         if (isLocked) {
-            Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI")
+            Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI + ringtone")
+            // Start FloatingCallBubbleService for ringtone playback (pill UI won't show on lock screen)
+            com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)
+            // Launch full-screen incoming call activity over lockscreen
             try {
                 val fullScreenIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
