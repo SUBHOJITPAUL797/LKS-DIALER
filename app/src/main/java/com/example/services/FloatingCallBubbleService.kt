@@ -549,21 +549,23 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Quick Mic Mute Toggle Button
-        var isMuted = false
+        val engine = WebRtcEngine.getInstance(this@FloatingCallBubbleService)
+        var isMuted = engine.state.value.isMuted
         val muteBtn = ImageView(this).apply {
-            setImageResource(android.R.drawable.stat_notify_chat)
+            setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)
             setColorFilter(Color.WHITE)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFF374151.toInt())
+                setColor(if (isMuted) 0xFF7F1D1D.toInt() else 0xFF374151.toInt())
             }
             setPadding(dpToPx(7f), dpToPx(7f), dpToPx(7f), dpToPx(7f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(34f), dpToPx(34f)).apply {
                 marginStart = dpToPx(10f)
             }
             setOnClickListener {
-                isMuted = !isMuted
-                WebRtcEngine.getInstance(this@FloatingCallBubbleService).toggleMute()
+                engine.toggleMute()
+                isMuted = engine.state.value.isMuted
+                setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)
                 setColorFilter(if (isMuted) 0xFFEF4444.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
@@ -573,21 +575,22 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Quick Speaker Toggle Button
-        var isSpeaker = false
+        var isSpeaker = engine.state.value.isSpeakerOn
         val speakerBtn = ImageView(this).apply {
-            setImageResource(android.R.drawable.ic_lock_silent_mode_off)
+            setImageResource(if (isSpeaker) com.example.R.drawable.ic_speaker_on else com.example.R.drawable.ic_speaker_off)
             setColorFilter(Color.WHITE)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFF374151.toInt())
+                setColor(if (isSpeaker) 0xFF134E4A.toInt() else 0xFF374151.toInt())
             }
             setPadding(dpToPx(7f), dpToPx(7f), dpToPx(7f), dpToPx(7f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(34f), dpToPx(34f)).apply {
                 marginStart = dpToPx(8f)
             }
             setOnClickListener {
-                isSpeaker = !isSpeaker
-                WebRtcEngine.getInstance(this@FloatingCallBubbleService).toggleSpeaker()
+                engine.toggleSpeaker()
+                isSpeaker = engine.state.value.isSpeakerOn
+                setImageResource(if (isSpeaker) com.example.R.drawable.ic_speaker_on else com.example.R.drawable.ic_speaker_off)
                 setColorFilter(if (isSpeaker) 0xFF00ADB5.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL

@@ -87,6 +87,10 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Dismiss floating pill when user is viewing the full-screen MainActivity
         com.example.services.FloatingCallBubbleService.hide(this)
+        
+        // Cancel the redundant heads-up notification card immediately so it doesn't cover the full-screen call UI
+        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        nm?.cancel(1001)
     }
 
     override fun onUserLeaveHint() {
