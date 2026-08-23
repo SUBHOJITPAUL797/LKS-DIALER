@@ -46,6 +46,13 @@ class CallNotificationReceiver : BroadcastReceiver() {
                     .addOnFailureListener { e ->
                         Log.e("CallReceiver", "Failed to decline call $callId", e)
                     }
+
+                try { HeadsetButtonManager(context).stopListening() } catch (_: Exception) {}
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                }
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                engine?.forceEndCallFromPush(callId)
             }
         }
     }

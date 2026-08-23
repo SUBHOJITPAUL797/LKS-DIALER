@@ -426,7 +426,8 @@ class FirebaseManager private constructor(private val context: Context) {
 
         if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
             // Use set with merge=true so this works even if the document doesn't exist yet
-            FirebaseFirestore.getInstance().collection("users")
+            val db = FirebaseFirestore.getInstance()
+            db.collection("users")
                 .document(updated.phoneNumber)
                 .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
                 .addOnSuccessListener {
@@ -435,6 +436,13 @@ class FirebaseManager private constructor(private val context: Context) {
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to update FCM token in Firestore: ${e.message}")
                 }
+
+            val cleanDigits = updated.phoneNumber.replace(Regex("[^0-9]"), "")
+            if (cleanDigits.isNotBlank() && cleanDigits != updated.phoneNumber) {
+                db.collection("users")
+                    .document(cleanDigits)
+                    .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
+            }
         }
     }
 
