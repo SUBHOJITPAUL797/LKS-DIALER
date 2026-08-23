@@ -246,6 +246,13 @@ class FloatingCallBubbleService : Service() {
             elevation = dpToPx(12f).toFloat()
         }
 
+        // 🎯 Info Area (Avatar + Text) — Touch/Drag this area to move or tap to expand full-screen
+        val infoArea = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+        }
+
         // Avatar Icon Circle
         val avatar = ImageView(this).apply {
             setImageResource(android.R.drawable.sym_action_call)
@@ -258,7 +265,7 @@ class FloatingCallBubbleService : Service() {
             layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
         }
 
-        // Text Info Container (Tap to open full-screen call)
+        // Text Info Container
         val textContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
@@ -286,7 +293,10 @@ class FloatingCallBubbleService : Service() {
         textContainer.addView(nameView)
         textContainer.addView(subTextView)
 
-        // Action Buttons Row
+        infoArea.addView(avatar)
+        infoArea.addView(textContainer)
+
+        // Action Buttons Row (Only triggers buttons — NEVER opens full screen!)
         val buttonsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -333,18 +343,17 @@ class FloatingCallBubbleService : Service() {
         buttonsContainer.addView(declineBtn)
         buttonsContainer.addView(answerBtn)
 
-        pill.addView(avatar)
-        pill.addView(textContainer)
+        pill.addView(infoArea)
         pill.addView(buttonsContainer)
 
-        // 🎯 Touch & Drag Listener for Incoming Call Pill
+        // 🎯 Touch & Drag Listener attached to infoArea so action buttons can receive clean clicks!
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
         var isDragging = false
 
-        pill.setOnTouchListener { _, event ->
+        infoArea.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
@@ -367,7 +376,7 @@ class FloatingCallBubbleService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
-                        // Tapping the card opens full screen
+                        // Tapping the card area opens full screen
                         openFullScreenCallActivity(callId, autoAnswer = false)
                     }
                     true
@@ -429,6 +438,13 @@ class FloatingCallBubbleService : Service() {
             elevation = dpToPx(12f).toFloat()
         }
 
+        // 🎯 Info Area (Indicator + Name + Timer) — Touch/Drag this area to move or tap to expand full-screen
+        val infoArea = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+        }
+
         // Pulsing Green Indicator Dot
         val liveIndicator = View(this).apply {
             background = GradientDrawable().apply {
@@ -465,6 +481,9 @@ class FloatingCallBubbleService : Service() {
         infoCol.addView(nameView)
         infoCol.addView(timerView)
 
+        infoArea.addView(liveIndicator)
+        infoArea.addView(infoCol)
+
         // Live Timer Loop
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = object : Runnable {
@@ -477,6 +496,12 @@ class FloatingCallBubbleService : Service() {
             }
         }
         handler.post(timerRunnable!!)
+
+        // Action Buttons Row (Mute, Speaker, End — NEVER opens full screen!)
+        val buttonsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
 
         // Quick Mic Mute Toggle Button
         var isMuted = false
@@ -545,20 +570,21 @@ class FloatingCallBubbleService : Service() {
             }
         }
 
-        pill.addView(liveIndicator)
-        pill.addView(infoCol)
-        pill.addView(muteBtn)
-        pill.addView(speakerBtn)
-        pill.addView(endBtn)
+        buttonsContainer.addView(muteBtn)
+        buttonsContainer.addView(speakerBtn)
+        buttonsContainer.addView(endBtn)
 
-        // 🎯 Touch & Drag Listener with smooth edge snap
+        pill.addView(infoArea)
+        pill.addView(buttonsContainer)
+
+        // 🎯 Touch & Drag Listener on infoArea with smooth edge drag
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
         var isDragging = false
 
-        pill.setOnTouchListener { _, event ->
+        infoArea.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
