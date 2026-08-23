@@ -126,6 +126,15 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+            // Silence ringtone on volume button press during incoming call
+            if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                if (engine != null && engine.state.value.callStatus == com.example.data.model.CallStatus.RINGING) {
+                    com.example.services.FloatingCallBubbleService.silenceRingtone(this)
+                    return true
+                }
+            }
             if (com.example.services.HeadsetButtonManager.handleHeadsetKeyEvent(event)) {
                 return true
             }
@@ -137,6 +146,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         applyLockscreenFlags()
+
+        // Start 24/7 keep-alive service for reliable FCM delivery
+        try {
+            val keepAliveIntent = android.content.Intent(this, com.example.services.LksKeepAliveService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(keepAliveIntent)
+            } else {
+                startService(keepAliveIntent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Failed to start keep-alive service: ${e.message}")
+        }
 
         // Register self-managed phone account for Bluetooth HFP call controls
         try {

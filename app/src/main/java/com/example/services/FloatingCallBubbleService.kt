@@ -62,6 +62,13 @@ class FloatingCallBubbleService : Service() {
         const val EXTRA_CALLER_NUMBER = "caller_number"
         const val EXTRA_CALL_TYPE = "call_type"
 
+        var instance: FloatingCallBubbleService? = null
+        var isShowingPill: Boolean = false
+
+        fun silenceRingtone(context: Context) {
+            instance?.stopRinging()
+        }
+
         fun showIncoming(
             context: Context,
             callId: String,
@@ -69,6 +76,7 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
+            if (isShowingPill) return  // Prevent duplicate pill
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
                 return
             }
@@ -150,9 +158,14 @@ class FloatingCallBubbleService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         createNotificationChannel()
-        startServiceForeground("Call in progress")
+        try {
+            startServiceForeground("Call in progress")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground in onCreate: ${e.message}")
+        }
         observeEngineState()
     }
 
@@ -189,22 +202,25 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun stopRinging() {
-        try {
-            incomingPlayer?.stop()
-            incomingPlayer?.release()
-            incomingPlayer = null
-        } catch (_: Exception) {}
+        handler.post {
+            try {
+                incomingPlayer?.stop()
+                incomingPlayer?.release()
+                incomingPlayer = null
+            } catch (_: Exception) {}
 
-        try {
-            incomingRingtone?.stop()
-            incomingRingtone = null
-        } catch (_: Exception) {}
+            try {
+                incomingRingtone?.stop()
+                incomingRingtone = null
+            } catch (_: Exception) {}
+        }
     }
 
     private fun observeEngineState() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
-            WebRtcEngine.getInstance(this@FloatingCallBubbleService).state.collectLatest { rtcState ->
+            val engine = WebRtcEngine.getInstanceIfCreated() ?: return@launch
+            engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
                     CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
                         stopRinging()
@@ -371,7 +387,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 stopRinging()
-                WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
+                WebRtcEngine.getInstanceIfCreated()?.endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(1001)
                 removeFloatingView()
@@ -394,8 +410,8 @@ class FloatingCallBubbleService : Service() {
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(1001)
                 // Answer directly via WebRtcEngine in background
-                val engine = WebRtcEngine.getInstance(this@FloatingCallBubbleService)
-                engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
+                val engine = WebRtcEngine.getInstanceIfCreated()
+                engine?.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
                 // Switch pill to active in-call pill
                 showActiveCallPill()
             }
@@ -450,6 +466,7 @@ class FloatingCallBubbleService : Service() {
         try {
             wm.addView(pill, params)
             floatingView = pill
+            isShowingPill = true
             Log.d(TAG, "Draggable incoming call pill attached successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add incoming call pill to WindowManager", e)
@@ -566,8 +583,8 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Quick Mic Mute Toggle Button
-        val engine = WebRtcEngine.getInstance(this@FloatingCallBubbleService)
-        var isMuted = engine.state.value.isMuted
+        val engine = WebRtcEngine.getInstanceIfCreated()
+        var isMuted = engine?.state?.value?.isMuted ?: false
         val muteBtn = ImageView(this).apply {
             setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)
             setColorFilter(Color.WHITE)
@@ -580,8 +597,9 @@ class FloatingCallBubbleService : Service() {
                 marginStart = dpToPx(10f)
             }
             setOnClickListener {
-                engine.toggleMute()
-                isMuted = engine.state.value.isMuted
+                val eng = WebRtcEngine.getInstanceIfCreated() ?: return@setOnClickListener
+                eng.toggleMute()
+                isMuted = eng.state.value.isMuted
                 setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)
                 setColorFilter(if (isMuted) 0xFFEF4444.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
@@ -592,7 +610,7 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Quick Speaker Toggle Button
-        var isSpeaker = engine.state.value.isSpeakerOn
+        var isSpeaker = engine?.state?.value?.isSpeakerOn ?: false
         val speakerBtn = ImageView(this).apply {
             setImageResource(if (isSpeaker) com.example.R.drawable.ic_speaker_on else com.example.R.drawable.ic_speaker_off)
             setColorFilter(Color.WHITE)
@@ -605,8 +623,9 @@ class FloatingCallBubbleService : Service() {
                 marginStart = dpToPx(8f)
             }
             setOnClickListener {
-                engine.toggleSpeaker()
-                isSpeaker = engine.state.value.isSpeakerOn
+                val eng = WebRtcEngine.getInstanceIfCreated() ?: return@setOnClickListener
+                eng.toggleSpeaker()
+                isSpeaker = eng.state.value.isSpeakerOn
                 setImageResource(if (isSpeaker) com.example.R.drawable.ic_speaker_on else com.example.R.drawable.ic_speaker_off)
                 setColorFilter(if (isSpeaker) 0xFF00ADB5.toInt() else Color.WHITE)
                 background = GradientDrawable().apply {
@@ -630,7 +649,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 stopRinging()
-                WebRtcEngine.getInstance(this@FloatingCallBubbleService).endCall()
+                WebRtcEngine.getInstanceIfCreated()?.endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(1001)
                 removeFloatingView()
@@ -687,6 +706,7 @@ class FloatingCallBubbleService : Service() {
         try {
             wm.addView(pill, params)
             floatingView = pill
+            isShowingPill = true
             Log.d(TAG, "Active call draggable pill attached to WindowManager")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add active call pill to WindowManager", e)
@@ -721,6 +741,7 @@ class FloatingCallBubbleService : Service() {
         }
         floatingView = null
         currentMode = null
+        isShowingPill = false
     }
 
     private fun createNotificationChannel() {
@@ -751,21 +772,23 @@ class FloatingCallBubbleService : Service() {
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                startForeground(NOTIFICATION_ID, notification)
             }
-            startForeground(NOTIFICATION_ID, notification, type)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground: ${e.message}")
+            try { startForeground(NOTIFICATION_ID, notification) } catch (_: Exception) {}
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
+        isShowingPill = false
         stopRinging()
         stateObserverJob?.cancel()
         removeFloatingView()

@@ -31,6 +31,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Hardware features -->
@@ -68,8 +69,18 @@
         <!-- Floating Call Pill Overlay Service (Display Over Other Apps) -->
         <service
             android:name=".services.FloatingCallBubbleService"
-            android:foregroundServiceType="microphone|camera|phoneCall"
+            android:foregroundServiceType="microphone"
             android:exported="false" />
+
+        <!-- 24/7 Keep-Alive Service for instant FCM call delivery -->
+        <service
+            android:name=".services.LksKeepAliveService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the app process alive to receive VoIP call push notifications instantly" />
+        </service>
 
         <!-- Active Call Foreground Service -->
         <service
@@ -109,6 +120,7 @@
         <!-- Boot Receiver — wakes up the app after restart to ensure FCM works -->
         <receiver
             android:name=".services.BootReceiver"
+            android:directBootAware="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

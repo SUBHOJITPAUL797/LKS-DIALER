@@ -147,6 +147,7 @@ class LksCallConnection(
 
     override fun onSilence() {
         Log.i("LksCallConnection", "Ringtone silenced by hardware button on callId=$callId")
+        FloatingCallBubbleService.silenceRingtone(context)
     }
 
     override fun onShowIncomingCallUi() {

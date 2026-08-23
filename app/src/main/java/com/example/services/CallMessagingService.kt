@@ -267,12 +267,7 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        val targetChannelId = if (!isLocked && canDrawOverlays) {
-            // When unlocked and overlay is active, use low-importance channel so OS does NOT drop down a duplicate HUN card
-            "incoming_call_silent_channel"
-        } else {
-            CHANNEL_ID
-        }
+        val targetChannelId = "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && targetChannelId == "incoming_call_silent_channel") {
             val silentChannel = NotificationChannel(
@@ -290,7 +285,7 @@ class CallMessagingService : FirebaseMessagingService() {
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-            .setPriority(if (!isLocked && canDrawOverlays) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_MAX)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)           // can't be swiped away — must tap Accept or Decline
@@ -311,12 +306,6 @@ class CallMessagingService : FirebaseMessagingService() {
                 ).build()
             )
 
-        if (isLocked || !canDrawOverlays) {
-            val resolvedSound = com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
-            builder.setSound(resolvedSound)
-            builder.setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
-        }
-
         // Only attach fullScreenIntent on notification if locked to prevent forced full-screen takeover when unlocked
         if (isLocked) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
@@ -325,8 +314,8 @@ class CallMessagingService : FirebaseMessagingService() {
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
         
+        // Wake screen if locked
         if (isLocked) {
-            // 💡 Wake up CPU and turn screen ON on lockscreen / idle state
             try {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
                 val wakeLock = powerManager?.newWakeLock(
@@ -335,21 +324,30 @@ class CallMessagingService : FirebaseMessagingService() {
                     android.os.PowerManager.ON_AFTER_RELEASE,
                     "lksdialer:incoming_call_wake"
                 )
-                wakeLock?.acquire(20000) // Keep screen awake for 20s while ringing
+                wakeLock?.acquire(20000)
             } catch (e: Exception) {
                 Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
             }
-
-            // 🚀 Phone is locked: Launch full screen incoming call activity directly over lockscreen
-            try {
-                startActivity(fullScreenIntent)
-            } catch (e: Exception) {
-                Log.d("FCM", "Direct startActivity skipped or handled by fullScreenIntent: ${e.message}")
-            }
-        } else {
-            // 🚀 Phone is unlocked: Show ONLY sleek floating pill banner over current app
-            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
         }
+
+        // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s,
+        // show UI ourselves
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                if (!com.example.services.FloatingCallBubbleService.isShowingPill) {
+                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                    val currentlyLocked = km?.isKeyguardLocked == true
+                    if (currentlyLocked) {
+                        try { startActivity(fullScreenIntent) } catch (_: Exception) {}
+                    } else {
+                        val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
+                        if (canOverlay) {
+                            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }, 1500)
 
         try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
         try {
