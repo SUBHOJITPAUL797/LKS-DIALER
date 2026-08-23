@@ -18,7 +18,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
+import android.app.KeyguardManager
+import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.view.WindowManager
 
 import com.example.data.model.CallDirection
 import com.example.data.model.CallStatus
@@ -62,7 +66,26 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        applyLockscreenFlags()
         _incomingIntent.value = intent
+    }
+
+    private fun applyLockscreenFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            keyguardManager?.requestDismissKeyguard(this, null)
+        }
     }
 
     override fun onUserLeaveHint() {
@@ -91,6 +114,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        applyLockscreenFlags()
+
         // Register self-managed phone account for Bluetooth HFP call controls
         try {
             com.example.services.LksTelecomManager.registerPhoneAccount(this)

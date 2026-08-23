@@ -57,7 +57,7 @@ class LksConnectionService : ConnectionService() {
         val callTypeStr = extras.getString("call_type") ?: "AUDIO"
         val callType = try { CallType.valueOf(callTypeStr) } catch (_: Exception) { CallType.AUDIO }
 
-        val connection = LksCallConnection(callId, callerName, callerNumber, callType, isIncoming = true)
+        val connection = LksCallConnection(this, callId, callerName, callerNumber, callType, isIncoming = true)
         connection.setCallerDisplayName(callerName, TelecomManager.PRESENTATION_ALLOWED)
         val addressUri = Uri.fromParts(PhoneAccount.SCHEME_TEL, callerNumber.ifBlank { "LKS" }, null)
         connection.setAddress(addressUri, TelecomManager.PRESENTATION_ALLOWED)
@@ -80,7 +80,7 @@ class LksConnectionService : ConnectionService() {
         val callTypeStr = extras.getString("call_type") ?: "AUDIO"
         val callType = try { CallType.valueOf(callTypeStr) } catch (_: Exception) { CallType.AUDIO }
 
-        val connection = LksCallConnection(callId, calleeName, calleeNumber, callType, isIncoming = false)
+        val connection = LksCallConnection(this, callId, calleeName, calleeNumber, callType, isIncoming = false)
         connection.setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
         val addressUri = Uri.fromParts(PhoneAccount.SCHEME_TEL, calleeNumber.ifBlank { "LKS" }, null)
         connection.setAddress(addressUri, TelecomManager.PRESENTATION_ALLOWED)
@@ -109,6 +109,7 @@ class LksConnectionService : ConnectionService() {
 }
 
 class LksCallConnection(
+    val context: android.content.Context,
     val callId: String,
     val peerName: String,
     val peerNumber: String,
@@ -149,6 +150,21 @@ class LksCallConnection(
     }
 
     override fun onShowIncomingCallUi() {
-        Log.d("LksCallConnection", "onShowIncomingCallUi triggered")
+        Log.d("LksCallConnection", "onShowIncomingCallUi triggered -> launching full screen UI")
+        try {
+            val fullScreenIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                        android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("incoming_call", true)
+                putExtra("call_id", callId)
+                putExtra("caller_name", peerName)
+                putExtra("caller_number", peerNumber)
+                putExtra("call_type", callType.name)
+            }
+            context.startActivity(fullScreenIntent)
+        } catch (e: Exception) {
+            Log.e("LksCallConnection", "Failed to launch incoming call UI from Telecom", e)
+        }
     }
 }

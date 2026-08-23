@@ -252,6 +252,28 @@ class CallMessagingService : FirebaseMessagingService() {
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName")
+        
+        // 💡 Wake up CPU and turn screen ON on lockscreen / idle state
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val wakeLock = powerManager?.newWakeLock(
+                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                android.os.PowerManager.ON_AFTER_RELEASE,
+                "lksdialer:incoming_call_wake"
+            )
+            wakeLock?.acquire(20000) // Keep screen awake for 20s while ringing
+        } catch (e: Exception) {
+            Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
+        }
+
+        // 🚀 Launch full screen incoming call screen directly over lockscreen
+        try {
+            startActivity(fullScreenIntent)
+        } catch (e: Exception) {
+            Log.d("FCM", "Direct startActivity skipped or handled by fullScreenIntent: ${e.message}")
+        }
+
         try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
         try {
             val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }

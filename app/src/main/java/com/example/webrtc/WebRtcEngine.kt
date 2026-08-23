@@ -1,6 +1,7 @@
 package com.example.webrtc
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import com.example.data.model.CallDto
 import com.example.data.model.CallStatus
@@ -391,6 +392,29 @@ class WebRtcEngine private constructor(private val context: Context) {
                         callType = incomingCall.callType,
                         connectionStatusText = "Incoming Call"
                     )
+
+                    // Wake screen and bring incoming call overlay to front if in background
+                    try {
+                        val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                        val wl = pm?.newWakeLock(
+                            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                            android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                            android.os.PowerManager.ON_AFTER_RELEASE,
+                            "lksdialer:incoming_call_wake_engine"
+                        )
+                        wl?.acquire(15000)
+
+                        val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            putExtra("incoming_call", true)
+                            putExtra("call_id", incomingCall.callId)
+                            putExtra("caller_name", incomingCall.callerName)
+                            putExtra("caller_number", incomingCall.callerNumber)
+                            putExtra("call_type", incomingCall.callType.name)
+                        }
+                        context.startActivity(launchIntent)
+                    } catch (_: Exception) {}
+
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                 }
             }
