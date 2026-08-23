@@ -29,6 +29,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
@@ -37,6 +38,11 @@ import com.example.ui.theme.AppThemeColor
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.LocalThemeColor
 import com.example.ui.theme.ThemeManager
+
+import android.media.RingtoneManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.util.LksRingtoneManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +59,41 @@ fun SettingsScreen(
     var isDataSaverOn by remember { mutableStateOf(false) }
     var isVibrateOn by remember { mutableStateOf(true) }
     var showDeveloperModal by remember { mutableStateOf(false) }
+
+    // Ringtone States
+    var appRingtoneState by remember { mutableStateOf(LksRingtoneManager.getAppRingtone(context)) }
+    var isPreviewPlaying by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            LksRingtoneManager.stopPreview()
+        }
+    }
+
+    // System Ringtone Picker Launcher
+    val systemRingtoneLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val pickedUri = result.data?.getParcelableExtra<Uri>(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            if (pickedUri != null) {
+                LksRingtoneManager.setAppRingtone(context, pickedUri)
+                appRingtoneState = LksRingtoneManager.getAppRingtone(context)
+                Toast.makeText(context, "Ringtone set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Device Song File Picker Launcher (.mp3, .m4a, .wav, .ogg, etc.)
+    val audioFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { pickedUri ->
+        if (pickedUri != null) {
+            LksRingtoneManager.setAppRingtone(context, pickedUri)
+            appRingtoneState = LksRingtoneManager.getAppRingtone(context)
+            Toast.makeText(context, "Custom song set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     if (showDeveloperModal) {
         DeveloperProfileDialog(onDismiss = { showDeveloperModal = false })
@@ -279,13 +320,128 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Notifications & Ringing
-            SettingsSectionHeader("Notifications & Ringtone")
+            SettingsSectionHeader("Call Ringtone & Sounds")
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Current Ringtone Display
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = currentThemeColor.primary.copy(alpha = 0.15f),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = currentThemeColor.primary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "App Call Ringtone",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = appRingtoneState.second,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = currentThemeColor.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        // Preview Play/Stop Button
+                        IconButton(
+                            onClick = {
+                                if (isPreviewPlaying) {
+                                    LksRingtoneManager.stopPreview()
+                                    isPreviewPlaying = false
+                                } else {
+                                    isPreviewPlaying = LksRingtoneManager.playPreview(context, appRingtoneState.first) {
+                                        isPreviewPlaying = false
+                                    }
+                                }
+                            }
+                        ) {
+                            Icon(
+                                if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                                contentDescription = if (isPreviewPlaying) "Stop Preview" else "Play Preview",
+                                tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Buttons Row (System Ringtone & Custom Song File)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_RINGTONE)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Call Ringtone")
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, appRingtoneState.first)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                }
+                                systemRingtoneLauncher.launch(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("System Ringtones", fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = {
+                                audioFileLauncher.launch(arrayOf("audio/*"))
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary)
+                        ) {
+                            Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Pick Song File", fontSize = 12.sp, color = Color.White)
+                        }
+                    }
+
+                    // Reset to System Default Option
+                    TextButton(
+                        onClick = {
+                            LksRingtoneManager.stopPreview()
+                            isPreviewPlaying = false
+                            LksRingtoneManager.resetAppRingtoneToDefault(context)
+                            appRingtoneState = LksRingtoneManager.getAppRingtone(context)
+                            Toast.makeText(context, "Reset to System Default Ringtone", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("Reset to System Default", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+
                     SettingsSwitchTile(
                         title = "Vibrate on Incoming Call",
                         subtitle = "Vibrate device for incoming VoIP calls",

@@ -144,6 +144,7 @@ class FloatingCallBubbleService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var stateObserverJob: Job? = null
     private var incomingRingtone: Ringtone? = null
+    private var incomingPlayer: android.media.MediaPlayer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -158,8 +159,18 @@ class FloatingCallBubbleService : Service() {
     private fun startRinging() {
         stopRinging()
         try {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            incomingRingtone = RingtoneManager.getRingtone(applicationContext, uri)?.apply {
+            val ringtoneUri = com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
+            
+            // Try MediaPlayer first for full audio song file support with looping
+            incomingPlayer = com.example.util.LksRingtoneManager.createIncomingCallPlayer(this, ringtoneUri)
+            if (incomingPlayer != null) {
+                incomingPlayer?.start()
+                Log.d(TAG, "Started playing custom incoming call audio via MediaPlayer ($ringtoneUri)")
+                return
+            }
+
+            // Fallback to RingtoneManager
+            incomingRingtone = RingtoneManager.getRingtone(applicationContext, ringtoneUri)?.apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     audioAttributes = AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -171,13 +182,19 @@ class FloatingCallBubbleService : Service() {
                 }
                 play()
             }
-            Log.d(TAG, "Started playing incoming call ringtone")
+            Log.d(TAG, "Started playing incoming call ringtone via RingtoneManager ($ringtoneUri)")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to play incoming call ringtone: ${e.message}")
         }
     }
 
     private fun stopRinging() {
+        try {
+            incomingPlayer?.stop()
+            incomingPlayer?.release()
+            incomingPlayer = null
+        } catch (_: Exception) {}
+
         try {
             incomingRingtone?.stop()
             incomingRingtone = null

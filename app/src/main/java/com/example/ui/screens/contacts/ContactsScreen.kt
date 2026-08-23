@@ -48,6 +48,13 @@ import com.example.util.LocalContact
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+import android.media.RingtoneManager
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.util.LksRingtoneManager
+
 private enum class ContactFilterTab(val title: String) {
     ALL("All"),
     ON_LKS("On LKS"),
@@ -74,6 +81,53 @@ fun ContactsScreen(
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
     var showSwipeHint by remember { mutableStateOf(false) }
     val demoSwipeOffset = remember { Animatable(0f) }
+
+    // Per-Contact Ringtone Picker State
+    var ringtoneModalContact by remember { mutableStateOf<Pair<String, String>?>(null) } // Pair(Name, PhoneNumber)
+    var contactRingtoneState by remember { mutableStateOf<Pair<Uri, String>?>(null) }
+    var isPreviewPlaying by remember { mutableStateOf(false) }
+
+    LaunchedEffect(ringtoneModalContact) {
+        ringtoneModalContact?.let {
+            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, it.second)
+        } ?: run {
+            LksRingtoneManager.stopPreview()
+            isPreviewPlaying = false
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            LksRingtoneManager.stopPreview()
+        }
+    }
+
+    // System Ringtone Picker for Selected Contact
+    val contactSystemRingtoneLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val pickedUri = result.data?.getParcelableExtra<Uri>(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            val contact = ringtoneModalContact
+            if (pickedUri != null && contact != null) {
+                LksRingtoneManager.setContactRingtone(context, contact.second, pickedUri)
+                contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
+                Toast.makeText(context, "Ringtone set for ${contact.first}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Audio File / Song Picker for Selected Contact
+    val contactAudioFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { pickedUri ->
+        val contact = ringtoneModalContact
+        if (pickedUri != null && contact != null) {
+            LksRingtoneManager.setContactRingtone(context, contact.second, pickedUri)
+            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
+            Toast.makeText(context, "Custom song set for ${contact.first}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Trigger contacts sync when screen is launched
     LaunchedEffect(Unit) {
@@ -387,6 +441,10 @@ fun ContactsScreen(
                                     delay(200)
                                     onStartCall(contact.phoneNumber, contact.name, CallType.VIDEO)
                                 }
+                            },
+                            onRingtoneClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
                             }
                         )
                     }
@@ -405,11 +463,62 @@ fun ContactsScreen(
                     itemsIndexed(filteredNonLksContacts, key = { index, it -> "nonlks_${it.normalizedNumber}_${it.name}_$index" }) { _, contact ->
                         InviteContactItem(
                             contact = contact,
-                            onInvite = { shareInvite(contact) }
+                            onInvite = { shareInvite(contact) },
+                            onRingtoneClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
+                            }
                         )
                     }
                 }
             }
+        }
+
+        // Contact Custom Ringtone Bottom Sheet
+        ringtoneModalContact?.let { contactPair ->
+            ContactRingtoneBottomSheet(
+                contactName = contactPair.first,
+                phoneNumber = contactPair.second,
+                customRingtone = contactRingtoneState,
+                isPreviewPlaying = isPreviewPlaying,
+                onPreviewToggle = {
+                    val targetUri = contactRingtoneState?.first ?: LksRingtoneManager.getAppRingtone(context).first
+                    if (isPreviewPlaying) {
+                        LksRingtoneManager.stopPreview()
+                        isPreviewPlaying = false
+                    } else {
+                        isPreviewPlaying = LksRingtoneManager.playPreview(context, targetUri) {
+                            isPreviewPlaying = false
+                        }
+                    }
+                },
+                onPickSystemRingtone = {
+                    val currentUri = contactRingtoneState?.first ?: LksRingtoneManager.getAppRingtone(context).first
+                    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_RINGTONE)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Ringtone for ${contactPair.first}")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                    }
+                    contactSystemRingtoneLauncher.launch(intent)
+                },
+                onPickAudioFile = {
+                    contactAudioFileLauncher.launch(arrayOf("audio/*"))
+                },
+                onResetToDefault = {
+                    LksRingtoneManager.stopPreview()
+                    isPreviewPlaying = false
+                    LksRingtoneManager.clearContactRingtone(context, contactPair.second)
+                    contactRingtoneState = null
+                    Toast.makeText(context, "Reverted to App Default Ringtone", Toast.LENGTH_SHORT).show()
+                },
+                onDismiss = {
+                    LksRingtoneManager.stopPreview()
+                    isPreviewPlaying = false
+                    ringtoneModalContact = null
+                }
+            )
         }
     }
 }
@@ -453,7 +562,8 @@ private fun SwipeableContactItem(
     isOnline: Boolean,
     demoOffset: Float,
     onAudioCall: () -> Unit,
-    onVideoCall: () -> Unit
+    onVideoCall: () -> Unit,
+    onRingtoneClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
     val dismissState = rememberSwipeToDismissBoxState(
@@ -508,7 +618,8 @@ private fun SwipeableContactItem(
                     contact = contact,
                     isOnline = isOnline,
                     onAudioCall = onAudioCall,
-                    onVideoCall = onVideoCall
+                    onVideoCall = onVideoCall,
+                    onRingtoneClick = onRingtoneClick
                 )
             }
         } else {
@@ -567,7 +678,8 @@ private fun SwipeableContactItem(
                         contact = contact,
                         isOnline = isOnline,
                         onAudioCall = onAudioCall,
-                        onVideoCall = onVideoCall
+                        onVideoCall = onVideoCall,
+                        onRingtoneClick = onRingtoneClick
                     )
                 }
             }
@@ -580,12 +692,14 @@ private fun ContactItemRow(
     contact: ContactDto,
     isOnline: Boolean,
     onAudioCall: () -> Unit,
-    onVideoCall: () -> Unit
+    onVideoCall: () -> Unit,
+    onRingtoneClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable { onRingtoneClick() }
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -637,6 +751,21 @@ private fun ContactItemRow(
             )
         }
 
+        // Custom Ringtone button
+        IconButton(
+            onClick = onRingtoneClick,
+            modifier = Modifier.size(34.dp)
+        ) {
+            Icon(
+                Icons.Default.MusicNote,
+                contentDescription = "Custom Ringtone",
+                tint = themeColor.primary.copy(alpha = 0.8f),
+                modifier = Modifier.size(18.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(2.dp))
+
         // Quick audio call shortcut
         IconButton(
             onClick = onAudioCall,
@@ -650,7 +779,7 @@ private fun ContactItemRow(
             )
         }
 
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(2.dp))
 
         // Quick video call shortcut
         IconButton(
@@ -670,7 +799,8 @@ private fun ContactItemRow(
 @Composable
 private fun InviteContactItem(
     contact: LocalContact,
-    onInvite: () -> Unit
+    onInvite: () -> Unit,
+    onRingtoneClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
 
@@ -681,6 +811,7 @@ private fun InviteContactItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .clickable { onRingtoneClick() }
                 .padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -705,6 +836,21 @@ private fun InviteContactItem(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+
+            // Custom Ringtone button
+            IconButton(
+                onClick = onRingtoneClick,
+                modifier = Modifier.size(34.dp)
+            ) {
+                Icon(
+                    Icons.Default.MusicNote,
+                    contentDescription = "Custom Ringtone",
+                    tint = themeColor.primary.copy(alpha = 0.8f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
 
             // Sleek "Invite" Pill Button
             OutlinedButton(
@@ -779,3 +925,164 @@ private fun ContactAvatar(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ContactRingtoneBottomSheet(
+    contactName: String,
+    phoneNumber: String,
+    customRingtone: Pair<Uri, String>?,
+    isPreviewPlaying: Boolean,
+    onPreviewToggle: () -> Unit,
+    onPickSystemRingtone: () -> Unit,
+    onPickAudioFile: () -> Unit,
+    onResetToDefault: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val themeColor = LocalThemeColor.current
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 36.dp)
+        ) {
+            // Header: Avatar + Contact Name + Number
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = themeColor.primary.copy(alpha = 0.15f),
+                    modifier = Modifier.size(52.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            tint = themeColor.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = contactName.ifBlank { "Contact" },
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = phoneNumber,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Current Ringtone Card
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (customRingtone != null) GreenCall.copy(alpha = 0.15f) else themeColor.primary.copy(alpha = 0.15f),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = if (customRingtone != null) GreenCall else themeColor.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (customRingtone != null) "Custom Ringtone" else "App Default Ringtone",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = if (customRingtone != null) GreenCall else themeColor.primary
+                        )
+                        Text(
+                            text = customRingtone?.second ?: "Using default global ringtone",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Preview Toggle
+                    IconButton(onClick = onPreviewToggle) {
+                        Icon(
+                            if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                            contentDescription = if (isPreviewPlaying) "Stop Preview" else "Play Preview",
+                            tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Buttons: System Ringtone & Pick Song
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onPickSystemRingtone,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("System Ringtone", fontSize = 12.sp)
+                }
+
+                Button(
+                    onClick = onPickAudioFile,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary)
+                ) {
+                    Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Pick Song File", fontSize = 12.sp, color = Color.White)
+                }
+            }
+
+            if (customRingtone != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                TextButton(
+                    onClick = onResetToDefault,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Text(
+                        "Reset to App Default Ringtone",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+    }
+}
+

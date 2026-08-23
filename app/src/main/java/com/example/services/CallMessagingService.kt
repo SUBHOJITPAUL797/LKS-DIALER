@@ -312,7 +312,8 @@ class CallMessagingService : FirebaseMessagingService() {
             )
 
         if (isLocked || !canDrawOverlays) {
-            builder.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+            val resolvedSound = com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
+            builder.setSound(resolvedSound)
             builder.setVibrate(longArrayOf(0, 500, 200, 500, 200, 500))
         }
 
