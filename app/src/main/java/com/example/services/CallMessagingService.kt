@@ -38,7 +38,7 @@ class CallMessagingService : FirebaseMessagingService() {
             val callId = remoteMessage.data["callId"] ?: return
             
             if (type == "cancel_call" || type == "missed_call") {
-                Log.d("FCM", "Received $type for callId: $callId, dismissing notification")
+                Log.d("FCM", "Received $type for callId: $callId, dismissing incoming ringing notification")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
                 try { HeadsetButtonManager(this).stopListening() } catch (_: Exception) {}
@@ -47,32 +47,81 @@ class CallMessagingService : FirebaseMessagingService() {
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
                 
-                if (type == "missed_call") {
-                    // Create silent channel for missed calls if not exists
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        val missedChannel = NotificationChannel(
-                            MISSED_CALL_CHANNEL_ID,
-                            "Missed Calls",
-                            NotificationManager.IMPORTANCE_DEFAULT
-                        ).apply {
-                            description = "Notifications for missed VoIP calls"
-                        }
-                        notificationManager.createNotificationChannel(missedChannel)
-                    }
+                val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
+                val callerNumber = remoteMessage.data["callerNumber"] ?: ""
+                val callType = remoteMessage.data["callType"] ?: "AUDIO"
+                val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
+                val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-                    val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
-                    val callType = remoteMessage.data["callType"] ?: "AUDIO"
-                    val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
-                    
-                    val builder = NotificationCompat.Builder(this, MISSED_CALL_CHANNEL_ID)
-                        .setSmallIcon(android.R.drawable.sym_action_call)
-                        .setContentTitle("Missed $callTypeLabel Call")
-                        .setContentText("You missed a call from $callerName")
-                        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                        .setAutoCancel(true)
-                        
-                    notificationManager.notify(callId.hashCode(), builder.build())
+                // Record the missed call in FirebaseManager immediately
+                try {
+                    com.example.data.repository.FirebaseManager.getInstance(this).logCall(
+                        direction = com.example.data.model.CallDirection.MISSED,
+                        otherPartyNumber = callerNumber,
+                        otherPartyName = callerName,
+                        callType = callTypeEnum,
+                        status = com.example.data.model.CallStatus.MISSED,
+                        durationSeconds = 0
+                    )
+                } catch (e: Exception) {
+                    Log.w("FCM", "Failed to log missed call locally: ${e.message}")
                 }
+
+                // Create high-importance channel for missed calls
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val missedChannel = NotificationChannel(
+                        MISSED_CALL_CHANNEL_ID,
+                        "Missed Calls",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Notifications for missed VoIP calls"
+                        enableVibration(true)
+                        enableLights(true)
+                        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                    }
+                    notificationManager.createNotificationChannel(missedChannel)
+                }
+
+                // Tap notification opens Recents tab
+                val openIntent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("open_tab", "RECENTS")
+                }
+                val pendingIntent = PendingIntent.getActivity(
+                    this,
+                    callId.hashCode(),
+                    openIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                // Call Back action
+                val callBackIntent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("call_back_number", callerNumber)
+                    putExtra("call_back_name", callerName)
+                    putExtra("call_back_type", callType)
+                }
+                val callBackPendingIntent = PendingIntent.getActivity(
+                    this,
+                    (callId + "_cb").hashCode(),
+                    callBackIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                val builder = NotificationCompat.Builder(this, MISSED_CALL_CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.sym_call_missed)
+                    .setContentTitle("Missed $callTypeLabel Call")
+                    .setContentText("Missed call from $callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setAutoCancel(true)
+                    .setContentIntent(pendingIntent)
+                    .addAction(
+                        android.R.drawable.sym_action_call,
+                        "Call Back",
+                        callBackPendingIntent
+                    )
+                    
+                notificationManager.notify(callId.hashCode(), builder.build())
                 return
             }
             

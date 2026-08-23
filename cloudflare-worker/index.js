@@ -32,11 +32,13 @@ export default {
       return new Response("Invalid JSON body", { status: 400, headers: corsHeaders });
     }
 
-    const { token, webToken, callerName, callerNumber, callType, callId, isCancel } = body;
+    const { token, webToken, callerName, callerNumber, callType, callId, isCancel, type } = body;
 
     if (!token && !webToken) {
       return new Response("Missing required fields: token or webToken", { status: 400, headers: corsHeaders });
     }
+
+    const pushType = type || (isCancel ? "cancel_call" : "incoming_call");
 
     try {
       // Step 1: Get OAuth2 access token from Google using Service Account
@@ -54,7 +56,7 @@ export default {
           message: {
             token: targetToken,
             data: {
-              type: isCancel ? "cancel_call" : "incoming_call",
+              type: pushType,
               callId: callId,
               callerName: callerName || "Unknown",
               callerNumber: callerNumber || "",

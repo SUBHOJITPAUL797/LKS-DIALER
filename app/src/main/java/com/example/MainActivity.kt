@@ -271,6 +271,23 @@ class MainActivity : ComponentActivity() {
                         } else if (autoAnswer && rtcState.activeCall != null && hasMicPermission) {
                             webRtcEngine.answerCall()
                         }
+
+                        val openTab = incoming.getStringExtra("open_tab")
+                        if (openTab == "RECENTS") {
+                            selectedTab = MainTab.RECENTS
+                        }
+
+                        val callBackNumber = incoming.getStringExtra("call_back_number")
+                        if (!callBackNumber.isNullOrBlank() && hasMicPermission) {
+                            val myNum = currentUser?.phoneNumber ?: ""
+                            val myName = currentUser?.displayName ?: "Me"
+                            val callBackName = incoming.getStringExtra("call_back_name") ?: callBackNumber
+                            val callBackTypeStr = incoming.getStringExtra("call_back_type") ?: "AUDIO"
+                            val callBackType = try { CallType.valueOf(callBackTypeStr) } catch (_: Exception) { CallType.AUDIO }
+                            if (myNum.isNotBlank()) {
+                                webRtcEngine.initiateCall(callBackNumber, callBackName, myNum, myName, callBackType)
+                            }
+                        }
                     }
                 }
 

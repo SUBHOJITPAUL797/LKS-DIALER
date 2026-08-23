@@ -1122,8 +1122,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                 "endedAt", System.currentTimeMillis()
             )
             
-            // If caller hangs up before it's answered, write a missed call log for the callee
-            val isCaller = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber == call.callerNumber
+            // If caller hangs up before it's answered, write a missed call log and send missed call push to callee
+            val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+            val isCaller = currentPhone.isNotBlank() && (
+                currentPhone == call.callerNumber ||
+                currentPhone.replace(Regex("[^0-9]"), "") == call.callerNumber.replace(Regex("[^0-9]"), "")
+            )
             if (isCaller && endStatus == CallStatus.MISSED) {
                 FirebaseManager.getInstance(context).logMissedCallForOfflineUser(
                     calleeNumber = call.calleeNumber,
