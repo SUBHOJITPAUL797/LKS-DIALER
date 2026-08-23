@@ -148,6 +148,8 @@ class FloatingCallBubbleService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
     private var callStartTime: Long = 0L
+    private var lastPillX: Int = -1
+    private var lastPillY: Int = -1
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var stateObserverJob: Job? = null
@@ -202,18 +204,16 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun stopRinging() {
-        handler.post {
-            try {
-                incomingPlayer?.stop()
-                incomingPlayer?.release()
-                incomingPlayer = null
-            } catch (_: Exception) {}
+        try {
+            incomingPlayer?.stop()
+            incomingPlayer?.release()
+            incomingPlayer = null
+        } catch (_: Exception) {}
 
-            try {
-                incomingRingtone?.stop()
-                incomingRingtone = null
-            } catch (_: Exception) {}
-        }
+        try {
+            incomingRingtone?.stop()
+            incomingRingtone = null
+        } catch (_: Exception) {}
     }
 
     private fun observeEngineState() {
@@ -456,6 +456,9 @@ class FloatingCallBubbleService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    // Save position for pill persistence
+                    lastPillX = params.x
+                    lastPillY = params.y
                     if (!isDragging) {
                         stopRinging()
                         // Tapping the card area opens full screen
@@ -503,8 +506,8 @@ class FloatingCallBubbleService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dpToPx(16f)
-            y = dpToPx(100f)
+            x = if (lastPillX >= 0) lastPillX else dpToPx(16f)
+            y = if (lastPillY >= 0) lastPillY else dpToPx(100f)
         }
 
         // Draggable In-Call Pill Card
@@ -697,6 +700,9 @@ class FloatingCallBubbleService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    // Save position for pill persistence
+                    lastPillX = params.x
+                    lastPillY = params.y
                     if (!isDragging) {
                         stopRinging()
                         openFullScreenCallActivity(callId, autoAnswer = false)
