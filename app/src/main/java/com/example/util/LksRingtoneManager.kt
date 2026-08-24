@@ -57,12 +57,13 @@ object LksRingtoneManager {
     fun setAppRingtone(context: Context, uri: Uri, customTitle: String? = null) {
         takePersistablePermission(context, uri)
         val title = customTitle ?: getRingtoneTitle(context, uri)
+        val safeUri = copyToInternalStorageIfNeeded(context, uri, "app_custom_ringtone.mp3")
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
-            .putString(KEY_APP_RINGTONE_URI, uri.toString())
+            .putString(KEY_APP_RINGTONE_URI, safeUri.toString())
             .putString(KEY_APP_RINGTONE_TITLE, title)
             .apply()
-        Log.i(TAG, "Global app ringtone set to: $title ($uri)")
+        Log.i(TAG, "Global app ringtone set to: $title ($safeUri)")
     }
 
     fun resetAppRingtoneToDefault(context: Context) {
@@ -100,12 +101,37 @@ object LksRingtoneManager {
         takePersistablePermission(context, uri)
         val title = customTitle ?: getRingtoneTitle(context, uri)
         val cleanDigits = phoneNumber.replace(Regex("[^0-9+]"), "")
+        val safeUri = copyToInternalStorageIfNeeded(context, uri, "contact_ringtone_${cleanDigits}.mp3")
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
-            .putString(PREFIX_CONTACT_URI + cleanDigits, uri.toString())
+            .putString(PREFIX_CONTACT_URI + cleanDigits, safeUri.toString())
             .putString(PREFIX_CONTACT_TITLE + cleanDigits, title)
             .apply()
-        Log.i(TAG, "Custom ringtone for $phoneNumber set to: $title ($uri)")
+        Log.i(TAG, "Custom ringtone for $phoneNumber set to: $title ($safeUri)")
+    }
+
+    private fun copyToInternalStorageIfNeeded(context: Context, uri: Uri, fileName: String): Uri {
+        // If it's already a file URI, return as is
+        if (uri.scheme == "file") return uri
+
+        // For SAF / content URIs, copy to internal filesDir so it is permanently accessible even when phone is locked in pocket
+        try {
+            val ringtonesDir = java.io.File(context.filesDir, "ringtones").apply { mkdirs() }
+            val destFile = java.io.File(ringtonesDir, fileName)
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                java.io.FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (destFile.exists() && destFile.length() > 0) {
+                Log.i(TAG, "Cached custom ringtone to internal storage: ${destFile.absolutePath} (${destFile.length()} bytes)")
+                return Uri.fromFile(destFile)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not copy ringtone to internal storage: ${e.message}")
+        }
+        return uri
     }
 
     fun clearContactRingtone(context: Context, phoneNumber: String) {

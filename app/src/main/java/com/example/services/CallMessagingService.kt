@@ -343,7 +343,10 @@ class CallMessagingService : FirebaseMessagingService() {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
 
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+        val notification = builder.build().apply {
+            flags = flags or android.app.Notification.FLAG_INSISTENT
+        }
+        notificationManager.notify(NOTIFICATION_ID, notification)
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
 
         // ─── Start ringtone via LksIncomingRingtonePlayer (in-process, 100% reliable) ───

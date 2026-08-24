@@ -152,10 +152,22 @@ object LksIncomingRingtonePlayer {
             Log.w(TAG, "Ringtone player failed: ${e.message}")
         }
 
-        // 5. SECONDARY ENGINE: Looping MediaPlayer for custom audio files
+        // 5. SECONDARY ENGINE: Looping MediaPlayer for custom audio files / local songs
         try {
             val player = MediaPlayer()
-            player.setDataSource(appCtx, resolvedUri)
+            if (resolvedUri.scheme == "file" && resolvedUri.path != null) {
+                val file = java.io.File(resolvedUri.path!!)
+                if (file.exists()) {
+                    java.io.FileInputStream(file).use { fis ->
+                        player.setDataSource(fis.fd)
+                    }
+                } else {
+                    player.setDataSource(appCtx, resolvedUri)
+                }
+            } else {
+                player.setDataSource(appCtx, resolvedUri)
+            }
+
             player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
