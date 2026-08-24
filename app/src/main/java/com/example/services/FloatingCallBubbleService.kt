@@ -67,6 +67,7 @@ class FloatingCallBubbleService : Service() {
 
         fun silenceRingtone(context: Context) {
             instance?.stopRinging()
+            LksKeepAliveService.silenceRingtone(context)
         }
 
         fun showIncoming(
@@ -214,6 +215,9 @@ class FloatingCallBubbleService : Service() {
             incomingRingtone?.stop()
             incomingRingtone = null
         } catch (_: Exception) {}
+
+        // Also stop ringtone from LksKeepAliveService (locked screen ringtone source)
+        try { LksKeepAliveService.stopRingtone(this) } catch (_: Exception) {}
     }
 
     private fun observeEngineState() {

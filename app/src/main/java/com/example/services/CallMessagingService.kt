@@ -47,6 +47,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
                 FloatingCallBubbleService.hide(this)
+                LksKeepAliveService.stopRingtone(this)
                 
                 val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
@@ -267,35 +268,21 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        // Use HIGH importance WITH RINGTONE for locked — Android notification system plays it natively.
-        // Use LOW importance silent for unlocked — FloatingCallBubbleService handles ringtone + pill.
+        // Use HIGH importance silent for locked (fullScreenIntent needs HIGH).
+        // Use LOW importance silent for unlocked (no heads-up).
+        // Ringtone is handled by LksKeepAliveService (already-foreground, 100% reliable).
         val targetChannelId = if (isLocked) "incoming_call_locked_channel" else "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (isLocked) {
-                // Get user's custom ringtone (app-level or per-contact)
-                val userRingtoneUri = try {
-                    com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
-                } catch (_: Exception) {
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                }
-                // Delete and recreate channel to support ringtone changes per call
-                try { notificationManager.deleteNotificationChannel("incoming_call_locked_channel") } catch (_: Exception) {}
                 val lockedChannel = NotificationChannel(
                     "incoming_call_locked_channel",
                     "Incoming Calls (Locked Screen)",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Incoming call ringtone and full-screen alert on locked screen"
-                    setSound(
-                        userRingtoneUri,
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
-                    )
-                    enableVibration(true)
-                    vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
+                    description = "High-priority silent channel for locked screen full-screen intent"
+                    setSound(null, null) // Silent — ringtone played by LksKeepAliveService
+                    enableVibration(false) // Vibration handled by LksKeepAliveService
                     lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 notificationManager.createNotificationChannel(lockedChannel)
@@ -319,7 +306,7 @@ class CallMessagingService : FirebaseMessagingService() {
             .setPriority(if (isLocked) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(true)           // can't be swiped away — must tap Accept or Decline
+            .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
             .addAction(
@@ -337,7 +324,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 ).build()
             )
 
-        // Only attach fullScreenIntent on notification if locked to prevent forced full-screen takeover when unlocked
+        // Only attach fullScreenIntent on locked to prevent forced full-screen takeover when unlocked
         if (isLocked) {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
@@ -345,9 +332,13 @@ class CallMessagingService : FirebaseMessagingService() {
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
 
-        // ─── Start ringtone + pill only on UNLOCKED screen ───
-        // On LOCKED screen, the notification channel handles ringtone natively (100% reliable).
-        // FloatingCallBubbleService.startForegroundService() is unreliable on locked/idle devices.
+        // ─── Start ringtone from LksKeepAliveService (ALREADY foreground — 100% reliable) ───
+        // This is the industry standard approach used by WhatsApp/Telegram.
+        // The service is already running in foreground, so no background start restrictions.
+        // Works on locked screen, unlocked screen, idle, Doze mode — always.
+        LksKeepAliveService.startRingtone(this, callerNumber)
+
+        // ─── Start pill overlay only on UNLOCKED screen ───
         if (!isLocked) {
             try {
                 FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
