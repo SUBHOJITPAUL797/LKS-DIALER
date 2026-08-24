@@ -192,8 +192,12 @@ class MainActivity : ComponentActivity() {
                     if (isIncomingRinging) {
                         // Ensure ringtone is playing if app is open on lockscreen while ringing
                         LksIncomingRingtonePlayer.start(context, rtcState.activeCall?.callerNumber ?: "")
-                    } else {
-                        // Any non-ringing state stops the ringtone immediately
+                    } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
+                               rtcState.callStatus == com.example.data.model.CallStatus.ENDED ||
+                               rtcState.callStatus == com.example.data.model.CallStatus.DECLINED ||
+                               rtcState.callStatus == com.example.data.model.CallStatus.MISSED) {
+                        // Explicitly terminal/answered states stop the ringtone.
+                        // Do NOT stop on initial IDLE state so FCM-started ringtone continues uninterrupted!
                         LksIncomingRingtonePlayer.stop()
                     }
 

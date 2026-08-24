@@ -209,7 +209,7 @@ class FloatingCallBubbleService : Service() {
             val engine = WebRtcEngine.getInstanceIfCreated() ?: return@launch
             engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
-                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
+                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED -> {
                         stopRinging()
                         removeFloatingView()
                         stopSelf()

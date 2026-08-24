@@ -44,7 +44,7 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun start(context: Context, callerNumber: String) {
-        if (isRinging) {
+        if (isRinging && (mediaPlayer?.isPlaying == true || ringtone?.isPlaying == true)) {
             Log.d(TAG, "Already ringing, skipping start")
             return
         }
@@ -57,8 +57,10 @@ object LksIncomingRingtonePlayer {
         // 1. Acquire partial wake lock to keep CPU awake while ringing on locked screen
         try {
             val pm = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lksdialer:ringtone_wake")?.apply {
-                acquire(60_000L) // 60s max safety timeout
+            if (wakeLock?.isHeld != true) {
+                wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lksdialer:ringtone_wake")?.apply {
+                    acquire(60_000L) // 60s max safety timeout
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to acquire ringtone wake lock: ${e.message}")
@@ -100,6 +102,17 @@ object LksIncomingRingtonePlayer {
                     .build()
             )
             player.isLooping = true
+            player.setOnCompletionListener {
+                try {
+                    if (isRinging) it.start()
+                } catch (_: Exception) {}
+            }
+            player.setOnErrorListener { mp, what, extra ->
+                Log.w(TAG, "MediaPlayer error ($what, $extra), falling back to Ringtone")
+                try { mp.release() } catch (_: Exception) {}
+                mediaPlayer = null
+                true
+            }
             player.prepare()
             player.start()
             mediaPlayer = player
@@ -107,7 +120,7 @@ object LksIncomingRingtonePlayer {
             Log.d(TAG, "Ringtone playing via MediaPlayer: $ringtoneUri")
         } catch (e: Exception) {
             Log.w(TAG, "MediaPlayer failed (${e.message}), falling back to Ringtone API")
-            mediaPlayer?.release()
+            try { mediaPlayer?.release() } catch (_: Exception) {}
             mediaPlayer = null
         }
 
