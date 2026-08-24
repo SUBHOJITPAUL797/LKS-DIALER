@@ -451,6 +451,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callId = callId,
                     callerName = callerName,
                     callerNumber = callerNumber,
+                    calleeNumber = myPhoneNumber,
                     callType = type,
                     status = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING
                 ),

@@ -184,14 +184,16 @@ class MainActivity : ComponentActivity() {
                 val currentUser by firebaseManager.currentUser.collectAsState()
                 val rtcState by webRtcEngine.state.collectAsState()
                 
-                LaunchedEffect(rtcState.callStatus) {
+                LaunchedEffect(rtcState.callStatus, rtcState.activeCall) {
                     val window = (context as? android.app.Activity)?.window
                     val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING &&
-                            rtcState.activeCall?.calleeNumber == currentUser?.phoneNumber
+                            (rtcState.activeCall?.calleeNumber == currentUser?.phoneNumber ||
+                             (rtcState.activeCall?.callerNumber.isNullOrBlank().not() && rtcState.activeCall?.callerNumber != currentUser?.phoneNumber))
 
                     if (isIncomingRinging) {
-                        // Ensure ringtone is playing if app is open on lockscreen while ringing
-                        LksIncomingRingtonePlayer.start(context, rtcState.activeCall?.callerNumber ?: "")
+                        // Ensure ringtone is playing continuously while caller screen is showing
+                        val callerNumber = rtcState.activeCall?.callerNumber ?: ""
+                        LksIncomingRingtonePlayer.start(context, callerNumber)
                     } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
                                rtcState.callStatus == com.example.data.model.CallStatus.ENDED ||
                                rtcState.callStatus == com.example.data.model.CallStatus.DECLINED ||

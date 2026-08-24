@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.RingtoneManager
 import android.os.Build
 import android.util.Log
@@ -271,18 +272,32 @@ class CallMessagingService : FirebaseMessagingService() {
         // Use HIGH importance silent for locked (fullScreenIntent needs HIGH).
         // Use LOW importance silent for unlocked (no heads-up).
         // Ringtone is handled by LksKeepAliveService (already-foreground, 100% reliable).
-        val targetChannelId = if (isLocked) "incoming_call_locked_channel" else "incoming_call_silent_channel"
+        val targetChannelId = if (isLocked) "incoming_call_locked_channel_v2" else "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (isLocked) {
+                val ringtoneUri = try {
+                    com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
+                } catch (_: Exception) {
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                }
+
                 val lockedChannel = NotificationChannel(
-                    "incoming_call_locked_channel",
+                    "incoming_call_locked_channel_v2",
                     "Incoming Calls (Locked Screen)",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "High-priority silent channel for locked screen full-screen intent"
-                    setSound(null, null) // Silent — ringtone played by LksKeepAliveService
-                    enableVibration(false) // Vibration handled by LksKeepAliveService
+                    description = "Incoming VoIP call ringtone and full-screen alert on locked screen"
+                    setSound(
+                        ringtoneUri,
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .setLegacyStreamType(AudioManager.STREAM_RING)
+                            .build()
+                    )
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 1000, 1000)
                     lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 notificationManager.createNotificationChannel(lockedChannel)
