@@ -330,7 +330,18 @@ class CallMessagingService : FirebaseMessagingService() {
 
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
-        
+
+        // ─── ALWAYS start ringtone service from FCM context ───
+        // FCM handler has the background foreground-service-start exemption on Android 12+.
+        // Telecom's onShowIncomingCallUi() does NOT — so starting from there fails silently on locked screens.
+        // On locked screen: ringtone plays, but no pill (can't draw overlay on lockscreen).
+        // On unlocked screen: ringtone plays + pill shows.
+        try {
+            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+        } catch (e: Exception) {
+            Log.e("FCM", "Failed to start ringtone service from FCM context: ${e.message}")
+        }
+
         // Wake screen if locked
         if (isLocked) {
             try {
@@ -351,16 +362,17 @@ class CallMessagingService : FirebaseMessagingService() {
         // show UI ourselves
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
-                if (!com.example.services.FloatingCallBubbleService.isShowingPill) {
-                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-                    val currentlyLocked = km?.isKeyguardLocked == true
-                    if (currentlyLocked) {
-                        try { startActivity(fullScreenIntent) } catch (_: Exception) {}
-                    } else {
-                        val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
-                        if (canOverlay) {
-                            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-                        }
+                val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                val currentlyLocked = km?.isKeyguardLocked == true
+                if (currentlyLocked) {
+                    // Full-screen activity should already be launched by Telecom or fullScreenIntent.
+                    // If not visible yet, try launching it.
+                    try { startActivity(fullScreenIntent) } catch (_: Exception) {}
+                } else if (!com.example.services.FloatingCallBubbleService.isShowingPill) {
+                    // Pill not shown yet — try again
+                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
+                    if (canOverlay) {
+                        FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
                     }
                 }
             } catch (_: Exception) {}

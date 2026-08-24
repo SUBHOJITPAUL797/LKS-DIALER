@@ -154,10 +154,11 @@ class LksCallConnection(
         val km = context.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         val isLocked = km?.isKeyguardLocked == true
         if (isLocked) {
-            Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI + ringtone")
-            // Start FloatingCallBubbleService for ringtone playback (pill UI won't show on lock screen)
-            com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)
-            // Launch full-screen incoming call activity over lockscreen
+            Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI")
+            // NOTE: Ringtone is already started by CallMessagingService (FCM context has bg service start exemption).
+            // Do NOT call FloatingCallBubbleService.showIncoming() from here — Telecom context lacks the
+            // exemption on Android 12+ and startForegroundService() fails silently on locked screens.
+            // Just launch the full-screen incoming call activity over lockscreen.
             try {
                 val fullScreenIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -174,7 +175,8 @@ class LksCallConnection(
                 Log.e("LksCallConnection", "Failed to launch incoming call UI from Telecom", e)
             }
         } else {
-            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> showing floating pill without opening full-screen")
+            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> showing floating pill")
+            // Safety: pill + ringtone may already be started by FCM. isShowingPill guard in showIncoming() prevents duplicate.
             com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)
         }
     }
