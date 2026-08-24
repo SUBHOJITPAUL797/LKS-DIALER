@@ -47,7 +47,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
                 FloatingCallBubbleService.hide(this)
-                LksKeepAliveService.stopRingtone(this)
+                com.example.util.LksIncomingRingtonePlayer.stop()
                 
                 val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
@@ -332,11 +332,10 @@ class CallMessagingService : FirebaseMessagingService() {
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
 
-        // ─── Start ringtone from LksKeepAliveService (ALREADY foreground — 100% reliable) ───
-        // This is the industry standard approach used by WhatsApp/Telegram.
-        // The service is already running in foreground, so no background start restrictions.
+        // ─── Start ringtone via LksIncomingRingtonePlayer (in-process, 100% reliable) ───
+        // Plays directly in process memory on STREAM_RING with CPU WakeLock.
         // Works on locked screen, unlocked screen, idle, Doze mode — always.
-        LksKeepAliveService.startRingtone(this, callerNumber)
+        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
 
         // ─── Start pill overlay only on UNLOCKED screen ───
         if (!isLocked) {

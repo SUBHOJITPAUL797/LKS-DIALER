@@ -66,6 +66,7 @@ class FloatingCallBubbleService : Service() {
         var isShowingPill: Boolean = false
 
         fun silenceRingtone(context: Context) {
+            com.example.util.LksIncomingRingtonePlayer.silence()
             instance?.stopRinging()
             LksKeepAliveService.silenceRingtone(context)
         }
@@ -149,8 +150,8 @@ class FloatingCallBubbleService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
     private var callStartTime: Long = 0L
-    private var lastPillX: Int = -1
-    private var lastPillY: Int = -1
+    private var lastPillX: Int = Int.MIN_VALUE
+    private var lastPillY: Int = Int.MIN_VALUE
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var stateObserverJob: Job? = null
@@ -172,36 +173,18 @@ class FloatingCallBubbleService : Service() {
         observeEngineState()
     }
 
-    private fun startRinging() {
+    override fun onDestroy() {
+        super.onDestroy()
+        instance = null
+        isShowingPill = false
         stopRinging()
-        try {
-            val ringtoneUri = com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
-            
-            // Try MediaPlayer first for full audio song file support with looping
-            incomingPlayer = com.example.util.LksRingtoneManager.createIncomingCallPlayer(this, ringtoneUri)
-            if (incomingPlayer != null) {
-                incomingPlayer?.start()
-                Log.d(TAG, "Started playing custom incoming call audio via MediaPlayer ($ringtoneUri)")
-                return
-            }
+        stateObserverJob?.cancel()
+        removeFloatingView()
+    }
 
-            // Fallback to RingtoneManager
-            incomingRingtone = RingtoneManager.getRingtone(applicationContext, ringtoneUri)?.apply {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    audioAttributes = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    isLooping = true
-                }
-                play()
-            }
-            Log.d(TAG, "Started playing incoming call ringtone via RingtoneManager ($ringtoneUri)")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to play incoming call ringtone: ${e.message}")
-        }
+    private fun startRinging(callerNumber: String) {
+        stopRinging()
+        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
     }
 
     private fun stopRinging() {
@@ -216,7 +199,7 @@ class FloatingCallBubbleService : Service() {
             incomingRingtone = null
         } catch (_: Exception) {}
 
-        // Also stop ringtone from LksKeepAliveService (locked screen ringtone source)
+        try { com.example.util.LksIncomingRingtonePlayer.stop() } catch (_: Exception) {}
         try { LksKeepAliveService.stopRingtone(this) } catch (_: Exception) {}
     }
 
@@ -261,7 +244,7 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            startRinging()
+            startRinging(callerNumber)
             // Only show the pill UI if we have overlay permission
             val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
             if (canOverlay) {
@@ -307,8 +290,8 @@ class FloatingCallBubbleService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = dpToPx(36f)
+            x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
+            y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
         }
 
         // Pill Card (Dark Teal Glassmorphism with rounded corners & elevation)
@@ -509,9 +492,9 @@ class FloatingCallBubbleService : Service() {
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = if (lastPillX >= 0) lastPillX else dpToPx(16f)
-            y = if (lastPillY >= 0) lastPillY else dpToPx(100f)
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
+            y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
         }
 
         // Draggable In-Call Pill Card
@@ -797,14 +780,5 @@ class FloatingCallBubbleService : Service() {
             Log.e(TAG, "Failed to start foreground: ${e.message}")
             try { startForeground(NOTIFICATION_ID, notification) } catch (_: Exception) {}
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        instance = null
-        isShowingPill = false
-        stopRinging()
-        stateObserverJob?.cancel()
-        removeFloatingView()
     }
 }

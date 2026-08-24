@@ -40,7 +40,10 @@ import com.example.ui.theme.TealPrimary
 import com.example.webrtc.WebRtcEngine
 import com.example.util.GitHubUpdater
 import com.example.util.UpdateInfo
+import com.example.util.LksIncomingRingtonePlayer
 import com.example.ui.components.UpdateDialog
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 enum class MainTab(val title: String, val icon: ImageVector) {
     DIALER("Dialer", Icons.Default.Dialpad),
@@ -131,6 +134,7 @@ class MainActivity : ComponentActivity() {
                 event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 if (engine != null && engine.state.value.callStatus == com.example.data.model.CallStatus.RINGING) {
+                    LksIncomingRingtonePlayer.silence()
                     com.example.services.FloatingCallBubbleService.silenceRingtone(this)
                     return true
                 }
@@ -182,6 +186,17 @@ class MainActivity : ComponentActivity() {
                 
                 LaunchedEffect(rtcState.callStatus) {
                     val window = (context as? android.app.Activity)?.window
+                    val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING &&
+                            rtcState.activeCall?.calleeNumber == currentUser?.phoneNumber
+
+                    if (isIncomingRinging) {
+                        // Ensure ringtone is playing if app is open on lockscreen while ringing
+                        LksIncomingRingtonePlayer.start(context, rtcState.activeCall?.callerNumber ?: "")
+                    } else {
+                        // Any non-ringing state stops the ringtone immediately
+                        LksIncomingRingtonePlayer.stop()
+                    }
+
                     if (rtcState.callStatus != com.example.data.model.CallStatus.IDLE && rtcState.callStatus != com.example.data.model.CallStatus.MISSED && rtcState.callStatus != com.example.data.model.CallStatus.ENDED) {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                             (context as? android.app.Activity)?.setShowWhenLocked(true)
@@ -471,7 +486,12 @@ class MainActivity : ComponentActivity() {
 
                     // Full Screen Calling Overlays
                     if (activeCall != null && rtcState.callStatus != CallStatus.IDLE) {
-                        val isIncoming = activeCall.calleeNumber == currentUser?.phoneNumber
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(Unit) { detectTapGestures { } }
+                        ) {
+                            val isIncoming = activeCall.calleeNumber == currentUser?.phoneNumber
                         val otherPartyNumber = if (isIncoming) activeCall.callerNumber else activeCall.calleeNumber
                         val otherPartyUser = firebaseManager.lookupUserByNumber(otherPartyNumber)
                         val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
@@ -590,6 +610,7 @@ class MainActivity : ComponentActivity() {
                             else -> {}
                         }
                     }
+                }
                     
                     // Show Update Dialog if needed
                     updateInfo?.let { info ->

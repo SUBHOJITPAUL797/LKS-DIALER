@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.ContentScale
 import com.example.util.ImageUtils
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import com.example.data.model.CallType
 import com.example.data.model.CallStatus
 import com.example.ui.theme.BackgroundDark
@@ -63,6 +65,7 @@ fun OutgoingCallScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundDark)
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
         val decodedBitmap = remember(profilePicUrl) {
             if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
@@ -170,6 +173,7 @@ fun IncomingCallOverlay(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundDark)
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
         val decodedBitmap = remember(profilePicUrl) {
             if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
@@ -344,6 +348,7 @@ fun ActiveAudioCallScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(BackgroundDark)
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
         val decodedBitmap = remember(profilePicUrl) {
             if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
@@ -541,6 +546,7 @@ fun ActiveVideoCallScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
+            .pointerInput(Unit) { detectTapGestures { } }
     ) {
         // Remote Video Preview
         Box(

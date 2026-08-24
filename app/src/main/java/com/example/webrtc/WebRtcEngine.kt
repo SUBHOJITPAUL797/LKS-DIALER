@@ -496,6 +496,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         notificationManager.cancel(1001)
+        com.example.util.LksIncomingRingtonePlayer.stop()
         
         com.example.services.ActiveCallService.start(context, call.callId, call.callType.name)
         headsetButtonManager.startListening()
@@ -1243,6 +1244,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         com.example.services.ActiveCallService.stop(context)
         com.example.services.FloatingCallBubbleService.hide(context)
+        com.example.util.LksIncomingRingtonePlayer.stop()
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {

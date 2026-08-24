@@ -54,6 +54,7 @@ class CallNotificationReceiver : BroadcastReceiver() {
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
                 FloatingCallBubbleService.hide(context)
+                com.example.util.LksIncomingRingtonePlayer.stop()
             }
         }
     }
