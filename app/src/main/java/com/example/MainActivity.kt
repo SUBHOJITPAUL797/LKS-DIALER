@@ -497,7 +497,8 @@ class MainActivity : ComponentActivity() {
                                 .fillMaxSize()
                                 .pointerInput(Unit) { detectTapGestures { } }
                         ) {
-                            val isIncoming = activeCall.calleeNumber == currentUser?.phoneNumber
+                        val isIncoming = (activeCall.callerNumber != currentUser?.phoneNumber) ||
+                                (currentUser?.phoneNumber != null && com.example.util.ContactsHelper.numbersMatch(activeCall.calleeNumber, currentUser?.phoneNumber ?: ""))
                         val otherPartyNumber = if (isIncoming) activeCall.callerNumber else activeCall.calleeNumber
                         val otherPartyUser = firebaseManager.lookupUserByNumber(otherPartyNumber)
                         val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""

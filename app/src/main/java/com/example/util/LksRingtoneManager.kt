@@ -48,7 +48,8 @@ object LksRingtoneManager {
             return Pair(uri, title)
         }
 
-        val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val actualUri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+        val defaultUri = actualUri ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         val defaultTitle = getRingtoneTitle(context, defaultUri)
         return Pair(defaultUri, defaultTitle.ifBlank { "System Default Ringtone" })
     }
