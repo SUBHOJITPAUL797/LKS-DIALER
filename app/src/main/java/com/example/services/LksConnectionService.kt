@@ -156,10 +156,7 @@ class LksCallConnection(
         val isLocked = km?.isKeyguardLocked == true
         if (isLocked) {
             Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI")
-            // NOTE: Ringtone is already started by CallMessagingService (FCM context has bg service start exemption).
-            // Do NOT call FloatingCallBubbleService.showIncoming() from here — Telecom context lacks the
-            // exemption on Android 12+ and startForegroundService() fails silently on locked screens.
-            // Just launch the full-screen incoming call activity over lockscreen.
+            com.example.util.LksIncomingRingtonePlayer.start(context, peerNumber)
             try {
                 val fullScreenIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
