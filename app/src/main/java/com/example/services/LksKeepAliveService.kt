@@ -74,7 +74,7 @@ class LksKeepAliveService : Service() {
         )
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("P2P Dialer")
+            .setContentTitle("LKS DIALER")
             .setContentText("Checking for incoming calls")
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentIntent(pendingIntent)

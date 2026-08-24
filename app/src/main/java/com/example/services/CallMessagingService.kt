@@ -267,19 +267,33 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        // Use HIGH importance (no sound) for locked so setFullScreenIntent works.
-        // Use LOW importance for unlocked so no heads-up card appears.
+        // Use HIGH importance WITH RINGTONE for locked — Android notification system plays it natively.
+        // Use LOW importance silent for unlocked — FloatingCallBubbleService handles ringtone + pill.
         val targetChannelId = if (isLocked) "incoming_call_locked_channel" else "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (isLocked) {
+                // Get user's custom ringtone (app-level or per-contact)
+                val userRingtoneUri = try {
+                    com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
+                } catch (_: Exception) {
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                }
+                // Delete and recreate channel to support ringtone changes per call
+                try { notificationManager.deleteNotificationChannel("incoming_call_locked_channel") } catch (_: Exception) {}
                 val lockedChannel = NotificationChannel(
                     "incoming_call_locked_channel",
                     "Incoming Calls (Locked Screen)",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "High-priority silent channel for locked screen full-screen intent"
-                    setSound(null, null) // No sound — ringtone managed by FloatingCallBubbleService
+                    description = "Incoming call ringtone and full-screen alert on locked screen"
+                    setSound(
+                        userRingtoneUri,
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
                     enableVibration(true)
                     vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
                     lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
@@ -331,15 +345,15 @@ class CallMessagingService : FirebaseMessagingService() {
         notificationManager.notify(NOTIFICATION_ID, builder.build())
         Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
 
-        // ─── ALWAYS start ringtone service from FCM context ───
-        // FCM handler has the background foreground-service-start exemption on Android 12+.
-        // Telecom's onShowIncomingCallUi() does NOT — so starting from there fails silently on locked screens.
-        // On locked screen: ringtone plays, but no pill (can't draw overlay on lockscreen).
-        // On unlocked screen: ringtone plays + pill shows.
-        try {
-            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-        } catch (e: Exception) {
-            Log.e("FCM", "Failed to start ringtone service from FCM context: ${e.message}")
+        // ─── Start ringtone + pill only on UNLOCKED screen ───
+        // On LOCKED screen, the notification channel handles ringtone natively (100% reliable).
+        // FloatingCallBubbleService.startForegroundService() is unreliable on locked/idle devices.
+        if (!isLocked) {
+            try {
+                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+            } catch (e: Exception) {
+                Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
+            }
         }
 
         // Wake screen if locked
