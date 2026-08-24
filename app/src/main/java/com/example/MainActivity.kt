@@ -191,9 +191,10 @@ class MainActivity : ComponentActivity() {
                              (rtcState.activeCall?.callerNumber.isNullOrBlank().not() && rtcState.activeCall?.callerNumber != currentUser?.phoneNumber))
 
                     if (isIncomingRinging) {
-                        // Ensure ringtone is playing continuously while caller screen is showing
-                        val callerNumber = rtcState.activeCall?.callerNumber ?: ""
-                        LksIncomingRingtonePlayer.start(context, callerNumber)
+                        if (!LksIncomingRingtonePlayer.isRinging) {
+                            val callerNumber = rtcState.activeCall?.callerNumber ?: ""
+                            LksIncomingRingtonePlayer.start(context, callerNumber)
+                        }
                     } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
                                rtcState.callStatus == com.example.data.model.CallStatus.ENDED ||
                                rtcState.callStatus == com.example.data.model.CallStatus.DECLINED ||

@@ -183,7 +183,6 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun startRinging(callerNumber: String) {
-        stopRinging()
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
     }
 

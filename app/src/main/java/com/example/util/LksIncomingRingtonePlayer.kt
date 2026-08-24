@@ -45,7 +45,7 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun start(context: Context, callerNumber: String) {
-        if (isRinging && (mediaPlayer?.isPlaying == true || ringtone?.isPlaying == true)) {
+        if (isRinging) {
             Log.d(TAG, "Already ringing actively, skipping duplicate start")
             return
         }
