@@ -177,7 +177,11 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
-        stopRinging()
+        // Only stop ringing if not in an active RINGING state (avoid killing lock-screen ringtone)
+        val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
+        if (activeStatus != com.example.data.model.CallStatus.RINGING) {
+            stopRinging()
+        }
         stateObserverJob?.cancel()
         removeFloatingView()
     }
@@ -229,7 +233,8 @@ class FloatingCallBubbleService : Service() {
         val action = intent?.action ?: return START_NOT_STICKY
 
         if (action == ACTION_HIDE) {
-            stopRinging()
+            // Only remove the floating overlay UI, do NOT stop ringtone here.
+            // Ringtone should keep playing even when MainActivity takes over on the lock screen.
             removeFloatingView()
             stopSelf()
             return START_NOT_STICKY
