@@ -352,13 +352,12 @@ class CallMessagingService : FirebaseMessagingService() {
         // Works on locked screen, unlocked screen, idle, Doze mode — always.
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
 
-        // ─── Start pill overlay only on UNLOCKED screen ───
-        if (!isLocked) {
-            try {
-                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-            } catch (e: Exception) {
-                Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
-            }
+        // ─── Start FloatingCallBubbleService (Foreground Service with Microphone type) ───
+        // Provides foreground service priority and unrestricted audio playback on both locked and unlocked screens.
+        try {
+            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+        } catch (e: Exception) {
+            Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
         }
 
         // Wake screen if locked

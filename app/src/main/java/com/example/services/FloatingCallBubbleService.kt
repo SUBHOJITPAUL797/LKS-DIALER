@@ -245,9 +245,11 @@ class FloatingCallBubbleService : Service() {
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
             startRinging(callerNumber)
-            // Only show the pill UI if we have overlay permission
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            val isLocked = km?.isKeyguardLocked == true
+            // Only show floating pill overlay if unlocked (when locked, full-screen MainActivity is shown)
             val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
-            if (canOverlay) {
+            if (canOverlay && !isLocked) {
                 showIncomingCallPill()
             }
         } else if (action == ACTION_SHOW_ACTIVE) {
