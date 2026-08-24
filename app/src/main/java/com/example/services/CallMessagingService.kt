@@ -269,22 +269,21 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        // Use HIGH importance silent for locked (fullScreenIntent needs HIGH).
-        // Use LOW importance silent for unlocked (no heads-up).
-        // Ringtone is handled by LksKeepAliveService (already-foreground, 100% reliable).
-        val targetChannelId = if (isLocked) "incoming_call_locked_channel_v2" else "incoming_call_silent_channel"
+        // Fresh channel ID forces Samsung & Xiaomi to recreate notification channel with full sound & vibration
+        val targetChannelId = if (isLocked) "lks_incoming_call_ringing_channel_v3" else "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (isLocked) {
                 val ringtoneUri = try {
                     com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
                 } catch (_: Exception) {
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                    RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_RINGTONE)
+                        ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 }
 
                 val lockedChannel = NotificationChannel(
-                    "incoming_call_locked_channel_v2",
-                    "Incoming Calls (Locked Screen)",
+                    "lks_incoming_call_ringing_channel_v3",
+                    "Incoming Calls (Ringtone & Full Screen)",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
                     description = "Incoming VoIP call ringtone and full-screen alert on locked screen"

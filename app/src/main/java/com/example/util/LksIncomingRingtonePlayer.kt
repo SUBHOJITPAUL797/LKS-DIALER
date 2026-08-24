@@ -68,9 +68,17 @@ object LksIncomingRingtonePlayer {
             Log.w(TAG, "Failed to acquire ringtone wake lock: ${e.message}")
         }
 
-        // 2. Check AudioManager and request audio focus
+        // 2. Set AudioManager mode to MODE_RINGTONE and request audio focus
         val audioManager = appCtx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
+
+        // Force AudioManager into MODE_RINGTONE to wake hardware audio amplifier on locked screen
+        try {
+            audioManager?.mode = AudioManager.MODE_RINGTONE
+            audioManager?.isSpeakerphoneOn = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set MODE_RINGTONE: ${e.message}")
+        }
 
         // Start Vibration (if not in silent mode)
         if (ringerMode != AudioManager.RINGER_MODE_SILENT) {
@@ -214,11 +222,14 @@ object LksIncomingRingtonePlayer {
         } catch (_: Exception) {}
         wakeLock = null
 
-        // Abandon audio focus
+        // Abandon audio focus & restore audio mode
         try {
             val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
                 am?.abandonAudioFocusRequest(audioFocusRequest!!)
+            }
+            if (am?.mode == AudioManager.MODE_RINGTONE) {
+                am.mode = AudioManager.MODE_NORMAL
             }
         } catch (_: Exception) {}
         audioFocusRequest = null
@@ -245,6 +256,13 @@ object LksIncomingRingtonePlayer {
             vibrator?.cancel()
         } catch (_: Exception) {}
         vibrator = null
+
+        try {
+            val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am?.mode == AudioManager.MODE_RINGTONE) {
+                am.mode = AudioManager.MODE_NORMAL
+            }
+        } catch (_: Exception) {}
     }
 
     private fun startVibration(context: Context) {
