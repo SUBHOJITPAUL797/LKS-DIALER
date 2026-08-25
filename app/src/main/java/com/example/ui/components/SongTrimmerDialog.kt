@@ -327,9 +327,16 @@ fun SongTrimmerDialog(
                                     isSaving = true; saveError = ""
                                     try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
                                     isPreviewPlaying = false
-                                    val result = withContext(Dispatchers.IO) { trimAudioFile(context, uri, startMs, endMs) }
+                                    val result = withContext(Dispatchers.IO) {
+                                        com.example.util.AudioTrimmerUtil.trimAudio(context, uri, startMs, endMs)
+                                    }
                                     isSaving = false
-                                    if (result != null) { onSave(result) } else { saveError = "Trim failed — saving full file."; onSave(uri) }
+                                    if (result != null) {
+                                        onSave(result)
+                                    } else {
+                                        saveError = "Could not crop audio format. Using full audio."
+                                        onSave(uri)
+                                    }
                                 }
                             },
                             enabled = !isSaving && trimDurationMs >= 1000,
@@ -354,75 +361,5 @@ fun SongTrimmerDialog(
                 }
             }
         }
-    }
-}
-
-private fun trimAudioFile(context: android.content.Context, uri: Uri, startMs: Long, endMs: Long): Uri? {
-    return try {
-        val ringtonesDir = File(context.filesDir, "ringtones").apply { mkdirs() }
-        val outFile = File(ringtonesDir, "trimmed_${System.currentTimeMillis()}.mp4")
-
-        val extractor = MediaExtractor()
-        extractor.setDataSource(context, uri, null)
-
-        var audioTrackIndex = -1
-        var audioFormat: MediaFormat? = null
-        for (i in 0 until extractor.trackCount) {
-            val fmt = extractor.getTrackFormat(i)
-            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
-            if (mime.startsWith("audio/")) { audioTrackIndex = i; audioFormat = fmt; break }
-        }
-        if (audioTrackIndex < 0 || audioFormat == null) { extractor.release(); return null }
-
-        extractor.selectTrack(audioTrackIndex)
-        extractor.seekTo(startMs * 1000L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-
-        val muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val muxerTrackIndex = muxer.addTrack(audioFormat)
-        muxer.start()
-
-        val bufSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
-            try {
-                audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(512 * 1024)
-            } catch (_: Exception) {
-                512 * 1024
-            }
-        } else {
-            512 * 1024
-        }
-
-        val buffer = java.nio.ByteBuffer.allocate(bufSize)
-        val bufInfo = android.media.MediaCodec.BufferInfo()
-        val endUs = endMs * 1000L
-        var written = false
-        var firstSampleTimeUs = -1L
-
-        while (true) {
-            bufInfo.offset = 0
-            bufInfo.size = extractor.readSampleData(buffer, 0)
-            if (bufInfo.size < 0) break
-            val sampleTimeUs = extractor.sampleTime
-            if (sampleTimeUs > endUs) break
-
-            if (firstSampleTimeUs == -1L) {
-                firstSampleTimeUs = sampleTimeUs
-            }
-
-            bufInfo.presentationTimeUs = (sampleTimeUs - firstSampleTimeUs).coerceAtLeast(0L)
-            bufInfo.flags = extractor.sampleFlags
-            muxer.writeSampleData(muxerTrackIndex, buffer, bufInfo)
-            written = true
-            extractor.advance()
-        }
-
-        muxer.stop(); muxer.release(); extractor.release()
-
-        if (written && outFile.length() > 0) {
-            Log.i(TAG, "Trimmed audio: ${outFile.absolutePath} (${outFile.length()} bytes)")
-            Uri.fromFile(outFile)
-        } else { outFile.delete(); null }
-    } catch (e: Exception) {
-        Log.e(TAG, "trimAudioFile failed: ${e.message}", e)
-        null
     }
 }
