@@ -130,10 +130,8 @@ object LksIncomingRingtonePlayer {
             val player = MediaPlayer()
             if (resolvedUri.scheme == "file" && resolvedUri.path != null) {
                 val file = java.io.File(resolvedUri.path!!)
-                if (file.exists()) {
-                    java.io.FileInputStream(file).use { fis ->
-                        player.setDataSource(fis.fd)
-                    }
+                if (file.exists() && file.length() > 0) {
+                    player.setDataSource(file.absolutePath)
                 } else {
                     player.setDataSource(appCtx, resolvedUri)
                 }

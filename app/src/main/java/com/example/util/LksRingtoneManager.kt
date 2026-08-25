@@ -103,11 +103,14 @@ object LksRingtoneManager {
         val cleanDigits = phoneNumber.replace(Regex("[^0-9+]"), "")
         val safeUri = copyToInternalStorageIfNeeded(context, uri, "contact_ringtone_${cleanDigits}.mp3")
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString(PREFIX_CONTACT_URI + cleanDigits, safeUri.toString())
-            .putString(PREFIX_CONTACT_TITLE + cleanDigits, title)
-            .apply()
-        Log.i(TAG, "Custom ringtone for $phoneNumber set to: $title ($safeUri)")
+        val editor = prefs.edit()
+        val variations = getNumberVariations(phoneNumber)
+        for (v in variations) {
+            editor.putString(PREFIX_CONTACT_URI + v, safeUri.toString())
+            editor.putString(PREFIX_CONTACT_TITLE + v, title)
+        }
+        editor.apply()
+        Log.i(TAG, "Custom ringtone for $phoneNumber set to: $title ($safeUri) across variations: $variations")
     }
 
     private fun copyToInternalStorageIfNeeded(context: Context, uri: Uri, fileName: String): Uri {

@@ -347,7 +347,18 @@ class CallMessagingService : FirebaseMessagingService() {
             flags = flags or android.app.Notification.FLAG_INSISTENT
         }
         notificationManager.notify(NOTIFICATION_ID, notification)
-        Log.d("FCM", "Incoming call notification shown for callId=$callId caller=$callerName (isLocked=$isLocked, canDrawOverlays=$canDrawOverlays)")
+        // ─── Update Firestore status to RINGING so the CALLER sees "Ringing..." instead of "Calling..." ───
+        try {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                .collection("calls")
+                .document(callId)
+                .update("status", com.example.data.model.CallStatus.RINGING.name)
+                .addOnSuccessListener {
+                    Log.i("FCM", "✅ Call status updated to RINGING in Firestore for callId=$callId")
+                }
+        } catch (e: Exception) {
+            Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
+        }
 
         // ─── Start ringtone via LksIncomingRingtonePlayer (in-process, 100% reliable) ───
         // Plays directly in process memory on STREAM_RING with CPU WakeLock.
