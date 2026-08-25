@@ -85,14 +85,22 @@ fun SongTrimmerDialog(
     LaunchedEffect(uri) {
         withContext(Dispatchers.IO) {
             try {
-                val player = MediaPlayer()
-                player.setDataSource(context, uri)
-                player.prepare()
-                totalDurationMs = player.duration.toLong()
-                player.release()
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not read duration: ${e.message}")
-                totalDurationMs = 0L
+                val mmr = android.media.MediaMetadataRetriever()
+                mmr.setDataSource(context, uri)
+                val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                totalDurationMs = durationStr?.toLongOrNull() ?: 0L
+                mmr.release()
+            } catch (_: Exception) {
+                try {
+                    val player = MediaPlayer()
+                    player.setDataSource(context, uri)
+                    player.prepare()
+                    totalDurationMs = player.duration.toLong()
+                    player.release()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not read duration: ${e.message}")
+                    totalDurationMs = 0L
+                }
             }
         }
         isLoadingDuration = false
