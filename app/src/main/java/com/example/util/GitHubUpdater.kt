@@ -50,7 +50,10 @@ class GitHubUpdater(private val context: Context) {
             val url = URL("https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
+            connection.setRequestProperty("User-Agent", "LKS-Dialer-Android-App")
             connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
             
             if (connection.responseCode == HttpURLConnection.HTTP_OK) {
                 val response = connection.inputStream.bufferedReader().use { it.readText() }
@@ -105,7 +108,10 @@ class GitHubUpdater(private val context: Context) {
                 
                 var downloadUrl = url
                 var connection = URL(downloadUrl).openConnection() as HttpURLConnection
+                connection.setRequestProperty("User-Agent", "LKS-Dialer-Android-App")
                 connection.instanceFollowRedirects = true
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
                 
                 // Manually handle redirects if HttpURLConnection fails to do so for HTTPS to HTTPS cross-domain
                 var redirectCount = 0
@@ -113,6 +119,9 @@ class GitHubUpdater(private val context: Context) {
                 while (responseCode / 100 == 3 && redirectCount < 5) {
                     downloadUrl = connection.getHeaderField("Location")
                     connection = URL(downloadUrl).openConnection() as HttpURLConnection
+                    connection.setRequestProperty("User-Agent", "LKS-Dialer-Android-App")
+                    connection.connectTimeout = 15000
+                    connection.readTimeout = 15000
                     responseCode = connection.responseCode
                     redirectCount++
                 }
