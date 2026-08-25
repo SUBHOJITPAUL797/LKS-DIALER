@@ -84,19 +84,36 @@ fun SettingsScreen(
         }
     }
 
-    // Device Song File Picker Launcher (.mp3, .m4a, .wav, .ogg, etc.)
+    // Device Song File Picker Launcher — now opens trimmer dialog
+    var settingsTrimmerUri by remember { mutableStateOf<Uri?>(null) }
+    var settingsTrimmerTitle by remember { mutableStateOf("") }
+
     val audioFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { pickedUri ->
         if (pickedUri != null) {
-            LksRingtoneManager.setAppRingtone(context, pickedUri)
-            appRingtoneState = LksRingtoneManager.getAppRingtone(context)
-            Toast.makeText(context, "Custom song set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
+            settingsTrimmerTitle = LksRingtoneManager.getRingtoneTitle(context, pickedUri)
+            settingsTrimmerUri = pickedUri
         }
     }
 
     if (showDeveloperModal) {
         DeveloperProfileDialog(onDismiss = { showDeveloperModal = false })
+    }
+
+    // Song Trimmer Dialog — shown after user picks a song file for app ringtone
+    settingsTrimmerUri?.let { uri ->
+        com.example.ui.components.SongTrimmerDialog(
+            uri = uri,
+            songTitle = settingsTrimmerTitle,
+            onSave = { trimmedUri ->
+                LksRingtoneManager.setAppRingtone(context, trimmedUri)
+                appRingtoneState = LksRingtoneManager.getAppRingtone(context)
+                Toast.makeText(context, "Ringtone set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
+                settingsTrimmerUri = null
+            },
+            onDismiss = { settingsTrimmerUri = null }
+        )
     }
 
     Scaffold(

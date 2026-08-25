@@ -117,17 +117,22 @@ fun ContactsScreen(
         }
     }
 
-    // Audio File / Song Picker for Selected Contact
+    // Song Trimmer Dialog state — opened after user picks a song file
+    var trimmerUri by remember { mutableStateOf<Uri?>(null) }
+    var trimmerSongTitle by remember { mutableStateOf("") }
+    var trimmerTarget by remember { mutableStateOf("contact") } // "contact" or "app"
+
+    // Audio File / Song Picker for Selected Contact — opens trimmer
     val contactAudioFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { pickedUri ->
-        val contact = ringtoneModalContact
-        if (pickedUri != null && contact != null) {
-            LksRingtoneManager.setContactRingtone(context, contact.second, pickedUri)
-            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
-            Toast.makeText(context, "Custom song set for ${contact.first}", Toast.LENGTH_SHORT).show()
+        if (pickedUri != null && ringtoneModalContact != null) {
+            trimmerTarget = "contact"
+            trimmerUri = pickedUri
+            trimmerSongTitle = LksRingtoneManager.getRingtoneTitle(context, pickedUri)
         }
     }
+
 
     // Trigger contacts sync when screen is launched
     LaunchedEffect(Unit) {
@@ -476,9 +481,12 @@ fun ContactsScreen(
 
         // Contact Custom Ringtone Bottom Sheet
         ringtoneModalContact?.let { contactPair ->
+            // Look up profile picture from synced contacts list
+            val contactDto = syncedContacts.find { it.phoneNumber == contactPair.second }
             ContactRingtoneBottomSheet(
                 contactName = contactPair.first,
                 phoneNumber = contactPair.second,
+                profilePicBase64 = contactDto?.profilePictureUrl ?: "",
                 customRingtone = contactRingtoneState,
                 isPreviewPlaying = isPreviewPlaying,
                 onPreviewToggle = {
@@ -518,6 +526,26 @@ fun ContactsScreen(
                     isPreviewPlaying = false
                     ringtoneModalContact = null
                 }
+            )
+        }
+
+        // Song Trimmer Dialog — shown after picking an audio file for contact ringtone
+        trimmerUri?.let { uri ->
+            com.example.ui.components.SongTrimmerDialog(
+                uri = uri,
+                songTitle = trimmerSongTitle,
+                onSave = { trimmedUri ->
+                    if (trimmerTarget == "contact") {
+                        val contact = ringtoneModalContact
+                        if (contact != null) {
+                            LksRingtoneManager.setContactRingtone(context, contact.second, trimmedUri)
+                            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
+                            Toast.makeText(context, "Custom ringtone set for ${contact.first}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    trimmerUri = null
+                },
+                onDismiss = { trimmerUri = null }
             )
         }
     }
@@ -884,7 +912,8 @@ private fun InviteContactItem(
 @Composable
 private fun ContactAvatar(
     name: String,
-    profilePicBase64: String
+    profilePicBase64: String,
+    size: Int = 48
 ) {
     val themeColor = LocalThemeColor.current
 
@@ -904,20 +933,20 @@ private fun ContactAvatar(
             bitmap = bitmap,
             contentDescription = name,
             modifier = Modifier
-                .size(48.dp)
+                .size(size.dp)
                 .clip(CircleShape),
             contentScale = ContentScale.Crop
         )
     } else {
         Surface(
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(size.dp),
             shape = CircleShape,
             color = themeColor.primary.copy(alpha = 0.15f)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     text = name.take(1).uppercase().ifBlank { "?" },
-                    fontSize = 18.sp,
+                    fontSize = (size * 0.375).sp,
                     fontWeight = FontWeight.Bold,
                     color = themeColor.primary
                 )
@@ -931,6 +960,7 @@ private fun ContactAvatar(
 private fun ContactRingtoneBottomSheet(
     contactName: String,
     phoneNumber: String,
+    profilePicBase64: String,
     customRingtone: Pair<Uri, String>?,
     isPreviewPlaying: Boolean,
     onPreviewToggle: () -> Unit,
@@ -952,24 +982,18 @@ private fun ContactRingtoneBottomSheet(
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 36.dp)
         ) {
-            // Header: Avatar + Contact Name + Number
+            // Header: Avatar (real photo or initials) + Contact Name + Number
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = themeColor.primary.copy(alpha = 0.15f),
-                    modifier = Modifier.size(52.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            Icons.Default.Person,
-                            contentDescription = null,
-                            tint = themeColor.primary,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
+                // Use the same ContactAvatar that shows real profile photo on the contact list
+                Box(modifier = Modifier.size(52.dp)) {
+                    ContactAvatar(
+                        name = contactName,
+                        profilePicBase64 = profilePicBase64,
+                        size = 52
+                    )
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
