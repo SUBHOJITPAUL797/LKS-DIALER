@@ -334,8 +334,7 @@ fun SongTrimmerDialog(
                                     if (result != null) {
                                         onSave(result)
                                     } else {
-                                        saveError = "Could not crop audio format. Using full audio."
-                                        onSave(uri)
+                                        saveError = "Could not crop this audio file. Please try another range."
                                     }
                                 }
                             },
