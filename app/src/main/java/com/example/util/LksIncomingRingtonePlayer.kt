@@ -124,35 +124,8 @@ object LksIncomingRingtonePlayer {
 
         Log.d(TAG, "Resolved Ringtone URI: $resolvedUri")
 
-        // 4. PRIMARY ENGINE: android.media.Ringtone (system-level IRingtonePlayer, bypasses MIUI/OEM restrictions)
-        try {
-            var r = RingtoneManager.getRingtone(appCtx, resolvedUri)
-            if (r == null) {
-                val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
-                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                r = RingtoneManager.getRingtone(appCtx, fallbackUri)
-            }
-
-            if (r != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    r.audioAttributes = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .setLegacyStreamType(AudioManager.STREAM_RING)
-                        .build()
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    r.isLooping = true
-                }
-                r.play()
-                ringtone = r
-                Log.i(TAG, "✅ System Ringtone PLAYING successfully via IRingtonePlayer")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Ringtone player failed: ${e.message}")
-        }
-
-        // 5. SECONDARY ENGINE: Looping MediaPlayer for custom audio files / local songs
+        // 4. PRIMARY ENGINE: Looping MediaPlayer for custom audio songs, trimmed clips & local media
+        var playedViaMediaPlayer = false
         try {
             val player = MediaPlayer()
             if (resolvedUri.scheme == "file" && resolvedUri.path != null) {
@@ -171,7 +144,7 @@ object LksIncomingRingtonePlayer {
             player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .setLegacyStreamType(AudioManager.STREAM_RING)
                     .build()
             )
@@ -191,11 +164,42 @@ object LksIncomingRingtonePlayer {
             player.prepare()
             player.start()
             mediaPlayer = player
-            Log.i(TAG, "✅ MediaPlayer PLAYING concurrently: $resolvedUri")
+            playedViaMediaPlayer = true
+            Log.i(TAG, "✅ Ringtone PLAYING via MediaPlayer: $resolvedUri")
         } catch (e: Exception) {
-            Log.w(TAG, "MediaPlayer initialization failed (${e.message})")
+            Log.w(TAG, "MediaPlayer playback failed (${e.message}), attempting RingtoneManager fallback...")
             try { mediaPlayer?.release() } catch (_: Exception) {}
             mediaPlayer = null
+        }
+
+        // 5. FALLBACK ENGINE: android.media.Ringtone (system-level IRingtonePlayer for default system sounds)
+        if (!playedViaMediaPlayer) {
+            try {
+                var r = RingtoneManager.getRingtone(appCtx, resolvedUri)
+                if (r == null) {
+                    val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
+                        ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                    r = RingtoneManager.getRingtone(appCtx, fallbackUri)
+                }
+
+                if (r != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        r.audioAttributes = AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .setLegacyStreamType(AudioManager.STREAM_RING)
+                            .build()
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        r.isLooping = true
+                    }
+                    r.play()
+                    ringtone = r
+                    Log.i(TAG, "✅ Ringtone PLAYING via IRingtonePlayer fallback")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "RingtoneManager fallback also failed: ${e.message}")
+            }
         }
     }
 
