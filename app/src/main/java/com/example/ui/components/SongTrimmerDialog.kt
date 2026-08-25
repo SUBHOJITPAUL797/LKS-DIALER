@@ -381,11 +381,21 @@ private fun trimAudioFile(context: android.content.Context, uri: Uri, startMs: L
         val muxerTrackIndex = muxer.addTrack(audioFormat)
         muxer.start()
 
-        val bufSize = audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 512 * 1024).coerceAtLeast(512 * 1024)
+        val bufSize = if (audioFormat.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+            try {
+                audioFormat.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(512 * 1024)
+            } catch (_: Exception) {
+                512 * 1024
+            }
+        } else {
+            512 * 1024
+        }
+
         val buffer = java.nio.ByteBuffer.allocate(bufSize)
         val bufInfo = android.media.MediaCodec.BufferInfo()
         val endUs = endMs * 1000L
         var written = false
+        var firstSampleTimeUs = -1L
 
         while (true) {
             bufInfo.offset = 0
@@ -393,7 +403,12 @@ private fun trimAudioFile(context: android.content.Context, uri: Uri, startMs: L
             if (bufInfo.size < 0) break
             val sampleTimeUs = extractor.sampleTime
             if (sampleTimeUs > endUs) break
-            bufInfo.presentationTimeUs = sampleTimeUs - (startMs * 1000L)
+
+            if (firstSampleTimeUs == -1L) {
+                firstSampleTimeUs = sampleTimeUs
+            }
+
+            bufInfo.presentationTimeUs = (sampleTimeUs - firstSampleTimeUs).coerceAtLeast(0L)
             bufInfo.flags = extractor.sampleFlags
             muxer.writeSampleData(muxerTrackIndex, buffer, bufInfo)
             written = true
