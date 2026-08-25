@@ -481,12 +481,20 @@ fun ContactsScreen(
 
         // Contact Custom Ringtone Bottom Sheet
         ringtoneModalContact?.let { contactPair ->
-            // Look up profile picture from synced contacts list
-            val contactDto = syncedContacts.find { it.phoneNumber == contactPair.second }
+            // Look up profile picture from synced contacts list and registeredUsers with robust number matching
+            val contactDto = syncedContacts.find {
+                it.phoneNumber == contactPair.second || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPair.second)
+            }
+            val regUser = registeredUsers.find {
+                it.phoneNumber == contactPair.second || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPair.second)
+            }
+            val profilePic = if (!contactDto?.profilePictureUrl.isNullOrBlank()) contactDto!!.profilePictureUrl
+                             else regUser?.profilePictureUrl ?: ""
+
             ContactRingtoneBottomSheet(
                 contactName = contactPair.first,
                 phoneNumber = contactPair.second,
-                profilePicBase64 = contactDto?.profilePictureUrl ?: "",
+                profilePicBase64 = profilePic,
                 customRingtone = contactRingtoneState,
                 isPreviewPlaying = isPreviewPlaying,
                 onPreviewToggle = {
