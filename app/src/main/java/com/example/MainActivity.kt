@@ -526,25 +526,31 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             CallStatus.RINGING -> {
+                                val isKeyguardLocked = (context.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.isKeyguardLocked == true
+                                val canDrawOverlays = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(context) else false
+                                val shouldShowFullScreen = isKeyguardLocked || !canDrawOverlays
+
                                 if (isIncoming) {
-                                    IncomingCallOverlay(
-                                        callerName = activeCall.callerName,
-                                        callerNumber = activeCall.callerNumber,
-                                        profilePicUrl = otherPartyProfilePic,
-                                        callType = activeCall.callType,
-                                        onAnswer = { webRtcEngine.answerCall() },
-                                        onDecline = {
-                                            firebaseManager.logCall(
-                                                direction = CallDirection.INCOMING,
-                                                otherPartyNumber = activeCall.callerNumber,
-                                                otherPartyName = activeCall.callerName,
-                                                callType = activeCall.callType,
-                                                status = CallStatus.DECLINED,
-                                                durationSeconds = rtcState.callDurationSeconds
-                                            )
-                                            webRtcEngine.endCall()
-                                        }
-                                    )
+                                    if (shouldShowFullScreen) {
+                                        IncomingCallOverlay(
+                                            callerName = activeCall.callerName,
+                                            callerNumber = activeCall.callerNumber,
+                                            profilePicUrl = otherPartyProfilePic,
+                                            callType = activeCall.callType,
+                                            onAnswer = { webRtcEngine.answerCall() },
+                                            onDecline = {
+                                                firebaseManager.logCall(
+                                                    direction = CallDirection.INCOMING,
+                                                    otherPartyNumber = activeCall.callerNumber,
+                                                    otherPartyName = activeCall.callerName,
+                                                    callType = activeCall.callType,
+                                                    status = CallStatus.DECLINED,
+                                                    durationSeconds = rtcState.callDurationSeconds
+                                                )
+                                                webRtcEngine.endCall()
+                                            }
+                                        )
+                                    }
                                 } else {
                                     OutgoingCallScreen(
                                         calleeName = activeCall.calleeName,
