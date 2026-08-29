@@ -304,8 +304,8 @@ fun ActiveAudioCallScreen(
 
     val context = androidx.compose.ui.platform.LocalContext.current
     
-    // Proximity Sensor Logic for Screen Blackout
-    DisposableEffect(state.callStatus, state.callType) {
+    // Proximity Sensor Logic for Screen Blackout (only active when using Phone Earpiece)
+    DisposableEffect(state.callStatus, state.callType, state.selectedAudioDevice) {
         val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
         var wakeLock: android.os.PowerManager.WakeLock? = null
         
@@ -313,7 +313,9 @@ fun ActiveAudioCallScreen(
         val proximityLockLevel = 32
         if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
             wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:ProximitySensor")
-            if (state.callStatus == CallStatus.ANSWERED && state.callType == CallType.AUDIO) {
+            if (state.callStatus == CallStatus.ANSWERED && 
+                state.callType == CallType.AUDIO && 
+                state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE) {
                 wakeLock.acquire(10 * 60 * 1000L /*10 minutes max*/)
             }
         }
