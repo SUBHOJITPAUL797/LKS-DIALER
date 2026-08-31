@@ -129,6 +129,12 @@ class CallMessagingService : FirebaseMessagingService() {
             }
             
             if (type == "incoming_call") {
+                // Drop stale/delayed push notifications (>45 seconds old) from reconnecting devices
+                if (remoteMessage.sentTime > 0 && (System.currentTimeMillis() - remoteMessage.sentTime > 45_000L)) {
+                    Log.w("FCM", "Dropping stale incoming call push: $callId (sent ${System.currentTimeMillis() - remoteMessage.sentTime}ms ago)")
+                    return
+                }
+
                 val callerName   = remoteMessage.data["callerName"]   ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"

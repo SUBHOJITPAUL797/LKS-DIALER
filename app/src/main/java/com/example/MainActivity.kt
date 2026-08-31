@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
         val rtcState = com.example.webrtc.WebRtcEngine.getInstance(this).state.value
         val activeCall = rtcState.activeCall
 
-        if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED && activeCall != null) {
+        if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING) && activeCall != null) {
             if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 try {
                     enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())

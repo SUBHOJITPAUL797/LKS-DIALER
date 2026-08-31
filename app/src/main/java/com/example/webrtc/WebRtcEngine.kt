@@ -67,6 +67,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var headsetReceiver: android.content.BroadcastReceiver? = null
     private val headsetButtonManager = com.example.services.HeadsetButtonManager(context)
     private var lastNonBluetoothAudioDevice: AudioDeviceType = AudioDeviceType.EARPIECE
+    private val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
 
     private val firestore = FirebaseFirestore.getInstance()
     private var myPhoneNumber: String = ""
@@ -113,6 +114,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         val audioDeviceModule = JavaAudioDeviceModule.builder(context)
             .setUseHardwareAcousticEchoCanceler(true)
             .setUseHardwareNoiseSuppressor(true)
+            .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .createAudioDeviceModule()
 
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -263,10 +265,31 @@ class WebRtcEngine private constructor(private val context: Context) {
                     if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                         val dto = change.document.toObject(IceCandidateDto::class.java)
                         val candidate = IceCandidate(dto.sdpMid, dto.sdpMLineIndex, dto.sdpCandidate)
-                        peerConnection?.addIceCandidate(candidate)
+                        val pc = peerConnection
+                        if (pc != null && pc.remoteDescription != null) {
+                            pc.addIceCandidate(candidate)
+                        } else {
+                            synchronized(queuedRemoteIceCandidates) {
+                                queuedRemoteIceCandidates.add(candidate)
+                            }
+                            Log.d("WebRtcEngine", "Queued ICE candidate until remote description is set: ${candidate.sdpMid}")
+                        }
                     }
                 }
             }
+    }
+
+    private fun drainQueuedRemoteIceCandidates() {
+        val pc = peerConnection ?: return
+        synchronized(queuedRemoteIceCandidates) {
+            if (queuedRemoteIceCandidates.isNotEmpty()) {
+                Log.i("WebRtcEngine", "⚡ Draining ${queuedRemoteIceCandidates.size} queued ICE candidates to PeerConnection")
+                for (candidate in queuedRemoteIceCandidates) {
+                    pc.addIceCandidate(candidate)
+                }
+                queuedRemoteIceCandidates.clear()
+            }
+        }
     }
 
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
@@ -368,9 +391,24 @@ class WebRtcEngine private constructor(private val context: Context) {
             .whereIn("calleeNumber", distinctVariations)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) return@addSnapshotListener
-                val incomingCall = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) }
-                    ?.filter { it.status == CallStatus.CALLING || it.status == CallStatus.RINGING }
-                    ?.maxByOrNull { it.createdAt }
+                val now = System.currentTimeMillis()
+                val activeCalls = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) } ?: emptyList()
+
+                // Auto-cleanup stale/expired calls (>45s old) from Firestore so they never trigger again
+                for (call in activeCalls) {
+                    if ((call.status == CallStatus.CALLING || call.status == CallStatus.RINGING) && (now - call.createdAt > 45_000L)) {
+                        Log.d("WebRtcEngine", "Cleaning up stale call document from Firestore: ${call.callId} (${now - call.createdAt}ms old)")
+                        try {
+                            firestore.collection("calls").document(call.callId).update("status", CallStatus.MISSED.name)
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                // Filter for FRESH incoming calls (<45s old) not initiated by self
+                val incomingCall = activeCalls
+                    .filter { (it.status == CallStatus.CALLING || it.status == CallStatus.RINGING) && (now - it.createdAt <= 45_000L) }
+                    .filter { it.callerNumber != myPhoneNumber && it.callerNumber.replace(Regex("[^0-9]"), "") != cleanDigits }
+                    .maxByOrNull { it.createdAt }
 
                 if (incomingCall != null && _state.value.activeCall == null && incomingCall.callId !in seenCallIds) {
                     seenCallIds.add(incomingCall.callId)
@@ -529,7 +567,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         hasProcessedOffer = true
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
-        peerConnection?.setRemoteDescription(SimpleSdpObserver(), sessionDescription)
+        peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+            override fun onSetSuccess() {
+                Log.i("WebRtcEngine", "Remote offer SDP set successfully")
+                drainQueuedRemoteIceCandidates()
+            }
+        }, sessionDescription)
         
         val constraints = MediaConstraints()
         peerConnection?.createAnswer(object : SdpObserver {
@@ -568,6 +611,15 @@ class WebRtcEngine private constructor(private val context: Context) {
             @Suppress("DEPRECATION")
             am.requestAudioFocus(null, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
         }
+
+        // Ensure voice call volume is clear and un-ducked
+        try {
+            val maxVol = am.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
+            val curVol = am.getStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL)
+            if (curVol < (maxVol * 0.7f).toInt()) {
+                am.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, (maxVol * 0.85f).toInt(), 0)
+            }
+        } catch (_: Exception) {}
 
         refreshAvailableAudioDevices(defaultCallType = callType)
     }
@@ -630,7 +682,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                         if (isCaller && call.answerSdp != null && call.answerSdp != oldCall?.answerSdp) {
                             hasProcessedAnswer = true
                             val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
-                            peerConnection?.setRemoteDescription(SimpleSdpObserver(), sessionDescription)
+                            peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                                override fun onSetSuccess() {
+                                    Log.i("WebRtcEngine", "Remote answer SDP set successfully")
+                                    drainQueuedRemoteIceCandidates()
+                                }
+                            }, sessionDescription)
                             if (_state.value.callStatus != CallStatus.ANSWERED) {
                                 _state.value = _state.value.copy(
                                     callStatus = CallStatus.ANSWERED,
@@ -645,7 +702,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                             // New offer received (e.g. during video upgrade renegotiation)
                             if (_state.value.callStatus == CallStatus.ANSWERED) {
                                 val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, call.offerSdp)
-                                peerConnection?.setRemoteDescription(SimpleSdpObserver(), sessionDescription)
+                                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                                    override fun onSetSuccess() {
+                                        drainQueuedRemoteIceCandidates()
+                                    }
+                                }, sessionDescription)
                                 
                                 val constraints = MediaConstraints()
                                 constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
@@ -1228,6 +1289,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        synchronized(queuedRemoteIceCandidates) {
+            queuedRemoteIceCandidates.clear()
+        }
         
         try { localAudioTrack?.dispose() } catch (_: Exception) {}
         localAudioTrack = null
