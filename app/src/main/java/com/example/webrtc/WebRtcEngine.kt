@@ -522,6 +522,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
             val call = doc.toObject(CallDto::class.java)
             if (call != null) {
+                if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
+                    Log.d("WebRtcEngine", "attachToCall: call $callId already finished with status ${call.status}")
+                    endCallInternalLocal(call.status)
+                    return@addOnSuccessListener
+                }
+
                 // AttachToCall is only used by the callee, so if the status is still CALLING, it should be RINGING
                 val resolvedStatus = if (autoAnswer) CallStatus.ANSWERED 
                                      else if (call.status == CallStatus.CALLING) CallStatus.RINGING
@@ -1318,7 +1324,6 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
-        seenCallIds.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }

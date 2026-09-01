@@ -176,7 +176,10 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
-        stopRinging()
+        val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
+        if (activeStatus != CallStatus.RINGING) {
+            stopRinging()
+        }
         stateObserverJob?.cancel()
         serviceJob.cancel()
         removeFloatingView()
@@ -197,7 +200,7 @@ class FloatingCallBubbleService : Service() {
             val engine = WebRtcEngine.getInstanceIfCreated() ?: return@launch
             engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
-                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
+                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED -> {
                         stopRinging()
                         removeFloatingView()
                         stopSelf()

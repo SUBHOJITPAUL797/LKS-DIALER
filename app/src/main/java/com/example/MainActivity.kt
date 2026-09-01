@@ -197,9 +197,10 @@ class MainActivity : ComponentActivity() {
                 
                 LaunchedEffect(rtcState.callStatus, rtcState.activeCall) {
                     val window = (context as? android.app.Activity)?.window
-                    val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING &&
-                            (rtcState.activeCall?.calleeNumber == currentUser?.phoneNumber ||
-                             (rtcState.activeCall?.callerNumber.isNullOrBlank().not() && rtcState.activeCall?.callerNumber != currentUser?.phoneNumber))
+                    val myPhone = currentUser?.phoneNumber ?: ""
+                    val callerNum = rtcState.activeCall?.callerNumber ?: ""
+                    val isMyOutgoing = myPhone.isNotBlank() && callerNum.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(myPhone, callerNum)
+                    val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing
 
                     if (isIncomingRinging) {
                         if (!LksIncomingRingtonePlayer.isRinging) {
@@ -539,31 +540,25 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             CallStatus.RINGING -> {
-                                val isKeyguardLocked = (context.getSystemService(android.content.Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager)?.isKeyguardLocked == true
-                                val canDrawOverlays = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(context) else false
-                                val shouldShowFullScreen = isKeyguardLocked || !canDrawOverlays
-
                                 if (isIncoming) {
-                                    if (shouldShowFullScreen) {
-                                        IncomingCallOverlay(
-                                            callerName = activeCall.callerName,
-                                            callerNumber = activeCall.callerNumber,
-                                            profilePicUrl = otherPartyProfilePic,
-                                            callType = activeCall.callType,
-                                            onAnswer = { webRtcEngine.answerCall() },
-                                            onDecline = {
-                                                firebaseManager.logCall(
-                                                    direction = CallDirection.INCOMING,
-                                                    otherPartyNumber = activeCall.callerNumber,
-                                                    otherPartyName = activeCall.callerName,
-                                                    callType = activeCall.callType,
-                                                    status = CallStatus.DECLINED,
-                                                    durationSeconds = rtcState.callDurationSeconds
-                                                )
-                                                webRtcEngine.endCall()
-                                            }
-                                        )
-                                    }
+                                    IncomingCallOverlay(
+                                        callerName = activeCall.callerName,
+                                        callerNumber = activeCall.callerNumber,
+                                        profilePicUrl = otherPartyProfilePic,
+                                        callType = activeCall.callType,
+                                        onAnswer = { webRtcEngine.answerCall() },
+                                        onDecline = {
+                                            firebaseManager.logCall(
+                                                direction = CallDirection.INCOMING,
+                                                otherPartyNumber = activeCall.callerNumber,
+                                                otherPartyName = activeCall.callerName,
+                                                callType = activeCall.callType,
+                                                status = CallStatus.DECLINED,
+                                                durationSeconds = rtcState.callDurationSeconds
+                                            )
+                                            webRtcEngine.endCall()
+                                        }
+                                    )
                                 } else {
                                     OutgoingCallScreen(
                                         calleeName = activeCall.calleeName,
