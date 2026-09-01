@@ -79,7 +79,6 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            if (isShowingPill) return  // Prevent duplicate pill
             // NOTE: Don't block on canDrawOverlays here — the service must start
             // for ringtone playback even without overlay permission. The pill UI
             // rendering is gated inside onStartCommand.
@@ -177,11 +176,7 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
-        // Only stop ringing if not in an active RINGING state (avoid killing lock-screen ringtone)
-        val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
-        if (activeStatus != com.example.data.model.CallStatus.RINGING) {
-            stopRinging()
-        }
+        stopRinging()
         stateObserverJob?.cancel()
         serviceJob.cancel()
         removeFloatingView()
@@ -202,7 +197,7 @@ class FloatingCallBubbleService : Service() {
             val engine = WebRtcEngine.getInstanceIfCreated() ?: return@launch
             engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
-                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED -> {
+                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
                         stopRinging()
                         removeFloatingView()
                         stopSelf()
@@ -472,7 +467,14 @@ class FloatingCallBubbleService : Service() {
         removeFloatingView()
         val wm = windowManager ?: return
 
-        callStartTime = System.currentTimeMillis()
+        val engine = WebRtcEngine.getInstanceIfCreated()
+        val engineStartTime = engine?.state?.value?.callStartedAtMillis ?: 0L
+        val currentDuration = engine?.state?.value?.callDurationSeconds ?: 0
+        callStartTime = when {
+            engineStartTime > 0L -> engineStartTime
+            currentDuration > 0 -> System.currentTimeMillis() - (currentDuration * 1000L)
+            else -> System.currentTimeMillis()
+        }
 
         val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -558,7 +560,12 @@ class FloatingCallBubbleService : Service() {
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = object : Runnable {
             override fun run() {
-                val elapsedSeconds = ((System.currentTimeMillis() - callStartTime) / 1000).coerceAtLeast(0)
+                val eng = WebRtcEngine.getInstanceIfCreated()
+                val elapsedSeconds = if (eng != null && eng.state.value.callDurationSeconds > 0) {
+                    eng.state.value.callDurationSeconds.toLong()
+                } else {
+                    ((System.currentTimeMillis() - callStartTime) / 1000).coerceAtLeast(0)
+                }
                 val mins = elapsedSeconds / 60
                 val secs = elapsedSeconds % 60
                 timerView.text = String.format("%02d:%02d", mins, secs)
@@ -573,7 +580,6 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Quick Mic Mute Toggle Button
-        val engine = WebRtcEngine.getInstanceIfCreated()
         var isMuted = engine?.state?.value?.isMuted ?: false
         val muteBtn = ImageView(this).apply {
             setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)

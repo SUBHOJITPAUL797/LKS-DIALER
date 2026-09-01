@@ -46,6 +46,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 // Force end the call in WebRtcEngine to drop the ringing UI if it's open
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.forceEndCallFromPush(callId)
+                FloatingCallBubbleService.silenceRingtone(this)
                 FloatingCallBubbleService.hide(this)
                 com.example.util.LksIncomingRingtonePlayer.stop()
                 
@@ -391,6 +392,12 @@ class CallMessagingService : FirebaseMessagingService() {
         val appCtx = applicationContext
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                if (engine != null && (engine.state.value.callStatus == com.example.data.model.CallStatus.ENDED || 
+                                       engine.state.value.callStatus == com.example.data.model.CallStatus.DECLINED || 
+                                       engine.state.value.callStatus == com.example.data.model.CallStatus.MISSED)) {
+                    return@postDelayed
+                }
                 val km = appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 val currentlyLocked = km?.isKeyguardLocked == true
                 if (currentlyLocked) {

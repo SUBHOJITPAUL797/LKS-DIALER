@@ -45,6 +45,7 @@ data class WebRtcState(
     val isCameraOn: Boolean = true,
     val isFrontCamera: Boolean = true,
     val callDurationSeconds: Int = 0,
+    val callStartedAtMillis: Long = 0L,
     val networkQualityBars: Int = 5,
     val connectionStatusText: String = "Idle",
     val localVideoTrack: VideoTrack? = null,
@@ -403,6 +404,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                         try {
                             firestore.collection("calls").document(call.callId).update("status", CallStatus.MISSED.name)
                         } catch (_: Exception) {}
+                    }
+                }
+
+                // If we are currently ringing/calling on a call that the caller ended/cancelled, end it immediately
+                val currentActive = _state.value.activeCall
+                if (currentActive != null && (_state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.CALLING)) {
+                    val activeDoc = snapshot?.documents?.find { it.id == currentActive.callId }
+                    if (activeDoc != null) {
+                        val statusStr = activeDoc.getString("status")
+                        if (statusStr == CallStatus.ENDED.name || statusStr == CallStatus.DECLINED.name || statusStr == CallStatus.MISSED.name) {
+                            Log.d("WebRtcEngine", "Incoming call was terminated by caller: ${currentActive.callId} ($statusStr)")
+                            endCallInternalLocal(try { CallStatus.valueOf(statusStr) } catch (_: Exception) { CallStatus.MISSED })
+                        }
                     }
                 }
 
@@ -800,12 +814,18 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private fun startCallTimer() {
         timerJob?.cancel()
+        val startMillis = if (_state.value.callStartedAtMillis > 0L) {
+            _state.value.callStartedAtMillis
+        } else {
+            System.currentTimeMillis()
+        }
+        _state.value = _state.value.copy(callStartedAtMillis = startMillis)
+
         timerJob = scope.launch {
-            var seconds = 0
             while (_state.value.callStatus == CallStatus.ANSWERED) {
+                val elapsed = ((System.currentTimeMillis() - startMillis) / 1000).toInt().coerceAtLeast(0)
+                _state.value = _state.value.copy(callDurationSeconds = elapsed)
                 delay(1000)
-                seconds++
-                _state.value = _state.value.copy(callDurationSeconds = seconds)
             }
         }
     }
@@ -1276,7 +1296,9 @@ class WebRtcEngine private constructor(private val context: Context) {
      */
     fun forceEndCallFromPush(callId: String) {
         scope.launch {
-            if (_state.value.activeCall?.callId == callId) {
+            val activeCallId = _state.value.activeCall?.callId
+            if (activeCallId == null || activeCallId == callId || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.CALLING) {
+                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId")
                 endCallInternalLocal(CallStatus.MISSED)
             }
         }

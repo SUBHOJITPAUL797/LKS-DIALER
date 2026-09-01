@@ -98,10 +98,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val rtcState = com.example.webrtc.WebRtcEngine.getInstance(this).state.value
-        val activeCall = rtcState.activeCall
+        triggerFloatingCallBubbleIfActive()
+    }
 
-        if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING) && activeCall != null) {
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            triggerFloatingCallBubbleIfActive()
+        }
+    }
+
+    private fun triggerFloatingCallBubbleIfActive() {
+        val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
+        val activeCall = rtcState.activeCall ?: return
+
+        if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
             if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 try {
                     enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
@@ -115,7 +126,7 @@ class MainActivity : ComponentActivity() {
                 activeCall.callerNumber,
                 activeCall.callType
             )
-        } else if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && activeCall != null) {
+        } else if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING) {
             // Show Incoming Call Pill over other apps if user backgrounds the app during ringing
             com.example.services.FloatingCallBubbleService.showIncoming(
                 this,
