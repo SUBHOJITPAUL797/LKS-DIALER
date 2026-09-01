@@ -78,6 +78,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var iceCandidateListener: ListenerRegistration? = null
     
     private val seenCallIds = mutableSetOf<String>()
+    private val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var audioFocusRequest: android.media.AudioFocusRequest? = null
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
 
@@ -244,6 +245,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun sendIceCandidate(callId: String, candidate: IceCandidate, isCaller: Boolean) {
+        val candidateKey = "${candidate.sdpMid}_${candidate.sdpMLineIndex}_${candidate.sdp}"
+        if (!sentIceCandidateHashes.add(candidateKey)) {
+            return // Skip duplicate candidate write to save Firestore operations
+        }
         val type = if (isCaller) "offerCandidate" else "answerCandidate"
         val candidateDto = IceCandidateDto(
             serverUrl = candidate.serverUrl,
@@ -397,14 +402,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                 val now = System.currentTimeMillis()
                 val activeCalls = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) } ?: emptyList()
 
-                // Auto-cleanup stale/expired calls (>45s old) from Firestore so they never trigger again
+                // Auto-cleanup stale/expired calls (>45s old) and delete finished calls (>60s) from Firestore to keep DB lean & fast
                 for (call in activeCalls) {
                     if ((call.status == CallStatus.CALLING || call.status == CallStatus.RINGING) && (now - call.createdAt > 45_000L)) {
                         Log.d("WebRtcEngine", "Cleaning up stale call document from Firestore: ${call.callId} (${now - call.createdAt}ms old)")
                         try {
                             firestore.collection("calls").document(call.callId).update("status", CallStatus.MISSED.name)
                         } catch (_: Exception) {}
+                    } else if ((call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) && (now - call.createdAt > 60_000L)) {
+                        // Delete finished call document from DB to prevent DB bloat
+                        try {
+                            firestore.collection("calls").document(call.callId).delete()
+                        } catch (_: Exception) {}
                     }
+                }
+
+                if (seenCallIds.size > 200) {
+                    seenCallIds.clear()
                 }
 
                 // If we are currently ringing/calling on a call that the caller ended/cancelled, end it immediately
@@ -1324,6 +1338,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        sentIceCandidateHashes.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
