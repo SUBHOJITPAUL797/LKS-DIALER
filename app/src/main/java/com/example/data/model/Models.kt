@@ -34,7 +34,7 @@ data class CallDto(
     val calleeName: String = "",
     val calleeProfilePic: String = "",
     val callType: CallType = CallType.AUDIO,
-    val status: CallStatus = CallStatus.CALLING,
+    val status: CallStatus = CallStatus.IDLE,
     val offerSdp: String? = null,
     val answerSdp: String? = null,
     val createdAt: Long = 0L,
@@ -75,13 +75,13 @@ data class ContactDto(
     val name: String = "",
     val phoneNumber: String = "",
     val profilePictureUrl: String = "",
-    val isVoiceLinkUser: Boolean = true,
+    val isVoiceLinkUser: Boolean = false,
     val statusMessage: String = "Available"
 )
 
 data class CountryCode(
-    val countryName: String,
-    val flagEmoji: String,
-    val dialCode: String,
-    val isoCode: String
+    val countryName: String = "",
+    val flagEmoji: String = "",
+    val dialCode: String = "",
+    val isoCode: String = ""
 )

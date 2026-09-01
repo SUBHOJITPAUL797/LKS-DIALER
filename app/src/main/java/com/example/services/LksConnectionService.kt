@@ -35,6 +35,10 @@ class LksConnectionService : ConnectionService() {
             }
         }
 
+        fun clearActiveConnection() {
+            activeConnection = null
+        }
+
         fun disconnectCall() {
             activeConnection?.let {
                 it.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
@@ -50,6 +54,13 @@ class LksConnectionService : ConnectionService() {
         request: ConnectionRequest?
     ): Connection {
         Log.d(TAG, "onCreateIncomingConnection received by Telecom")
+        activeConnection?.let {
+            try {
+                it.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
+                it.destroy()
+            } catch (_: Exception) {}
+        }
+
         val extras = request?.extras ?: Bundle()
         val callId = extras.getString("call_id") ?: ""
         val callerName = extras.getString("caller_name") ?: "LKS Caller"
@@ -73,6 +84,13 @@ class LksConnectionService : ConnectionService() {
         request: ConnectionRequest?
     ): Connection {
         Log.d(TAG, "onCreateOutgoingConnection received by Telecom")
+        activeConnection?.let {
+            try {
+                it.setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
+                it.destroy()
+            } catch (_: Exception) {}
+        }
+
         val extras = request?.extras?.getBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS) ?: request?.extras ?: Bundle()
         val callId = extras.getString("call_id") ?: ""
         val calleeName = extras.getString("callee_name") ?: "LKS Contact"
@@ -135,6 +153,7 @@ class LksCallConnection(
         Log.i("LksCallConnection", "🎯 Bluetooth Headset / System rejected the call via Telecom! callId=$callId")
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
         destroy()
+        LksConnectionService.clearActiveConnection()
         WebRtcEngine.getInstanceIfCreated()?.endCall()
     }
 
@@ -142,6 +161,7 @@ class LksCallConnection(
         Log.i("LksCallConnection", "🎯 Bluetooth Headset / System hung up the call via Telecom! callId=$callId")
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
         destroy()
+        LksConnectionService.clearActiveConnection()
         WebRtcEngine.getInstanceIfCreated()?.endCall()
     }
 

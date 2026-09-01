@@ -22,22 +22,24 @@ import com.example.webrtc.WebRtcEngine
  * - Answer incoming calls on single-click / tap
  * - Hang up / end ongoing calls on single-click / tap
  */
-class HeadsetButtonManager(private val context: Context) {
+class HeadsetButtonManager(context: Context) {
 
+    private val context = context.applicationContext
     private var mediaSession: MediaSession? = null
     private var mediaReceiver: BroadcastReceiver? = null
-    private var isRegistered = false
+    @Volatile private var isRegistered = false
 
+    @Synchronized
     fun startListening() {
         if (isRegistered) return
         isRegistered = true
 
         try {
             // 1. Setup native MediaSession for API 21+
-            val componentName = ComponentName(context, HeadsetMediaButtonReceiver::class.java)
-            mediaSession = MediaSession(context, "LksDialerCallSession").apply {
+            val componentName = ComponentName(this.context, HeadsetMediaButtonReceiver::class.java)
+            mediaSession = MediaSession(this.context, "LksDialerCallSession").apply {
                 val mediaButtonPendingIntent = PendingIntent.getBroadcast(
-                    context,
+                    this@HeadsetButtonManager.context,
                     0,
                     Intent(Intent.ACTION_MEDIA_BUTTON).setComponent(componentName),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -84,9 +86,7 @@ class HeadsetButtonManager(private val context: Context) {
                             intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
                         }
                         if (event != null && event.action == KeyEvent.ACTION_DOWN) {
-                            if (handleHeadsetKeyEvent(event)) {
-                                try { abortBroadcast() } catch (_: Exception) {}
-                            }
+                            handleHeadsetKeyEvent(event)
                         }
                     }
                 }

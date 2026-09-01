@@ -13,10 +13,14 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.example.MainActivity
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
 
 class ActiveCallService : Service() {
 
     private var headsetButtonManager: HeadsetButtonManager? = null
+    private val serviceJob = kotlinx.coroutines.SupervisorJob()
+    private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + serviceJob)
 
     companion object {
         const val CHANNEL_ID = "active_call_channel"
@@ -52,6 +56,22 @@ class ActiveCallService : Service() {
             headsetButtonManager = HeadsetButtonManager(this).also { it.startListening() }
         } else {
             headsetButtonManager?.startListening()
+        }
+
+        // Auto-stop self if call ends in WebRtcEngine
+        serviceScope.launch {
+            val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() ?: return@launch
+            engine.state.collectLatest { s ->
+                when (s.callStatus) {
+                    com.example.data.model.CallStatus.ENDED,
+                    com.example.data.model.CallStatus.DECLINED,
+                    com.example.data.model.CallStatus.MISSED,
+                    com.example.data.model.CallStatus.IDLE -> {
+                        stopSelf()
+                    }
+                    else -> {}
+                }
+            }
         }
 
         createNotificationChannel()
@@ -95,10 +115,11 @@ class ActiveCallService : Service() {
     }
 
     override fun onDestroy() {
+        serviceJob.cancel()
         try {
             headsetButtonManager?.stopListening()
-            headsetButtonManager = null
         } catch (_: Exception) {}
+        headsetButtonManager = null
         super.onDestroy()
     }
 

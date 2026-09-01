@@ -37,6 +37,7 @@ import com.example.webrtc.WebRtcEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -62,8 +63,8 @@ class FloatingCallBubbleService : Service() {
         const val EXTRA_CALLER_NUMBER = "caller_number"
         const val EXTRA_CALL_TYPE = "call_type"
 
-        var instance: FloatingCallBubbleService? = null
-        var isShowingPill: Boolean = false
+        @Volatile var instance: FloatingCallBubbleService? = null
+        @Volatile var isShowingPill: Boolean = false
 
         fun silenceRingtone(context: Context) {
             com.example.util.LksIncomingRingtonePlayer.silence()
@@ -153,10 +154,9 @@ class FloatingCallBubbleService : Service() {
     private var lastPillX: Int = Int.MIN_VALUE
     private var lastPillY: Int = Int.MIN_VALUE
 
-    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private var stateObserverJob: Job? = null
-    private var incomingRingtone: Ringtone? = null
-    private var incomingPlayer: android.media.MediaPlayer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -183,6 +183,7 @@ class FloatingCallBubbleService : Service() {
             stopRinging()
         }
         stateObserverJob?.cancel()
+        serviceJob.cancel()
         removeFloatingView()
     }
 
@@ -191,17 +192,6 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun stopRinging() {
-        try {
-            incomingPlayer?.stop()
-            incomingPlayer?.release()
-            incomingPlayer = null
-        } catch (_: Exception) {}
-
-        try {
-            incomingRingtone?.stop()
-            incomingRingtone = null
-        } catch (_: Exception) {}
-
         try { com.example.util.LksIncomingRingtonePlayer.stop() } catch (_: Exception) {}
         try { LksKeepAliveService.stopRingtone(this) } catch (_: Exception) {}
     }
@@ -235,6 +225,7 @@ class FloatingCallBubbleService : Service() {
         if (action == ACTION_HIDE) {
             // Only remove the floating overlay UI, do NOT stop ringtone here.
             // Ringtone should keep playing even when MainActivity takes over on the lock screen.
+            stateObserverJob?.cancel()
             removeFloatingView()
             stopSelf()
             return START_NOT_STICKY
@@ -261,7 +252,7 @@ class FloatingCallBubbleService : Service() {
             showActiveCallPill()
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun dpToPx(dp: Float): Int {
@@ -574,7 +565,6 @@ class FloatingCallBubbleService : Service() {
                 handler.postDelayed(this, 1000)
             }
         }
-        handler.post(timerRunnable!!)
 
         // Action Buttons Row (Mute, Speaker, End — NEVER opens full screen!)
         val buttonsContainer = LinearLayout(this).apply {
@@ -710,8 +700,11 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
+            timerRunnable?.let { handler.post(it) }
             Log.d(TAG, "Active call draggable pill attached to WindowManager")
         } catch (e: Exception) {
+            timerRunnable?.let { handler.removeCallbacks(it) }
+            timerRunnable = null
             Log.e(TAG, "Failed to add active call pill to WindowManager", e)
         }
     }
@@ -737,6 +730,7 @@ class FloatingCallBubbleService : Service() {
 
     private fun removeFloatingView() {
         timerRunnable?.let { handler.removeCallbacks(it) }
+        timerRunnable = null
         floatingView?.let { view ->
             try {
                 windowManager?.removeView(view)

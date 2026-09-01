@@ -35,7 +35,8 @@ sealed class DownloadState {
     data class Error(val message: String) : DownloadState()
 }
 
-class GitHubUpdater(private val context: Context) {
+class GitHubUpdater(context: Context) {
+    private val context = context.applicationContext
     private val TAG = "GitHubUpdater"
     private val REPO_OWNER = "SUBHOJITPAUL797"
     private val REPO_NAME = "LKS-DIALER"
@@ -43,57 +44,50 @@ class GitHubUpdater(private val context: Context) {
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     
-    private var downloadId: Long = -1L
-
-    suspend fun checkForUpdates(): UpdateInfo? = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdates(currentVersion: String = "v${com.example.BuildConfig.VERSION_NAME}"): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
-            val url = URL("https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest")
+            val urlString = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
+            val url = URL(urlString)
             val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "GET"
             connection.setRequestProperty("User-Agent", "LKS-Dialer-Android-App")
-            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
             connection.connectTimeout = 10000
             connection.readTimeout = 10000
             
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                val response = connection.inputStream.bufferedReader().use { it.readText() }
-                val jsonObject = JSONObject(response)
-                
-                val tagName = jsonObject.optString("tag_name", "")
-                val body = jsonObject.optString("body", "No release notes provided.")
-                val assets = jsonObject.optJSONArray("assets")
-                
-                var downloadUrl = ""
-                if (assets != null && assets.length() > 0) {
+            try {
+                if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(response)
+                    
+                    val tagName = json.getString("tag_name")
+                    val releaseNotes = json.optString("body", "")
+                    
+                    // Parse assets to find the APK
+                    val assets = json.getJSONArray("assets")
+                    var downloadUrl: String? = null
                     for (i in 0 until assets.length()) {
                         val asset = assets.getJSONObject(i)
-                        if (asset.optString("name", "").endsWith(".apk")) {
-                            downloadUrl = asset.optString("browser_download_url", "")
+                        val name = asset.getString("name")
+                        if (name.endsWith(".apk")) {
+                            downloadUrl = asset.getString("browser_download_url")
                             break
                         }
                     }
+                    
+                    if (downloadUrl != null && isVersionGreater(tagName, currentVersion)) {
+                        return@withContext UpdateInfo(
+                            isUpdateAvailable = true,
+                            latestVersion = tagName,
+                            releaseNotes = releaseNotes,
+                            downloadUrl = downloadUrl,
+                            isMandatory = false
+                        )
+                    }
                 }
-                
-                // Compare versions. Very basic string comparison for simple semantic versioning (e.g. v1.0.0)
-                val currentVersion = "v${BuildConfig.VERSION_NAME}"
-                val isUpdateAvailable = isVersionGreater(tagName, currentVersion)
-                
-                // Check if mandatory
-                val isMandatory = body.contains("[MANDATORY]", ignoreCase = true) || 
-                                  body.contains("[CRITICAL]", ignoreCase = true)
-                                  
-                if (isUpdateAvailable && downloadUrl.isNotBlank()) {
-                    return@withContext UpdateInfo(
-                        isUpdateAvailable = true,
-                        latestVersion = tagName,
-                        releaseNotes = body.replace("[MANDATORY]", "").replace("[CRITICAL]", "").trim(),
-                        downloadUrl = downloadUrl,
-                        isMandatory = isMandatory
-                    )
-                }
+            } finally {
+                connection.disconnect()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error checking for updates", e)
+            Log.e(TAG, "Failed to check for updates", e)
         }
         return@withContext null
     }
@@ -103,6 +97,7 @@ class GitHubUpdater(private val context: Context) {
         val destinationFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
         
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            var activeConnection: HttpURLConnection? = null
             try {
                 _downloadState.value = DownloadState.Downloading(0f)
                 
@@ -112,16 +107,19 @@ class GitHubUpdater(private val context: Context) {
                 connection.instanceFollowRedirects = true
                 connection.connectTimeout = 15000
                 connection.readTimeout = 15000
+                activeConnection = connection
                 
                 // Manually handle redirects if HttpURLConnection fails to do so for HTTPS to HTTPS cross-domain
                 var redirectCount = 0
                 var responseCode = connection.responseCode
                 while (responseCode / 100 == 3 && redirectCount < 5) {
                     downloadUrl = connection.getHeaderField("Location")
+                    connection.disconnect()
                     connection = URL(downloadUrl).openConnection() as HttpURLConnection
                     connection.setRequestProperty("User-Agent", "LKS-Dialer-Android-App")
                     connection.connectTimeout = 15000
                     connection.readTimeout = 15000
+                    activeConnection = connection
                     responseCode = connection.responseCode
                     redirectCount++
                 }
@@ -141,23 +139,24 @@ class GitHubUpdater(private val context: Context) {
                 
                 var lastUpdate = System.currentTimeMillis()
                 
-                while (input.read(data).also { count = it } != -1) {
-                    total += count
-                    output.write(data, 0, count)
-                    
-                    if (fileLength > 0) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastUpdate > 100) { // Throttle UI updates to every 100ms
-                            val progress = total.toFloat() / fileLength.toFloat()
-                            _downloadState.value = DownloadState.Downloading(progress)
-                            lastUpdate = now
+                input.use { inStream ->
+                    output.use { outStream ->
+                        while (inStream.read(data).also { count = it } != -1) {
+                            total += count
+                            outStream.write(data, 0, count)
+                            
+                            if (fileLength > 0) {
+                                val now = System.currentTimeMillis()
+                                if (now - lastUpdate > 100) { // Throttle UI updates to every 100ms
+                                    val progress = total.toFloat() / fileLength.toFloat()
+                                    _downloadState.value = DownloadState.Downloading(progress)
+                                    lastUpdate = now
+                                }
+                            }
                         }
+                        outStream.flush()
                     }
                 }
-                
-                output.flush()
-                output.close()
-                input.close()
                 
                 val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", destinationFile)
                 _downloadState.value = DownloadState.Downloaded(contentUri)
@@ -169,14 +168,16 @@ class GitHubUpdater(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed", e)
                 _downloadState.value = DownloadState.Error(e.message ?: "Download failed")
+            } finally {
+                activeConnection?.disconnect()
             }
         }
     }
     
-    fun installApk(contentUri: Uri) {
+    private fun installApk(uri: Uri) {
         try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(contentUri, "application/vnd.android.package-archive")
+                setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
             }
             context.startActivity(intent)
@@ -187,8 +188,8 @@ class GitHubUpdater(private val context: Context) {
     
     private fun isVersionGreater(remote: String, local: String): Boolean {
         return try {
-            val rParts = remote.replace("v", "").split(".").map { it.toIntOrNull() ?: 0 }
-            val lParts = local.replace("v", "").split(".").map { it.toIntOrNull() ?: 0 }
+            val rParts = remote.removePrefix("v").trim().split(".").map { it.toIntOrNull() ?: 0 }
+            val lParts = local.removePrefix("v").trim().split(".").map { it.toIntOrNull() ?: 0 }
             val maxLen = maxOf(rParts.size, lParts.size)
             for (i in 0 until maxLen) {
                 val r = rParts.getOrElse(i) { 0 }

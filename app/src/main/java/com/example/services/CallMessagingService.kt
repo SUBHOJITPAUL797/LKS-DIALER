@@ -42,7 +42,6 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.d("FCM", "Received $type for callId: $callId, dismissing incoming ringing notification")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
-                try { HeadsetButtonManager(this).stopListening() } catch (_: Exception) {}
                 
                 // Force end the call in WebRtcEngine to drop the ringing UI if it's open
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
@@ -246,19 +245,11 @@ class CallMessagingService : FirebaseMessagingService() {
             .setName(callerName)
             .setImportant(true)
             
-        // Load Profile Picture if available (supports Base64 and HTTP URL)
-        if (callerProfilePic.isNotEmpty()) {
+        // Load Profile Picture if available (Base64 decoded locally)
+        if (callerProfilePic.isNotEmpty() && !callerProfilePic.startsWith("http")) {
             try {
-                val bitmap = if (callerProfilePic.startsWith("http://") || callerProfilePic.startsWith("https://")) {
-                    val url = java.net.URL(callerProfilePic)
-                    val connection = url.openConnection()
-                    connection.connectTimeout = 2000
-                    connection.readTimeout = 2000
-                    android.graphics.BitmapFactory.decodeStream(connection.getInputStream())
-                } else {
-                    val decodedBytes = android.util.Base64.decode(callerProfilePic, android.util.Base64.DEFAULT)
-                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                }
+                val decodedBytes = android.util.Base64.decode(callerProfilePic, android.util.Base64.DEFAULT)
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
                 if (bitmap != null) {
                     callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
                 }
@@ -397,25 +388,25 @@ class CallMessagingService : FirebaseMessagingService() {
 
         // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s,
         // show UI ourselves
+        val appCtx = applicationContext
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
-                val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                val km = appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 val currentlyLocked = km?.isKeyguardLocked == true
                 if (currentlyLocked) {
                     // Full-screen activity should already be launched by Telecom or fullScreenIntent.
                     // If not visible yet, try launching it.
-                    try { startActivity(fullScreenIntent) } catch (_: Exception) {}
+                    try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
                 } else if (!com.example.services.FloatingCallBubbleService.isShowingPill) {
                     // Pill not shown yet — try again
-                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
+                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
                     if (canOverlay) {
-                        FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+                        FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
                     }
                 }
             } catch (_: Exception) {}
         }, 1500)
 
-        try { HeadsetButtonManager(this).startListening() } catch (_: Exception) {}
         try {
             LksTelecomManager.reportIncomingCall(this, callId, callerName, callerNumber, callTypeEnum)
         } catch (_: Exception) {}

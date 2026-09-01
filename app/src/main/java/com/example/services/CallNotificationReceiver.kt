@@ -12,16 +12,20 @@ import com.google.firebase.firestore.FirebaseFirestore
 class CallNotificationReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val action = intent.action
+        val action = intent.action ?: return
         val callId = intent.getStringExtra("call_id") ?: return
+        if (action != ACTION_ACCEPT && action != ACTION_DECLINE) return
         Log.d("CallReceiver", "Action: $action, CallId: $callId")
 
-        // Dismiss the notification
+        // Dismiss the incoming call notification
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)
 
         when (action) {
             ACTION_ACCEPT -> {
+                com.example.util.LksIncomingRingtonePlayer.stop()
+                FloatingCallBubbleService.silenceRingtone(context)
+
                 // Open MainActivity and pass the call info to answer
                 val launchIntent = Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -32,6 +36,9 @@ class CallNotificationReceiver : BroadcastReceiver() {
                 context.startActivity(launchIntent)
             }
             ACTION_DECLINE -> {
+                // Dismiss any floating bubble notification
+                try { notificationManager.cancel(2002) } catch (_: Exception) {}
+
                 // Decline in Firestore immediately without opening the app
                 FirebaseFirestore.getInstance()
                     .collection("calls")
@@ -47,7 +54,6 @@ class CallNotificationReceiver : BroadcastReceiver() {
                         Log.e("CallReceiver", "Failed to decline call $callId", e)
                     }
 
-                try { HeadsetButtonManager(context).stopListening() } catch (_: Exception) {}
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }

@@ -272,11 +272,22 @@ object LksIncomingRingtonePlayer {
         vibrator = null
 
         try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (_: Exception) {}
+        wakeLock = null
+
+        try {
             val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
+                am?.abandonAudioFocusRequest(audioFocusRequest!!)
+            }
             if (am?.mode == AudioManager.MODE_RINGTONE) {
                 am.mode = AudioManager.MODE_NORMAL
             }
         } catch (_: Exception) {}
+        audioFocusRequest = null
     }
 
     private fun startVibration(context: Context) {

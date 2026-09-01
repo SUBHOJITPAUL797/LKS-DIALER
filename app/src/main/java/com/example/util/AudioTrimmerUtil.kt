@@ -359,7 +359,7 @@ object AudioTrimmerUtil {
             while (!encoderDone) {
                 // 1. Feed Extractor -> Decoder
                 if (!extractorDone) {
-                    val inIdx = decoder.dequeueInputBuffer(0L)
+                    val inIdx = decoder.dequeueInputBuffer(2500L)
                     if (inIdx >= 0) {
                         val inBuf = decoder.getInputBuffer(inIdx)
                         if (inBuf != null) {
@@ -378,7 +378,7 @@ object AudioTrimmerUtil {
 
                 // 2. Decoder -> PCM -> Encoder
                 if (!decoderDone) {
-                    val outIdx = decoder.dequeueOutputBuffer(decodeBufferInfo, 0L)
+                    val outIdx = decoder.dequeueOutputBuffer(decodeBufferInfo, 2500L)
                     if (outIdx >= 0) {
                         val pcmBuf = decoder.getOutputBuffer(outIdx)
                         val isEOS = (decodeBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
@@ -387,7 +387,7 @@ object AudioTrimmerUtil {
                             var encQueued = false
                             var retry = 0
                             while (!encQueued && retry++ < 5) {
-                                val encInIdx = encoder.dequeueInputBuffer(500L)
+                                val encInIdx = encoder.dequeueInputBuffer(2500L)
                                 if (encInIdx >= 0) {
                                     val encInBuf = encoder.getInputBuffer(encInIdx)
                                     if (encInBuf != null) {
@@ -412,7 +412,7 @@ object AudioTrimmerUtil {
                             var eosQueued = false
                             var eosRetry = 0
                             while (!eosQueued && eosRetry++ < 10) {
-                                val encInIdx = encoder.dequeueInputBuffer(1000L)
+                                val encInIdx = encoder.dequeueInputBuffer(2500L)
                                 if (encInIdx >= 0) {
                                     encoder.queueInputBuffer(encInIdx, 0, 0, presentationTimeUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                     eosQueued = true
@@ -424,7 +424,7 @@ object AudioTrimmerUtil {
                 }
 
                 // 3. Encoder -> Muxer
-                val encOutIdx = encoder.dequeueOutputBuffer(encodeBufferInfo, 0L)
+                val encOutIdx = encoder.dequeueOutputBuffer(encodeBufferInfo, 2500L)
                 if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = encoder.outputFormat
                     muxerTrackIndex = muxer.addTrack(newFormat)

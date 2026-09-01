@@ -77,6 +77,8 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var iceCandidateListener: ListenerRegistration? = null
     
     private val seenCallIds = mutableSetOf<String>()
+    private var audioFocusRequest: android.media.AudioFocusRequest? = null
+    private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
 
     // WebRTC Core
     private val eglBase = EglBase.create()
@@ -333,7 +335,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
                 _state.value = _state.value.copy(connectionStatusText = "User Offline / Unavailable")
                 delay(2000)
-                if (_state.value.callStatus == CallStatus.CALLING) endCall()
+                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) endCall()
                 return@launch
             }
             
@@ -342,7 +344,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) {
                 _state.value = _state.value.copy(connectionStatusText = "No Answer")
                 delay(2000)
-                if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) endCall()
+                if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) endCall()
             }
         }
         
@@ -435,13 +437,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                     // Wake screen and route to lockscreen activity or floating pill if unlocked
                     try {
                         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-                        val wl = pm?.newWakeLock(
+                        try {
+                            if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()
+                        } catch (_: Exception) {}
+                        incomingCallWakeLock = pm?.newWakeLock(
                             android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
                             android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
                             android.os.PowerManager.ON_AFTER_RELEASE,
                             "lksdialer:incoming_call_wake_engine"
-                        )
-                        wl?.acquire(15000)
+                        )?.apply { acquire(15000) }
 
                         val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                         val isLocked = km?.isKeyguardLocked == true
@@ -606,6 +610,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 .setAcceptsDelayedFocusGain(true)
                 .setOnAudioFocusChangeListener { }
                 .build()
+            audioFocusRequest = focusRequest
             am.requestAudioFocus(focusRequest)
         } else {
             @Suppress("DEPRECATION")
@@ -693,7 +698,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     callStatus = CallStatus.ANSWERED,
                                     connectionStatusText = "Connected • WebRTC"
                                 )
-                                configureAudio(_state.value.callType)
+                                refreshAvailableAudioDevices(defaultCallType = _state.value.callType)
                                 startCallTimer()
                             }
                         }
@@ -1270,8 +1275,10 @@ class WebRtcEngine private constructor(private val context: Context) {
      * is received, preventing the UI from lingering in a ringing state.
      */
     fun forceEndCallFromPush(callId: String) {
-        if (_state.value.activeCall?.callId == callId) {
-            endCallInternalLocal(CallStatus.MISSED)
+        scope.launch {
+            if (_state.value.activeCall?.callId == callId) {
+                endCallInternalLocal(CallStatus.MISSED)
+            }
         }
     }
 
@@ -1289,12 +1296,21 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        seenCallIds.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
+
+        try {
+            if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()
+        } catch (_: Exception) {}
+        incomingCallWakeLock = null
         
         try { localAudioTrack?.dispose() } catch (_: Exception) {}
         localAudioTrack = null
+        try { audioSource?.dispose() } catch (_: Exception) {}
+        audioSource = null
+
         try { _state.value.localVideoTrack?.dispose() } catch (_: Exception) {}
         try { _state.value.remoteVideoTrack?.dispose() } catch (_: Exception) {}
         
@@ -1303,10 +1319,15 @@ class WebRtcEngine private constructor(private val context: Context) {
             videoCapturer?.dispose()
         } catch (_: Exception) {}
         videoCapturer = null
+        try { videoSource?.dispose() } catch (_: Exception) {}
+        videoSource = null
         try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
         surfaceTextureHelper = null
         
-        try { peerConnection?.close() } catch (_: Exception) {}
+        try {
+            peerConnection?.close()
+            peerConnection?.dispose()
+        } catch (_: Exception) {}
         peerConnection = null
         
         _state.value = WebRtcState(callStatus = status)
@@ -1323,6 +1344,14 @@ class WebRtcEngine private constructor(private val context: Context) {
         unregisterAudioDeviceListeners()
         try {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(null)
+            }
+            audioFocusRequest = null
+
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                 am.clearCommunicationDevice()
             } else {
@@ -1373,31 +1402,34 @@ class WebRtcEngine private constructor(private val context: Context) {
             val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
             
             Thread {
+                var conn: java.net.HttpURLConnection? = null
                 try {
                     val url = java.net.URL(workerUrl)
-                    val conn = url.openConnection() as java.net.HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("X-Worker-Secret", workerSecret)
-                    conn.doOutput = true
+                    conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("X-Worker-Secret", workerSecret)
+                        doOutput = true
+                    }
                     
-                    val json = """
-                        {
-                            "token": "$fcmToken",
-                            "webToken": "$webToken",
-                            "callerName": "$callerName",
-                            "callerNumber": "$callerNumber",
-                            "callType": "$callType",
-                            "callId": "$callId",
-                            "type": "$type"
-                        }
-                    """.trimIndent()
+                    val jsonObj = org.json.JSONObject().apply {
+                        put("token", fcmToken)
+                        put("webToken", webToken)
+                        put("callerName", callerName)
+                        put("callerNumber", callerNumber)
+                        put("callType", callType)
+                        put("callId", callId)
+                        put("type", type)
+                    }
+                    val json = jsonObj.toString()
                     
-                    conn.outputStream.write(json.toByteArray())
+                    conn.outputStream.use { it.write(json.toByteArray()) }
                     val responseCode = conn.responseCode
                     android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode")
                 } catch (e: Exception) {
                     android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
+                } finally {
+                    conn?.disconnect()
                 }
             }.start()
         }

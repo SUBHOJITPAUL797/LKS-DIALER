@@ -368,6 +368,8 @@ class MainActivity : ComponentActivity() {
                                 webRtcEngine.initiateCall(callBackNumber, callBackName, myNum, myName, callBackType)
                             }
                         }
+                        
+                        _incomingIntent.value = null
                     }
                 }
 

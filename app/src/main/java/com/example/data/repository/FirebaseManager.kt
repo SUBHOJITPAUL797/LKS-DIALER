@@ -47,6 +47,9 @@ class FirebaseManager private constructor(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
 
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    private var syncJob: kotlinx.coroutines.Job? = null
+
     private var contactsListener: ListenerRegistration? = null
     private var callLogsListener: ListenerRegistration? = null
     // BUG-14 FIX: Store reference so it can be removed if needed
@@ -140,7 +143,8 @@ class FirebaseManager private constructor(private val context: Context) {
     
     private fun syncDeviceContactsWithUsers(firebaseUsers: List<UserDto>) {
         if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            syncJob?.cancel()
+            syncJob = scope.launch {
                 try {
                     val localContacts = com.example.util.ContactsHelper.getLocalContacts(context)
                     val currentPhone = _currentUser.value?.phoneNumber ?: ""
@@ -229,7 +233,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 val logs = snapshot.toObjects(CallLogDto::class.java)
                 _callLogs.value = logs
 
-                val prefs = context.getSharedPreferences("DialerPrefs", Context.MODE_PRIVATE)
+                val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
                 val lastSeenMissedCallAt = prefs.getLong("lastSeenMissedCallAt", 0L)
                 var maxMissedCallAt = lastSeenMissedCallAt
                 
@@ -559,14 +563,31 @@ class FirebaseManager private constructor(private val context: Context) {
     fun clearCallLogs() {
         _callLogs.value = emptyList()
 
-        if (_isFirebaseConfigured.value) {
+        val userPhone = _currentUser.value?.phoneNumber
+        if (_isFirebaseConfigured.value && !userPhone.isNullOrBlank()) {
             val db = FirebaseFirestore.getInstance()
-            db.collection("callLogs").get().addOnSuccessListener { snapshot ->
+            db.collection("users").document(userPhone).collection("callLogs").get().addOnSuccessListener { snapshot ->
                 for (doc in snapshot.documents) {
                     doc.reference.delete()
                 }
             }
         }
+    }
+
+    fun logout() {
+        usersListener?.remove()
+        usersListener = null
+        contactsListener?.remove()
+        contactsListener = null
+        callLogsListener?.remove()
+        callLogsListener = null
+        syncJob?.cancel()
+        _currentUser.value = null
+        _registeredUsers.value = emptyList()
+        _syncedContacts.value = emptyList()
+        _callLogs.value = emptyList()
+        _contacts.value = emptyList()
+        prefs.edit().clear().apply()
     }
 
     companion object {

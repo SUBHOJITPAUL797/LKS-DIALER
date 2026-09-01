@@ -176,9 +176,13 @@ object LksRingtoneManager {
         try {
             // Check if it's a System Ringtone
             val ringtone = RingtoneManager.getRingtone(context, uri)
-            val title = ringtone?.getTitle(context)
-            if (!title.isNullOrBlank() && !title.startsWith("content://") && !title.startsWith("file://")) {
-                return title
+            try {
+                val title = ringtone?.getTitle(context)
+                if (!title.isNullOrBlank() && !title.startsWith("content://") && !title.startsWith("file://")) {
+                    return title
+                }
+            } finally {
+                ringtone?.stop()
             }
         } catch (_: Exception) {}
 
@@ -242,6 +246,7 @@ object LksRingtoneManager {
     // 5. PREVIEW PLAYBACK IN UI
     // ─────────────────────────────────────────────────────────────────────────────
 
+    @Synchronized
     fun playPreview(context: Context, uri: Uri, onCompletion: (() -> Unit)? = null): Boolean {
         stopPreview()
         try {
@@ -281,6 +286,7 @@ object LksRingtoneManager {
         }
     }
 
+    @Synchronized
     fun isPreviewPlaying(): Boolean {
         return try {
             previewPlayer?.isPlaying == true || previewRingtone?.isPlaying == true
@@ -289,6 +295,7 @@ object LksRingtoneManager {
         }
     }
 
+    @Synchronized
     fun stopPreview() {
         try {
             previewPlayer?.stop()
