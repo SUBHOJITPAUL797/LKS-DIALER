@@ -414,10 +414,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             firestore.collection("calls").document(call.callId).update("status", CallStatus.MISSED.name)
                         } catch (_: Exception) {}
                     } else if ((call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) && (now - call.createdAt > 60_000L)) {
-                        // Delete finished call document from DB to prevent DB bloat
-                        try {
-                            firestore.collection("calls").document(call.callId).delete()
-                        } catch (_: Exception) {}
+                        // Delete finished call document and orphaned candidates to prevent DB bloat
+                        deleteCallAndCandidates(call.callId)
                     }
                 }
 
@@ -1321,6 +1319,19 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
         endCallInternalLocal(CallStatus.ENDED)
+    }
+
+    private fun deleteCallAndCandidates(callId: String) {
+        try {
+            val callRef = firestore.collection("calls").document(callId)
+            callRef.collection("callerCandidates").get().addOnSuccessListener { snap ->
+                for (doc in snap.documents) try { doc.reference.delete() } catch (_: Exception) {}
+            }
+            callRef.collection("calleeCandidates").get().addOnSuccessListener { snap ->
+                for (doc in snap.documents) try { doc.reference.delete() } catch (_: Exception) {}
+            }
+            callRef.delete()
+        } catch (_: Exception) {}
     }
 
     /**

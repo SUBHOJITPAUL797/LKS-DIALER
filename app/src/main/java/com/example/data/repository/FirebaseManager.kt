@@ -97,14 +97,26 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    private val pendingLookups = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private fun checkFirebaseAvailability() {
         try {
             val firestore = FirebaseFirestore.getInstance()
+            try {
+                val settings = com.google.firebase.firestore.FirebaseFirestoreSettings.Builder()
+                    .setLocalCacheSettings(
+                        com.google.firebase.firestore.PersistentCacheSettings.newBuilder()
+                            .setSizeBytes(100 * 1024 * 1024L) // 100MB persistent disk cache
+                            .build()
+                    )
+                    .build()
+                firestore.firestoreSettings = settings
+            } catch (_: Exception) {}
             _isFirebaseConfigured.value = firestore.app != null
             Log.d(TAG, "Firebase configuration check: ${_isFirebaseConfigured.value}")
 
             if (_isFirebaseConfigured.value) {
-                // Start listening to all registered users globally
+                // Fetch recent registered users up to 300 to keep DB reads strictly bounded
                 listenToFirestoreUsers()
             }
         } catch (e: Exception) {
@@ -116,7 +128,9 @@ class FirebaseManager private constructor(private val context: Context) {
     private fun listenToFirestoreUsers() {
         if (!_isFirebaseConfigured.value) return
         usersListener?.remove()
+        // Bound query to 300 to prevent runaway reads at high scale
         usersListener = FirebaseFirestore.getInstance().collection("users")
+            .limit(300)
             .addSnapshotListener { snapshot, e ->
                 if (e != null || snapshot == null) {
                     Log.e(TAG, "Listen to users failed", e)
@@ -284,9 +298,35 @@ class FirebaseManager private constructor(private val context: Context) {
 
     fun lookupUserByNumber(phoneNumber: String): UserDto? {
         val cleanNumber = phoneNumber.replace(" ", "").trim()
-        return _registeredUsers.value.find { it.phoneNumber == cleanNumber } ?: _registeredUsers.value.find {
+        val found = _registeredUsers.value.find { it.phoneNumber == cleanNumber } ?: _registeredUsers.value.find {
             it.phoneNumber.endsWith(cleanNumber.takeLast(10))
         }
+        if (found != null) return found
+
+        // Asynchronously query Firestore for this specific number if not in memory cache
+        if (_isFirebaseConfigured.value && cleanNumber.length >= 7 && pendingLookups.add(cleanNumber)) {
+            scope.launch {
+                try {
+                    val db = FirebaseFirestore.getInstance()
+                    db.collection("users").document(cleanNumber).get().addOnSuccessListener { doc ->
+                        pendingLookups.remove(cleanNumber)
+                        val user = doc.toObject(UserDto::class.java)
+                        if (user != null && user.phoneNumber.isNotBlank()) {
+                            val list = _registeredUsers.value.toMutableList()
+                            if (list.none { it.phoneNumber == user.phoneNumber }) {
+                                list.add(user)
+                                _registeredUsers.value = list
+                            }
+                        }
+                    }.addOnFailureListener {
+                        pendingLookups.remove(cleanNumber)
+                    }
+                } catch (_: Exception) {
+                    pendingLookups.remove(cleanNumber)
+                }
+            }
+        }
+        return null
     }
 
     fun verifyAndRegisterNumber(phoneNumber: String, currentDeviceId: String): RegisterResult {
@@ -567,8 +607,12 @@ class FirebaseManager private constructor(private val context: Context) {
         if (_isFirebaseConfigured.value && !userPhone.isNullOrBlank()) {
             val db = FirebaseFirestore.getInstance()
             db.collection("users").document(userPhone).collection("callLogs").get().addOnSuccessListener { snapshot ->
-                for (doc in snapshot.documents) {
-                    doc.reference.delete()
+                if (!snapshot.isEmpty) {
+                    val batch = db.batch()
+                    for (doc in snapshot.documents) {
+                        batch.delete(doc.reference)
+                    }
+                    batch.commit()
                 }
             }
         }
