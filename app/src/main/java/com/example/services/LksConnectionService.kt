@@ -192,7 +192,7 @@ class LksCallConnection(
             } catch (e: Exception) {
                 Log.e("LksCallConnection", "Failed to launch incoming call UI from Telecom", e)
             }
-        } else {
+        } else if (!com.example.MainActivity.isForeground) {
             Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> showing floating pill")
             // Safety: pill + ringtone may already be started by FCM. isShowingPill guard in showIncoming() prevents duplicate.
             com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)

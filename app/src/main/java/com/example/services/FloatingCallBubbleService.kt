@@ -79,6 +79,12 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            val isLocked = km?.isKeyguardLocked == true
+            if (com.example.MainActivity.isForeground || isLocked) {
+                Log.d(TAG, "Full screen incoming call is showing (isForeground=${com.example.MainActivity.isForeground}, isLocked=$isLocked) - suppressing pill")
+                return
+            }
             // NOTE: Don't block on canDrawOverlays here — the service must start
             // for ringtone playback even without overlay permission. The pill UI
             // rendering is gated inside onStartCommand.
@@ -240,14 +246,21 @@ class FloatingCallBubbleService : Service() {
             startRinging(callerNumber)
             val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
             val isLocked = km?.isKeyguardLocked == true
-            // Only show floating pill overlay if unlocked (when locked, full-screen MainActivity is shown)
+            val isAppInForeground = com.example.MainActivity.isForeground
+            // Only show floating pill overlay if unlocked AND MainActivity is NOT showing full screen in foreground
             val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
-            if (canOverlay && !isLocked) {
+            if (canOverlay && !isLocked && !isAppInForeground) {
                 showIncomingCallPill()
+            } else {
+                removeFloatingView()
             }
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
-            showActiveCallPill()
+            if (!com.example.MainActivity.isForeground) {
+                showActiveCallPill()
+            } else {
+                removeFloatingView()
+            }
         }
 
         return START_NOT_STICKY
@@ -266,6 +279,13 @@ class FloatingCallBubbleService : Service() {
     // ─────────────────────────────────────────────────────────────────────────────
     @SuppressLint("ClickableViewAccessibility")
     private fun showIncomingCallPill() {
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+        val isLocked = km?.isKeyguardLocked == true
+        if (com.example.MainActivity.isForeground || isLocked) {
+            Log.d(TAG, "Full screen incoming call is active (isForeground=${com.example.MainActivity.isForeground}, isLocked=$isLocked) - suppressing pill")
+            removeFloatingView()
+            return
+        }
         removeFloatingView()
         val wm = windowManager ?: return
 
@@ -466,6 +486,11 @@ class FloatingCallBubbleService : Service() {
     // ─────────────────────────────────────────────────────────────────────────────
     @SuppressLint("ClickableViewAccessibility")
     private fun showActiveCallPill() {
+        if (com.example.MainActivity.isForeground) {
+            Log.d(TAG, "MainActivity is in foreground - suppressing active call pill overlay")
+            removeFloatingView()
+            return
+        }
         removeFloatingView()
         val wm = windowManager ?: return
 

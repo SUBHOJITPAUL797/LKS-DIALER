@@ -62,6 +62,12 @@ enum class AppNavState {
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        @Volatile
+        var isForeground: Boolean = false
+            private set
+    }
+
     // Needed so FLAG_ACTIVITY_SINGLE_TOP re-delivers the intent
     // when the activity is already running (e.g. user taps Accept while app is open)
     private val _incomingIntent = androidx.compose.runtime.mutableStateOf<android.content.Intent?>(null)
@@ -88,12 +94,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        isForeground = true
         // Dismiss floating pill when user is viewing the full-screen MainActivity
         com.example.services.FloatingCallBubbleService.hide(this)
         
         // Cancel the redundant heads-up notification card immediately so it doesn't cover the full-screen call UI
         val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
         nm?.cancel(1001)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isForeground = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isForeground = false
     }
 
     override fun onUserLeaveHint() {
@@ -109,6 +126,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun triggerFloatingCallBubbleIfActive() {
+        isForeground = false
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
         val activeCall = rtcState.activeCall ?: return
 
@@ -203,6 +221,7 @@ class MainActivity : ComponentActivity() {
                     val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing
 
                     if (isIncomingRinging) {
+                        com.example.services.FloatingCallBubbleService.hide(context)
                         if (!LksIncomingRingtonePlayer.isRinging) {
                             val callerNumber = rtcState.activeCall?.callerNumber ?: ""
                             LksIncomingRingtonePlayer.start(context, callerNumber)

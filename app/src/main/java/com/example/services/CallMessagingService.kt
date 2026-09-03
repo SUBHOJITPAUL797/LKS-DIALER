@@ -364,11 +364,13 @@ class CallMessagingService : FirebaseMessagingService() {
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
 
         // ─── Start FloatingCallBubbleService (Foreground Service with Microphone type) ───
-        // Provides foreground service priority and unrestricted audio playback on both locked and unlocked screens.
-        try {
-            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-        } catch (e: Exception) {
-            Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
+        // Only show floating incoming pill if unlocked and NOT already showing in foreground
+        if (!isLocked && !com.example.MainActivity.isForeground) {
+            try {
+                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+            } catch (e: Exception) {
+                Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
+            }
         }
 
         // Wake screen if locked
@@ -398,13 +400,16 @@ class CallMessagingService : FirebaseMessagingService() {
                                        engine.state.value.callStatus == com.example.data.model.CallStatus.MISSED)) {
                     return@postDelayed
                 }
+                if (com.example.MainActivity.isForeground) {
+                    return@postDelayed
+                }
                 val km = appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 val currentlyLocked = km?.isKeyguardLocked == true
                 if (currentlyLocked) {
                     // Full-screen activity should already be launched by Telecom or fullScreenIntent.
                     // If not visible yet, try launching it.
                     try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
-                } else if (!com.example.services.FloatingCallBubbleService.isShowingPill) {
+                } else if (!com.example.MainActivity.isForeground && !com.example.services.FloatingCallBubbleService.isShowingPill) {
                     // Pill not shown yet — try again
                     val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
                     if (canOverlay) {
