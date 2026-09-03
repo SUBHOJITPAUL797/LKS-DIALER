@@ -97,7 +97,11 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
     private val iceServers = listOf(
-        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer()
     )
 
     init {
@@ -601,29 +605,46 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (hasProcessedOffer) return
         val call = _state.value.activeCall ?: return
         val offerSdp = call.offerSdp ?: return
-        if (peerConnection == null || peerConnection?.remoteDescription != null) return
+        val pc = peerConnection ?: return
+        if (pc.remoteDescription != null) return
         
         hasProcessedOffer = true
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
-        peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+        pc.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
                 Log.i("WebRtcEngine", "Remote offer SDP set successfully")
                 drainQueuedRemoteIceCandidates()
+                
+                val constraints = MediaConstraints().apply {
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (_state.value.callType == CallType.VIDEO) "true" else "false"))
+                }
+                
+                pc.createAnswer(object : SimpleSdpObserver() {
+                    override fun onCreateSuccess(desc: SessionDescription?) {
+                        if (desc != null) {
+                            pc.setLocalDescription(object : SimpleSdpObserver() {
+                                override fun onSetSuccess() {
+                                    Log.i("WebRtcEngine", "Local answer SDP set successfully, uploading to Firestore")
+                                    firestore.collection("calls").document(call.callId)
+                                        .update("answerSdp", desc.description)
+                                }
+                                override fun onSetFailure(error: String?) {
+                                    Log.e("WebRtcEngine", "Failed to set local answer: $error")
+                                }
+                            }, desc)
+                        }
+                    }
+                    override fun onCreateFailure(error: String?) {
+                        Log.e("WebRtcEngine", "Failed to create answer: $error")
+                    }
+                }, constraints)
+            }
+            override fun onSetFailure(error: String?) {
+                Log.e("WebRtcEngine", "Failed to set remote offer SDP: $error")
+                hasProcessedOffer = false
             }
         }, sessionDescription)
-        
-        val constraints = MediaConstraints()
-        peerConnection?.createAnswer(object : SdpObserver {
-            override fun onCreateSuccess(desc: SessionDescription?) {
-                if (desc != null) {
-                    peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                    firestore.collection("calls").document(call.callId).update("answerSdp", desc.description)
-                }
-            }
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
-        }, constraints)
     }
 
     private fun configureAudio(callType: CallType) {
@@ -718,7 +739,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                         }
 
-                        if (isCaller && call.answerSdp != null && call.answerSdp != oldCall?.answerSdp) {
+                        if (isCaller && call.status == CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ANSWERED) {
+                            _state.value = _state.value.copy(
+                                callStatus = CallStatus.ANSWERED,
+                                connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
+                            )
+                            if (_state.value.callDurationSeconds == 0) {
+                                startCallTimer()
+                            }
+                        }
+
+                        if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
                             hasProcessedAnswer = true
                             val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
                             peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
@@ -726,43 +757,22 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     Log.i("WebRtcEngine", "Remote answer SDP set successfully")
                                     drainQueuedRemoteIceCandidates()
                                 }
+                                override fun onSetFailure(error: String?) {
+                                    Log.e("WebRtcEngine", "Failed to set remote answer: $error")
+                                }
                             }, sessionDescription)
-                            if (_state.value.callStatus != CallStatus.ANSWERED) {
-                                _state.value = _state.value.copy(
-                                    callStatus = CallStatus.ANSWERED,
-                                    connectionStatusText = "Connected • WebRTC"
-                                )
-                                refreshAvailableAudioDevices(defaultCallType = _state.value.callType)
+                            _state.value = _state.value.copy(
+                                callStatus = CallStatus.ANSWERED,
+                                connectionStatusText = "Connected • WebRTC"
+                            )
+                            refreshAvailableAudioDevices(defaultCallType = _state.value.callType)
+                            if (_state.value.callDurationSeconds == 0) {
                                 startCallTimer()
                             }
                         }
                         
-                        if (!isCaller && call.offerSdp != null && call.offerSdp != oldCall?.offerSdp) {
-                            // New offer received (e.g. during video upgrade renegotiation)
-                            if (_state.value.callStatus == CallStatus.ANSWERED) {
-                                val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, call.offerSdp)
-                                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                                    override fun onSetSuccess() {
-                                        drainQueuedRemoteIceCandidates()
-                                    }
-                                }, sessionDescription)
-                                
-                                val constraints = MediaConstraints()
-                                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-                                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
-                                
-                                peerConnection?.createAnswer(object : SimpleSdpObserver() {
-                                    override fun onCreateSuccess(desc: SessionDescription?) {
-                                        peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                                        desc?.let {
-                                            firestore.collection("calls").document(call.callId)
-                                                .update("answerSdp", it.description)
-                                        }
-                                    }
-                                }, constraints)
-                            } else {
-                                processOfferSdpIfAvailable()
-                            }
+                        if (!isCaller && call.offerSdp != null && (!hasProcessedOffer || call.offerSdp != oldCall?.offerSdp)) {
+                            processOfferSdpIfAvailable()
                         }
                         
                         if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
