@@ -1143,11 +1143,8 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             when (device.type) {
                 AudioDeviceType.SPEAKERPHONE -> {
-                    @Suppress("DEPRECATION")
-                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
-                    am.isSpeakerphoneOn = true
-                    
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        am.clearCommunicationDevice()
                         val speaker = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER 
                         }
@@ -1155,14 +1152,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val res = am.setCommunicationDevice(speaker)
                             Log.d("WebRtcEngine", "setCommunicationDevice(SPEAKER): $res")
                         }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
+                    am.isSpeakerphoneOn = true
                 }
                 AudioDeviceType.EARPIECE -> {
-                    @Suppress("DEPRECATION")
-                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
-                    am.isSpeakerphoneOn = false
-                    
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        am.clearCommunicationDevice()
                         val earpiece = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
                         }
@@ -1170,7 +1168,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val res = am.setCommunicationDevice(earpiece)
                             Log.d("WebRtcEngine", "setCommunicationDevice(EARPIECE): $res")
                         }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
+                    am.isSpeakerphoneOn = false
                 }
                 AudioDeviceType.BLUETOOTH -> {
                     am.isSpeakerphoneOn = false
@@ -1190,20 +1192,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val res = am.setCommunicationDevice(bt)
                             Log.d("WebRtcEngine", "setCommunicationDevice(BLUETOOTH - ${bt.productName}): $res")
                         }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        try {
+                            am.startBluetoothSco()
+                            am.isBluetoothScoOn = true
+                        } catch (_: Exception) {}
                     }
-                    
-                    @Suppress("DEPRECATION")
-                    try {
-                        am.startBluetoothSco()
-                        am.isBluetoothScoOn = true
-                    } catch (_: Exception) {}
                 }
                 AudioDeviceType.WIRED_HEADSET -> {
-                    @Suppress("DEPRECATION")
-                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
-                    am.isSpeakerphoneOn = false
-                    
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                        am.clearCommunicationDevice()
                         val wired = if (device.rawDevice is android.media.AudioDeviceInfo) {
                             device.rawDevice as android.media.AudioDeviceInfo
                         } else {
@@ -1218,7 +1217,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val res = am.setCommunicationDevice(wired)
                             Log.d("WebRtcEngine", "setCommunicationDevice(WIRED - ${wired.productName}): $res")
                         }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
+                    am.isSpeakerphoneOn = false
                 }
             }
         } catch (e: Exception) {

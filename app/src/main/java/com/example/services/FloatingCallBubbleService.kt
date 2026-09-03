@@ -373,7 +373,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 stopRinging()
-                WebRtcEngine.getInstanceIfCreated()?.endCall()
+                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 removeFloatingView()
@@ -396,8 +396,8 @@ class FloatingCallBubbleService : Service() {
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 // Answer directly via WebRtcEngine in background
-                val engine = WebRtcEngine.getInstanceIfCreated()
-                engine?.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
+                val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
+                engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
                 // Switch pill to active in-call pill
                 showActiveCallPill()
             }
@@ -442,8 +442,7 @@ class FloatingCallBubbleService : Service() {
                     lastPillX = params.x
                     lastPillY = params.y
                     if (!isDragging) {
-                        stopRinging()
-                        // Tapping the card area opens full screen
+                        // Tapping the card area opens full screen without prematurely silencing ringtone
                         openFullScreenCallActivity(callId, autoAnswer = false)
                     }
                     true
@@ -648,7 +647,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 stopRinging()
-                WebRtcEngine.getInstanceIfCreated()?.endCall()
+                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 removeFloatingView()
