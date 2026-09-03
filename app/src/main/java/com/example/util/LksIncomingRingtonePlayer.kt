@@ -7,8 +7,11 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -17,13 +20,14 @@ import android.util.Log
 
 /**
  * LksIncomingRingtonePlayer
- * Industry-grade, bulletproof ringtone and vibration manager.
+ * Bulletproof, non-stopping ringtone and vibration manager.
  * 
- * 1. Resolves ACTUAL media URI (not virtual settings URI) for seamless MediaPlayer playback.
- * 2. Requests transient AudioFocus on STREAM_RING / USAGE_NOTIFICATION_RINGTONE.
- * 3. CPU Partial WakeLock ensures playback continuous across locked / deep sleep states.
- * 4. Dual-Engine: Looping MediaPlayer (primary) + RingtoneManager (fallback).
- * 5. Full volume output and automatic loop continuation.
+ * 1. Looping MediaPlayer with AssetFileDescriptor fallback.
+ * 2. Active Loop Monitor (ticks every 800ms) that detects if a 3-second system sound finished
+ *    and immediately restarts playback, guaranteeing the ringtone NEVER stops after 3 seconds.
+ * 3. Continuous hardware ToneGenerator fallback if audio files cannot be decoded.
+ * 4. Requests exclusive AUDIOFOCUS_GAIN_TRANSIENT so system chimes cannot silence the ringtone.
+ * 5. Partial WakeLock keeps CPU running continuously through lockscreen deep-sleep.
  */
 object LksIncomingRingtonePlayer {
     private const val TAG = "LksRingtonePlayer"
@@ -31,13 +35,50 @@ object LksIncomingRingtonePlayer {
     private var appContext: Context? = null
     private var mediaPlayer: MediaPlayer? = null
     private var ringtone: Ringtone? = null
+    private var toneGenerator: ToneGenerator? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var audioFocusRequest: AudioFocusRequest? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     @Volatile
     var isRinging: Boolean = false
         private set
+
+    /**
+     * Active Loop Monitor:
+     * System ringtones played via RingtoneManager often play once for 3-4 seconds and stop because
+     * Android's IRingtonePlayer IPC ignores isLooping for 3rd-party apps.
+     * This monitor checks every 800ms: if the ringtone stopped playing while isRinging is true,
+     * it immediately restarts it, ensuring an unbroken, continuous ring until answered.
+     */
+    private val loopMonitorRunnable = object : Runnable {
+        override fun run() {
+            if (!isRinging) return
+            try {
+                if (mediaPlayer != null) {
+                    if (!mediaPlayer!!.isPlaying) {
+                        Log.d(TAG, "MediaPlayer paused or finished loop cycle, restarting...")
+                        mediaPlayer!!.start()
+                    }
+                } else if (ringtone != null) {
+                    if (!ringtone!!.isPlaying) {
+                        Log.d(TAG, "Ringtone completed 3-second cycle, replaying loop...")
+                        ringtone!!.play()
+                    }
+                } else if (toneGenerator == null) {
+                    Log.d(TAG, "No active audio player found during ring, activating ToneGenerator fallback...")
+                    startToneGeneratorFallback()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Loop monitor error: ${e.message}")
+            }
+            if (isRinging) {
+                mainHandler.postDelayed(this, 800L)
+            }
+        }
+    }
 
     /**
      * Start playing incoming call ringtone and vibration.
@@ -46,12 +87,14 @@ object LksIncomingRingtonePlayer {
     @Synchronized
     fun start(context: Context, callerNumber: String) {
         if (isRinging) {
-            Log.d(TAG, "Already ringing actively, skipping duplicate start")
+            Log.d(TAG, "Already ringing actively, ensuring loop monitor is running")
+            mainHandler.removeCallbacks(loopMonitorRunnable)
+            mainHandler.postDelayed(loopMonitorRunnable, 800L)
             return
         }
 
         isRinging = true
-        Log.i(TAG, "🔔 STARTING RINGTONE for caller: $callerNumber")
+        Log.i(TAG, "🔔 STARTING BULLETPROOF RINGTONE for caller: $callerNumber")
 
         val appCtx = context.applicationContext
         appContext = appCtx
@@ -68,11 +111,10 @@ object LksIncomingRingtonePlayer {
             Log.w(TAG, "Failed to acquire ringtone wake lock: ${e.message}")
         }
 
-        // 2. Set AudioManager mode to MODE_RINGTONE and request audio focus
+        // 2. Set AudioManager mode to MODE_RINGTONE
         val audioManager = appCtx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
 
-        // Force AudioManager into MODE_RINGTONE to wake hardware audio amplifier on locked screen
         try {
             audioManager?.mode = AudioManager.MODE_RINGTONE
             audioManager?.isSpeakerphoneOn = true
@@ -91,10 +133,10 @@ object LksIncomingRingtonePlayer {
             return
         }
 
-        // Request Audio Focus on STREAM_RING
+        // Request Audio Focus on STREAM_RING (AUDIOFOCUS_GAIN_TRANSIENT so nothing ducks us)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                     .setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -102,12 +144,21 @@ object LksIncomingRingtonePlayer {
                             .setLegacyStreamType(AudioManager.STREAM_RING)
                             .build()
                     )
+                    .setOnAudioFocusChangeListener { focusChange ->
+                        Log.d(TAG, "Ringtone AudioFocus changed: $focusChange")
+                        if (focusChange == AudioManager.AUDIOFOCUS_GAIN && isRinging) {
+                            try {
+                                if (mediaPlayer?.isPlaying == false) mediaPlayer?.start()
+                                if (ringtone?.isPlaying == false) ringtone?.play()
+                            } catch (_: Exception) {}
+                        }
+                    }
                     .build()
                 audioFocusRequest = focusReq
                 audioManager?.requestAudioFocus(focusReq)
             } else {
                 @Suppress("DEPRECATION")
-                audioManager?.requestAudioFocus(null, AudioManager.STREAM_RING, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                audioManager?.requestAudioFocus(null, AudioManager.STREAM_RING, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Audio focus request failed: ${e.message}")
@@ -124,18 +175,31 @@ object LksIncomingRingtonePlayer {
 
         Log.d(TAG, "Resolved Ringtone URI: $resolvedUri")
 
-        // 4. PRIMARY ENGINE: Looping MediaPlayer for custom audio songs, trimmed clips & local media
+        // 4. PRIMARY ENGINE: Looping MediaPlayer with AssetFileDescriptor fallback
         var playedViaMediaPlayer = false
         try {
             val player = MediaPlayer()
+            var dataSourceSet = false
+
             if (resolvedUri.scheme == "file" && resolvedUri.path != null) {
                 val file = java.io.File(resolvedUri.path!!)
                 if (file.exists() && file.length() > 0) {
                     player.setDataSource(file.absolutePath)
-                } else {
-                    player.setDataSource(appCtx, resolvedUri)
+                    dataSourceSet = true
                 }
-            } else {
+            }
+
+            if (!dataSourceSet) {
+                // Try opening AssetFileDescriptor for content:// media/settings URIs
+                try {
+                    appCtx.contentResolver.openAssetFileDescriptor(resolvedUri, "r")?.use { afd ->
+                        player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                        dataSourceSet = true
+                    }
+                } catch (_: Exception) {}
+            }
+
+            if (!dataSourceSet) {
                 player.setDataSource(appCtx, resolvedUri)
             }
 
@@ -154,9 +218,10 @@ object LksIncomingRingtonePlayer {
                 } catch (_: Exception) {}
             }
             player.setOnErrorListener { mp, what, extra ->
-                Log.w(TAG, "MediaPlayer error ($what, $extra)")
+                Log.w(TAG, "MediaPlayer error ($what, $extra), switching to fallback")
                 try { mp.release() } catch (_: Exception) {}
                 mediaPlayer = null
+                playFallbackRingtone(appCtx, resolvedUri)
                 true
             }
             player.prepare()
@@ -170,34 +235,57 @@ object LksIncomingRingtonePlayer {
             mediaPlayer = null
         }
 
-        // 5. FALLBACK ENGINE: android.media.Ringtone (system-level IRingtonePlayer for default system sounds)
+        // 5. FALLBACK ENGINE: RingtoneManager
         if (!playedViaMediaPlayer) {
-            try {
-                var r = RingtoneManager.getRingtone(appCtx, resolvedUri)
-                if (r == null) {
-                    val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
-                        ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                    r = RingtoneManager.getRingtone(appCtx, fallbackUri)
-                }
+            playFallbackRingtone(appCtx, resolvedUri)
+        }
 
-                if (r != null) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        r.audioAttributes = AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .setLegacyStreamType(AudioManager.STREAM_RING)
-                            .build()
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        r.isLooping = true
-                    }
-                    r.play()
-                    ringtone = r
-                    Log.i(TAG, "✅ Ringtone PLAYING via IRingtonePlayer fallback")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "RingtoneManager fallback also failed: ${e.message}")
+        // 6. Start Loop Monitor to guarantee playback never cuts out
+        mainHandler.removeCallbacks(loopMonitorRunnable)
+        mainHandler.postDelayed(loopMonitorRunnable, 800L)
+    }
+
+    private fun playFallbackRingtone(appCtx: Context, uri: Uri) {
+        try {
+            var r = RingtoneManager.getRingtone(appCtx, uri)
+            if (r == null) {
+                val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                r = RingtoneManager.getRingtone(appCtx, fallbackUri)
             }
+
+            if (r != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    r.audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setLegacyStreamType(AudioManager.STREAM_RING)
+                        .build()
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    r.isLooping = true
+                }
+                r.play()
+                ringtone = r
+                Log.i(TAG, "✅ Ringtone PLAYING via IRingtonePlayer fallback")
+            } else {
+                startToneGeneratorFallback()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "RingtoneManager fallback also failed: ${e.message}, using ToneGenerator")
+            startToneGeneratorFallback()
+        }
+    }
+
+    private fun startToneGeneratorFallback() {
+        try {
+            if (toneGenerator == null) {
+                toneGenerator = ToneGenerator(AudioManager.STREAM_RING, 100)
+                toneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+                Log.i(TAG, "✅ Continuous hardware ToneGenerator ringing active")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "ToneGenerator fallback failed: ${e.message}")
         }
     }
 
@@ -206,12 +294,13 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun stop() {
-        if (!isRinging && mediaPlayer == null && ringtone == null && vibrator == null) {
+        if (!isRinging && mediaPlayer == null && ringtone == null && toneGenerator == null && vibrator == null) {
             return
         }
 
         isRinging = false
         Log.i(TAG, "⏹️ STOPPING RINGTONE and vibration")
+        mainHandler.removeCallbacks(loopMonitorRunnable)
 
         try {
             mediaPlayer?.stop()
@@ -223,6 +312,12 @@ object LksIncomingRingtonePlayer {
             ringtone?.stop()
         } catch (_: Exception) {}
         ringtone = null
+
+        try {
+            toneGenerator?.stopTone()
+            toneGenerator?.release()
+        } catch (_: Exception) {}
+        toneGenerator = null
 
         try {
             vibrator?.cancel()
@@ -255,6 +350,8 @@ object LksIncomingRingtonePlayer {
     @Synchronized
     fun silence() {
         Log.i(TAG, "🔇 SILENCING RINGTONE")
+        mainHandler.removeCallbacks(loopMonitorRunnable)
+
         try {
             mediaPlayer?.stop()
             mediaPlayer?.release()
@@ -265,6 +362,12 @@ object LksIncomingRingtonePlayer {
             ringtone?.stop()
         } catch (_: Exception) {}
         ringtone = null
+
+        try {
+            toneGenerator?.stopTone()
+            toneGenerator?.release()
+        } catch (_: Exception) {}
+        toneGenerator = null
 
         try {
             vibrator?.cancel()

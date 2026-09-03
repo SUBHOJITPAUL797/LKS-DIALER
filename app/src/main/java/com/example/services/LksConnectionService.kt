@@ -166,9 +166,10 @@ class LksCallConnection(
     }
 
     override fun onSilence() {
-        Log.i("LksCallConnection", "Ringtone silenced by hardware button on callId=$callId")
-        com.example.util.LksIncomingRingtonePlayer.silence()
-        FloatingCallBubbleService.silenceRingtone(context)
+        Log.i("LksCallConnection", "Telecom onSilence called on callId=$callId")
+        // NOTE: Do NOT silence LksIncomingRingtonePlayer here! Telecom invokes onSilence autonomously
+        // on Samsung/Xiaomi when focus shifts or when notification is posted.
+        // Hardware volume key silencing is handled directly in MainActivity.dispatchKeyEvent.
     }
 
     override fun onShowIncomingCallUi() {

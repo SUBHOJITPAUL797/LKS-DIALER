@@ -47,6 +47,8 @@ object LksTelecomManager {
         }
     }
 
+    private val reportedIncomingCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     fun reportIncomingCall(
         context: Context,
         callId: String,
@@ -55,6 +57,13 @@ object LksTelecomManager {
         callType: CallType
     ) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (callId.isNotBlank()) {
+            if (reportedIncomingCalls.size > 50) reportedIncomingCalls.clear()
+            if (!reportedIncomingCalls.add(callId)) {
+                Log.d(TAG, "Incoming call $callId already reported to Telecom, skipping duplicate")
+                return
+            }
+        }
         try {
             registerPhoneAccount(context)
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
