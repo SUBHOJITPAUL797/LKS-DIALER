@@ -6,13 +6,16 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
@@ -163,6 +166,21 @@ class FloatingCallBubbleService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private var stateObserverJob: Job? = null
 
+    // BUG-23: Volume key receiver — FLAG_NOT_FOCUSABLE overlays cannot receive KeyEvents,
+    // so we intercept AudioManager.VOLUME_CHANGED_ACTION broadcasts instead.
+    private val volumeKeyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != "android.media.VOLUME_CHANGED_ACTION") return
+            val engine = WebRtcEngine.getInstanceIfCreated() ?: return
+            if (engine.state.value.callStatus == CallStatus.RINGING) {
+                Log.d(TAG, "Volume key pressed while ringing — silencing ringtone")
+                com.example.util.LksIncomingRingtonePlayer.silence()
+                instance?.stopRinging()
+            }
+        }
+    }
+    private var volumeReceiverRegistered = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -174,6 +192,19 @@ class FloatingCallBubbleService : Service() {
             startServiceForeground("Call in progress")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground in onCreate: ${e.message}")
+        }
+        // BUG-23: Register volume key broadcast receiver so incoming ringtone is silenced
+        // when user presses volume keys while the floating pill overlay is displayed.
+        try {
+            val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(volumeKeyReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(volumeKeyReceiver, filter)
+            }
+            volumeReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register volume key receiver: ${e.message}")
         }
         observeEngineState()
     }
@@ -188,6 +219,11 @@ class FloatingCallBubbleService : Service() {
         }
         stateObserverJob?.cancel()
         serviceJob.cancel()
+        // BUG-23: Unregister volume key receiver
+        if (volumeReceiverRegistered) {
+            try { unregisterReceiver(volumeKeyReceiver) } catch (_: Exception) {}
+            volumeReceiverRegistered = false
+        }
         removeFloatingView()
     }
 

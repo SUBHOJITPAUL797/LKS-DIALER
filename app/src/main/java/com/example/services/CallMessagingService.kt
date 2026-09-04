@@ -328,10 +328,9 @@ class CallMessagingService : FirebaseMessagingService() {
                 ).build()
             )
 
-        // Only attach fullScreenIntent on locked to prevent forced full-screen takeover when unlocked
-        if (isLocked) {
-            builder.setFullScreenIntent(fullScreenPendingIntent, true)
-        }
+        // BUG-24: Always attach fullScreenIntent. When locked → high priority forces full-screen.
+        // When unlocked → false priority still re-shows activity when screen turns back on after Power button press.
+        builder.setFullScreenIntent(fullScreenPendingIntent, isLocked)
 
         val notification = builder.build()
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -377,6 +376,37 @@ class CallMessagingService : FirebaseMessagingService() {
             } catch (e: Exception) {
                 Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
             }
+        }
+
+        // BUG-24: Register a one-shot ACTION_SCREEN_ON / ACTION_USER_PRESENT receiver so that when
+        // the user presses Power button (screen off) and then turns it back on, we relaunch the
+        // full-screen call activity instead of leaving the call collapsed in the notification shade.
+        val screenOnReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val action = intent?.action ?: return
+                if (action != Intent.ACTION_SCREEN_ON && action != Intent.ACTION_USER_PRESENT) return
+                try {
+                    val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                    val status = engine?.state?.value?.callStatus
+                    if (status == com.example.data.model.CallStatus.RINGING &&
+                        !com.example.MainActivity.isForeground) {
+                        Log.d("FCM", "Screen turned on during ringing — relaunching full-screen call UI (BUG-24)")
+                        ctx?.startActivity(fullScreenIntent)
+                    }
+                } catch (e: Exception) {
+                    Log.w("FCM", "BUG-24 screen-on handler failed: ${e.message}")
+                }
+                try { ctx?.unregisterReceiver(this) } catch (_: Exception) {}
+            }
+        }
+        try {
+            val screenFilter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            registerReceiver(screenOnReceiver, screenFilter)
+        } catch (e: Exception) {
+            Log.w("FCM", "Failed to register screen-on receiver: ${e.message}")
         }
 
         // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s,

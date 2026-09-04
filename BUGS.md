@@ -30,6 +30,9 @@ This document tracks all identified bugs and stability enhancements across the L
 | **BUG-20** | Loudspeaker reset to Earpiece when outgoing call connects (Telecom active transition override) | 🔴 CRITICAL | `services/LksConnectionService.kt`, `webrtc/WebRtcEngine.kt` | ✅ Fixed |
 | **BUG-21** | Remote party not receiving Call Hold status (Firestore JavaBean mapping & phone format mismatch) | 🔴 CRITICAL | `data/model/Models.kt`, `webrtc/WebRtcEngine.kt` | ✅ Fixed |
 | **BUG-22** | Switching from Bluetooth to Speaker/Earpiece on Samsung fails (Telecom echo & audio policy override) | 🔴 CRITICAL | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-23** | Volume button does not silence ringtone when floating pill is showing (FLAG_NOT_FOCUSABLE blocks KeyEvents) | 🟡 MEDIUM | `services/FloatingCallBubbleService.kt` | ✅ Fixed |
+| **BUG-24** | Power button press collapses incoming call to notification — full-screen UI not shown on screen-on | 🟡 MEDIUM | `services/CallMessagingService.kt` | ✅ Fixed |
+| **BUG-25** | Outgoing call auto-placed on hold before it is answered (AUDIOFOCUS_LOSS_TRANSIENT echo on call start) | 🔴 CRITICAL | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
 
 ---
 
@@ -235,3 +238,30 @@ This document tracks all identified bugs and stability enhancements across the L
   3. Disconnect Bluetooth SCO cleanly (`if (am.isBluetoothScoOn) { am.isBluetoothScoOn = false; am.stopBluetoothSco() }`) and call `setCommunicationDevice` directly using resolved `rawDevice` before falling back to `clearCommunicationDevice()`.
 
 
+---
+
+### BUG-23: Volume Button Does Not Silence Ringtone on Floating Pill
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/services/FloatingCallBubbleService.kt`
+- **Root Cause**: The floating incoming call pill is created with `WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE`. This flag means the overlay never receives keyboard or hardware key events. `MainActivity.dispatchKeyEvent()` correctly silences the ringtone on volume key press, but when the floating pill is showing, `MainActivity` is in the background (`isForeground = false`) and does not receive any key events at all.
+- **Fix**: Register an `AudioManager.VOLUME_CHANGED_ACTION` broadcast receiver in `FloatingCallBubbleService.onCreate()`. When the broadcast fires while `callStatus == RINGING`, call `LksIncomingRingtonePlayer.silence()` to silence the ringtone. Unregister the receiver in `onDestroy()`.
+
+---
+
+### BUG-24: Power Button Press Collapses Incoming Call to Notification
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/services/CallMessagingService.kt`
+- **Root Cause**: `setFullScreenIntent()` was only attached to the incoming call notification when `isLocked == true`. When the user pressed Power (screen off) and back on, Android considers the screen unlocked briefly before showing the lockscreen again, and the notification downgraded to a normal heads-up (or silent) notification since `isLocked` was `false` at push delivery time. On screen-on, no activity was launched.
+- **Fix**:
+  1. Always call `builder.setFullScreenIntent(fullScreenPendingIntent, isLocked)` — `highPriority = true` when locked (forces full-screen), `false` when unlocked (does not force takeover but allows the system to show full-screen on wakeup).
+  2. Register a one-shot `ACTION_SCREEN_ON` / `ACTION_USER_PRESENT` broadcast receiver immediately after posting the notification. If the screen turns on while `callStatus == RINGING` and `MainActivity` is not in foreground, relaunch the full-screen call activity.
+
+---
+
+### BUG-25: Outgoing Call Auto-Placed On Hold Before Answered
+- **Severity**: 🔴 Critical
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: In `configureAudio()`, the engine requests `AUDIOFOCUS_GAIN` for voice communication. This causes Android to fire `AUDIOFOCUS_LOSS_TRANSIENT` to any app that previously held audio focus (e.g. a music player). The audio system then echoes this event back through `audioFocusChangeListener` as part of the focus handoff bookkeeping. Since the listener had no guard for call state, it unconditionally called `putCallOnHold(true, isCellularInterruption = true)` — placing the outgoing call on hold before the callee even picked up.
+- **Fix**:
+  1. Added guard: if `_state.value.callStatus == CALLING || RINGING`, return immediately from the `AUDIOFOCUS_LOSS_TRANSIENT` handler — the call is not active yet, this is not a real cellular interruption.
+  2. Added 5-second startup cooldown via `callAudioFocusGrantedAt` timestamp: if audio focus was acquired less than 5 seconds ago, suppress auto-hold to absorb any residual system ducking transients during call setup.

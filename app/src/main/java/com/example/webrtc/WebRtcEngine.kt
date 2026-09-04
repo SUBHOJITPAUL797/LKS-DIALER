@@ -76,6 +76,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var userExplicitSelectedDevice: AudioDeviceType? = null
     @Volatile
     private var isCellularCallInterrupting: Boolean = false
+    // Timestamp when audio focus was acquired for the current call — suppress spurious
+    // AUDIOFOCUS_LOSS_TRANSIENT events that fire immediately on call start (media ducking echo)
+    @Volatile
+    private var callAudioFocusGrantedAt: Long = 0L
     private var samsungVoiceFocusEffect: Any? = null
     private val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
 
@@ -84,6 +88,20 @@ class WebRtcEngine private constructor(private val context: Context) {
         when (focusChange) {
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                val currentStatus = _state.value.callStatus
+                val timeSinceFocusGrant = System.currentTimeMillis() - callAudioFocusGrantedAt
+                // BUG-25 guard: Do NOT auto-hold if:
+                //  1. The call hasn't been answered yet (still CALLING/RINGING) — this is a media-ducking
+                //     echo from the system handing focus to our VoIP session, not a real cellular interrupt.
+                //  2. Audio focus was acquired less than 5 seconds ago — startup transient noise.
+                if (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING) {
+                    Log.d("WebRtcEngine", "Suppressing auto-hold: call still in $currentStatus state — not a real interruption")
+                    return@OnAudioFocusChangeListener
+                }
+                if (timeSinceFocusGrant < 5000L) {
+                    Log.d("WebRtcEngine", "Suppressing auto-hold: audio focus granted only ${timeSinceFocusGrant}ms ago — startup transient")
+                    return@OnAudioFocusChangeListener
+                }
                 // Cellular phone call or high-priority audio interruption — silence mic and put on hold
                 Log.i("WebRtcEngine", "Cellular call interruption — muting mic and placing VoIP call on hold")
                 isCellularCallInterrupting = true
@@ -768,6 +786,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             @Suppress("DEPRECATION")
             am.requestAudioFocus(audioFocusChangeListener, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN)
         }
+        callAudioFocusGrantedAt = System.currentTimeMillis()
 
         // Ensure voice call volume is clear and un-ducked
         try {

@@ -1,0 +1,15 @@
+## LKS Dialer v1.9.1 -- Bug Fix Release
+
+### Bug Fixes
+
+BUG-23 -- Volume Button Does Not Silence Ringtone on Floating Pill
+- Fixed: Pressing volume up/down while the floating incoming call pill is showing now silences the ringtone.
+- Root cause: FLAG_NOT_FOCUSABLE overlays cannot receive KeyEvents. Fixed by registering AudioManager.VOLUME_CHANGED_ACTION broadcast receiver in FloatingCallBubbleService.
+
+BUG-24 -- Power Button Collapses Call to Notification (No Full-Screen UI on Screen-On)
+- Fixed: Pressing Power button and turning screen back on now relaunches the full-screen call UI.
+- Root cause: setFullScreenIntent was only set when locked. Fixed by always attaching fullScreenIntent and registering an ACTION_SCREEN_ON/ACTION_USER_PRESENT receiver to relaunch call UI.
+
+BUG-25 -- Outgoing Call Auto-Placed On Hold Without User Action
+- Fixed: Outgoing calls no longer go on hold immediately after dialling.
+- Root cause: AUDIOFOCUS_LOSS_TRANSIENT echo during configureAudio() triggered putCallOnHold(). Fixed by suppressing auto-hold when call status is CALLING/RINGING, and within 5 seconds of audio focus acquisition.
