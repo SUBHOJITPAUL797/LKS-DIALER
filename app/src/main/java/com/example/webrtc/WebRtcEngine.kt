@@ -79,6 +79,30 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var samsungVoiceFocusEffect: Any? = null
     private val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
 
+    private val audioFocusChangeListener = android.media.AudioManager.OnAudioFocusChangeListener { focusChange ->
+        Log.d("WebRtcEngine", "AudioFocus changed: $focusChange")
+        when (focusChange) {
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Cellular phone call or high-priority audio interruption — silence mic and put on hold
+                Log.i("WebRtcEngine", "Cellular call interruption — muting mic and placing VoIP call on hold")
+                isCellularCallInterrupting = true
+                putCallOnHold(true, isCellularInterruption = true)
+            }
+            android.media.AudioManager.AUDIOFOCUS_GAIN -> {
+                if (isCellularCallInterrupting) {
+                    Log.i("WebRtcEngine", "Regained audio focus after cellular call — resuming VoIP call")
+                    isCellularCallInterrupting = false
+                    putCallOnHold(false)
+                }
+            }
+            android.media.AudioManager.AUDIOFOCUS_LOSS -> {
+                Log.i("WebRtcEngine", "Permanent audio focus loss — muting local audio track")
+                localAudioTrack?.setEnabled(false)
+            }
+        }
+    }
+
     private val firestore = FirebaseFirestore.getInstance()
     private var myPhoneNumber: String = ""
     
@@ -725,30 +749,6 @@ class WebRtcEngine private constructor(private val context: Context) {
         am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
         
         registerAudioDeviceListeners()
-        
-        val audioFocusChangeListener = android.media.AudioManager.OnAudioFocusChangeListener { focusChange ->
-            Log.d("WebRtcEngine", "AudioFocus changed: $focusChange")
-            when (focusChange) {
-                android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-                android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                    // Cellular phone call or high-priority audio interruption — silence mic and put on hold
-                    Log.i("WebRtcEngine", "Cellular call interruption — muting mic and placing VoIP call on hold")
-                    isCellularCallInterrupting = true
-                    putCallOnHold(true, isCellularInterruption = true)
-                }
-                android.media.AudioManager.AUDIOFOCUS_GAIN -> {
-                    if (isCellularCallInterrupting) {
-                        Log.i("WebRtcEngine", "Regained audio focus after cellular call — resuming VoIP call")
-                        isCellularCallInterrupting = false
-                        putCallOnHold(false)
-                    }
-                }
-                android.media.AudioManager.AUDIOFOCUS_LOSS -> {
-                    Log.i("WebRtcEngine", "Permanent audio focus loss — muting local audio track")
-                    localAudioTrack?.setEnabled(false)
-                }
-            }
-        }
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
@@ -910,6 +910,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 } catch (_: Exception) {}
                             }
                             refreshAvailableAudioDevices(defaultCallType = null)
+                            val desiredDevice = userExplicitSelectedDevice ?: _state.value.selectedAudioDevice
+                            selectAudioDeviceType(desiredDevice)
                             if (_state.value.callDurationSeconds == 0) {
                                 startCallTimer()
                             }
@@ -1056,11 +1058,19 @@ class WebRtcEngine private constructor(private val context: Context) {
             connectionStatusText = statusText
         )
         
-        // 3. Sync hold state to Firestore so remote party sees it immediately
+        // 3. Sync hold state with Telecom Connection (Bluetooth Headsets, Smartwatches, Android Auto)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                com.example.services.LksConnectionService.setCallOnHold(onHold)
+            } catch (_: Exception) {}
+        }
+
+        // 4. Sync hold state to Firestore so remote party sees it immediately
         try {
             firestore.collection("calls").document(currentCall.callId)
                 .update(
                     "onHold", onHold,
+                    "isOnHold", onHold,
                     "heldBy", if (onHold) myNumber else null
                 )
                 .addOnSuccessListener {
@@ -1407,9 +1417,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                             .build()
                     )
                     .setAcceptsDelayedFocusGain(true)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener)
                     .build()
                 audioFocusRequest = focusRequest
                 am.requestAudioFocus(focusRequest)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(audioFocusChangeListener, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN)
             }
 
             // Sync with Telecom Connection if active (critical for Android Telecom managed audio)
@@ -1562,8 +1576,13 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
         val now = System.currentTimeMillis()
-        if (now - lastUserExplicitSelectionTime < 2500L) {
+        if (now - lastUserExplicitSelectionTime < 3500L) {
             Log.d("WebRtcEngine", "Telecom route change to $targetType ignored (cooldown: ${now - lastUserExplicitSelectionTime}ms, user selected $userExplicitSelectedDevice)")
+            return
+        }
+        // Guard against Telecom resetting route to EARPIECE when user explicitly selected SPEAKERPHONE
+        if (userExplicitSelectedDevice == AudioDeviceType.SPEAKERPHONE && targetType == AudioDeviceType.EARPIECE) {
+            Log.d("WebRtcEngine", "Ignoring Telecom automatic fallback to EARPIECE because user explicitly chose SPEAKERPHONE")
             return
         }
         if (_state.value.selectedAudioDevice != targetType) {
@@ -1723,7 +1742,19 @@ class WebRtcEngine private constructor(private val context: Context) {
         } catch (_: Exception) {}
         peerConnection = null
         
-        _state.value = WebRtcState(callStatus = status)
+        val prevCall = _state.value.activeCall
+        _state.value = _state.value.copy(
+            callStatus = status,
+            activeCall = prevCall,
+            connectionStatusText = when (status) {
+                CallStatus.ENDED -> "Call Ended"
+                CallStatus.DECLINED -> "Call Declined"
+                CallStatus.MISSED -> "Call Missed"
+                else -> status.name
+            },
+            localVideoTrack = null,
+            remoteVideoTrack = null
+        )
         
         // Briefly delay then reset to IDLE so the UI can show the end status
         scope.launch {
@@ -1741,7 +1772,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
             } else {
                 @Suppress("DEPRECATION")
-                am.abandonAudioFocus(null)
+                am.abandonAudioFocus(audioFocusChangeListener)
             }
             audioFocusRequest = null
 

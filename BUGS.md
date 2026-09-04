@@ -19,6 +19,15 @@ This document tracks all identified bugs and stability enhancements across the L
 | **BUG-09** | Screen stay-awake flag (`FLAG_KEEP_SCREEN_ON`) not cleared when call is DECLINED | 🟡 MEDIUM | `MainActivity.kt` | ✅ Fixed |
 | **BUG-10** | `clearCallLogs()` crashes if total logs exceed 500 documents (Firestore batch limit) | 🟡 MEDIUM | `data/repository/FirebaseManager.kt` | ✅ Fixed |
 | **BUG-11** | Professional Call Hold: Auto-hold on cellular call pickup + sync "On Hold" status to other party | 🟠 HIGH | `data/model/Models.kt`, `webrtc/WebRtcEngine.kt`, `ui/screens/call/CallScreens.kt` | ✅ Fixed |
+| **BUG-12** | AudioFocusChangeListener dropped on audio route switch, disabling cellular auto-hold | 🟠 HIGH | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-13** | PiP called in `onStop()` crashes / conflicts with floating call bubble on video call backgrounding | 🟠 HIGH | `MainActivity.kt` | ✅ Fixed |
+| **BUG-14** | System back gesture closes `MainActivity` during active call instead of sending task to back | 🟡 MEDIUM | `MainActivity.kt` | ✅ Fixed |
+| **BUG-15** | `endCallInternalLocal` immediately wipes `activeCall`, dropping "Call Ended" UI feedback | 🟡 MEDIUM | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-16** | Video call screen lacks call hold status, manual hold control, and earpiece proximity sensor | 🟠 HIGH | `ui/screens/call/CallScreens.kt` | ✅ Fixed |
+| **BUG-17** | Telecom connection lacks `onHold()` / `onUnhold()` overrides for Bluetooth headsets & car kits | 🟡 MEDIUM | `services/LksConnectionService.kt` | ✅ Fixed |
+| **BUG-18** | `lookupUserByNumber` fails on formatted phone numbers (dashes, parentheses) | 🟡 MEDIUM | `data/repository/FirebaseManager.kt` | ✅ Fixed |
+| **BUG-19** | `SongTrimmerDialog` `DisposableEffect(Unit)` captures null `previewPlayer`, leaking MediaPlayer | 🟡 MEDIUM | `ui/components/SongTrimmerDialog.kt` | ✅ Fixed |
+| **BUG-20** | Loudspeaker reset to Earpiece when outgoing call connects (Telecom active transition override) | 🔴 CRITICAL | `services/LksConnectionService.kt`, `webrtc/WebRtcEngine.kt` | ✅ Fixed |
 
 ---
 
@@ -117,3 +126,81 @@ This document tracks all identified bugs and stability enhancements across the L
 - **Root Cause**: Single `db.batch()` used for all documents without chunking.
 - **Impact**: Throws `IllegalArgumentException` if user has > 500 call logs.
 - **Fix**: Chunk deletion operations into batches of 450.
+
+---
+
+### BUG-12: AudioFocus Listener Dropped on Dynamic Audio Route Switching
+- **Severity**: 🟠 High
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: `selectAudioDevice()` created a new `AudioFocusRequest` without attaching `setOnAudioFocusChangeListener`.
+- **Impact**: Switching from Earpiece to Speakerphone or Bluetooth caused subsequent incoming cellular calls to not trigger auto-hold, causing audio overlap and broken communication.
+- **Fix**: Elevate `audioFocusChangeListener` to a class property and attach it to every `AudioFocusRequest` builder invocation.
+
+---
+
+### BUG-13: PiP Initiation in `onStop()` & Conflict with Floating Call Pill
+- **Severity**: 🟠 High
+- **Affected File**: `app/src/main/java/com/example/MainActivity.kt`
+- **Root Cause**: Calling `enterPictureInPictureMode()` in `onStop()` throws `IllegalStateException` on Android because the Activity has already stopped. Furthermore, returning to home screen during video call triggered BOTH Android PiP and the floating overlay pill.
+- **Fix**: Move `enterPictureInPictureMode()` to `onUserLeaveHint()`, and guard `triggerFloatingCallBubbleIfActive()` to check `isInPictureInPictureMode`.
+
+---
+
+### BUG-14: Back Gesture Kills Activity During Active Call
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/MainActivity.kt`
+- **Root Cause**: No `BackHandler` was registered in the calling screen overlay. System back navigation would pop or finish `MainActivity`.
+- **Fix**: Add Compose `BackHandler { (context as? Activity)?.moveTaskToBack(true) }` to keep the call alive in background.
+
+---
+
+### BUG-15: Call End Transition Discards `activeCall` Metadata Prematurely
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: `endCallInternalLocal()` assigned `_state.value = WebRtcState(callStatus = status)`, setting `activeCall = null` immediately.
+- **Fix**: Retain `activeCall = prevCall` during the 1.5s post-call delay and set appropriate `connectionStatusText` so the caller sees "Call Ended" / "Call Declined" before returning to the dialer.
+
+---
+
+### BUG-16: Video Call Screen Missing Call Hold Indicators & Proximity Sensor
+- **Severity**: 🟠 High
+- **Affected File**: `app/src/main/java/com/example/ui/screens/call/CallScreens.kt`
+- **Root Cause**: `ActiveVideoCallScreen` lacked Hold/Resume button, Hold animated banner, and proximity sensor management when routed to Earpiece.
+- **Fix**: Add animated Hold banner, Hold/Resume button, and proximity sensor `DisposableEffect` for earpiece routing.
+
+---
+
+### BUG-17: Android Telecom Connection Missing Hold / Unhold Sync
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/services/LksConnectionService.kt`
+- **Root Cause**: `LksCallConnection` did not override `onHold()` and `onUnhold()`.
+- **Fix**: Implement `onHold()` and `onUnhold()` in `LksCallConnection` delegating to `WebRtcEngine.putCallOnHold()`, and add `LksConnectionService.setCallOnHold(onHold)`.
+
+---
+
+### BUG-18: Phone Number Lookup Fails on Formatted Contact Numbers
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/data/repository/FirebaseManager.kt`
+- **Root Cause**: `lookupUserByNumber()` only stripped whitespace with `replace(" ", "")`, failing on numbers formatted with dashes or parentheses (e.g. `+91-98765-43210`, `(555) 123-4567`).
+- **Fix**: Use `ContactsHelper.normalizePhoneNumber(phoneNumber)` and `ContactsHelper.numbersMatch(it.phoneNumber, phoneNumber)` for robust matching.
+
+---
+
+### BUG-19: `SongTrimmerDialog` Leaks MediaPlayer on Dialog Dismiss
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/ui/components/SongTrimmerDialog.kt`
+- **Root Cause**: `DisposableEffect(Unit)` captured initial `previewPlayer` (null), so when the dialog closed, `previewPlayer?.release()` did not execute.
+- **Fix**: Key effect to `DisposableEffect(previewPlayer)` and release player in `onDismissRequest`.
+
+---
+
+### BUG-20: Loudspeaker Automatically Reset to Earpiece on Outgoing Call Connect
+- **Severity**: 🔴 Critical
+- **Affected Files**: `app/src/main/java/com/example/services/LksConnectionService.kt`, `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: When the caller toggled Speakerphone while the call was DIALING, the audio route was set. But when the callee answered, Telecom transitioned the connection to `STATE_ACTIVE`. This system transition triggered `onCallAudioStateChanged` with system default `ROUTE_EARPIECE`, snapping the audio back to Earpiece.
+- **Fix**: 
+  1. Add explicit guard in `WebRtcEngine.onTelecomAudioRouteChanged()` to prevent Telecom from reverting `SPEAKERPHONE` to `EARPIECE`.
+  2. Increase user selection cooldown to 3500ms.
+  3. Re-assert user's selected audio route in `WebRtcEngine.listenToActiveCall()` when outgoing call becomes `ANSWERED`.
+  4. Remove stale route guard in `LksConnectionService.setAudioRoute()`.
+

@@ -76,7 +76,7 @@ fun SongTrimmerDialog(
     var isSaving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf("") }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(previewPlayer) {
         onDispose {
             try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
         }
@@ -140,7 +140,10 @@ fun SongTrimmerDialog(
     val trimDurationMs = endMs - startMs
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
+            onDismiss()
+        },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(

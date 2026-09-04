@@ -37,13 +37,27 @@ class LksConnectionService : ConnectionService() {
 
         fun setAudioRoute(route: Int) {
             activeConnection?.let {
-                if (it.callAudioState?.route != route) {
-                    try {
-                        it.setAudioRoute(route)
-                        Log.d(TAG, "Telecom Connection setAudioRoute to: $route")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to set Telecom audio route: ${e.message}")
+                try {
+                    it.setAudioRoute(route)
+                    Log.d(TAG, "Telecom Connection setAudioRoute to: $route")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set Telecom audio route: ${e.message}")
+                }
+            }
+        }
+
+        fun setCallOnHold(onHold: Boolean) {
+            activeConnection?.let {
+                try {
+                    if (onHold) {
+                        it.setOnHold()
+                        Log.d(TAG, "Telecom Connection set to ON_HOLD")
+                    } else {
+                        it.setActive()
+                        Log.d(TAG, "Telecom Connection resumed to ACTIVE")
                     }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to set Telecom hold state: ${e.message}")
                 }
             }
         }
@@ -176,6 +190,18 @@ class LksCallConnection(
         destroy()
         LksConnectionService.clearActiveConnection()
         WebRtcEngine.getInstanceIfCreated()?.endCall()
+    }
+
+    override fun onHold() {
+        Log.i("LksCallConnection", "🎯 System / Bluetooth Headset requested Hold via Telecom! callId=$callId")
+        setOnHold()
+        WebRtcEngine.getInstanceIfCreated()?.putCallOnHold(true)
+    }
+
+    override fun onUnhold() {
+        Log.i("LksCallConnection", "🎯 System / Bluetooth Headset requested Unhold via Telecom! callId=$callId")
+        setActive()
+        WebRtcEngine.getInstanceIfCreated()?.putCallOnHold(false)
     }
 
     override fun onSilence() {

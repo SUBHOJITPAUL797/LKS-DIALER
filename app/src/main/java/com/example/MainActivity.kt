@@ -140,6 +140,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
+        if (rtcState != null && (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
+            if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
+                    return // Successfully triggered PiP mode; do NOT show overlapping floating pill
+                } catch (_: Exception) {}
+            }
+        }
         triggerFloatingCallBubbleIfActive()
     }
 
@@ -152,15 +161,15 @@ class MainActivity : ComponentActivity() {
 
     private fun triggerFloatingCallBubbleIfActive() {
         isForeground = false
+        // If already in PiP mode on Android O+, do not show overlapping floating bubble
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            return
+        }
+
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
         val activeCall = rtcState.activeCall ?: return
 
         if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
-            if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
-                    enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                } catch (_: Exception) {}
-            }
             // Show Draggable Active Call Pill over other apps
             com.example.services.FloatingCallBubbleService.showActive(
                 this,
@@ -557,6 +566,9 @@ class MainActivity : ComponentActivity() {
 
                     // Full Screen Calling Overlays
                     if (activeCall != null && rtcState.callStatus != CallStatus.IDLE) {
+                        androidx.activity.compose.BackHandler {
+                            (context as? android.app.Activity)?.moveTaskToBack(true)
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -637,7 +649,7 @@ class MainActivity : ComponentActivity() {
                                 val otherNumber = if (isIncoming) activeCall.callerNumber else activeCall.calleeNumber
                                 val otherName = if (isIncoming) activeCall.callerName else activeCall.calleeName
                                 
-                                if (activeCall.callType == CallType.VIDEO) {
+                                if (rtcState.callType == CallType.VIDEO || activeCall.callType == CallType.VIDEO) {
                                     ActiveVideoCallScreen(
                                         state = rtcState,
                                         profilePicUrl = otherPartyProfilePic,

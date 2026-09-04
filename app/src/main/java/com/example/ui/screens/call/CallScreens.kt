@@ -667,6 +667,31 @@ fun ActiveVideoCallScreen(
         )
     }
 
+    // Proximity Sensor Logic for Screen Blackout (only active when user switches video call to Phone Earpiece)
+    DisposableEffect(state.callStatus, state.selectedAudioDevice) {
+        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        var wakeLock: android.os.PowerManager.WakeLock? = null
+        
+        val proximityLockLevel = 32
+        if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
+            wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:VideoProximitySensor").apply {
+                setReferenceCounted(false)
+            }
+            if (state.callStatus == CallStatus.ANSWERED && 
+                state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE) {
+                wakeLock.acquire()
+            }
+        }
+        
+        onDispose {
+            try {
+                if (wakeLock?.isHeld == true) {
+                    wakeLock.release()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -758,12 +783,44 @@ fun ActiveVideoCallScreen(
                 }
             }
 
+            // Call On Hold Banner (shown during cellular interruption or manual hold)
+            androidx.compose.animation.AnimatedVisibility(
+                visible = state.isOnHold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 80.dp)
+            ) {
+                Surface(
+                    color = Color(0xFFE53935).copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(20.dp),
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Pause,
+                            contentDescription = "Hold",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (state.isHeldLocally) "Call On Hold" else "Call On Hold (Other Party)",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+
             // Bottom Controls Overlay
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 12.dp, vertical = 24.dp),
+                    .padding(horizontal = 8.dp, vertical = 24.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -772,7 +829,7 @@ fun ActiveVideoCallScreen(
                     icon = Icons.Default.Cameraswitch,
                     label = if (state.isFrontCamera) "Front" else "Rear",
                     isActive = false,
-                    size = 52.dp,
+                    size = 48.dp,
                     onClick = { webRtcEngine.switchCamera() }
                 )
 
@@ -781,7 +838,7 @@ fun ActiveVideoCallScreen(
                     icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
                     label = if (state.isCameraOn) "Cam On" else "Cam Off",
                     isActive = state.isCameraOn,
-                    size = 52.dp,
+                    size = 48.dp,
                     onClick = { webRtcEngine.toggleCamera() }
                 )
 
@@ -790,7 +847,7 @@ fun ActiveVideoCallScreen(
                     icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                     label = if (state.isMuted) "Muted" else "Mute",
                     isActive = state.isMuted,
-                    size = 52.dp,
+                    size = 48.dp,
                     onClick = { webRtcEngine.toggleMute() }
                 )
 
@@ -812,7 +869,7 @@ fun ActiveVideoCallScreen(
                     icon = audioIcon,
                     label = audioLabel,
                     isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
-                    size = 52.dp,
+                    size = 48.dp,
                     onClick = {
                         if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
                             showAudioDialog = true
@@ -822,11 +879,20 @@ fun ActiveVideoCallScreen(
                     }
                 )
 
+                // Hold / Resume Call
+                InCallControlButton(
+                    icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
+                    label = if (state.isOnHold) "Resume" else "Hold",
+                    isActive = state.isOnHold,
+                    size = 48.dp,
+                    onClick = { webRtcEngine.toggleHold() }
+                )
+
                 // Red End Call
                 Button(
                     onClick = onEndCall,
                     shape = CircleShape,
-                    modifier = Modifier.size(56.dp),
+                    modifier = Modifier.size(54.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
                     contentPadding = PaddingValues(0.dp)
                 ) {

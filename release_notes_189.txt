@@ -1,0 +1,18 @@
+## What's Changed in v1.8.9
+
+### 🔊 Loudspeaker & Audio Routing Fix (BUG-20)
+- **Fixed Loudspeaker Reset on Outgoing Calls**: Fixed the critical issue where tapping Loudspeaker during dialing reverted back to the Earpiece the moment the callee picked up. Android Telecom's transition to `ACTIVE` no longer resets the caller's loudspeaker preference, and the chosen audio route is firmly re-asserted on connection.
+- **Improved Audio Route Switching Cooldown**: Added a 3500ms debounce guard preventing device audio HALs from overriding user-selected routes.
+- **Telecom Audio Route Sync**: Seamlessly propagates route changes to Android Telecom and Bluetooth devices without race conditions.
+
+### 📞 Professional Call Hold & Cellular Interruption (BUG-11, BUG-12, BUG-16, BUG-17)
+- **Cellular Call Auto-Hold**: Retains `AudioFocusChangeListener` across all dynamic audio device switches (Earpiece, Speaker, Bluetooth), guaranteeing that incoming cellular calls automatically place the VoIP call on hold.
+- **Video Call Hold Support**: Added Hold/Resume controls, animated hold indicator banner, and proximity sensor screen blackout for earpiece routing in `ActiveVideoCallScreen`.
+- **Telecom Hold Sync**: Added `onHold()` / `onUnhold()` overrides to `LksCallConnection` to keep Bluetooth headsets, smartwatches, and car systems in sync.
+
+### 📱 Stability & UI Enhancements (BUG-13, BUG-14, BUG-15, BUG-18, BUG-19)
+- **Picture-in-Picture Crash Fix**: Moved PiP trigger from `onStop()` to `onUserLeaveHint()` to prevent `IllegalStateException` crashes, and suppressed duplicate floating overlay pills while video PiP is active.
+- **Accidental Back Navigation Protection**: Integrated Compose `BackHandler` on call screens to send the task to background rather than destroying the activity and disconnecting calls.
+- **Post-Call Screen Feedback**: Preserved call metadata during the 1.5s post-call delay so users see "Call Ended" or "Call Declined" UI feedback instead of immediately snapping to the dialer.
+- **Formatted Contact Lookup**: Enhanced contact matching with `ContactsHelper.numbersMatch()` to handle phone numbers formatted with dashes and parentheses (e.g., `+91-98765-43210`, `(555) 123-4567`).
+- **Media Player Leak Fix**: Keyed `SongTrimmerDialog`'s `DisposableEffect` to the active player instance and ensured cleanup on dialog dismissal.

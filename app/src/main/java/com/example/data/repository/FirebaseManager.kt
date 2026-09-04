@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.content.Context
 import android.util.Log
 import com.example.data.model.*
+import com.example.util.ContactsHelper
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.Query
@@ -304,10 +305,9 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     fun lookupUserByNumber(phoneNumber: String): UserDto? {
-        val cleanNumber = phoneNumber.replace(" ", "").trim()
-        val found = _registeredUsers.value.find { it.phoneNumber == cleanNumber } ?: _registeredUsers.value.find {
-            it.phoneNumber.endsWith(cleanNumber.takeLast(10))
-        }
+        val cleanNumber = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val found = _registeredUsers.value.find { it.phoneNumber == cleanNumber } 
+            ?: _registeredUsers.value.find { ContactsHelper.numbersMatch(it.phoneNumber, phoneNumber) }
         if (found != null) return found
 
         // Asynchronously query Firestore for this specific number if not in memory cache
