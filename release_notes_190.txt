@@ -1,0 +1,12 @@
+## What's Changed in v1.9.0
+
+### ⏸️ Call Hold Bi-Directional Remote Sync (BUG-21)
+- **Resolved Remote Party Hold Sync**: Fixed Firestore JavaBean introspection by explicitly annotating `isOnHold` and `heldBy` on `CallDto` with `@get:PropertyName` and `@set:PropertyName`.
+- **Direct Snapshot Read**: In `WebRtcEngine.listenToActiveCall()`, hold state is now read directly from Firestore snapshot data (`isOnHold`, `onHold`), ensuring the remote user immediately receives the hold status.
+- **Robust Phone Matching**: Replaced strict string equality with `ContactsHelper.numbersMatch()` so formatted phone numbers (e.g. `+91-98765-43210` vs `9876543210`) accurately distinguish local vs remote hold.
+- **Caller Phone Initialization**: Initialized `myPhoneNumber` on outgoing calls in `initiateCall()` and added fallback to current logged-in user in `putCallOnHold()`.
+
+### 🔊 Bluetooth to Speaker / Earpiece Switching on Samsung (BUG-22)
+- **Eliminated Bluetooth Lock-in**: Fixed the issue where switching from a connected Bluetooth device to Speakerphone or Earpiece snapped back to Bluetooth on Samsung devices.
+- **Telecom Cooldown & Guards**: Added a strict 5000ms guard in `onTelecomAudioRouteChanged()` preventing Telecom from overriding explicit user selections with `ROUTE_BLUETOOTH`.
+- **Samsung One UI Audio Policy Fix**: Cleanly terminates Bluetooth SCO before switching routes, and directly requests `setCommunicationDevice()` using the resolved hardware device without intermediary clearing that triggers Bluetooth re-routing.

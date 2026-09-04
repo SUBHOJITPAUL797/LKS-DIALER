@@ -400,6 +400,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
+        myPhoneNumber = callerNumber
         val newCall = CallDto(
             callId = UUID.randomUUID().toString(),
             callerNumber = callerNumber,
@@ -922,14 +923,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         
                         // Hold State synchronization
-                        val remoteHold = call.isOnHold
-                        if (remoteHold != _state.value.isOnHold) {
-                            val isHeldByMe = call.heldBy == myPhoneNumber
+                        val remoteHold = snapshot.getBoolean("isOnHold") == true || snapshot.getBoolean("onHold") == true || call.isOnHold
+                        val heldBy = snapshot.getString("heldBy") ?: call.heldBy ?: ""
+                        val myPhone = myPhoneNumber.ifBlank {
+                            com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+                        }
+                        val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
+                        
+                        if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
                             val statusMsg = when {
                                 !remoteHold -> "Connected • WebRTC"
                                 isHeldByMe -> "Call On Hold"
                                 else -> "Call On Hold (Other Party)"
                             }
+                            Log.i("WebRtcEngine", "Hold state updated: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy, myPhone=$myPhone")
                             _state.value = _state.value.copy(
                                 isOnHold = remoteHold,
                                 isHeldLocally = isHeldByMe,
@@ -1037,7 +1044,9 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun putCallOnHold(onHold: Boolean, isCellularInterruption: Boolean = false) {
         val currentCall = _state.value.activeCall ?: return
-        val myNumber = myPhoneNumber
+        val myNumber = myPhoneNumber.ifBlank {
+            com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+        }
         
         // 1. Mute or restore local audio track
         if (onHold) {
@@ -1443,18 +1452,27 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             when (device.type) {
                 AudioDeviceType.SPEAKERPHONE -> {
-                    // Stop any active Bluetooth SCO so it doesn't intercept speaker audio
+                    // Stop any active Bluetooth SCO so it doesn't intercept speaker audio on Samsung / Android
                     @Suppress("DEPRECATION")
-                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+                    try {
+                        if (am.isBluetoothScoOn) {
+                            am.isBluetoothScoOn = false
+                            am.stopBluetoothSco()
+                        }
+                    } catch (_: Exception) {}
                     
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        am.clearCommunicationDevice()
-                        val speaker = am.availableCommunicationDevices.firstOrNull { 
-                            it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER 
-                        }
+                        val speaker = (device.rawDevice as? android.media.AudioDeviceInfo)
+                            ?: am.availableCommunicationDevices.firstOrNull { 
+                                it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER 
+                            }
                         if (speaker != null) {
                             val res = am.setCommunicationDevice(speaker)
                             Log.d("WebRtcEngine", "setCommunicationDevice(SPEAKER): $res")
+                            if (!res) {
+                                am.clearCommunicationDevice()
+                                am.setCommunicationDevice(speaker)
+                            }
                         }
                     }
                     @Suppress("DEPRECATION")
@@ -1464,16 +1482,27 @@ class WebRtcEngine private constructor(private val context: Context) {
                     @Suppress("DEPRECATION")
                     am.isSpeakerphoneOn = false
                     @Suppress("DEPRECATION")
-                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+                    try {
+                        if (am.isBluetoothScoOn) {
+                            am.isBluetoothScoOn = false
+                            am.stopBluetoothSco()
+                        }
+                    } catch (_: Exception) {}
 
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        am.clearCommunicationDevice()
-                        val earpiece = am.availableCommunicationDevices.firstOrNull { 
-                            it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
-                        }
+                        val earpiece = (device.rawDevice as? android.media.AudioDeviceInfo)
+                            ?: am.availableCommunicationDevices.firstOrNull { 
+                                it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
+                            }
                         if (earpiece != null) {
                             val res = am.setCommunicationDevice(earpiece)
                             Log.d("WebRtcEngine", "setCommunicationDevice(EARPIECE): $res")
+                            if (!res) {
+                                am.clearCommunicationDevice()
+                                am.setCommunicationDevice(earpiece)
+                            }
+                        } else {
+                            am.clearCommunicationDevice()
                         }
                     }
                 }
@@ -1576,17 +1605,32 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
         val now = System.currentTimeMillis()
-        if (now - lastUserExplicitSelectionTime < 3500L) {
-            Log.d("WebRtcEngine", "Telecom route change to $targetType ignored (cooldown: ${now - lastUserExplicitSelectionTime}ms, user selected $userExplicitSelectedDevice)")
+        val explicit = userExplicitSelectedDevice
+
+        // 1. Within 5 seconds of explicit user selection, strictly ignore ANY Telecom transition echo back to a different route
+        if (now - lastUserExplicitSelectionTime < 5000L) {
+            if (explicit != null && explicit != targetType) {
+                Log.d("WebRtcEngine", "Ignoring Telecom route change to $targetType (user explicitly selected $explicit ${now - lastUserExplicitSelectionTime}ms ago)")
+                return
+            }
+        }
+
+        // 2. Permanent guards against Telecom/Samsung automatically snapping back to Bluetooth or Earpiece:
+        // If user chose SPEAKERPHONE, do not allow Telecom to automatically revert to EARPIECE or BLUETOOTH
+        if (explicit == AudioDeviceType.SPEAKERPHONE && (targetType == AudioDeviceType.EARPIECE || targetType == AudioDeviceType.BLUETOOTH)) {
+            Log.d("WebRtcEngine", "Ignoring Telecom automatic transition to $targetType because user explicitly chose SPEAKERPHONE")
             return
         }
-        // Guard against Telecom resetting route to EARPIECE when user explicitly selected SPEAKERPHONE
-        if (userExplicitSelectedDevice == AudioDeviceType.SPEAKERPHONE && targetType == AudioDeviceType.EARPIECE) {
-            Log.d("WebRtcEngine", "Ignoring Telecom automatic fallback to EARPIECE because user explicitly chose SPEAKERPHONE")
+        // If user chose EARPIECE, do not allow Telecom to automatically revert to BLUETOOTH
+        if (explicit == AudioDeviceType.EARPIECE && targetType == AudioDeviceType.BLUETOOTH) {
+            Log.d("WebRtcEngine", "Ignoring Telecom automatic transition to BLUETOOTH because user explicitly chose EARPIECE")
             return
         }
+
+        // 3. Genuine external change (e.g. user toggled output via Samsung system Quick Panel or Bluetooth headset button)
         if (_state.value.selectedAudioDevice != targetType) {
             Log.i("WebRtcEngine", "Syncing route from Telecom: $targetType")
+            userExplicitSelectedDevice = targetType
             selectAudioDeviceType(targetType)
         }
     }

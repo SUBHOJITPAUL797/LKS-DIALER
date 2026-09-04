@@ -28,6 +28,8 @@ This document tracks all identified bugs and stability enhancements across the L
 | **BUG-18** | `lookupUserByNumber` fails on formatted phone numbers (dashes, parentheses) | 🟡 MEDIUM | `data/repository/FirebaseManager.kt` | ✅ Fixed |
 | **BUG-19** | `SongTrimmerDialog` `DisposableEffect(Unit)` captures null `previewPlayer`, leaking MediaPlayer | 🟡 MEDIUM | `ui/components/SongTrimmerDialog.kt` | ✅ Fixed |
 | **BUG-20** | Loudspeaker reset to Earpiece when outgoing call connects (Telecom active transition override) | 🔴 CRITICAL | `services/LksConnectionService.kt`, `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-21** | Remote party not receiving Call Hold status (Firestore JavaBean mapping & phone format mismatch) | 🔴 CRITICAL | `data/model/Models.kt`, `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-22** | Switching from Bluetooth to Speaker/Earpiece on Samsung fails (Telecom echo & audio policy override) | 🔴 CRITICAL | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
 
 ---
 
@@ -203,4 +205,33 @@ This document tracks all identified bugs and stability enhancements across the L
   2. Increase user selection cooldown to 3500ms.
   3. Re-assert user's selected audio route in `WebRtcEngine.listenToActiveCall()` when outgoing call becomes `ANSWERED`.
   4. Remove stale route guard in `LksConnectionService.setAudioRoute()`.
+
+---
+
+### BUG-21: Remote Party Not Receiving Call Hold Status
+- **Severity**: 🔴 Critical
+- **Affected Files**: `app/src/main/java/com/example/data/model/Models.kt`, `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**:
+  1. Firestore Java SDK uses JavaBean naming introspection. Without `@get:PropertyName("isOnHold") @set:PropertyName("isOnHold")`, `val isOnHold: Boolean` is serialized as `onHold` and fails to deserialize onto `isOnHold`. The remote party's snapshot listener evaluated `false != false` and failed to trigger the hold state change.
+  2. `call.heldBy == myPhoneNumber` failed when phone number formatting differed (e.g. `+91` prefix vs national format).
+  3. `myPhoneNumber` was not initialized during outgoing calls in `initiateCall()`.
+- **Fix**:
+  1. Annotate `isOnHold` and `heldBy` in `CallDto` with `@get:PropertyName` and `@set:PropertyName`.
+  2. Read hold state directly from snapshot (`snapshot.getBoolean("isOnHold") == true || snapshot.getBoolean("onHold") == true || call.isOnHold`).
+  3. Match phone numbers using `ContactsHelper.numbersMatch(heldBy, myPhone)`.
+  4. Ensure `myPhoneNumber = callerNumber` is set in `initiateCall()`, and `putCallOnHold()` falls back to `FirebaseManager.currentUser`.
+
+---
+
+### BUG-22: Audio Route Locked to Bluetooth on Samsung Devices
+- **Severity**: 🔴 Critical
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**:
+  1. When taking a call on a connected Bluetooth headset, Telecom route is `ROUTE_BLUETOOTH`. When user tapped Speaker or Earpiece, Telecom dispatched `onCallAudioStateChanged` with `ROUTE_BLUETOOTH`. Because `onTelecomAudioRouteChanged` only guarded against `ROUTE_EARPIECE`, Telecom's event for `BLUETOOTH` was unguarded and immediately snapped audio back to Bluetooth.
+  2. On Samsung One UI (Android 12+), calling `am.clearCommunicationDevice()` immediately prior to `am.setCommunicationDevice(speaker)` caused Samsung's audio policy to revert back to the connected Bluetooth device during the switch.
+- **Fix**:
+  1. Add strict 5000ms cooldown in `onTelecomAudioRouteChanged()` against any Telecom transition echo that contradicts explicit user selection.
+  2. Add permanent guards: when user explicitly chooses `SPEAKERPHONE` or `EARPIECE`, Telecom is never permitted to force audio back to `BLUETOOTH`.
+  3. Disconnect Bluetooth SCO cleanly (`if (am.isBluetoothScoOn) { am.isBluetoothScoOn = false; am.stopBluetoothSco() }`) and call `setCommunicationDevice` directly using resolved `rawDevice` before falling back to `clearCommunicationDevice()`.
+
 

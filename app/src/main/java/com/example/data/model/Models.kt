@@ -1,5 +1,7 @@
 package com.example.data.model
 
+import com.google.firebase.firestore.PropertyName
+
 data class UserDto(
     val phoneNumber: String = "",
     val displayName: String = "",
@@ -43,8 +45,10 @@ data class CallDto(
     val durationSeconds: Int = 0,
     val endedBy: String? = null,
     val videoUpgradeStatus: VideoUpgradeStatus? = null,
-    val isOnHold: Boolean = false,
-    val heldBy: String? = null
+    @get:PropertyName("isOnHold") @set:PropertyName("isOnHold")
+    var isOnHold: Boolean = false,
+    @get:PropertyName("heldBy") @set:PropertyName("heldBy")
+    var heldBy: String? = null
 )
 
 data class IceCandidateDto(
