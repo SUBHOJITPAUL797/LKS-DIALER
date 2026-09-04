@@ -1048,6 +1048,30 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                 }
             }
+            val hasBtInComm = deviceList.any { it.type == AudioDeviceType.BLUETOOTH }
+            if (!hasBtInComm) {
+                try {
+                    val allDevices = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+                    val btOutput = allDevices.firstOrNull {
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                        it.type == android.media.AudioDeviceInfo.TYPE_HEARING_AID
+                    }
+                    if (btOutput != null) {
+                        val rawName = btOutput.productName?.toString()?.ifBlank { "Bluetooth" } ?: "Bluetooth"
+                        val name = if (rawName.startsWith("Bluetooth", ignoreCase = true)) rawName else "Bluetooth ($rawName)"
+                        deviceList.add(
+                            AudioDeviceOption(
+                                id = "bt_${btOutput.id}",
+                                name = name,
+                                type = AudioDeviceType.BLUETOOTH,
+                                rawDevice = btOutput
+                            )
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
             if (!hasSpeaker) {
                 deviceList.add(
                     AudioDeviceOption(
@@ -1204,13 +1228,27 @@ class WebRtcEngine private constructor(private val context: Context) {
                 am.requestAudioFocus(focusRequest)
             }
 
+            // Sync with Telecom Connection if active (critical for Android Telecom managed audio)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val telecomRoute = when (device.type) {
+                        AudioDeviceType.SPEAKERPHONE -> android.telecom.CallAudioState.ROUTE_SPEAKER
+                        AudioDeviceType.BLUETOOTH -> android.telecom.CallAudioState.ROUTE_BLUETOOTH
+                        AudioDeviceType.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
+                        AudioDeviceType.WIRED_HEADSET -> android.telecom.CallAudioState.ROUTE_WIRED_HEADSET
+                    }
+                    com.example.services.LksConnectionService.setAudioRoute(telecomRoute)
+                } catch (e: Exception) {
+                    Log.w("WebRtcEngine", "Failed to set Telecom audio route: ${e.message}")
+                }
+            }
+
             when (device.type) {
                 AudioDeviceType.SPEAKERPHONE -> {
-                    // Stop any active Bluetooth SCO so it doesn't intercept audio on Samsung
+                    // Stop any active Bluetooth SCO so it doesn't intercept speaker audio
                     @Suppress("DEPRECATION")
                     try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
-                    // Samsung devices require isSpeakerphoneOn=true alongside setCommunicationDevice
-                    am.isSpeakerphoneOn = true
+                    
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                         val speaker = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER 
@@ -1218,35 +1256,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                         if (speaker != null) {
                             val res = am.setCommunicationDevice(speaker)
                             Log.d("WebRtcEngine", "setCommunicationDevice(SPEAKER): $res")
-                            // Verify Samsung HAL accepted the switch — if not, force via legacy path
-                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                try {
-                                    val actual = am.communicationDevice
-                                    if (actual == null || actual.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                                        Log.w("WebRtcEngine", "⚠️ Samsung HAL rejected setCommunicationDevice(SPEAKER), forcing legacy path")
-                                        am.clearCommunicationDevice()
-                                        am.isSpeakerphoneOn = true
-                                    } else {
-                                        Log.d("WebRtcEngine", "✅ Speaker routing confirmed: ${actual.productName}")
-                                    }
-                                } catch (_: Exception) {}
-                            }, 200)
-                        } else {
-                            // No BUILTIN_SPEAKER in communication devices — force legacy
-                            am.clearCommunicationDevice()
-                            am.isSpeakerphoneOn = true
                         }
-                    } else {
-                        @Suppress("DEPRECATION")
-                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
+                    @Suppress("DEPRECATION")
                     am.isSpeakerphoneOn = true
                 }
                 AudioDeviceType.EARPIECE -> {
+                    @Suppress("DEPRECATION")
                     am.isSpeakerphoneOn = false
-                    // Always stop BT SCO if active — otherwise audio stays in Bluetooth even after switching
                     @Suppress("DEPRECATION")
                     try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                         val earpiece = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
@@ -1258,13 +1278,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                             // On Samsung, earpiece is restored by clearing the active communication device
                             am.clearCommunicationDevice()
                         }
-                    } else {
-                        @Suppress("DEPRECATION")
-                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
-                    am.isSpeakerphoneOn = false
                 }
                 AudioDeviceType.BLUETOOTH -> {
+                    @Suppress("DEPRECATION")
                     am.isSpeakerphoneOn = false
                     
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
@@ -1274,49 +1291,24 @@ class WebRtcEngine private constructor(private val context: Context) {
                             am.availableCommunicationDevices.firstOrNull { 
                                 it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO || 
                                 it.type == android.media.AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                it.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                                 it.type == android.media.AudioDeviceInfo.TYPE_HEARING_AID
                             }
                         }
                         if (bt != null) {
                             val res = am.setCommunicationDevice(bt)
                             Log.d("WebRtcEngine", "setCommunicationDevice(BLUETOOTH - ${bt.productName}): $res, type=${bt.type}")
-                            // Samsung One UI: HFP/SCO type Bluetooth also needs startBluetoothSco()
-                            // even on API 31+ because Samsung's Bluetooth stack requires explicit
-                            // SCO link setup regardless of the newer API.
-                            if (bt.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                            if (!res) {
                                 @Suppress("DEPRECATION")
                                 try {
                                     am.startBluetoothSco()
                                     am.isBluetoothScoOn = true
-                                    Log.d("WebRtcEngine", "🎧 Started SCO for HFP Bluetooth on API 31+")
                                 } catch (_: Exception) {}
                             }
-                            // Verify Samsung accepted the BT routing after a short delay
-                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                try {
-                                    val actual = am.communicationDevice
-                                    if (actual == null || (
-                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
-                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLE_HEADSET &&
-                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                                    )) {
-                                        // HAL rejected it — fall back to SCO legacy path
-                                        Log.w("WebRtcEngine", "⚠️ BT setCommunicationDevice rejected, forcing SCO legacy")
-                                        @Suppress("DEPRECATION")
-                                        try { am.startBluetoothSco(); am.isBluetoothScoOn = true } catch (_: Exception) {}
-                                    } else {
-                                        Log.d("WebRtcEngine", "✅ BT routing confirmed: ${actual.productName}")
-                                    }
-                                } catch (_: Exception) {}
-                            }, 500)
                         } else {
-                            // No BT device in communication list — try legacy SCO path
                             @Suppress("DEPRECATION")
                             try {
                                 am.startBluetoothSco()
                                 am.isBluetoothScoOn = true
-                                Log.d("WebRtcEngine", "🎧 No BT in commDevices, using legacy SCO path")
                             } catch (_: Exception) {}
                         }
                     } else {
@@ -1328,8 +1320,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                 }
                 AudioDeviceType.WIRED_HEADSET -> {
+                    @Suppress("DEPRECATION")
+                    am.isSpeakerphoneOn = false
+                    @Suppress("DEPRECATION")
+                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
+
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        am.clearCommunicationDevice()
                         val wired = if (device.rawDevice is android.media.AudioDeviceInfo) {
                             device.rawDevice as android.media.AudioDeviceInfo
                         } else {
@@ -1343,12 +1339,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                         if (wired != null) {
                             val res = am.setCommunicationDevice(wired)
                             Log.d("WebRtcEngine", "setCommunicationDevice(WIRED - ${wired.productName}): $res")
+                        } else {
+                            am.clearCommunicationDevice()
                         }
-                    } else {
-                        @Suppress("DEPRECATION")
-                        try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     }
-                    am.isSpeakerphoneOn = false
                 }
             }
         } catch (e: Exception) {

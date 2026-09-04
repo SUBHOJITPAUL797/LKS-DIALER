@@ -35,6 +35,19 @@ class LksConnectionService : ConnectionService() {
             }
         }
 
+        fun setAudioRoute(route: Int) {
+            activeConnection?.let {
+                if (it.callAudioState?.route != route) {
+                    try {
+                        it.setAudioRoute(route)
+                        Log.d(TAG, "Telecom Connection setAudioRoute to: $route")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to set Telecom audio route: ${e.message}")
+                    }
+                }
+            }
+        }
+
         fun clearActiveConnection() {
             activeConnection = null
         }
@@ -170,6 +183,23 @@ class LksCallConnection(
         // NOTE: Do NOT silence LksIncomingRingtonePlayer here! Telecom invokes onSilence autonomously
         // on Samsung/Xiaomi when focus shifts or when notification is posted.
         // Hardware volume key silencing is handled directly in MainActivity.dispatchKeyEvent.
+    }
+
+    override fun onCallAudioStateChanged(state: android.telecom.CallAudioState?) {
+        super.onCallAudioStateChanged(state)
+        val route = state?.route ?: return
+        Log.d("LksCallConnection", "Telecom onCallAudioStateChanged: route=$route, isMuted=${state.isMuted}")
+        val engine = WebRtcEngine.getInstanceIfCreated() ?: return
+        val targetType = when (route) {
+            android.telecom.CallAudioState.ROUTE_SPEAKER -> com.example.webrtc.AudioDeviceType.SPEAKERPHONE
+            android.telecom.CallAudioState.ROUTE_BLUETOOTH -> com.example.webrtc.AudioDeviceType.BLUETOOTH
+            android.telecom.CallAudioState.ROUTE_WIRED_HEADSET -> com.example.webrtc.AudioDeviceType.WIRED_HEADSET
+            android.telecom.CallAudioState.ROUTE_EARPIECE -> com.example.webrtc.AudioDeviceType.EARPIECE
+            else -> null
+        }
+        if (targetType != null && engine.state.value.selectedAudioDevice != targetType) {
+            engine.selectAudioDeviceType(targetType)
+        }
     }
 
     override fun onShowIncomingCallUi() {
