@@ -119,9 +119,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         val defaultVideoEncoderFactory = DefaultVideoEncoderFactory(eglBaseContext, true, true)
         val defaultVideoDecoderFactory = DefaultVideoDecoderFactory(eglBaseContext)
         
+        // Use software AEC/NS via WebRTC's own DSP rather than hardware variants.
+        // Hardware AEC on Samsung (and many OEMs) over-suppresses mic input, making the remote
+        // party hear very low/quiet audio. WebRTC's built-in software processing is more consistent.
         val audioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
+            .setUseHardwareAcousticEchoCanceler(false)
+            .setUseHardwareNoiseSuppressor(false)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .createAudioDeviceModule()
 
@@ -679,7 +682,44 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         } catch (_: Exception) {}
 
+        // Try to enable Samsung Voice Focus (AI noise suppression) if available on this device.
+        // Samsung One UI exposes this as an AudioEffect. Silently ignored on non-Samsung devices.
+        applySamsungVoiceFocusIfAvailable()
+
         refreshAvailableAudioDevices(defaultCallType = callType)
+    }
+
+    /** Tries to find and enable Samsung's proprietary Voice Focus audio effect for in-call mic enhancement.
+     *  AudioEffect constructor is package-private so we use reflection — fail silently if unavailable. */
+    private fun applySamsungVoiceFocusIfAvailable() {
+        try {
+            val effects = android.media.audiofx.AudioEffect.queryEffects() ?: return
+            // Samsung Voice Focus UUIDs vary by One UI version; search by name as well.
+            val samsungEffect = effects.firstOrNull { descriptor ->
+                val name = descriptor.name?.lowercase() ?: ""
+                val implementor = descriptor.implementor?.lowercase() ?: ""
+                name.contains("voice focus") || name.contains("voicefocus") ||
+                    name.contains("samsung") && name.contains("focus") ||
+                    implementor.contains("samsung") && name.contains("noise")
+            }
+            if (samsungEffect != null) {
+                // AudioEffect constructor is package-private — access via reflection
+                val ctor = android.media.audiofx.AudioEffect::class.java
+                    .getDeclaredConstructor(java.util.UUID::class.java, java.util.UUID::class.java, Int::class.java, Int::class.java)
+                ctor.isAccessible = true
+                val effect = ctor.newInstance(samsungEffect.type, samsungEffect.uuid, 0, 0)
+                // Call setEnabled(true) via reflection
+                val setEnabled = android.media.audiofx.AudioEffect::class.java.getDeclaredMethod("setEnabled", Boolean::class.java)
+                setEnabled.isAccessible = true
+                setEnabled.invoke(effect, true)
+                Log.i("WebRtcEngine", "✅ Samsung Voice Focus effect enabled: ${samsungEffect.name}")
+            } else {
+                Log.d("WebRtcEngine", "Samsung Voice Focus not found on this device (non-Samsung or unsupported One UI version)")
+            }
+        } catch (e: Exception) {
+            // Not supported or requires extra permissions — fail silently
+            Log.d("WebRtcEngine", "Samsung Voice Focus not available: ${e.message}")
+        }
     }
 
     private fun listenToActiveCall(callId: String, isCaller: Boolean) {
@@ -1166,6 +1206,9 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             when (device.type) {
                 AudioDeviceType.SPEAKERPHONE -> {
+                    // Stop any active Bluetooth SCO so it doesn't intercept audio on Samsung
+                    @Suppress("DEPRECATION")
+                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     // Samsung devices require isSpeakerphoneOn=true alongside setCommunicationDevice
                     am.isSpeakerphoneOn = true
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
@@ -1175,6 +1218,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                         if (speaker != null) {
                             val res = am.setCommunicationDevice(speaker)
                             Log.d("WebRtcEngine", "setCommunicationDevice(SPEAKER): $res")
+                            // Verify Samsung HAL accepted the switch — if not, force via legacy path
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                try {
+                                    val actual = am.communicationDevice
+                                    if (actual == null || actual.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                                        Log.w("WebRtcEngine", "⚠️ Samsung HAL rejected setCommunicationDevice(SPEAKER), forcing legacy path")
+                                        am.clearCommunicationDevice()
+                                        am.isSpeakerphoneOn = true
+                                    } else {
+                                        Log.d("WebRtcEngine", "✅ Speaker routing confirmed: ${actual.productName}")
+                                    }
+                                } catch (_: Exception) {}
+                            }, 200)
+                        } else {
+                            // No BUILTIN_SPEAKER in communication devices — force legacy
+                            am.clearCommunicationDevice()
+                            am.isSpeakerphoneOn = true
                         }
                     } else {
                         @Suppress("DEPRECATION")
@@ -1184,6 +1244,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 AudioDeviceType.EARPIECE -> {
                     am.isSpeakerphoneOn = false
+                    // Always stop BT SCO if active — otherwise audio stays in Bluetooth even after switching
+                    @Suppress("DEPRECATION")
+                    try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
                         val earpiece = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
@@ -1217,7 +1280,44 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         if (bt != null) {
                             val res = am.setCommunicationDevice(bt)
-                            Log.d("WebRtcEngine", "setCommunicationDevice(BLUETOOTH - ${bt.productName}): $res")
+                            Log.d("WebRtcEngine", "setCommunicationDevice(BLUETOOTH - ${bt.productName}): $res, type=${bt.type}")
+                            // Samsung One UI: HFP/SCO type Bluetooth also needs startBluetoothSco()
+                            // even on API 31+ because Samsung's Bluetooth stack requires explicit
+                            // SCO link setup regardless of the newer API.
+                            if (bt.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                                @Suppress("DEPRECATION")
+                                try {
+                                    am.startBluetoothSco()
+                                    am.isBluetoothScoOn = true
+                                    Log.d("WebRtcEngine", "🎧 Started SCO for HFP Bluetooth on API 31+")
+                                } catch (_: Exception) {}
+                            }
+                            // Verify Samsung accepted the BT routing after a short delay
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                try {
+                                    val actual = am.communicationDevice
+                                    if (actual == null || (
+                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
+                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLE_HEADSET &&
+                                        actual.type != android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                                    )) {
+                                        // HAL rejected it — fall back to SCO legacy path
+                                        Log.w("WebRtcEngine", "⚠️ BT setCommunicationDevice rejected, forcing SCO legacy")
+                                        @Suppress("DEPRECATION")
+                                        try { am.startBluetoothSco(); am.isBluetoothScoOn = true } catch (_: Exception) {}
+                                    } else {
+                                        Log.d("WebRtcEngine", "✅ BT routing confirmed: ${actual.productName}")
+                                    }
+                                } catch (_: Exception) {}
+                            }, 500)
+                        } else {
+                            // No BT device in communication list — try legacy SCO path
+                            @Suppress("DEPRECATION")
+                            try {
+                                am.startBluetoothSco()
+                                am.isBluetoothScoOn = true
+                                Log.d("WebRtcEngine", "🎧 No BT in commDevices, using legacy SCO path")
+                            } catch (_: Exception) {}
                         }
                     } else {
                         @Suppress("DEPRECATION")
