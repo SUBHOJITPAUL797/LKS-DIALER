@@ -51,7 +51,9 @@ data class WebRtcState(
     val localVideoTrack: VideoTrack? = null,
     val remoteVideoTrack: VideoTrack? = null,
     val isVideoUpgradeRequested: Boolean = false,
-    val didIRequestVideoUpgrade: Boolean = false
+    val didIRequestVideoUpgrade: Boolean = false,
+    val isOnHold: Boolean = false,
+    val isHeldLocally: Boolean = false
 )
 
 class WebRtcEngine private constructor(private val context: Context) {
@@ -72,6 +74,9 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var lastUserExplicitSelectionTime: Long = 0L
     @Volatile
     private var userExplicitSelectedDevice: AudioDeviceType? = null
+    @Volatile
+    private var isCellularCallInterrupting: Boolean = false
+    private var samsungVoiceFocusEffect: Any? = null
     private val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
 
     private val firestore = FirebaseFirestore.getInstance()
@@ -668,11 +673,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun processOfferSdpIfAvailable() {
-        if (hasProcessedOffer) return
         val call = _state.value.activeCall ?: return
         val offerSdp = call.offerSdp ?: return
         val pc = peerConnection ?: return
-        if (pc.remoteDescription != null) return
+        if (hasProcessedOffer && pc.remoteDescription?.description == offerSdp) return
         
         hasProcessedOffer = true
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
@@ -722,6 +726,30 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         registerAudioDeviceListeners()
         
+        val audioFocusChangeListener = android.media.AudioManager.OnAudioFocusChangeListener { focusChange ->
+            Log.d("WebRtcEngine", "AudioFocus changed: $focusChange")
+            when (focusChange) {
+                android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    // Cellular phone call or high-priority audio interruption — silence mic and put on hold
+                    Log.i("WebRtcEngine", "Cellular call interruption — muting mic and placing VoIP call on hold")
+                    isCellularCallInterrupting = true
+                    putCallOnHold(true, isCellularInterruption = true)
+                }
+                android.media.AudioManager.AUDIOFOCUS_GAIN -> {
+                    if (isCellularCallInterrupting) {
+                        Log.i("WebRtcEngine", "Regained audio focus after cellular call — resuming VoIP call")
+                        isCellularCallInterrupting = false
+                        putCallOnHold(false)
+                    }
+                }
+                android.media.AudioManager.AUDIOFOCUS_LOSS -> {
+                    Log.i("WebRtcEngine", "Permanent audio focus loss — muting local audio track")
+                    localAudioTrack?.setEnabled(false)
+                }
+            }
+        }
+
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
@@ -731,13 +759,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                         .build()
                 )
                 .setAcceptsDelayedFocusGain(true)
-                .setOnAudioFocusChangeListener { }
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
                 .build()
             audioFocusRequest = focusRequest
             am.requestAudioFocus(focusRequest)
         } else {
             @Suppress("DEPRECATION")
-            am.requestAudioFocus(null, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN)
+            am.requestAudioFocus(audioFocusChangeListener, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN)
         }
 
         // Ensure voice call volume is clear and un-ducked
@@ -779,6 +807,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 val setEnabled = android.media.audiofx.AudioEffect::class.java.getDeclaredMethod("setEnabled", Boolean::class.java)
                 setEnabled.isAccessible = true
                 setEnabled.invoke(effect, true)
+                samsungVoiceFocusEffect = effect
                 Log.i("WebRtcEngine", "✅ Samsung Voice Focus effect enabled: ${samsungEffect.name}")
             } else {
                 Log.d("WebRtcEngine", "Samsung Voice Focus not found on this device (non-Samsung or unsupported One UI version)")
@@ -890,6 +919,27 @@ class WebRtcEngine private constructor(private val context: Context) {
                             processOfferSdpIfAvailable()
                         }
                         
+                        // Hold State synchronization
+                        val remoteHold = call.isOnHold
+                        if (remoteHold != _state.value.isOnHold) {
+                            val isHeldByMe = call.heldBy == myPhoneNumber
+                            val statusMsg = when {
+                                !remoteHold -> "Connected • WebRTC"
+                                isHeldByMe -> "Call On Hold"
+                                else -> "Call On Hold (Other Party)"
+                            }
+                            _state.value = _state.value.copy(
+                                isOnHold = remoteHold,
+                                isHeldLocally = isHeldByMe,
+                                connectionStatusText = statusMsg
+                            )
+                            if (remoteHold) {
+                                localAudioTrack?.setEnabled(false)
+                            } else {
+                                localAudioTrack?.setEnabled(!_state.value.isMuted)
+                            }
+                        }
+                        
                         if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
                             if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
                                 endCallInternalLocal(call.status)
@@ -981,6 +1031,52 @@ class WebRtcEngine private constructor(private val context: Context) {
         val newMuted = !_state.value.isMuted
         localAudioTrack?.setEnabled(!newMuted)
         _state.value = _state.value.copy(isMuted = newMuted)
+    }
+
+    fun putCallOnHold(onHold: Boolean, isCellularInterruption: Boolean = false) {
+        val currentCall = _state.value.activeCall ?: return
+        val myNumber = myPhoneNumber
+        
+        // 1. Mute or restore local audio track
+        if (onHold) {
+            localAudioTrack?.setEnabled(false)
+        } else {
+            localAudioTrack?.setEnabled(!_state.value.isMuted)
+        }
+        
+        // 2. Update local UI state
+        val statusText = when {
+            !onHold -> "Connected • WebRTC"
+            isCellularInterruption -> "On Hold (Cellular Call)"
+            else -> "Call On Hold"
+        }
+        _state.value = _state.value.copy(
+            isOnHold = onHold,
+            isHeldLocally = onHold,
+            connectionStatusText = statusText
+        )
+        
+        // 3. Sync hold state to Firestore so remote party sees it immediately
+        try {
+            firestore.collection("calls").document(currentCall.callId)
+                .update(
+                    "onHold", onHold,
+                    "heldBy", if (onHold) myNumber else null
+                )
+                .addOnSuccessListener {
+                    Log.i("WebRtcEngine", "Synced call hold state to Firestore: onHold=$onHold, heldBy=$myNumber")
+                }
+                .addOnFailureListener { e ->
+                    Log.w("WebRtcEngine", "Failed to sync hold state to Firestore: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.w("WebRtcEngine", "Exception updating hold state: ${e.message}")
+        }
+    }
+
+    fun toggleHold() {
+        val current = _state.value.isOnHold
+        putCallOnHold(!current)
     }
 
     private fun registerAudioDeviceListeners() {
@@ -1670,6 +1766,15 @@ class WebRtcEngine private constructor(private val context: Context) {
         try {
             headsetButtonManager.stopListening()
         } catch (_: Exception) {}
+
+        try {
+            if (samsungVoiceFocusEffect != null) {
+                val releaseMethod = samsungVoiceFocusEffect?.javaClass?.getMethod("release")
+                releaseMethod?.invoke(samsungVoiceFocusEffect)
+            }
+        } catch (_: Exception) {}
+        samsungVoiceFocusEffect = null
+        isCellularCallInterrupting = false
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {

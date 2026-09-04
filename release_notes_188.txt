@@ -1,0 +1,22 @@
+# LKS Dialer v1.8.8 Release Notes
+
+### 🚀 Highlights & Fixes in v1.8.8
+- **Bi-Directional Call Hold & Cellular Interruption Handling**:
+  - Automatically puts VoIP calls on hold when an incoming cellular (SIM/PSTN) call interrupts audio focus.
+  - Remote party instantly sees "Call on Hold (Other Party)" and audio is cleanly muted.
+  - Manual Call Hold / Resume toggle button added with real-time Firestore sync.
+- **Telecom Connection & Self-Managed Outgoing Calls**:
+  - Registered outgoing calls properly with `TelecomManager.placeCall()`, ensuring system-level call connection tracking and hardware button handling.
+- **Dual Ringtone Conflict Resolved**:
+  - Lockscreen notification channel sound silenced in favor of dedicated `LksIncomingRingtonePlayer`, eliminating echo/double ringtone on Samsung and other Android devices.
+- **Renegotiation & Video Upgrades**:
+  - Unblocked SDP offer renegotiation in `WebRtcEngine` for mid-call video upgrades and ICE reconnects.
+- **Proximity Sensor & Screen Control**:
+  - Removed 10-minute timeout; non-reference counted Proximity WakeLock now reliably manages screen state during calls and dialing.
+- **Samsung Voice Focus & Audio Cleanup**:
+  - Retained and cleanly released Samsung Voice Focus audio effects on call termination to prevent audio server leaks.
+- **Ringtone State & Vibration Fixes**:
+  - Prevented orphan vibrations in Silent/DND mode and guaranteed ringtone flag state cleanup.
+- **Clean Call Log & Firestore Batching**:
+  - Chunked Firestore deletions into safe batches (<450 ops) to avoid crashing limits.
+  - Suppressed phantom missed call spam on new installs by initializing baseline timestamp.

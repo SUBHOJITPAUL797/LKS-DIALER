@@ -96,9 +96,28 @@ object LksTelecomManager {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         try {
             registerPhoneAccount(context)
-            Log.i(TAG, "Outgoing self-managed call active for callId=$callId to $calleeName")
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
+            val handle = getPhoneAccountHandle(context)
+
+            val outgoingExtras = Bundle().apply {
+                putString("call_id", callId)
+                putString("callee_name", calleeName)
+                putString("callee_number", calleeNumber)
+                putString("call_type", callType.name)
+            }
+            val uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, calleeNumber.ifBlank { "LKS" }, null)
+            val extras = Bundle().apply {
+                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+                putParcelable(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, outgoingExtras)
+                if (callType == CallType.VIDEO) {
+                    putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE, android.telecom.VideoProfile.STATE_BIDIRECTIONAL)
+                }
+            }
+
+            telecomManager.placeCall(uri, extras)
+            Log.i(TAG, "Reported outgoing call to TelecomManager via placeCall: callId=$callId to $calleeName")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to register PhoneAccount for outgoing call: ${e.message}")
+            Log.w(TAG, "Failed to placeCall via TelecomManager: ${e.message}")
         }
     }
 }

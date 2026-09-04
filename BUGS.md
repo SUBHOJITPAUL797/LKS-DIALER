@@ -1,0 +1,119 @@
+# LKS Dialer - Bug Audit & Remediation Tracker
+
+This document tracks all identified bugs and stability enhancements across the LKS Dialer codebase, their root causes, severity, affected files, and verification criteria.
+
+---
+
+## 📋 Bug Summary Table
+
+| ID | Bug Description | Severity | File(s) | Status |
+|---|---|---|---|---|
+| **BUG-01** | Outgoing VoIP calls never reported to Android Telecom (`telecomManager.placeCall` missing) | 🔴 CRITICAL | `services/LksTelecomManager.kt` | ✅ Fixed |
+| **BUG-02** | Double ringtone playback on lockscreen (Notification Channel sound + `LksIncomingRingtonePlayer` conflict) | 🔴 CRITICAL | `services/CallMessagingService.kt` | ✅ Fixed |
+| **BUG-03** | Callee ignores SDP renegotiation for mid-call video upgrade and ICE restarts | 🟠 HIGH | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-04** | Proximity sensor 10-minute timeout drops screen blackout during long calls & missing on dialing | 🟠 HIGH | `ui/screens/call/CallScreens.kt` | ✅ Fixed |
+| **BUG-05** | AudioFocus listener empty & native cellular phone call interruption handling | 🟡 MEDIUM | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-06** | Samsung Voice Focus `AudioEffect` instance garbage-collected and leaked in native audio HAL | 🟡 MEDIUM | `webrtc/WebRtcEngine.kt` | ✅ Fixed |
+| **BUG-07** | `LksIncomingRingtonePlayer.silence()` does not reset `isRinging`, risking monitor restart | 🟡 MEDIUM | `util/LksIncomingRingtonePlayer.kt` | ✅ Fixed |
+| **BUG-08** | Fresh install / login spams user with all historical missed call notifications | 🟡 MEDIUM | `data/repository/FirebaseManager.kt` | ✅ Fixed |
+| **BUG-09** | Screen stay-awake flag (`FLAG_KEEP_SCREEN_ON`) not cleared when call is DECLINED | 🟡 MEDIUM | `MainActivity.kt` | ✅ Fixed |
+| **BUG-10** | `clearCallLogs()` crashes if total logs exceed 500 documents (Firestore batch limit) | 🟡 MEDIUM | `data/repository/FirebaseManager.kt` | ✅ Fixed |
+| **BUG-11** | Professional Call Hold: Auto-hold on cellular call pickup + sync "On Hold" status to other party | 🟠 HIGH | `data/model/Models.kt`, `webrtc/WebRtcEngine.kt`, `ui/screens/call/CallScreens.kt` | ✅ Fixed |
+
+---
+
+## 🔍 Detailed Bug Reports
+
+### BUG-01: Outgoing Calls Missing Android Telecom Registration
+- **Severity**: 🔴 Critical
+- **Affected File**: `app/src/main/java/com/example/services/LksTelecomManager.kt`
+- **Root Cause**: `reportOutgoingCall()` only called `registerPhoneAccount(context)` and logged a message. It never called `telecomManager.placeCall(uri, extras)`.
+- **Impact**:
+  - `LksConnectionService.activeConnection` remained `null` for outgoing calls.
+  - Caller could not control audio routing (Speakerphone/Earpiece) via Telecom.
+  - Bluetooth car kits and wireless earbuds did not receive call state; hardware answer/hangup buttons failed on outgoing calls.
+- **Fix**: Implement `telecomManager.placeCall(uri, extras)` with `PhoneAccountHandle` and `EXTRA_OUTGOING_CALL_EXTRAS`.
+
+---
+
+### BUG-02: Double Ringtone Playback on Lockscreen
+- **Severity**: 🔴 Critical
+- **Affected File**: `app/src/main/java/com/example/services/CallMessagingService.kt`
+- **Root Cause**: When phone is locked, notification channel `lks_incoming_call_ringing_channel_v3` was configured with `setSound(ringtoneUri)` AND `LksIncomingRingtonePlayer.start()` was called simultaneously.
+- **Impact**: Two media players played the ringtone simultaneously on `STREAM_RING`, causing audio stutter, volume ducking, and echo.
+- **Fix**: Configure notification channel with `setSound(null, null)` and `enableVibration(false)` while maintaining `IMPORTANCE_HIGH` for lockscreen display, leaving `LksIncomingRingtonePlayer` as the sole, reliable audio/vibration manager.
+
+---
+
+### BUG-03: Callee Ignores SDP Renegotiation for Video Upgrades & ICE Restarts
+- **Severity**: 🟠 High
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: In `processOfferSdpIfAvailable()`, execution returned immediately if `hasProcessedOffer == true` or `pc.remoteDescription != null`.
+- **Impact**: When upgrading from audio to video mid-call or when the caller restarted ICE, the callee rejected the new `offerSdp`, leaving video upgrade stuck at "Connecting video...".
+- **Fix**: Allow renegotiated offers when `offerSdp != pc.remoteDescription?.description`, set the new remote description, generate a new answer, and update `answerSdp` in Firestore.
+
+---
+
+### BUG-04: Proximity Sensor 10-Minute Timeout & Missing on Dialing
+- **Severity**: 🟠 High
+- **Affected File**: `app/src/main/java/com/example/ui/screens/call/CallScreens.kt`
+- **Root Cause**: `wakeLock.acquire(10 * 60 * 1000L)` had a hardcoded 10-minute timeout, and only checked `CallStatus.ANSWERED`.
+- **Impact**: Calls longer than 10 minutes lost proximity blackout (screen lit up against face, triggering accidental touches). Dialing outgoing calls with phone to ear didn't black out until answer.
+- **Fix**: Remove 10-minute limit, use `wakeLock.setReferenceCounted(false)`, allow proximity during `CALLING` and `RINGING` when on Earpiece, and release cleanly via `onDispose`.
+
+---
+
+### BUG-05 & BUG-11: Professional Call Hold & Cellular Interruption Management
+- **Severity**: 🟠 High
+- **Affected Files**: `app/src/main/java/com/example/data/model/Models.kt`, `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`, `app/src/main/java/com/example/ui/screens/call/CallScreens.kt`
+- **Requirement**: When user receives or picks up a native cellular call during an LKS call, the VoIP call must immediately silence mic, mute audio, and transition to "On Hold". The remote caller must see "Call on Hold" status in real-time. When cellular call concludes, LKS call resumes smoothly. Also adds explicit manual "Hold / Resume" button in call UI.
+- **Fix**:
+  1. Add `isOnHold: Boolean = false` and `heldBy: String = ""` to `CallDto` and `WebRtcState`.
+  2. Implement `OnAudioFocusChangeListener`: on `AUDIOFOCUS_LOSS_TRANSIENT` (cellular call or third-party VoIP), automatically set `putOnHold(true)`. On `AUDIOFOCUS_GAIN`, automatically set `putOnHold(false)`.
+  3. Mute local audio track and suppress remote audio during hold.
+  4. Show clear "Call On Hold" banner to both local and remote users.
+
+---
+
+### BUG-06: Samsung Voice Focus `AudioEffect` Resource Leak
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/webrtc/WebRtcEngine.kt`
+- **Root Cause**: `applySamsungVoiceFocusIfAvailable()` instantiated an `AudioEffect` as a local variable without retaining a reference or calling `release()`.
+- **Impact**: Premature garbage collection and native audio HAL resource leak.
+- **Fix**: Hold `samsungVoiceFocusEffect` reference in engine and call `release()` in `endCallInternalLocal`.
+
+---
+
+### BUG-07: `silence()` Does Not Reset `isRinging`
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/util/LksIncomingRingtonePlayer.kt`
+- **Root Cause**: `silence()` stopped playback but didn't set `isRinging = false`.
+- **Impact**: `loopMonitorRunnable` could potentially restart playback if a tick executed after silencing.
+- **Fix**: Explicitly set `isRinging = false` in `silence()`.
+
+---
+
+### BUG-08: Historical Missed Call Notification Spam on First Login
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/data/repository/FirebaseManager.kt`
+- **Root Cause**: `lastSeenMissedCallAt` defaulted to `0L`.
+- **Impact**: On a new device or re-install, up to 100 past missed calls from history triggered notifications simultaneously.
+- **Fix**: Initialize `lastSeenMissedCallAt = System.currentTimeMillis()` if `0L`.
+
+---
+
+### BUG-09: Screen Stay-Awake Flag Not Cleared on Call DECLINED
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/MainActivity.kt`
+- **Root Cause**: `FLAG_KEEP_SCREEN_ON` logic omitted `CallStatus.DECLINED` in the terminal state check.
+- **Impact**: Screen stayed awake indefinitely after a call was declined, draining battery.
+- **Fix**: Ensure `clearFlags(FLAG_KEEP_SCREEN_ON)` runs when call status is `DECLINED`.
+
+---
+
+### BUG-10: `clearCallLogs()` Batch Exceeds 500 Limit
+- **Severity**: 🟡 Medium
+- **Affected File**: `app/src/main/java/com/example/data/repository/FirebaseManager.kt`
+- **Root Cause**: Single `db.batch()` used for all documents without chunking.
+- **Impact**: Throws `IllegalArgumentException` if user has > 500 call logs.
+- **Fix**: Chunk deletion operations into batches of 450.

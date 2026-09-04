@@ -273,34 +273,19 @@ class CallMessagingService : FirebaseMessagingService() {
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        // Fresh channel ID forces Samsung & Xiaomi to recreate notification channel with full sound & vibration
-        val targetChannelId = if (isLocked) "lks_incoming_call_ringing_channel_v3" else "incoming_call_silent_channel"
+        // Fresh channel ID forces Android to apply null sound so LksIncomingRingtonePlayer handles audio exclusively
+        val targetChannelId = if (isLocked) "lks_incoming_call_fgs_v4" else "incoming_call_silent_channel"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             if (isLocked) {
-                val ringtoneUri = try {
-                    com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
-                } catch (_: Exception) {
-                    RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_RINGTONE)
-                        ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                }
-
                 val lockedChannel = NotificationChannel(
-                    "lks_incoming_call_ringing_channel_v3",
-                    "Incoming Calls (Ringtone & Full Screen)",
+                    "lks_incoming_call_fgs_v4",
+                    "Incoming Calls (Full Screen Alert)",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Incoming VoIP call ringtone and full-screen alert on locked screen"
-                    setSound(
-                        ringtoneUri,
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .setLegacyStreamType(AudioManager.STREAM_RING)
-                            .build()
-                    )
-                    enableVibration(true)
-                    vibrationPattern = longArrayOf(0, 1000, 1000)
+                    description = "Incoming VoIP call full-screen alert on locked screen"
+                    setSound(null, null)
+                    enableVibration(false)
                     lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 notificationManager.createNotificationChannel(lockedChannel)
@@ -326,6 +311,7 @@ class CallMessagingService : FirebaseMessagingService() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
+            .setSound(null)
             .setContentIntent(fullScreenPendingIntent)
             .addAction(
                 NotificationCompat.Action.Builder(

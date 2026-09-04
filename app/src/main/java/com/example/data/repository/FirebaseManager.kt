@@ -249,6 +249,13 @@ class FirebaseManager private constructor(private val context: Context) {
 
                 val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
                 val lastSeenMissedCallAt = prefs.getLong("lastSeenMissedCallAt", 0L)
+                if (lastSeenMissedCallAt == 0L) {
+                    // On first run / fresh install, initialize to now so we don't spam old historical missed calls
+                    val maxTimestamp = logs.filter { it.direction == CallDirection.MISSED }
+                        .maxOfOrNull { it.startedAt } ?: System.currentTimeMillis()
+                    prefs.edit().putLong("lastSeenMissedCallAt", maxTimestamp).apply()
+                    return@addSnapshotListener
+                }
                 var maxMissedCallAt = lastSeenMissedCallAt
                 
                 logs.filter { it.direction == CallDirection.MISSED && it.startedAt > lastSeenMissedCallAt }
@@ -608,11 +615,14 @@ class FirebaseManager private constructor(private val context: Context) {
             val db = FirebaseFirestore.getInstance()
             db.collection("users").document(userPhone).collection("callLogs").get().addOnSuccessListener { snapshot ->
                 if (!snapshot.isEmpty) {
-                    val batch = db.batch()
-                    for (doc in snapshot.documents) {
-                        batch.delete(doc.reference)
+                    // Firestore batches have a 500-op limit: chunk into 450 per batch
+                    snapshot.documents.chunked(450).forEach { chunk ->
+                        val batch = db.batch()
+                        for (doc in chunk) {
+                            batch.delete(doc.reference)
+                        }
+                        batch.commit()
                     }
-                    batch.commit()
                 }
             }
         }

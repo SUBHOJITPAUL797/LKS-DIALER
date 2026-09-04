@@ -262,7 +262,11 @@ class MainActivity : ComponentActivity() {
                         LksIncomingRingtonePlayer.stop()
                     }
 
-                    if (rtcState.callStatus != com.example.data.model.CallStatus.IDLE && rtcState.callStatus != com.example.data.model.CallStatus.MISSED && rtcState.callStatus != com.example.data.model.CallStatus.ENDED) {
+                    val isCallActive = rtcState.callStatus == com.example.data.model.CallStatus.CALLING ||
+                                       rtcState.callStatus == com.example.data.model.CallStatus.RINGING ||
+                                       rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED
+
+                    if (isCallActive) {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                             (context as? android.app.Activity)?.setShowWhenLocked(true)
                             (context as? android.app.Activity)?.setTurnScreenOn(true)

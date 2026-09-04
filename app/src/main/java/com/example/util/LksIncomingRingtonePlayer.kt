@@ -349,6 +349,7 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun silence() {
+        isRinging = false
         Log.i(TAG, "🔇 SILENCING RINGTONE")
         mainHandler.removeCallbacks(loopMonitorRunnable)
 
@@ -395,6 +396,12 @@ object LksIncomingRingtonePlayer {
 
     private fun startVibration(context: Context) {
         try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am?.ringerMode == AudioManager.RINGER_MODE_SILENT) {
+                Log.d(TAG, "Device is in Silent mode, skipping vibration")
+                return
+            }
+
             vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
                 vm?.defaultVibrator

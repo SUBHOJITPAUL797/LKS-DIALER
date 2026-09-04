@@ -1,5 +1,6 @@
 package com.example.ui.screens.call
 
+import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -61,6 +62,29 @@ fun OutgoingCallScreen(
             repeatMode = RepeatMode.Reverse
         )
     )
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    if (webRtcEngine != null) {
+        val rtcState by webRtcEngine.state.collectAsState()
+        DisposableEffect(rtcState.callType, rtcState.selectedAudioDevice) {
+            val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            var wakeLock: android.os.PowerManager.WakeLock? = null
+            val proximityLockLevel = 32
+            if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
+                wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:ProximitySensor").apply {
+                    setReferenceCounted(false)
+                }
+                if (callType == CallType.AUDIO && rtcState.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE) {
+                    wakeLock.acquire()
+                }
+            }
+            onDispose {
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (_: Exception) {}
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -370,18 +394,22 @@ fun ActiveAudioCallScreen(
         // PROXIMITY_SCREEN_OFF_WAKE_LOCK is 32 (added in API 21)
         val proximityLockLevel = 32
         if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
-            wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:ProximitySensor")
-            if (state.callStatus == CallStatus.ANSWERED && 
+            wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:ProximitySensor").apply {
+                setReferenceCounted(false)
+            }
+            if ((state.callStatus == CallStatus.ANSWERED || state.callStatus == CallStatus.CALLING || state.callStatus == CallStatus.RINGING) && 
                 state.callType == CallType.AUDIO && 
                 state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE) {
-                wakeLock.acquire(10 * 60 * 1000L /*10 minutes max*/)
+                wakeLock.acquire()
             }
         }
         
         onDispose {
-            if (wakeLock?.isHeld == true) {
-                wakeLock.release()
-            }
+            try {
+                if (wakeLock?.isHeld == true) {
+                    wakeLock.release()
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -470,6 +498,35 @@ fun ActiveAudioCallScreen(
                         )
                     }
                 }
+                AnimatedVisibility(
+                    visible = state.isOnHold,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Surface(
+                        color = Color(0xFFF59E0B).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.PauseCircle,
+                                contentDescription = null,
+                                tint = Color(0xFFF59E0B),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (state.isHeldLocally) "Call On Hold" else "Other party placed call on hold",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFFFBBF24)
+                            )
+                        }
+                    }
+                }
             }
 
             // Center Contact Avatar
@@ -514,6 +571,14 @@ fun ActiveAudioCallScreen(
                         label = if (state.isMuted) "Muted" else "Mute",
                         isActive = state.isMuted,
                         onClick = { webRtcEngine.toggleMute() }
+                    )
+
+                    // Hold Call Toggle
+                    InCallControlButton(
+                        icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
+                        label = if (state.isOnHold) "Resume" else "Hold",
+                        isActive = state.isOnHold,
+                        onClick = { webRtcEngine.toggleHold() }
                     )
 
                     // Switch to Video Button

@@ -42,7 +42,9 @@ data class CallDto(
     val endedAt: Long? = null,
     val durationSeconds: Int = 0,
     val endedBy: String? = null,
-    val videoUpgradeStatus: VideoUpgradeStatus? = null
+    val videoUpgradeStatus: VideoUpgradeStatus? = null,
+    val isOnHold: Boolean = false,
+    val heldBy: String? = null
 )
 
 data class IceCandidateDto(
