@@ -742,6 +742,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 callStatus = CallStatus.ANSWERED,
                                 connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
                             )
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                try {
+                                    com.example.services.LksConnectionService.setCallActive()
+                                } catch (_: Exception) {}
+                            }
                             if (_state.value.callDurationSeconds == 0) {
                                 startCallTimer()
                             }
@@ -763,7 +768,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 callStatus = CallStatus.ANSWERED,
                                 connectionStatusText = "Connected • WebRTC"
                             )
-                            refreshAvailableAudioDevices(defaultCallType = _state.value.callType)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                try {
+                                    com.example.services.LksConnectionService.setCallActive()
+                                } catch (_: Exception) {}
+                            }
+                            refreshAvailableAudioDevices(defaultCallType = null)
                             if (_state.value.callDurationSeconds == 0) {
                                 startCallTimer()
                             }
@@ -1139,10 +1149,26 @@ class WebRtcEngine private constructor(private val context: Context) {
         try {
             am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
 
+            // Guarantee audio focus so Android and Samsung Audio HAL permit communication device switching
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAcceptsDelayedFocusGain(true)
+                    .build()
+                audioFocusRequest = focusRequest
+                am.requestAudioFocus(focusRequest)
+            }
+
             when (device.type) {
                 AudioDeviceType.SPEAKERPHONE -> {
+                    // Samsung devices require isSpeakerphoneOn=true alongside setCommunicationDevice
+                    am.isSpeakerphoneOn = true
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        am.clearCommunicationDevice()
                         val speaker = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER 
                         }
@@ -1157,14 +1183,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                     am.isSpeakerphoneOn = true
                 }
                 AudioDeviceType.EARPIECE -> {
+                    am.isSpeakerphoneOn = false
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                        am.clearCommunicationDevice()
                         val earpiece = am.availableCommunicationDevices.firstOrNull { 
                             it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE 
                         }
                         if (earpiece != null) {
                             val res = am.setCommunicationDevice(earpiece)
                             Log.d("WebRtcEngine", "setCommunicationDevice(EARPIECE): $res")
+                        } else {
+                            // On Samsung, earpiece is restored by clearing the active communication device
+                            am.clearCommunicationDevice()
                         }
                     } else {
                         @Suppress("DEPRECATION")

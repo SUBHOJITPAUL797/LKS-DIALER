@@ -49,6 +49,7 @@ fun OutgoingCallScreen(
     profilePicUrl: String,
     callType: CallType,
     statusText: String,
+    webRtcEngine: WebRtcEngine? = null,
     onEndCall: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition()
@@ -138,6 +139,63 @@ fun OutgoingCallScreen(
                         text = statusText,
                         style = MaterialTheme.typography.titleMedium,
                         color = Color.White
+                    )
+                }
+            }
+
+            // In-Call Controls (Mute & Speakerphone while Calling / Ringing)
+            if (webRtcEngine != null) {
+                val state by webRtcEngine.state.collectAsState()
+                var showAudioDialog by remember { mutableStateOf(false) }
+
+                if (showAudioDialog) {
+                    AudioOutputSelectionDialog(
+                        state = state,
+                        onSelectDevice = { webRtcEngine.selectAudioDevice(it) },
+                        onDismiss = { showAudioDialog = false }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Mute Mic Toggle
+                    InCallControlButton(
+                        icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                        label = if (state.isMuted) "Muted" else "Mute",
+                        isActive = state.isMuted,
+                        onClick = { webRtcEngine.toggleMute() }
+                    )
+
+                    // Audio Output Switcher / Speakerphone Toggle
+                    val audioIcon = when (state.selectedAudioDevice) {
+                        com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+                        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+                        com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+                        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+                    }
+                    val audioLabel = when (state.selectedAudioDevice) {
+                        com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
+                        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
+                        com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
+                        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
+                    }
+
+                    InCallControlButton(
+                        icon = audioIcon,
+                        label = audioLabel,
+                        isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH,
+                        onClick = {
+                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
+                                showAudioDialog = true
+                            } else {
+                                webRtcEngine.toggleSpeaker()
+                            }
+                        }
                     )
                 }
             }

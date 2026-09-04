@@ -572,6 +572,7 @@ class MainActivity : ComponentActivity() {
                                     profilePicUrl = otherPartyProfilePic,
                                     callType = activeCall.callType,
                                     statusText = rtcState.connectionStatusText,
+                                    webRtcEngine = webRtcEngine,
                                     onEndCall = {
                                         firebaseManager.logCall(
                                             direction = CallDirection.OUTGOING,
@@ -612,6 +613,7 @@ class MainActivity : ComponentActivity() {
                                         profilePicUrl = otherPartyProfilePic,
                                         callType = activeCall.callType,
                                         statusText = rtcState.connectionStatusText,
+                                        webRtcEngine = webRtcEngine,
                                         onEndCall = {
                                             firebaseManager.logCall(
                                                 direction = CallDirection.OUTGOING,
