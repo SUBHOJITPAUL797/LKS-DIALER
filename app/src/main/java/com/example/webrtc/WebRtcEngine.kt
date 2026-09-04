@@ -126,6 +126,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
             .createAudioDeviceModule()
 
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -138,7 +144,15 @@ class WebRtcEngine private constructor(private val context: Context) {
     
     private fun createAudioTrack() {
         if (peerConnectionFactory == null) return
-        val audioConstraints = MediaConstraints()
+        val audioConstraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("echoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
+        }
         audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
         localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
         localAudioTrack?.setEnabled(true)
@@ -181,8 +195,13 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun createPeerConnection(isCaller: Boolean, callId: String) {
-        val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
-        rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+            sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+            bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+        }
         
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onSignalingChange(newState: PeerConnection.SignalingState?) {}
@@ -307,6 +326,46 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
+    private fun preferOpusAndEnableFec(sdp: String): String {
+        val lines = sdp.split("\r\n").toMutableList()
+        var opusPayloadType: String? = null
+        
+        for (line in lines) {
+            if (line.startsWith("a=rtpmap:") && line.contains("opus/48000", ignoreCase = true)) {
+                opusPayloadType = line.substringAfter("a=rtpmap:").substringBefore(" ").trim()
+                break
+            }
+        }
+        
+        if (opusPayloadType == null) return sdp
+        
+        var fmtpFound = false
+        for (i in lines.indices) {
+            val line = lines[i]
+            if (line.startsWith("a=fmtp:$opusPayloadType")) {
+                fmtpFound = true
+                var newLine = line
+                if (!newLine.contains("useinbandfec=")) newLine += ";useinbandfec=1"
+                if (!newLine.contains("usedtx=")) newLine += ";usedtx=1"
+                if (!newLine.contains("maxaveragebitrate=")) newLine += ";maxaveragebitrate=64000"
+                if (!newLine.contains("minptime=")) newLine += ";minptime=10"
+                lines[i] = newLine
+                break
+            }
+        }
+        
+        if (!fmtpFound) {
+            for (i in lines.indices) {
+                if (lines[i].startsWith("a=rtpmap:$opusPayloadType")) {
+                    lines.add(i + 1, "a=fmtp:$opusPayloadType minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000")
+                    break
+                }
+            }
+        }
+        
+        return lines.joinToString("\r\n")
+    }
+
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
         val newCall = CallDto(
             callId = UUID.randomUUID().toString(),
@@ -370,8 +429,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         peerConnection?.createOffer(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {
                 if (desc != null) {
-                    peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                    firestore.collection("calls").document(newCall.callId).update("offerSdp", desc.description)
+                    val tunedSdp = preferOpusAndEnableFec(desc.description)
+                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                    peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                    firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
                 }
             }
             override fun onSetSuccess() {}
@@ -624,16 +685,18 @@ class WebRtcEngine private constructor(private val context: Context) {
                 pc.createAnswer(object : SimpleSdpObserver() {
                     override fun onCreateSuccess(desc: SessionDescription?) {
                         if (desc != null) {
+                            val tunedSdp = preferOpusAndEnableFec(desc.description)
+                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
                             pc.setLocalDescription(object : SimpleSdpObserver() {
                                 override fun onSetSuccess() {
                                     Log.i("WebRtcEngine", "Local answer SDP set successfully, uploading to Firestore")
                                     firestore.collection("calls").document(call.callId)
-                                        .update("answerSdp", desc.description)
+                                        .update("answerSdp", tunedSdp)
                                 }
                                 override fun onSetFailure(error: String?) {
                                     Log.e("WebRtcEngine", "Failed to set local answer: $error")
                                 }
-                            }, desc)
+                            }, tunedDesc)
                         }
                     }
                     override fun onCreateFailure(error: String?) {
@@ -877,11 +940,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             
             peerConnection?.createOffer(object : SimpleSdpObserver() {
                 override fun onCreateSuccess(desc: SessionDescription?) {
-                    peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                    desc?.let {
+                    if (desc != null) {
+                        val tunedSdp = preferOpusAndEnableFec(desc.description)
+                        val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                        peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
                         firestore.collection("calls").document(currentCall.callId)
                             .update(
-                                "offerSdp", it.description,
+                                "offerSdp", tunedSdp,
                                 "callType", CallType.VIDEO.name
                             )
                     }
@@ -1440,6 +1505,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                     type = "missed_call"
                 )
             }
+            // Auto-cleanup call and candidate documents after 30 seconds to keep DB lean & fast
+            val callIdToDelete = call.callId
+            scope.launch {
+                delay(30000)
+                deleteCallAndCandidates(callIdToDelete)
+            }
         }
         endCallInternalLocal(CallStatus.ENDED)
     }
@@ -1447,13 +1518,16 @@ class WebRtcEngine private constructor(private val context: Context) {
     private fun deleteCallAndCandidates(callId: String) {
         try {
             val callRef = firestore.collection("calls").document(callId)
-            callRef.collection("callerCandidates").get().addOnSuccessListener { snap ->
-                for (doc in snap.documents) try { doc.reference.delete() } catch (_: Exception) {}
+            callRef.collection("candidates").get().addOnSuccessListener { snap ->
+                val batch = firestore.batch()
+                for (doc in snap.documents) {
+                    batch.delete(doc.reference)
+                }
+                batch.delete(callRef)
+                batch.commit()
+            }.addOnFailureListener {
+                try { callRef.delete() } catch (_: Exception) {}
             }
-            callRef.collection("calleeCandidates").get().addOnSuccessListener { snap ->
-                for (doc in snap.documents) try { doc.reference.delete() } catch (_: Exception) {}
-            }
-            callRef.delete()
         } catch (_: Exception) {}
     }
 
