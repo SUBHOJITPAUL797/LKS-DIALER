@@ -347,9 +347,7 @@ class CallMessagingService : FirebaseMessagingService() {
             builder.setFullScreenIntent(fullScreenPendingIntent, true)
         }
 
-        val notification = builder.build().apply {
-            flags = flags or android.app.Notification.FLAG_INSISTENT
-        }
+        val notification = builder.build()
         notificationManager.notify(NOTIFICATION_ID, notification)
         // ─── Update Firestore status to RINGING so the CALLER sees "Ringing..." instead of "Calling..." ───
         try {

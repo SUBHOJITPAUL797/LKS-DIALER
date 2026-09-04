@@ -656,7 +656,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         registerAudioDeviceListeners()
         
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
                     android.media.AudioAttributes.Builder()
                         .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -670,7 +670,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             am.requestAudioFocus(focusRequest)
         } else {
             @Suppress("DEPRECATION")
-            am.requestAudioFocus(null, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            am.requestAudioFocus(null, android.media.AudioManager.STREAM_VOICE_CALL, android.media.AudioManager.AUDIOFOCUS_GAIN)
         }
 
         // Ensure voice call volume is clear and un-ducked
@@ -1191,7 +1191,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             // Guarantee audio focus so Android and Samsung Audio HAL permit communication device switching
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(
                         android.media.AudioAttributes.Builder()
                             .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -1548,6 +1548,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             audioFocusRequest = null
 
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                // Always stop BT SCO first — clearCommunicationDevice alone won't tear down the SCO link
+                @Suppress("DEPRECATION")
+                try { am.stopBluetoothSco(); am.isBluetoothScoOn = false } catch (_: Exception) {}
                 am.clearCommunicationDevice()
             } else {
                 @Suppress("DEPRECATION")
