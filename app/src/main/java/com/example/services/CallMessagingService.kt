@@ -176,6 +176,12 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         }
 
+        if (com.example.MainActivity.isForeground) {
+            Log.d("FCM", "MainActivity is already visible in foreground. Ringing directly without heads-up card.")
+            com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
+            return
+        }
+
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 

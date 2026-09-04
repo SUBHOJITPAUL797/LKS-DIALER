@@ -64,7 +64,8 @@ export default {
             },
             android: {
               priority: "HIGH",
-              ttl: "30s",
+              ttl: "60s",
+              direct_boot_ok: true,
             },
             webpush: {
               headers: {

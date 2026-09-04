@@ -92,15 +92,40 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+                if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = android.net.Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                    android.util.Log.i("MainActivity", "Requested battery optimization exemption for 24/7 call readiness")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "Failed to launch battery optimization request: ${e.message}")
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         isForeground = true
         // Dismiss floating pill when user is viewing the full-screen MainActivity
         com.example.services.FloatingCallBubbleService.hide(this)
         
-        // Cancel the redundant heads-up notification card immediately so it doesn't cover the full-screen call UI
-        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
-        nm?.cancel(1001)
+        // Cancel the redundant heads-up notification card immediately with retries so it NEVER covers the full-screen UI
+        dismissIncomingCallNotificationBanner()
+    }
+
+    private fun dismissIncomingCallNotificationBanner() {
+        val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager ?: return
+        nm.cancel(1001)
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        handler.postDelayed({ nm.cancel(1001) }, 300L)
+        handler.postDelayed({ nm.cancel(1001) }, 800L)
+        handler.postDelayed({ nm.cancel(1001) }, 1500L)
     }
 
     override fun onPause() {
@@ -179,6 +204,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         applyLockscreenFlags()
+        requestBatteryOptimizationExemption()
 
         // Start 24/7 keep-alive service for reliable FCM delivery
         try {
@@ -222,6 +248,7 @@ class MainActivity : ComponentActivity() {
 
                     if (isIncomingRinging) {
                         com.example.services.FloatingCallBubbleService.hide(context)
+                        (context as? MainActivity)?.dismissIncomingCallNotificationBanner()
                         if (!LksIncomingRingtonePlayer.isRinging) {
                             val callerNumber = rtcState.activeCall?.callerNumber ?: ""
                             LksIncomingRingtonePlayer.start(context, callerNumber)
