@@ -197,8 +197,8 @@ class LksCallConnection(
             android.telecom.CallAudioState.ROUTE_EARPIECE -> com.example.webrtc.AudioDeviceType.EARPIECE
             else -> null
         }
-        if (targetType != null && engine.state.value.selectedAudioDevice != targetType) {
-            engine.selectAudioDeviceType(targetType)
+        if (targetType != null) {
+            engine.onTelecomAudioRouteChanged(targetType)
         }
     }
 
