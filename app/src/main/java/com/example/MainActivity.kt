@@ -128,6 +128,12 @@ class MainActivity : ComponentActivity() {
         handler.postDelayed({ nm.cancel(1001) }, 1500L)
     }
 
+    override fun onStart() {
+        super.onStart()
+        isForeground = true
+        com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(true)
+    }
+
     override fun onPause() {
         super.onPause()
         isForeground = false
@@ -136,6 +142,9 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         isForeground = false
+        if (!isChangingConfigurations) {
+            com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
+        }
     }
 
     override fun onUserLeaveHint() {
@@ -156,8 +165,10 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         if (!isChangingConfigurations) {
             triggerFloatingCallBubbleIfActive()
+            com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
         }
     }
+
 
     private fun triggerFloatingCallBubbleIfActive() {
         isForeground = false

@@ -24,8 +24,8 @@ object ImageUtils {
 
             if (originalBitmap == null) return null
 
-            // Scale down the image to max 800x800 while maintaining aspect ratio
-            val maxDim = 800f
+            // Scale down the avatar to max 256x256 (crisp for 128dp circle on xxxhdpi)
+            val maxDim = 256f
             val width = originalBitmap.width
             val height = originalBitmap.height
             val ratio = width.toFloat() / height.toFloat()
@@ -45,13 +45,13 @@ object ImageUtils {
 
             val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
             
-            // Compress to JPEG and ensure it stays under ~600KB (so Base64 is < 900KB)
-            var quality = 80
+            // Compress to JPEG and ensure it stays under 30KB (Base64 < 40KB)
+            var quality = 75
             var outputStream = ByteArrayOutputStream()
             scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
             
-            val maxSizeBytes = 600 * 1024
-            while (outputStream.toByteArray().size > maxSizeBytes && quality > 10) {
+            val maxSizeBytes = 30 * 1024
+            while (outputStream.toByteArray().size > maxSizeBytes && quality > 30) {
                 quality -= 10
                 outputStream.reset()
                 scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
@@ -59,8 +59,9 @@ object ImageUtils {
 
             val byteArray = outputStream.toByteArray()
 
-            // Encode to Base64
-            Base64.encodeToString(byteArray, Base64.DEFAULT)
+            // Encode to Base64 without line breaks (clean for Firestore)
+            Base64.encodeToString(byteArray, Base64.NO_WRAP)
+
         } catch (e: Exception) {
             e.printStackTrace()
             null

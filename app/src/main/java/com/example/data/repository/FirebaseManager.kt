@@ -469,6 +469,35 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Updates the user's online presence and lastSeen timestamp in Firestore.
+     * Called on app foreground (isOnline = true) and background (isOnline = false).
+     */
+    fun updateUserPresence(isOnline: Boolean) {
+        val user = _currentUser.value ?: return
+        if (user.phoneNumber.isBlank()) return
+        val now = System.currentTimeMillis()
+        _currentUser.value = user.copy(isOnline = isOnline, lastSeen = now)
+        if (_isFirebaseConfigured.value) {
+            val updates = mapOf<String, Any>(
+                "isOnline" to isOnline,
+                "online" to isOnline,
+                "lastSeen" to now
+            )
+            FirebaseFirestore.getInstance().collection("users").document(user.phoneNumber)
+                .update(updates)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Presence updated: isOnline=$isOnline for ${user.phoneNumber}")
+                }
+                .addOnFailureListener {
+                    try {
+                        FirebaseFirestore.getInstance().collection("users").document(user.phoneNumber)
+                            .set(updates, com.google.firebase.firestore.SetOptions.merge())
+                    } catch (_: Exception) {}
+                }
+        }
+    }
+
     fun updateFcmToken(token: String) {
         val current = _currentUser.value ?: return
         if (current.fcmToken == token) return

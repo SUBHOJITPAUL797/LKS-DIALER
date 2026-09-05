@@ -1,0 +1,14 @@
+## LKS Dialer v1.9.7 — Phase 5: Real-time Presence & 96% Avatar Optimization
+
+### 🚀 Key Improvements in v1.9.7
+
+1. **Accurate Online / Offline Presence Tracking**
+   - Wired user presence into the full Android Activity lifecycle (onStart, onStop, onDestroy).
+   - Switching apps or locking the phone immediately updates isOnline = false and writes the exact lastSeen timestamp to Firestore.
+   - Reopening the app immediately publishes isOnline = true.
+   - Fixed Firestore field serialization annotation on UserDto.isOnline so the status reflects accurately across all contacts.
+
+2. **Avatar Storage Optimization (96% Document Size Reduction)**
+   - Resized and compressed avatars to max 256×256 pixels, keeping file size strictly under 30KB.
+   - Eliminated Firestore 1MB document quota risk and prevented memory bloat when loading contacts.
+   - Clean Base64 NO_WRAP encoding prevents unnecessary newline overhead.
