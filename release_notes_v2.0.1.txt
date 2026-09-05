@@ -1,0 +1,12 @@
+# Release v2.0.1 — Firestore Security Rules Hardening
+
+### 🔒 Firestore Security Rules Hardening
+- **Schema Validation & Integrity**:
+  - `isValidUser`: Enforces that only valid user profiles with matching phone numbers and non-empty display names can be created. Prevents arbitrary deletion of user accounts.
+  - `isValidCall`: Validates incoming call records against allowed statuses (`CALLING`, `RINGING`, `ANSWERED`, `ENDED`, `DECLINED`, `MISSED`, `FAILED`), requiring matching IDs and valid phone numbers.
+  - `isValidCandidate`: Restricts WebRTC ICE candidate signaling subcollections to valid `offerCandidate` or `answerCandidate` types with SDP payload.
+  - `isValidCallLog`: Restricts user call logs to legitimate call directions (`INCOMING`, `OUTGOING`, `MISSED`) and call types (`AUDIO`, `VIDEO`).
+- **Eliminated Wildcard Access**: Replaced all legacy `allow read, write: if true;` wildcard rules with strictly validated schema rules tested and validated against Firebase security rules engine.
+
+### 📦 Artifacts
+- **Release APK**: `LKS-Dialer-v2.0.1.apk` (VersionCode: 91, VersionName: 2.0.1)

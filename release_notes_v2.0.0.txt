@@ -1,0 +1,10 @@
+# Release v2.0.0 — Major Architecture & Modularization Overhaul
+
+### 🏗️ Complete Modular Architecture
+- **Dedicated AudioRouteManager (`AudioRouteManager.kt`)**: Extracted all audio routing, focus arbitration, Samsung Voice Focus AI noise suppression, Bluetooth SCO / BLE / Hearing Aid switching, and Telecom route synchronization from `WebRtcEngine.kt` into a standalone, single-responsibility manager.
+- **Dedicated CallSignalingManager (`CallSignalingManager.kt`)**: Extracted all Firestore SDP offer/answer exchanges, real-time ICE candidate deduplication, remote candidate streaming, hold state sync, and automatic document teardown into a specialized signaling manager.
+- **Dedicated AudioDeviceModels (`AudioDeviceModels.kt`)**: Extracted `AudioDeviceType` and `AudioDeviceOption` models for clean architectural boundaries.
+- **Lightweight WebRtcEngine**: Streamlined `WebRtcEngine.kt` by ~600 lines, delegating audio routing and Firestore signaling cleanly with zero circular dependencies or memory leaks.
+
+### 📦 Artifacts
+- **Release APK**: `LKS-Dialer-v2.0.0.apk` (VersionCode: 90, VersionName: 2.0.0)
