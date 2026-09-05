@@ -21,6 +21,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
 import com.example.util.ImageUtils
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -214,7 +215,8 @@ fun OutgoingCallScreen(
                         label = audioLabel,
                         isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH,
                         onClick = {
-                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
+                            webRtcEngine.refreshAvailableAudioDevices()
+                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH } || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH) {
                                 showAudioDialog = true
                             } else {
                                 webRtcEngine.toggleSpeaker()
@@ -722,14 +724,78 @@ fun ActiveVideoCallScreen(
             .background(Color.Black)
             .pointerInput(Unit) { detectTapGestures { } }
     ) {
-        // Remote Video Preview
+        // Remote Video Preview or Dedicated On-Hold Screen
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0xFF1C2826)),
             contentAlignment = Alignment.Center
         ) {
-            if (state.remoteVideoTrack != null) {
+            if (state.isOnHold) {
+                // Dedicated On-Hold Screen to prevent frozen/blurred video surface
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF0F172A).copy(alpha = 0.94f))
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Surface(
+                        modifier = Modifier.size(96.dp),
+                        shape = CircleShape,
+                        color = if (state.isHeldLocally) Color(0xFFF59E0B) else Color(0xFF3B82F6)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Pause,
+                                contentDescription = "Call On Hold",
+                                tint = Color.White,
+                                modifier = Modifier.size(44.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = if (state.isHeldLocally) "Call Placed On Hold" else "Call On Hold",
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (state.isHeldLocally) 
+                            "Microphone and camera are paused" 
+                        else 
+                            "${activeCall.calleeName.ifBlank { activeCall.callerName }} placed the call on hold",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.75f),
+                        textAlign = TextAlign.Center
+                    )
+                    
+                    if (state.isHeldLocally) {
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = { webRtcEngine.putCallOnHold(false) },
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
+                            shape = RoundedCornerShape(24.dp),
+                            contentPadding = PaddingValues(horizontal = 28.dp, vertical = 12.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.PlayArrow,
+                                contentDescription = "Resume",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Resume Call",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White
+                            )
+                        }
+                    }
+                }
+            } else if (state.remoteVideoTrack != null) {
                 WebRtcVideoRenderer(
                     videoTrack = state.remoteVideoTrack,
                     eglBaseContext = webRtcEngine.eglBaseContext,
@@ -774,13 +840,38 @@ fun ActiveVideoCallScreen(
                     shadowElevation = 8.dp,
                     color = Color.Black
                 ) {
-                    WebRtcVideoRenderer(
-                        videoTrack = state.localVideoTrack,
-                        eglBaseContext = webRtcEngine.eglBaseContext,
-                        modifier = Modifier.fillMaxSize(),
-                        mirror = state.isFrontCamera,
-                        isOverlay = true
-                    )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        WebRtcVideoRenderer(
+                            videoTrack = state.localVideoTrack,
+                            eglBaseContext = webRtcEngine.eglBaseContext,
+                            modifier = Modifier.fillMaxSize(),
+                            mirror = state.isFrontCamera,
+                            isOverlay = true
+                        )
+                        if (state.isOnHold) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.8f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        Icons.Default.Pause,
+                                        contentDescription = "Paused",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Paused",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -929,21 +1020,31 @@ fun ActiveVideoCallScreen(
                     isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
                     size = 48.dp,
                     onClick = {
-                        if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
-                            showAudioDialog = true
-                        } else {
-                            webRtcEngine.toggleSpeaker()
-                        }
+                        webRtcEngine.refreshAvailableAudioDevices()
+                        showAudioDialog = true
                     }
                 )
 
                 // Hold / Resume Call
+                val holdLabel = when {
+                    !state.isOnHold -> "Hold"
+                    state.isHeldLocally -> "Resume"
+                    else -> "On Hold"
+                }
                 InCallControlButton(
                     icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
-                    label = if (state.isOnHold) "Resume" else "Hold",
+                    label = holdLabel,
                     isActive = state.isOnHold,
                     size = 48.dp,
-                    onClick = { webRtcEngine.toggleHold() }
+                    onClick = {
+                        if (state.isOnHold) {
+                            if (state.isHeldLocally) {
+                                webRtcEngine.putCallOnHold(false)
+                            }
+                        } else {
+                            webRtcEngine.putCallOnHold(true)
+                        }
+                    }
                 )
 
                 // Red End Call

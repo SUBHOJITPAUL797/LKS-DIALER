@@ -40,6 +40,18 @@ class AudioRouteManager(
     private var audioDeviceCallback: AudioDeviceCallback? = null
     private var headsetReceiver: BroadcastReceiver? = null
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val delayedRefreshRunnable400 = Runnable { refreshAvailableAudioDevices() }
+    private val delayedRefreshRunnable1000 = Runnable { refreshAvailableAudioDevices() }
+
+    private fun triggerHardwareDeviceRefresh() {
+        refreshAvailableAudioDevices()
+        mainHandler.removeCallbacks(delayedRefreshRunnable400)
+        mainHandler.removeCallbacks(delayedRefreshRunnable1000)
+        mainHandler.postDelayed(delayedRefreshRunnable400, 400L)
+        mainHandler.postDelayed(delayedRefreshRunnable1000, 1000L)
+    }
+
     private var lastNonBluetoothAudioDevice: AudioDeviceType = AudioDeviceType.EARPIECE
     @Volatile
     private var lastUserExplicitSelectionTime: Long = 0L
@@ -127,12 +139,12 @@ class AudioRouteManager(
             audioDeviceCallback = object : AudioDeviceCallback() {
                 override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
                     Log.d(TAG, "Audio devices added, refreshing device list")
-                    refreshAvailableAudioDevices()
+                    triggerHardwareDeviceRefresh()
                 }
 
                 override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
                     Log.d(TAG, "Audio devices removed, refreshing device list")
-                    refreshAvailableAudioDevices()
+                    triggerHardwareDeviceRefresh()
                 }
             }
             audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
@@ -145,9 +157,12 @@ class AudioRouteManager(
                         Intent.ACTION_HEADSET_PLUG,
                         BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED,
                         BluetoothDevice.ACTION_ACL_CONNECTED,
-                        BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                        BluetoothDevice.ACTION_ACL_DISCONNECTED,
+                        BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED,
+                        BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED,
+                        AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED -> {
                             Log.d(TAG, "Audio hardware broadcast received: ${intent.action}")
-                            refreshAvailableAudioDevices()
+                            triggerHardwareDeviceRefresh()
                         }
                     }
                 }
@@ -157,12 +172,17 @@ class AudioRouteManager(
                 addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
                 addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
                 addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
+                addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
             }
             context.registerReceiver(headsetReceiver, filter)
         }
     }
 
     private fun unregisterAudioDeviceListeners() {
+        mainHandler.removeCallbacks(delayedRefreshRunnable400)
+        mainHandler.removeCallbacks(delayedRefreshRunnable1000)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback != null) {
             try {
                 audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
@@ -263,6 +283,34 @@ class AudioRouteManager(
                                 rawDevice = btOutput
                             )
                         )
+                    }
+                } catch (_: Exception) {}
+            }
+
+            if (deviceList.none { it.type == AudioDeviceType.BLUETOOTH }) {
+                try {
+                    @Suppress("DEPRECATION")
+                    val btAdapter = BluetoothAdapter.getDefaultAdapter()
+                    if (btAdapter != null && btAdapter.isEnabled) {
+                        val headsetState = btAdapter.getProfileConnectionState(BluetoothProfile.HEADSET)
+                        val a2dpState = btAdapter.getProfileConnectionState(BluetoothProfile.A2DP)
+                        if (headsetState == BluetoothProfile.STATE_CONNECTED || a2dpState == BluetoothProfile.STATE_CONNECTED) {
+                            var btName = "Bluetooth Headset"
+                            try {
+                                val bonded = btAdapter.bondedDevices
+                                val firstBt = bonded?.firstOrNull()
+                                if (firstBt != null && !firstBt.name.isNullOrBlank()) {
+                                    btName = "Bluetooth (${firstBt.name})"
+                                }
+                            } catch (_: Exception) {}
+                            deviceList.add(
+                                AudioDeviceOption(
+                                    id = "bt_connected_fallback",
+                                    name = btName,
+                                    type = AudioDeviceType.BLUETOOTH
+                                )
+                            )
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -522,6 +570,7 @@ class AudioRouteManager(
                             audioManager.availableCommunicationDevices.firstOrNull {
                                 it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                                 it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                                 it.type == AudioDeviceInfo.TYPE_HEARING_AID
                             }
                         }
@@ -680,6 +729,7 @@ class AudioRouteManager(
 
     fun resetAudioRouting() {
         unregisterAudioDeviceListeners()
+        mainHandler.removeCallbacksAndMessages(null)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }

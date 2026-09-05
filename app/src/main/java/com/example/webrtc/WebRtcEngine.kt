@@ -976,8 +976,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                             )
                             if (remoteHold) {
                                 localAudioTrack?.setEnabled(false)
+                                _state.value.localVideoTrack?.setEnabled(false)
                             } else {
                                 localAudioTrack?.setEnabled(!_state.value.isMuted)
+                                _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
                             }
                         }
                         
@@ -1146,7 +1148,9 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun toggleMute() {
         val newMuted = !_state.value.isMuted
-        localAudioTrack?.setEnabled(!newMuted)
+        if (!_state.value.isOnHold) {
+            localAudioTrack?.setEnabled(!newMuted)
+        }
         _state.value = _state.value.copy(isMuted = newMuted)
     }
 
@@ -1156,11 +1160,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
         }
         
-        // 1. Mute or restore local audio track
+        // 1. Mute or restore local audio and video tracks
         if (onHold) {
             localAudioTrack?.setEnabled(false)
+            _state.value.localVideoTrack?.setEnabled(false)
         } else {
             localAudioTrack?.setEnabled(!_state.value.isMuted)
+            _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
         }
         
         // 2. Update local UI state
@@ -1214,7 +1220,9 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun toggleCamera() {
         val newCameraOn = !_state.value.isCameraOn
-        _state.value.localVideoTrack?.setEnabled(newCameraOn)
+        if (!_state.value.isOnHold) {
+            _state.value.localVideoTrack?.setEnabled(newCameraOn)
+        }
         _state.value = _state.value.copy(isCameraOn = newCameraOn)
     }
 
