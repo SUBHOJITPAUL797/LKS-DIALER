@@ -1,22 +1,67 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Helper functions for schema integrity and security
+    function isValidUser(data, phone) {
+      return data.phoneNumber == phone
+        && data.displayName is string
+        && data.displayName.size() > 0;
+    }
+
+    function isValidCall(data, id) {
+      return data.callId == id
+        && data.callerNumber is string
+        && data.calleeNumber is string
+        && data.status in ['CALLING', 'RINGING', 'ANSWERED', 'ENDED', 'DECLINED', 'MISSED', 'FAILED'];
+    }
+
+    function isValidCandidate(data) {
+      return data.type in ['offerCandidate', 'answerCandidate']
+        && data.sdpCandidate is string;
+    }
+
+    function isValidCallLog(data) {
+      return data.direction in ['INCOMING', 'OUTGOING', 'MISSED']
+        && data.callType in ['AUDIO', 'VIDEO'];
+    }
+
+    // User profiles & presence
     match /users/{phoneNumber} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if isValidUser(request.resource.data, phoneNumber);
+      allow update: if request.resource.data.phoneNumber == phoneNumber;
+      allow delete: if false;
+
+      // User contacts
       match /contacts/{contactId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create, update: if request.resource.data.name is string && request.resource.data.phoneNumber is string;
+        allow delete: if true;
       }
-      // ✅ NEW: call logs are now per-user subcollection
+
+      // Per-user call logs (created locally or by caller on missed call)
       match /callLogs/{logId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create: if isValidCallLog(request.resource.data);
+        allow update: if true;
+        allow delete: if true;
       }
     }
+
+    // Active calls & signaling
     match /calls/{callId} {
-      allow read, write: if true;
-      
-      // ✅ FIXED: Allow WebRTC audio/video stream data sync
+      allow read: if true;
+      allow create: if isValidCall(request.resource.data, callId);
+      allow update: if true;
+      allow delete: if true;
+
+      // WebRTC ICE candidates subcollection
       match /candidates/{candidateId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create: if isValidCandidate(request.resource.data);
+        allow update: if true;
+        allow delete: if true;
       }
     }
   }
