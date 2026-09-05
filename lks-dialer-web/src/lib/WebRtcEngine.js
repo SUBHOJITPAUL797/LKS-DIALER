@@ -7,7 +7,19 @@ import {
 
 const servers = {
   iceServers: [
-    { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
+    { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
+    {
+      urls: [
+        'turn:a.relay.metered.ca:80',
+        'turn:a.relay.metered.ca:80?transport=tcp',
+        'turn:a.relay.metered.ca:443',
+        'turn:a.relay.metered.ca:443?transport=tcp',
+        'turns:a.relay.metered.ca:443',
+        'turns:a.relay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ],
   iceCandidatePoolSize: 10,
 };
@@ -20,6 +32,7 @@ class WebRtcEngine {
     this.activeCallId = null;
     this.currentUser = null;
     this.isFrontCamera = true;
+    this.iceServers = servers;
     
     // Callbacks for UI updates
     this.onCallStateChange = null;
@@ -27,6 +40,24 @@ class WebRtcEngine {
     this.onRemoteStream = null;
     
     this.callUnsubscribers = [];
+    this.fetchIceServers();
+  }
+
+  async fetchIceServers() {
+    try {
+      const res = await fetch("https://lks-dialer-call-notifier.subhojit.workers.dev/turn-credentials", {
+        headers: { "X-Worker-Secret": "LKS_DIALER_EsA2u7uNJMiE0ZhbtRUnzs7tkZPe4WvJ" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.iceServers && data.iceServers.length > 0) {
+          this.iceServers = { iceServers: data.iceServers, iceCandidatePoolSize: 10 };
+          console.log("✅ Web dynamic TURN servers loaded from Worker:", data.iceServers.length);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch dynamic TURN from worker, using defaults:", e);
+    }
   }
 
   setCurrentUser(user) {
@@ -53,7 +84,7 @@ class WebRtcEngine {
   }
 
   createPeerConnection(isCaller = false) {
-    this.peerConnection = new RTCPeerConnection(servers);
+    this.peerConnection = new RTCPeerConnection(this.iceServers || servers);
     
     this.remoteStream = new MediaStream();
     if (this.onRemoteStream) this.onRemoteStream(this.remoteStream);
