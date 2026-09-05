@@ -596,7 +596,8 @@ class MainActivity : ComponentActivity() {
                                             otherPartyName = activeCall.calleeName,
                                             callType = activeCall.callType,
                                             status = CallStatus.ENDED,
-                                            durationSeconds = rtcState.callDurationSeconds
+                                            durationSeconds = rtcState.callDurationSeconds,
+                                            callId = activeCall.callId
                                         )
                                         webRtcEngine.endCall()
                                     }
@@ -617,7 +618,8 @@ class MainActivity : ComponentActivity() {
                                                 otherPartyName = activeCall.callerName,
                                                 callType = activeCall.callType,
                                                 status = CallStatus.DECLINED,
-                                                durationSeconds = rtcState.callDurationSeconds
+                                                durationSeconds = rtcState.callDurationSeconds,
+                                                callId = activeCall.callId
                                             )
                                             webRtcEngine.endCall()
                                         }
@@ -637,7 +639,8 @@ class MainActivity : ComponentActivity() {
                                                 otherPartyName = activeCall.calleeName,
                                                 callType = activeCall.callType,
                                                 status = CallStatus.ENDED,
-                                                durationSeconds = rtcState.callDurationSeconds
+                                                durationSeconds = rtcState.callDurationSeconds,
+                                                callId = activeCall.callId
                                             )
                                             webRtcEngine.endCall()
                                         }
@@ -665,7 +668,8 @@ class MainActivity : ComponentActivity() {
                                                 callType = activeCall.callType,
                                                 // BUG-21 FIX: Log as ENDED not ANSWERED
                                                 status = CallStatus.ENDED,
-                                                durationSeconds = rtcState.callDurationSeconds
+                                                durationSeconds = rtcState.callDurationSeconds,
+                                                callId = activeCall.callId
                                             )
                                             webRtcEngine.endCall()
                                         }
@@ -686,13 +690,15 @@ class MainActivity : ComponentActivity() {
                                                 callType = activeCall.callType,
                                                 // BUG-21 FIX: Log as ENDED not ANSWERED
                                                 status = CallStatus.ENDED,
-                                                durationSeconds = rtcState.callDurationSeconds
+                                                durationSeconds = rtcState.callDurationSeconds,
+                                                callId = activeCall.callId
                                             )
                                             webRtcEngine.endCall()
                                         }
                                     )
                                 }
                             }
+
                             else -> {}
                         }
                     }

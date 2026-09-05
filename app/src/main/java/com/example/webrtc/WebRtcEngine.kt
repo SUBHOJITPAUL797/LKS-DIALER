@@ -830,9 +830,19 @@ class WebRtcEngine private constructor(private val context: Context) {
         createPeerConnection(isCaller = false, callId = call.callId)
         processOfferSdpIfAvailable()
         
+        // Phase 3: Reliable call logs — record call start immediately on answer
+        com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+            callId = call.callId,
+            direction = com.example.data.model.CallDirection.INCOMING,
+            otherPartyNumber = call.callerNumber,
+            otherPartyName = call.callerName,
+            callType = call.callType
+        )
+
         listenForIceCandidates(call.callId, isCaller = false)
         startCallTimer()
     }
+
 
     private fun processOfferSdpIfAvailable() {
         val call = _state.value.activeCall ?: return
@@ -1017,6 +1027,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 callStatus = CallStatus.ANSWERED,
                                 connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
                             )
+                            // Phase 3: Reliable call logs — record outgoing call start immediately on answer
+                            com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+                                callId = call.callId,
+                                direction = com.example.data.model.CallDirection.OUTGOING,
+                                otherPartyNumber = call.calleeNumber,
+                                otherPartyName = call.calleeName,
+                                callType = call.callType
+                            )
                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                                 try {
                                     com.example.services.LksConnectionService.setCallActive()
@@ -1026,6 +1044,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 startCallTimer()
                             }
                         }
+
 
                         if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
                             hasProcessedAnswer = true
@@ -1927,6 +1946,33 @@ class WebRtcEngine private constructor(private val context: Context) {
         peerConnection = null
         
         val prevCall = _state.value.activeCall
+
+        // Phase 3: Reliable call logs — record call ended for both caller and callee
+        if (prevCall != null) {
+            val userPhone = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+            val isCaller = userPhone.isNotBlank() && (
+                userPhone == prevCall.callerNumber ||
+                userPhone.replace(Regex("[^0-9]"), "") == prevCall.callerNumber.replace(Regex("[^0-9]"), "")
+            )
+            val direction = if (status == CallStatus.MISSED) {
+                com.example.data.model.CallDirection.MISSED
+            } else if (isCaller) {
+                com.example.data.model.CallDirection.OUTGOING
+            } else {
+                com.example.data.model.CallDirection.INCOMING
+            }
+            val otherNumber = if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
+            val otherName = if (isCaller) prevCall.calleeName else prevCall.callerName
+            com.example.data.repository.FirebaseManager.getInstance(context).recordCallEnded(
+                callId = prevCall.callId,
+                status = status,
+                durationSeconds = _state.value.callDurationSeconds,
+                fallbackDirection = direction,
+                fallbackOtherNumber = otherNumber,
+                fallbackOtherName = otherName,
+                fallbackCallType = prevCall.callType
+            )
+        }
         _state.value = _state.value.copy(
             callStatus = status,
             activeCall = prevCall,

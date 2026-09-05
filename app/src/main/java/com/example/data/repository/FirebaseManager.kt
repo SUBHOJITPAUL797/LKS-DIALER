@@ -55,6 +55,7 @@ class FirebaseManager private constructor(private val context: Context) {
     private var callLogsListener: ListenerRegistration? = null
     // BUG-14 FIX: Store reference so it can be removed if needed
     private var usersListener: ListenerRegistration? = null
+    private val activeCallLogIds = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     init {
         // Step 1: Check if Firebase is properly configured first
@@ -535,20 +536,138 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Records an active call start in local state and Firestore as soon as it's answered.
+     * Guarantees that even if the app crashes, is force-killed, or loses power mid-call,
+     * the call record exists with startedAt.
+     */
+    fun recordCallStarted(
+        callId: String,
+        direction: CallDirection,
+        otherPartyNumber: String,
+        otherPartyName: String,
+        callType: CallType
+    ) {
+        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val logId = UUID.randomUUID().toString()
+        activeCallLogIds[callId] = logId
+
+        val initialLog = CallLogDto(
+            id = logId,
+            callId = callId,
+            direction = direction,
+            otherPartyNumber = otherPartyNumber,
+            otherPartyName = otherPartyName,
+            callType = callType,
+            status = CallStatus.ANSWERED,
+            startedAt = System.currentTimeMillis(),
+            durationSeconds = 0
+        )
+        if (_callLogs.value.none { it.callId == callId }) {
+            _callLogs.value = listOf(initialLog) + _callLogs.value
+        }
+
+        if (_isFirebaseConfigured.value) {
+            FirebaseFirestore.getInstance()
+                .collection("users").document(userPhone)
+                .collection("callLogs").document(logId)
+                .set(initialLog)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Call started log written to Firestore: callId=$callId logId=$logId")
+                }
+        }
+    }
+
+    /**
+     * Updates an active call log with final duration and status when the call ends,
+     * or writes a new completed entry if it was ended before an active log was created.
+     */
+    fun recordCallEnded(
+        callId: String,
+        status: CallStatus,
+        durationSeconds: Int,
+        fallbackDirection: CallDirection? = null,
+        fallbackOtherNumber: String? = null,
+        fallbackOtherName: String? = null,
+        fallbackCallType: CallType = CallType.AUDIO
+    ) {
+        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val logId = activeCallLogIds.remove(callId)
+
+        if (logId != null) {
+            _callLogs.value = _callLogs.value.map { log ->
+                if (log.id == logId || log.callId == callId) {
+                    log.copy(status = status, durationSeconds = durationSeconds)
+                } else log
+            }
+
+            if (_isFirebaseConfigured.value) {
+                FirebaseFirestore.getInstance()
+                    .collection("users").document(userPhone)
+                    .collection("callLogs").document(logId)
+                    .update(
+                        "status", status.name,
+                        "durationSeconds", durationSeconds
+                    )
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Call ended log updated in Firestore: callId=$callId")
+                    }
+            }
+        } else {
+            // No prior started log exists (e.g. rejected, missed, cancelled before answer)
+            if (fallbackDirection != null && fallbackOtherNumber != null) {
+                logCall(
+                    direction = fallbackDirection,
+                    otherPartyNumber = fallbackOtherNumber,
+                    otherPartyName = fallbackOtherName ?: fallbackOtherNumber,
+                    callType = fallbackCallType,
+                    status = status,
+                    durationSeconds = durationSeconds,
+                    callId = callId
+                )
+            }
+        }
+    }
+
     fun logCall(
         direction: CallDirection,
         otherPartyNumber: String,
         otherPartyName: String,
         callType: CallType,
         status: CallStatus,
-        durationSeconds: Int
+        durationSeconds: Int,
+        callId: String? = null
     ) {
-        val logId = UUID.randomUUID().toString()
         val userPhone = _currentUser.value?.phoneNumber ?: return
+        val resolvedCallId = callId ?: "${userPhone}_${System.currentTimeMillis()}"
+
+        // Deduplication: if already tracked in activeCallLogIds, update instead
+        if (activeCallLogIds.containsKey(resolvedCallId)) {
+            recordCallEnded(resolvedCallId, status, durationSeconds)
+            return
+        }
+
+        // Deduplication: check if already in local list with same callId
+        val existingIndex = _callLogs.value.indexOfFirst { it.callId == resolvedCallId }
+        if (existingIndex >= 0) {
+            val existingLog = _callLogs.value[existingIndex]
+            val updated = existingLog.copy(status = status, durationSeconds = durationSeconds)
+            val mutable = _callLogs.value.toMutableList()
+            mutable[existingIndex] = updated
+            _callLogs.value = mutable
+            if (_isFirebaseConfigured.value) {
+                FirebaseFirestore.getInstance()
+                    .collection("users").document(userPhone)
+                    .collection("callLogs").document(existingLog.id)
+                    .update("status", status.name, "durationSeconds", durationSeconds)
+            }
+            return
+        }
+
+        val logId = UUID.randomUUID().toString()
         val newLog = CallLogDto(
             id = logId,
-            // BUG-20 FIX: Use a deterministic ID derived from user + timestamp, not a random UUID
-            callId = "${userPhone}_${System.currentTimeMillis()}",
+            callId = resolvedCallId,
             direction = direction,
             otherPartyNumber = otherPartyNumber,
             otherPartyName = otherPartyName,
@@ -560,7 +679,6 @@ class FirebaseManager private constructor(private val context: Context) {
         _callLogs.value = listOf(newLog) + _callLogs.value
 
         if (_isFirebaseConfigured.value) {
-            // BUG-05 FIX: Store call logs in user-scoped subcollection so each user only sees their own
             FirebaseFirestore.getInstance()
                 .collection("users").document(userPhone)
                 .collection("callLogs").document(logId)
@@ -573,6 +691,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 }
         }
     }
+
 
     fun logMissedCallForOfflineUser(
         calleeNumber: String,

@@ -1,0 +1,15 @@
+## LKS Dialer v1.9.5 — Phase 3: Reliable Two-Phase Call Logging & Sync
+
+### 🚀 Key Improvements in v1.9.5
+
+1. **Guaranteed Two-Phase Call Logging (No Lost Call Logs on Crash / Kill)**
+   - Initial call log is recorded to local memory and Firestore immediately when answered (ecordCallStarted).
+   - If the app process is force-killed, crashes, or the phone runs out of battery, the call record is already preserved with its start timestamp.
+   - When the call terminates, ecordCallEnded updates the existing log with exact duration and final status (ENDED, DECLINED, MISSED).
+
+2. **Bidirectional Call Logging (Both Caller and Callee Always Logged)**
+   - Fixed architectural gap where only the party tapping the red \"End Call\" button recorded the log.
+   - Now ndCallInternalLocal automatically finalizes and records call logs for whichever party terminates or receives the termination signal.
+
+3. **Deterministic Call Log Deduplication**
+   - Correlated call logs by unique callId, preventing duplicate logs in recent call history when UI actions and WebRTC events both process call termination.
