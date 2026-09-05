@@ -1,0 +1,21 @@
+## LKS Dialer v1.9.6 — Phase 4: Dynamic Adaptive Video & Live Quality UI
+
+### 🚀 Key Improvements in v1.9.6
+
+1. **Real-time WebRTC Quality Monitor**
+   - Continuously samples WebRTC candidate-pair and inbound RTP stats (Round Trip Time, packet loss ratio, jitter).
+   - Dynamically translates network metrics into a 5-bar signal indicator (
+etworkQualityBars).
+   - Integrated into both Audio and Video call screens with responsive color coding (Green / Amber / Red).
+
+2. **Network-Adaptive Video Bitrate & Framerate**
+   - Dynamically adjusts video RTP sender encoding parameters based on connection health:
+     - 5 bars: 2.0 Mbps @ 30fps (Crystal-clear HD)
+     - 4 bars: 1.2 Mbps @ 30fps (Smooth HD)
+     - 3 bars: 800 Kbps @ 24fps (Standard Definition)
+     - 2 bars: 400 Kbps @ 15fps (Bandwidth Saver)
+     - 1 bar:  200 Kbps @ 15fps (Survival mode, prioritizing audio packets)
+   - Prevents video freeze, lag, and audio packet loss on constrained mobile data or weak WiFi.
+
+3. **In-Call Weak Network Warning Banners**
+   - Prominently displays \"⚠️ Weak network\" notifications when quality drops below 2 bars so users know why call fidelity may be reduced.

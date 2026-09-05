@@ -1188,10 +1188,86 @@ class WebRtcEngine private constructor(private val context: Context) {
             while (_state.value.callStatus == CallStatus.ANSWERED) {
                 val elapsed = ((System.currentTimeMillis() - startMillis) / 1000).toInt().coerceAtLeast(0)
                 _state.value = _state.value.copy(callDurationSeconds = elapsed)
+                if (elapsed % 2 == 0) {
+                    monitorCallQuality()
+                }
                 delay(1000)
             }
         }
     }
+
+    private fun monitorCallQuality() {
+        val pc = peerConnection ?: return
+        try {
+            pc.getStats(object : RTCStatsCollectorCallback {
+                override fun onStatsDelivered(report: RTCStatsReport?) {
+                    if (report == null) return
+                    var rttMs = 80.0
+                    var packetsLost = 0L
+                    var packetsReceived = 0L
+
+                    for (stat in report.statsMap.values) {
+                        if (stat.type == "candidate-pair" && (stat.members["nominated"] == true || stat.members["state"] == "succeeded")) {
+                            val currentRtt = stat.members["currentRoundTripTime"] as? Double
+                            if (currentRtt != null) {
+                                rttMs = currentRtt * 1000.0
+                            }
+                        }
+                        if (stat.type == "inbound-rtp") {
+                            val lost = (stat.members["packetsLost"] as? Number)?.toLong() ?: 0L
+                            val received = (stat.members["packetsReceived"] as? Number)?.toLong() ?: 0L
+                            packetsLost += lost
+                            packetsReceived += received
+                        }
+                    }
+
+                    val lossRate = if (packetsReceived > 0) (packetsLost.toDouble() / (packetsReceived + packetsLost)) * 100.0 else 0.0
+
+                    val bars = when {
+                        rttMs < 120.0 && lossRate < 2.0 -> 5
+                        rttMs < 220.0 && lossRate < 5.0 -> 4
+                        rttMs < 350.0 && lossRate < 10.0 -> 3
+                        rttMs < 550.0 && lossRate < 20.0 -> 2
+                        else -> 1
+                    }
+
+                    scope.launch(Dispatchers.Main) {
+                        if (_state.value.networkQualityBars != bars && _state.value.callStatus == CallStatus.ANSWERED) {
+                            _state.value = _state.value.copy(networkQualityBars = bars)
+                            if (_state.value.callType == CallType.VIDEO) {
+                                adaptVideoQuality(bars)
+                            }
+                        }
+                    }
+                }
+            })
+        } catch (_: Exception) {}
+    }
+
+    private fun adaptVideoQuality(qualityBars: Int) {
+        val pc = peerConnection ?: return
+        try {
+            val videoSender = pc.senders.find { it.track() is VideoTrack } ?: return
+            val params = videoSender.parameters
+            if (params.encodings.isNotEmpty()) {
+                val encoding = params.encodings[0]
+                val (maxBitrate, maxFps) = when (qualityBars) {
+                    5 -> 2_000_000 to 30 // 2 Mbps, 30fps
+                    4 -> 1_200_000 to 30 // 1.2 Mbps, 30fps
+                    3 -> 800_000 to 24   // 800 Kbps, 24fps
+                    2 -> 400_000 to 15   // 400 Kbps, 15fps
+                    else -> 200_000 to 15 // 200 Kbps, 15fps
+                }
+                encoding.maxBitrateBps = maxBitrate
+                encoding.maxFramerate = maxFps
+                videoSender.parameters = params
+                Log.d("WebRtcEngine", "Adaptive Video: quality=$qualityBars maxBitrate=$maxBitrate bps maxFps=$maxFps")
+            }
+        } catch (e: Exception) {
+            Log.w("WebRtcEngine", "Failed to adapt video quality: ${e.message}")
+        }
+    }
+
 
     fun toggleMute() {
         val newMuted = !_state.value.isMuted

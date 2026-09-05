@@ -486,18 +486,42 @@ fun ActiveAudioCallScreen(
                         color = GreenCall
                     )
                     Spacer(modifier = Modifier.width(12.dp))
+                    val qualityColor = when {
+                        state.networkQualityBars >= 4 -> Color(0xFF22C55E)
+                        state.networkQualityBars == 3 -> Color(0xFFF59E0B)
+                        else -> Color(0xFFEF4444)
+                    }
                     Surface(
-                        color = Color.White.copy(alpha = 0.15f),
+                        color = qualityColor.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
                             text = "📶 Quality ${state.networkQualityBars}/5",
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
+                            color = qualityColor,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 }
+                AnimatedVisibility(
+                    visible = state.networkQualityBars < 2,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    Surface(
+                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.padding(top = 6.dp)
+                    ) {
+                        Text(
+                            text = "⚠️ Weak network — audio may be affected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFCA5A5),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
                 AnimatedVisibility(
                     visible = state.isOnHold,
                     enter = fadeIn(),
@@ -775,12 +799,46 @@ fun ActiveVideoCallScreen(
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = Color.White
                     )
-                    Text(
-                        text = webRtcEngine.formatDuration(state.callDurationSeconds) + "   " + state.connectionStatusText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = GreenCall
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = GreenCall
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        val qualityColor = when {
+                            state.networkQualityBars >= 4 -> Color(0xFF22C55E)
+                            state.networkQualityBars == 3 -> Color(0xFFF59E0B)
+                            else -> Color(0xFFEF4444)
+                        }
+                        Surface(
+                            color = qualityColor.copy(alpha = 0.25f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = "📶 ${state.networkQualityBars}/5",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = qualityColor,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                    if (state.networkQualityBars < 2) {
+                        Surface(
+                            color = Color(0xFFEF4444).copy(alpha = 0.35f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.padding(top = 4.dp)
+                        ) {
+                            Text(
+                                text = "⚠️ Weak network — video quality reduced",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFCA5A5),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
                 }
+
             }
 
             // Call On Hold Banner (shown during cellular interruption or manual hold)
