@@ -1,0 +1,29 @@
+## LKS Dialer v1.9.2 -- Proper Fix for BUG-23 and BUG-24
+
+### What Was Wrong in v1.9.1
+
+BUG-23 (Volume Key) -- Previous fix used AudioManager.VOLUME_CHANGED_ACTION broadcast which is
+a @hide internal API and may not fire on Samsung/OEM devices. Root window flag FLAG_NOT_FOCUSABLE
+was still set, meaning the overlay window physically CANNOT receive any KeyEvents regardless.
+
+BUG-24 (Power Button) -- Previous fix registered ACTION_SCREEN_ON receiver on CallMessagingService,
+which is a TRANSIENT FCM service destroyed within seconds of onMessageReceived(). By the time the
+user presses Power, the service is already dead and the receiver is unregistered -- so it never fires.
+
+### Proper Fixes in v1.9.2
+
+BUG-23 -- Volume Button Now Silences Ringtone on Floating Pill (REAL FIX)
+- Changed incoming pill WindowManager flag from FLAG_NOT_FOCUSABLE to FLAG_NOT_TOUCH_MODAL.
+  FLAG_NOT_FOCUSABLE blocks ALL KeyEvents to the window. FLAG_NOT_TOUCH_MODAL allows KeyEvents
+  while still passing unhandled touches to windows behind the overlay (drag still works).
+- Made pill view isFocusable=true + isFocusableInTouchMode=true and added setOnKeyListener
+  directly on the pill for KEYCODE_VOLUME_UP and KEYCODE_VOLUME_DOWN.
+- Called pill.requestFocus() after wm.addView() so Android delivers keys here immediately.
+
+BUG-24 -- Power Button Screen-On Now Shows Full-Screen Call UI (REAL FIX)
+- Moved ACTION_SCREEN_ON/ACTION_USER_PRESENT receiver to FloatingCallBubbleService, which is a
+  PERSISTENT foreground service that stays alive for the entire duration of the incoming call.
+- Receiver is registered when the incoming pill is shown and unregistered when pill is removed.
+- When screen turns on while callStatus==RINGING and MainActivity is not foreground, the full-screen
+  call activity is relaunched via openFullScreenCallActivity().
+- Removed the broken receiver from CallMessagingService entirely.

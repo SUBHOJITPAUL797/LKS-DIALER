@@ -181,6 +181,48 @@ class FloatingCallBubbleService : Service() {
     }
     private var volumeReceiverRegistered = false
 
+    // BUG-24: Screen-on receiver — registered in FloatingCallBubbleService (persistent foreground
+    // service) so it survives after CallMessagingService (transient FCM service) is destroyed.
+    private var screenOnReceiver: BroadcastReceiver? = null
+    private var screenOnReceiverRegistered = false
+
+    private fun registerScreenOnReceiver() {
+        if (screenOnReceiverRegistered) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val action = intent?.action ?: return
+                if (action != Intent.ACTION_SCREEN_ON && action != Intent.ACTION_USER_PRESENT) return
+                val engine = WebRtcEngine.getInstanceIfCreated() ?: return
+                val status = engine.state.value.callStatus
+                if (status == CallStatus.RINGING && !com.example.MainActivity.isForeground) {
+                    Log.d(TAG, "Screen turned on during ringing — relaunching full-screen call UI (BUG-24)")
+                    openFullScreenCallActivity(callId, autoAnswer = false)
+                }
+            }
+        }
+        try {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            registerReceiver(receiver, filter)
+            screenOnReceiver = receiver
+            screenOnReceiverRegistered = true
+            Log.d(TAG, "Screen-on receiver registered (BUG-24)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register screen-on receiver: ${e.message}")
+        }
+    }
+
+    private fun unregisterScreenOnReceiver() {
+        if (screenOnReceiverRegistered) {
+            try { unregisterReceiver(screenOnReceiver) } catch (_: Exception) {}
+            screenOnReceiver = null
+            screenOnReceiverRegistered = false
+            Log.d(TAG, "Screen-on receiver unregistered (BUG-24)")
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -224,6 +266,8 @@ class FloatingCallBubbleService : Service() {
             try { unregisterReceiver(volumeKeyReceiver) } catch (_: Exception) {}
             volumeReceiverRegistered = false
         }
+        // BUG-24: Unregister screen-on receiver
+        unregisterScreenOnReceiver()
         removeFloatingView()
     }
 
@@ -336,7 +380,10 @@ class FloatingCallBubbleService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            // BUG-23: FLAG_NOT_TOUCH_MODAL instead of FLAG_NOT_FOCUSABLE so the window CAN receive
+            // KeyEvents (volume buttons). FLAG_NOT_TOUCH_MODAL passes unhandled touches to windows
+            // behind the overlay, so drag + app interaction still works normally.
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -357,6 +404,23 @@ class FloatingCallBubbleService : Service() {
                 setStroke(dpToPx(1.5f), 0xFF00ADB5.toInt()) // Teal border
             }
             elevation = dpToPx(12f).toFloat()
+            // BUG-23: Must be focusable so the overlay window (FLAG_NOT_TOUCH_MODAL) receives KeyEvents.
+            isFocusable = true
+            isFocusableInTouchMode = true
+            // Intercept hardware volume key presses to silence the ringtone while pill is visible.
+            // This fires because FLAG_NOT_FOCUSABLE was replaced with FLAG_NOT_TOUCH_MODAL above.
+            setOnKeyListener { _, keyCode, event ->
+                if (event.action == android.view.KeyEvent.ACTION_DOWN &&
+                    (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+                     keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP)) {
+                    Log.d(TAG, "Volume key intercepted on incoming pill — silencing ringtone (BUG-23)")
+                    com.example.util.LksIncomingRingtonePlayer.silence()
+                    stopRinging()
+                    true
+                } else {
+                    false
+                }
+            }
         }
 
         // 🎯 Info Area (Avatar + Text) — Touch/Drag this area to move or tap to expand full-screen
@@ -511,7 +575,12 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
+            // BUG-23: Request focus so hardware volume key events are delivered to this overlay window.
+            pill.requestFocus()
             Log.d(TAG, "Draggable incoming call pill attached successfully")
+            // BUG-24: Register screen-on receiver HERE (persistent foreground service) not in
+            // CallMessagingService (which is transient and gets destroyed after onMessageReceived).
+            registerScreenOnReceiver()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to add incoming call pill to WindowManager", e)
         }
@@ -808,6 +877,8 @@ class FloatingCallBubbleService : Service() {
         floatingView = null
         currentMode = null
         isShowingPill = false
+        // BUG-24: Clean up screen-on receiver when pill is removed
+        unregisterScreenOnReceiver()
     }
 
     private fun createNotificationChannel() {
