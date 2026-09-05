@@ -1,0 +1,9 @@
+# LKS-DIALER v1.9.8 — Smart Dialer (T9 Search) + Do Not Disturb + Call Blocking
+
+### Highlights in v1.9.8:
+- **Smart Dialer (T9 Search)**: As you type digits, the dialer matches contacts by both phone number and T9 alphanumeric name spelling (e.g., typing 782 matches SUB).
+- **Interactive Auto-Complete Suggestion Bar**: Quick-access chip row above keypad displaying matching contacts with initials/avatar, LKS status badge, tap-to-populate, and 1-tap direct audio calling.
+- **Do Not Disturb (DND)**: Enable in Settings to silently auto-decline incoming calls without ringing, vibration, or waking the device screen.
+- **Call Blocking & Management**: Easily block unwanted callers directly from Settings; blocked callers are instantly and silently declined on the signaling level without waking the phone.
+- **Deep Linking**: Added support for lksdialer://call/{phoneNumber} deep links for external shortcuts and invites.
+- **Enhanced Cloudflare Worker / Push Coordination**: Incoming call pushes are checked against local blocklists and DND rules before ringing or showing heads-up notification cards.

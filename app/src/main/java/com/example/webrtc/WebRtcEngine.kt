@@ -673,6 +673,13 @@ class WebRtcEngine private constructor(private val context: Context) {
 
                 if (incomingCall != null && _state.value.activeCall == null && incomingCall.callId !in seenCallIds) {
                     seenCallIds.add(incomingCall.callId)
+
+                    val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
+                    if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(incomingCall.callerNumber)) {
+                        Log.d("WebRtcEngine", "Incoming call auto-declined by DND or Blocklist: ${incomingCall.callId} from ${incomingCall.callerNumber}")
+                        firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.DECLINED.name)
+                        return@addSnapshotListener
+                    }
                     
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     headsetButtonManager.startListening()
@@ -749,6 +756,16 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         hasProcessedOffer = false
         hasProcessedAnswer = false
+
+        val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
+        if (firebaseMgr.isDndEnabled() || (callerNumber != null && firebaseMgr.isNumberBlocked(callerNumber))) {
+            Log.d("WebRtcEngine", "attachToCall auto-declined by DND or Blocklist: $callId from $callerNumber")
+            try {
+                firestore.collection("calls").document(callId).update("status", CallStatus.DECLINED.name)
+            } catch (_: Exception) {}
+            return
+        }
+
         fetchIceServersAsync {}
         
         // Optimistically show the call screen if we have the data

@@ -54,6 +54,11 @@ fun SettingsScreen(
     val themeManager = remember { ThemeManager.getInstance(context) }
     val currentThemeColor = LocalThemeColor.current
 
+    val isDndEnabled by firebaseManager.isDndEnabled.collectAsState()
+    val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
+    var showBlockNumberDialog by remember { mutableStateOf(false) }
+    var numberToBlockInput by remember { mutableStateOf("") }
+
     var isNoiseSuppressionOn by remember { mutableStateOf(true) }
     var isEchoCancellationOn by remember { mutableStateOf(true) }
     var isDataSaverOn by remember { mutableStateOf(false) }
@@ -99,6 +104,59 @@ fun SettingsScreen(
 
     if (showDeveloperModal) {
         DeveloperProfileDialog(onDismiss = { showDeveloperModal = false })
+    }
+
+    if (showBlockNumberDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showBlockNumberDialog = false
+                numberToBlockInput = ""
+            },
+            title = { Text("Block Phone Number") },
+            text = {
+                Column {
+                    Text(
+                        "Enter the phone number you want to block. Any incoming calls from this number will be rejected silently.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = numberToBlockInput,
+                        onValueChange = { numberToBlockInput = it },
+                        label = { Text("Phone Number") },
+                        placeholder = { Text("+1234567890") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val clean = numberToBlockInput.trim()
+                        if (clean.isNotBlank()) {
+                            firebaseManager.blockNumber(clean)
+                            Toast.makeText(context, "Blocked $clean", Toast.LENGTH_SHORT).show()
+                            showBlockNumberDialog = false
+                            numberToBlockInput = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Block", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBlockNumberDialog = false
+                        numberToBlockInput = ""
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Song Trimmer Dialog — shown after user picks a song file for app ringtone
@@ -466,6 +524,128 @@ fun SettingsScreen(
                         checked = isVibrateOn,
                         onCheckedChange = { isVibrateOn = it }
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Call Privacy & Do Not Disturb Section
+            SettingsSectionHeader("Call Privacy & Do Not Disturb")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                    // DND Switch Tile
+                    SettingsSwitchTile(
+                        title = "Do Not Disturb (DND)",
+                        subtitle = "Silently decline all incoming calls without ringing",
+                        icon = Icons.Default.DoNotDisturbOn,
+                        checked = isDndEnabled,
+                        onCheckedChange = { enabled ->
+                            firebaseManager.setDndEnabled(enabled)
+                            Toast.makeText(
+                                context,
+                                if (enabled) "Do Not Disturb enabled" else "Do Not Disturb disabled",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+
+                    // Blocked Numbers Tile & Management
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Block,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Blocked Numbers (${blockedNumbers.size})",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "Calls from blocked numbers are auto-declined",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { showBlockNumberDialog = true }) {
+                                Icon(
+                                    Icons.Default.AddCircle,
+                                    contentDescription = "Block a number",
+                                    tint = currentThemeColor.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+
+                        if (blockedNumbers.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                blockedNumbers.forEach { number ->
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.PhoneDisabled,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text(
+                                                text = number,
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            TextButton(
+                                                onClick = {
+                                                    firebaseManager.unblockNumber(number)
+                                                    Toast.makeText(context, "Unblocked $number", Toast.LENGTH_SHORT).show()
+                                                }
+                                            ) {
+                                                Text(
+                                                    "Unblock",
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    style = MaterialTheme.typography.labelMedium
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

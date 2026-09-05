@@ -450,6 +450,19 @@ class MainActivity : ComponentActivity() {
                                 webRtcEngine.initiateCall(callBackNumber, callBackName, myNum, myName, callBackType)
                             }
                         }
+
+                        // Deep link: lksdialer://call/{phoneNumber}
+                        val dataUri = incoming.data
+                        if (dataUri?.scheme == "lksdialer" && dataUri.host == "call") {
+                            val targetNumber = dataUri.lastPathSegment
+                            if (!targetNumber.isNullOrBlank() && hasMicPermission) {
+                                val myNum = currentUser?.phoneNumber ?: ""
+                                val myName = currentUser?.displayName ?: "Me"
+                                if (myNum.isNotBlank()) {
+                                    webRtcEngine.initiateCall(targetNumber, targetNumber, myNum, myName, CallType.AUDIO)
+                                }
+                            }
+                        }
                         
                         _incomingIntent.value = null
                     }

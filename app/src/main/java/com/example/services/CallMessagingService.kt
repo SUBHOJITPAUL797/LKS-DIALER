@@ -139,6 +139,19 @@ class CallMessagingService : FirebaseMessagingService() {
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
+
+                // Check Do Not Disturb (DND) and Blocklist
+                val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(this)
+                if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(callerNumber)) {
+                    Log.i("FCM", "Incoming call auto-declined by DND or Blocklist: $callId from $callerNumber")
+                    try {
+                        val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        db.collection("calls").document(callId).update("status", com.example.data.model.CallStatus.DECLINED.name)
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to decline blocked/DND call: ${e.message}")
+                    }
+                    return
+                }
                 
                 // Immediately update Firestore status to RINGING so caller knows recipient device received it
                 try {

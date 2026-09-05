@@ -48,6 +48,14 @@ class FirebaseManager private constructor(private val context: Context) {
 
     private val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
 
+    private val _isDndEnabled = MutableStateFlow<Boolean>(prefs.getBoolean("dnd_enabled", false))
+    val isDndEnabled: StateFlow<Boolean> = _isDndEnabled.asStateFlow()
+
+    private val _blockedNumbers = MutableStateFlow<List<String>>(
+        (prefs.getStringSet("blocked_numbers", emptySet()) ?: emptySet()).toList()
+    )
+    val blockedNumbers: StateFlow<List<String>> = _blockedNumbers.asStateFlow()
+
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private var syncJob: kotlinx.coroutines.Job? = null
 
@@ -75,7 +83,9 @@ class FirebaseManager private constructor(private val context: Context) {
                 profilePictureUrl = savedProfilePic,
                 registeredDeviceId = savedDeviceId ?: "",
                 isOnline = true,
-                lastSeen = System.currentTimeMillis()
+                lastSeen = System.currentTimeMillis(),
+                blockedNumbers = _blockedNumbers.value,
+                isDndEnabled = _isDndEnabled.value
             )
             _currentUser.value = user
 
@@ -393,7 +403,9 @@ class FirebaseManager private constructor(private val context: Context) {
             registeredDeviceId = finalDeviceId,
             isOnline = true,
             lastSeen = System.currentTimeMillis(),
-            createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis()
+            createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            blockedNumbers = existing?.blockedNumbers?.ifEmpty { _blockedNumbers.value } ?: _blockedNumbers.value,
+            isDndEnabled = existing?.isDndEnabled ?: _isDndEnabled.value
         )
         _currentUser.value = user
         
@@ -403,7 +415,11 @@ class FirebaseManager private constructor(private val context: Context) {
             .putString("user_status", user.statusMessage)
             .putString("user_profile_pic", user.profilePictureUrl)
             .putString("device_id", user.registeredDeviceId)
+            .putBoolean("dnd_enabled", user.isDndEnabled)
+            .putStringSet("blocked_numbers", user.blockedNumbers.toSet())
             .apply()
+        _isDndEnabled.value = user.isDndEnabled
+        _blockedNumbers.value = user.blockedNumbers
 
         // Attach listeners for this user
         if (_isFirebaseConfigured.value) {
@@ -496,6 +512,94 @@ class FirebaseManager private constructor(private val context: Context) {
                     } catch (_: Exception) {}
                 }
         }
+    }
+
+    /**
+     * Toggles Do Not Disturb (DND) mode.
+     * When DND is active, incoming calls are automatically declined without ringing.
+     */
+    fun setDndEnabled(enabled: Boolean) {
+        _isDndEnabled.value = enabled
+        prefs.edit().putBoolean("dnd_enabled", enabled).apply()
+        val user = _currentUser.value ?: return
+        val updated = user.copy(isDndEnabled = enabled)
+        _currentUser.value = updated
+        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+            FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                .update("isDndEnabled", enabled)
+                .addOnFailureListener {
+                    try {
+                        FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                            .set(mapOf("isDndEnabled" to enabled), com.google.firebase.firestore.SetOptions.merge())
+                    } catch (_: Exception) {}
+                }
+        }
+    }
+
+    fun isDndEnabled(): Boolean = _isDndEnabled.value
+
+    /**
+     * Adds a phone number to the user's blocked numbers list.
+     */
+    fun blockNumber(phoneNumber: String) {
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        if (clean.isBlank()) return
+        val currentSet = prefs.getStringSet("blocked_numbers", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (currentSet.add(clean)) {
+            prefs.edit().putStringSet("blocked_numbers", currentSet).apply()
+            val newList = currentSet.toList()
+            _blockedNumbers.value = newList
+            val user = _currentUser.value ?: return
+            val updated = user.copy(blockedNumbers = newList)
+            _currentUser.value = updated
+            if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+                FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                    .update("blockedNumbers", newList)
+                    .addOnFailureListener {
+                        try {
+                            FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                                .set(mapOf("blockedNumbers" to newList), com.google.firebase.firestore.SetOptions.merge())
+                        } catch (_: Exception) {}
+                    }
+            }
+        }
+    }
+
+    /**
+     * Removes a phone number from the user's blocked numbers list.
+     */
+    fun unblockNumber(phoneNumber: String) {
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val currentSet = prefs.getStringSet("blocked_numbers", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val toRemove = currentSet.filter { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
+        if (toRemove.isNotEmpty()) {
+            currentSet.removeAll(toRemove.toSet())
+            prefs.edit().putStringSet("blocked_numbers", currentSet).apply()
+            val newList = currentSet.toList()
+            _blockedNumbers.value = newList
+            val user = _currentUser.value ?: return
+            val updated = user.copy(blockedNumbers = newList)
+            _currentUser.value = updated
+            if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+                FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                    .update("blockedNumbers", newList)
+                    .addOnFailureListener {
+                        try {
+                            FirebaseFirestore.getInstance().collection("users").document(updated.phoneNumber)
+                                .set(mapOf("blockedNumbers" to newList), com.google.firebase.firestore.SetOptions.merge())
+                        } catch (_: Exception) {}
+                    }
+            }
+        }
+    }
+
+    /**
+     * Checks if a phone number is blocked by the user.
+     */
+    fun isNumberBlocked(phoneNumber: String): Boolean {
+        if (phoneNumber.isBlank()) return false
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        return _blockedNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
     }
 
     fun updateFcmToken(token: String) {

@@ -13,7 +13,10 @@ data class UserDto(
     val lastSeen: Long = 0L,
     val createdAt: Long = 0L,
     val privacyWhoCanCall: String = "EVERYONE",
-    val registeredDeviceId: String = ""
+    val registeredDeviceId: String = "",
+    val blockedNumbers: List<String> = emptyList(),
+    @get:PropertyName("isDndEnabled") @set:PropertyName("isDndEnabled")
+    var isDndEnabled: Boolean = false
 )
 
 enum class CallType {

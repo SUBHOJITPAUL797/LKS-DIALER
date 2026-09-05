@@ -1,12 +1,17 @@
 package com.example.ui.screens.dialer
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -63,6 +68,76 @@ fun DialerScreen(
     val callButtonSize = if (screenHeight < 700) 54.dp else 62.dp
 
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+    val syncedContacts by firebaseManager.syncedContacts.collectAsState()
+    val nonLksContacts by firebaseManager.nonLksContacts.collectAsState()
+    val callLogs by firebaseManager.callLogs.collectAsState()
+
+    val t9Matches by remember(dialNumber, syncedContacts, nonLksContacts, callLogs, registeredUsers) {
+        derivedStateOf {
+            val queryDigits = dialNumber.filter { it.isDigit() }
+            if (queryDigits.isEmpty()) {
+                emptyList<T9MatchItem>()
+            } else {
+                val seenNumbers = mutableSetOf<String>()
+                val result = mutableListOf<T9MatchItem>()
+
+                for (contact in syncedContacts) {
+                    val cleanPhone = contact.phoneNumber.filter { it.isDigit() }
+                    val t9Name = nameToT9(contact.name)
+                    if (cleanPhone.contains(queryDigits) || t9Name.contains(queryDigits)) {
+                        val norm = com.example.util.ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
+                        if (seenNumbers.add(norm)) {
+                            result.add(
+                                T9MatchItem(
+                                    name = contact.name,
+                                    phoneNumber = contact.phoneNumber,
+                                    isLksUser = true,
+                                    profilePic = contact.profilePictureUrl
+                                )
+                            )
+                        }
+                    }
+                }
+
+                for (contact in nonLksContacts) {
+                    val cleanPhone = contact.phoneNumber.filter { it.isDigit() }
+                    val t9Name = nameToT9(contact.name)
+                    if (cleanPhone.contains(queryDigits) || t9Name.contains(queryDigits)) {
+                        val norm = com.example.util.ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
+                        if (seenNumbers.add(norm)) {
+                            result.add(
+                                T9MatchItem(
+                                    name = contact.name,
+                                    phoneNumber = contact.phoneNumber,
+                                    isLksUser = false
+                                )
+                            )
+                        }
+                    }
+                }
+
+                for (log in callLogs) {
+                    val cleanPhone = log.otherPartyNumber.filter { it.isDigit() }
+                    val t9Name = nameToT9(log.otherPartyName)
+                    if (cleanPhone.contains(queryDigits) || t9Name.contains(queryDigits)) {
+                        val norm = com.example.util.ContactsHelper.normalizePhoneNumber(log.otherPartyNumber)
+                        if (seenNumbers.add(norm)) {
+                            result.add(
+                                T9MatchItem(
+                                    name = log.otherPartyName.ifBlank { log.otherPartyNumber },
+                                    phoneNumber = log.otherPartyNumber,
+                                    isLksUser = registeredUsers.any { it.phoneNumber == norm },
+                                    profilePic = log.otherPartyProfilePic
+                                )
+                            )
+                        }
+                    }
+                }
+
+                result.take(12)
+            }
+        }
+    }
 
     val matchedUser: UserDto? by remember(dialNumber, registeredUsers) {
         derivedStateOf {
@@ -278,6 +353,34 @@ fun DialerScreen(
                 }
             }
 
+            // Smart Dialer T9 Suggestions Row
+            AnimatedVisibility(
+                visible = t9Matches.isNotEmpty(),
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items(t9Matches, key = { it.phoneNumber }) { match ->
+                        T9SuggestionChip(
+                            match = match,
+                            onSelect = {
+                                val clean = match.phoneNumber.filter { it.isDigit() || it == '+' }
+                                dialNumber = clean
+                            },
+                            onCall = {
+                                onStartCall(match.phoneNumber, match.name, CallType.AUDIO)
+                            }
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             // Clean 3-Column Keypad Grid (No overlaps)
@@ -419,6 +522,126 @@ private fun KeypadButton(
                     fontSize = keySubFontSize,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+data class T9MatchItem(
+    val name: String,
+    val phoneNumber: String,
+    val isLksUser: Boolean,
+    val profilePic: String = ""
+)
+
+private fun charToT9(c: Char): Char = when (c.uppercaseChar()) {
+    'A', 'B', 'C' -> '2'
+    'D', 'E', 'F' -> '3'
+    'G', 'H', 'I' -> '4'
+    'J', 'K', 'L' -> '5'
+    'M', 'N', 'O' -> '6'
+    'P', 'Q', 'R', 'S' -> '7'
+    'T', 'U', 'V' -> '8'
+    'W', 'X', 'Y', 'Z' -> '9'
+    else -> '0'
+}
+
+private fun nameToT9(name: String): String {
+    return buildString(name.length) {
+        for (ch in name) {
+            if (ch.isLetter()) {
+                append(charToT9(ch))
+            } else if (ch.isDigit()) {
+                append(ch)
+            }
+        }
+    }
+}
+
+@Composable
+private fun T9SuggestionChip(
+    match: T9MatchItem,
+    onSelect: () -> Unit,
+    onCall: () -> Unit
+) {
+    val themeColor = LocalThemeColor.current
+    Surface(
+        onClick = onSelect,
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier.padding(vertical = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Initial avatar circle
+            Surface(
+                shape = CircleShape,
+                color = if (match.isLksUser) GreenCall.copy(alpha = 0.2f) else themeColor.primary.copy(alpha = 0.15f),
+                modifier = Modifier.size(32.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = match.name.take(1).uppercase(),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = if (match.isLksUser) GreenCall else themeColor.primary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = match.name,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (match.isLksUser) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Surface(
+                            color = GreenCall.copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "LKS",
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Black,
+                                color = GreenCall,
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = match.phoneNumber,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Quick audio call button right on the chip
+            IconButton(
+                onClick = onCall,
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(GreenCall)
+            ) {
+                Icon(
+                    Icons.Default.Call,
+                    contentDescription = "Call ${match.name}",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
