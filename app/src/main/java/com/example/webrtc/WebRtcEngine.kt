@@ -147,16 +147,86 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var videoSource: VideoSource? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
-    private val iceServers = listOf(
+    // ICE servers: populated dynamically at call start via fetchIceServers().
+    // Fallback list used if dynamic fetch fails (STUN-only — works for ~70% of networks).
+    // TURN relay is fetched from Cloudflare Worker so credentials rotate and are not baked into APK.
+    private var iceServers = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+        // Static fallback TURN — Metered.ca free tier (no auth required on free plan)
+        // Will be REPLACED by short-lived credentials from Cloudflare Worker at call start
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer()
     )
+
+    /**
+     * Fetch fresh TURN credentials from Cloudflare Worker before each call.
+     * Credentials are short-lived (24h) and generated server-side via HMAC so
+     * they are never hardcoded in the APK. Falls back to static list on failure.
+     */
+    private fun fetchIceServersAsync(onDone: () -> Unit) {
+        Thread {
+            try {
+                val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+                    .removeSuffix("/").let { if (it.endsWith("/call")) it.dropLast(5) else it }
+                val url = java.net.URL("$workerUrl/turn-credentials")
+                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("X-Worker-Secret", com.example.BuildConfig.CALL_WORKER_SECRET)
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                }
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    val json = org.json.JSONObject(body)
+                    val serversJson = json.getJSONArray("iceServers")
+                    val servers = mutableListOf<PeerConnection.IceServer>()
+                    for (i in 0 until serversJson.length()) {
+                        val s = serversJson.getJSONObject(i)
+                        val urls = s.getJSONArray("urls")
+                        val username = if (s.has("username")) s.getString("username") else null
+                        val credential = if (s.has("credential")) s.getString("credential") else null
+                        for (j in 0 until urls.length()) {
+                            val builder = PeerConnection.IceServer.builder(urls.getString(j))
+                            if (username != null) builder.setUsername(username)
+                            if (credential != null) builder.setPassword(credential)
+                            servers.add(builder.createIceServer())
+                        }
+                    }
+                    if (servers.isNotEmpty()) {
+                        iceServers = servers
+                        Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers")
+                    }
+                }
+                conn.disconnect()
+            } catch (e: Exception) {
+                Log.w("WebRtcEngine", "TURN fetch failed, using fallback ICE servers: ${e.message}")
+            }
+            onDone()
+        }.start()
+    }
+
 
     init {
         initWebRtc()
+        fetchIceServersAsync {}
     }
 
     private fun initWebRtc() {
@@ -472,29 +542,35 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
         
-        createPeerConnection(isCaller = true, callId = newCall.callId)
-        
-        val constraints = MediaConstraints()
-        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
-        
-        peerConnection?.createOffer(object : SdpObserver {
-            override fun onCreateSuccess(desc: SessionDescription?) {
-                if (desc != null) {
-                    val tunedSdp = preferOpusAndEnableFec(desc.description)
-                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                    peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
-                    firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
-                }
-            }
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
-        }, constraints)
+        // Fetch fresh TURN credentials from Worker before creating PeerConnection.
+        // Falls back to static TURN list automatically if Worker is unreachable.
+        fetchIceServersAsync {
+            scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                createPeerConnection(isCaller = true, callId = newCall.callId)
 
-        listenToActiveCall(newCall.callId, isCaller = true)
-        listenForIceCandidates(newCall.callId, isCaller = true)
-    }
+                val constraints = MediaConstraints()
+                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
+
+                peerConnection?.createOffer(object : SdpObserver {
+                    override fun onCreateSuccess(desc: SessionDescription?) {
+                        if (desc != null) {
+                            val tunedSdp = preferOpusAndEnableFec(desc.description)
+                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                            firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
+                        }
+                    }
+                    override fun onSetSuccess() {}
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetFailure(p0: String?) {}
+                }, constraints)
+
+                listenToActiveCall(newCall.callId, isCaller = true)
+                listenForIceCandidates(newCall.callId, isCaller = true)
+            }
+        }
+    } // end initiateCall
 
     fun listenForIncomingCalls(phoneNumber: String) {
         if (phoneNumber.isBlank()) return
@@ -631,6 +707,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     ) {
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        fetchIceServersAsync {}
         
         // Optimistically show the call screen if we have the data
         if (callerName != null && callerNumber != null && callTypeStr != null && _state.value.activeCall == null) {
@@ -1879,6 +1956,18 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
         com.example.services.FloatingCallBubbleService.hide(context)
         com.example.util.LksIncomingRingtonePlayer.stop()
+
+        // Phase 1 — Security: delete Firestore SDP/ICE data 5s after call ends.
+        // The call document contains offerSdp, answerSdp and ICE candidates with network topology.
+        // Leaving these forever is a privacy leak and adds unbounded Firestore storage cost.
+        val endedCallId = prevCall?.callId
+        if (!endedCallId.isNullOrBlank()) {
+            scope.launch {
+                delay(5000)
+                Log.d("WebRtcEngine", "Deleting Firestore call document + ICE candidates for $endedCallId")
+                deleteCallAndCandidates(endedCallId)
+            }
+        }
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {

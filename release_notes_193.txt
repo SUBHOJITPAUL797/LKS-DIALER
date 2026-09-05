@@ -1,0 +1,20 @@
+## LKS Dialer v1.9.3 — Phase 1: TURN Relay Server & Firestore Leak Fix
+
+### 🚀 Key Improvements in v1.9.3
+
+1. **TURN Relay Server Integration (Guaranteed P2P Connection)**
+   - Added TURN relay servers (UDP, TCP, TLS on port 443) alongside Google STUN.
+   - STUN alone fails on ~30% of real-world networks (corporate WiFi, symmetric NAT, mobile data). TURN acts as an encrypted relay fallback when direct P2P is blocked.
+   - Integrated dynamic TURN credential rotation via Cloudflare Worker (GET /turn-credentials) generating HMAC-SHA256 time-limited (24h) credentials.
+   - Built-in static fallback TURN relay so calls still connect even if Worker is offline.
+
+2. **Firestore SDP & ICE Candidates Cleanup (Security & Storage Cost)**
+   - WebRTC SDP offer/answer and ICE candidates contain internal IP addresses and network topology data.
+   - Now automatically purges the Firestore call document and its candidates subcollection 5 seconds after a call ends.
+   - Prevents stale call state retention and unbounded database growth.
+
+3. **Cloudflare Worker v2.0 (Push & Relay)**
+   - New GET /turn-credentials endpoint with HMAC-SHA256 rotation.
+   - Rate limiting via Cloudflare KV (max 10 push triggers per IP/minute) to prevent abuse.
+   - Call cancel notification TTL reduced from 60s → 5s to eliminate delayed cancel vibrations.
+   - Detection and logging of stale FCM tokens (UNREGISTERED) from FCM v1 responses.
