@@ -1,0 +1,14 @@
+## LKS Dialer v1.9.4 — Phase 2: WebRTC Auto-Reconnection & State Reset
+
+### 🚀 Key Improvements in v1.9.4
+
+1. **Intelligent Network Reconnection (WiFi <-> 4G / Signal Drops)**
+   - Monitored IceConnectionState transitions with automated timeout handling.
+   - On DISCONNECTED: Displays "Reconnecting..." and activates a 15-second grace window to allow network handoffs without dropping calls.
+   - On FAILED: Initiates automated estartIce() and SDP renegotiation to reconstruct the P2P or TURN path.
+   - On CONNECTED / COMPLETED: Automatically cancels timeout timers and returns call to "Connected • WebRTC".
+
+2. **WebRtcEngine State Isolation & Reset Protection**
+   - Fixed race conditions where ending one call and initiating or answering a consecutive call could trigger a delayed idle reset.
+   - Added esetIdleJob and econnectJob tracking with atomic cancellation on incoming/outgoing call attachment.
+   - Guaranteed full teardown of media tracks, video capturers, and surface texture helpers between calls.
