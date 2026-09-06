@@ -104,9 +104,22 @@ class WebRtcEngine {
     });
 
     this.peerConnection.ontrack = (event) => {
-      event.streams[0].getTracks().forEach((track) => {
-        this.remoteStream.addTrack(track);
-      });
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach((track) => {
+          track.enabled = true;
+          if (!this.remoteStream.getTracks().some(t => t.id === track.id)) {
+            this.remoteStream.addTrack(track);
+          }
+        });
+      } else if (event.track) {
+        event.track.enabled = true;
+        if (!this.remoteStream.getTracks().some(t => t.id === event.track.id)) {
+          this.remoteStream.addTrack(event.track);
+        }
+      }
+      if (this.onRemoteStream) {
+        this.onRemoteStream(this.remoteStream);
+      }
     };
 
     this.peerConnection.oniceconnectionstatechange = async () => {

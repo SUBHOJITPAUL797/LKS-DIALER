@@ -634,7 +634,8 @@ fun ActiveAudioCallScreen(
                         label = audioLabel,
                         isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH,
                         onClick = {
-                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH }) {
+                            webRtcEngine.refreshAvailableAudioDevices()
+                            if (state.availableAudioDevices.size > 2 || state.availableAudioDevices.any { it.type == com.example.webrtc.AudioDeviceType.BLUETOOTH } || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH) {
                                 showAudioDialog = true
                             } else {
                                 webRtcEngine.toggleSpeaker()

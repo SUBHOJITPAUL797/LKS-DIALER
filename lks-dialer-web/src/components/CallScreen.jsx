@@ -36,6 +36,7 @@ export default function CallScreen({ callData, onEndCall }) {
     remoteVideoRef.current = el;
     if (el && webRtcEngine.remoteStream) {
       el.srcObject = webRtcEngine.remoteStream;
+      el.play?.().catch(() => {});
     }
   }, []);
 
@@ -56,6 +57,7 @@ export default function CallScreen({ callData, onEndCall }) {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = null;
         remoteVideoRef.current.srcObject = stream;
+        remoteVideoRef.current.play?.().catch(() => {});
       }
     };
 
@@ -64,6 +66,7 @@ export default function CallScreen({ callData, onEndCall }) {
     }
     if (webRtcEngine.remoteStream && remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = webRtcEngine.remoteStream;
+      remoteVideoRef.current.play?.().catch(() => {});
     }
 
     webRtcEngine.onVideoUpgradeRequested = () => setVideoUpgradeRequested(true);

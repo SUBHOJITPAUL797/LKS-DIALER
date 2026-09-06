@@ -210,7 +210,6 @@ class WebRtcEngine private constructor(private val context: Context) {
             .setUseHardwareNoiseSuppressor(isNsSupported)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
-            .setUseStereoOutput(false)
             .setAudioAttributes(
                 android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -357,7 +356,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
-            override fun onAddStream(stream: MediaStream?) {}
+            override fun onAddStream(stream: MediaStream?) {
+                stream?.audioTracks?.forEach { audioTrack ->
+                    try {
+                        audioTrack.setEnabled(true)
+                        audioTrack.setVolume(1.0)
+                        Log.i("WebRtcEngine", "Enabled remote AudioTrack from stream: ${audioTrack.id()}")
+                    } catch (e: Exception) {
+                        Log.w("WebRtcEngine", "Failed to enable remote AudioTrack: ${e.message}")
+                    }
+                }
+            }
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(dataChannel: DataChannel?) {}
             override fun onRenegotiationNeeded() {}
@@ -367,6 +376,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
                     if (track is VideoTrack) {
                         _state.value = _state.value.copy(remoteVideoTrack = track)
+                    } else if (track is AudioTrack) {
+                        try {
+                            track.setEnabled(true)
+                            track.setVolume(1.0)
+                            Log.i("WebRtcEngine", "Enabled remote AudioTrack: ${track.id()}")
+                        } catch (e: Exception) {
+                            Log.w("WebRtcEngine", "Failed to configure remote AudioTrack: ${e.message}")
+                        }
                     }
                 }
             }
@@ -436,9 +453,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (line.startsWith("a=fmtp:$opusPayloadType")) {
                 fmtpFound = true
                 var newLine = line
-                if (!newLine.contains("stereo=")) newLine += ";stereo=0;sprop-stereo=0"
                 if (!newLine.contains("useinbandfec=")) newLine += ";useinbandfec=1"
-                if (!newLine.contains("usedtx=")) newLine += ";usedtx=1"
                 if (!newLine.contains("maxaveragebitrate=")) newLine += ";maxaveragebitrate=64000"
                 if (!newLine.contains("minptime=")) newLine += ";minptime=10"
                 lines[i] = newLine
@@ -449,7 +464,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (!fmtpFound) {
             for (i in lines.indices) {
                 if (lines[i].startsWith("a=rtpmap:$opusPayloadType")) {
-                    lines.add(i + 1, "a=fmtp:$opusPayloadType stereo=0;sprop-stereo=0;minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000")
+                    lines.add(i + 1, "a=fmtp:$opusPayloadType minptime=10;useinbandfec=1;maxaveragebitrate=64000")
                     break
                 }
             }

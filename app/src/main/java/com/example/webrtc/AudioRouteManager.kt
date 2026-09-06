@@ -61,7 +61,6 @@ class AudioRouteManager(
     private var isCellularCallInterrupting: Boolean = false
     @Volatile
     private var callAudioFocusGrantedAt: Long = 0L
-    private var samsungVoiceFocusEffect: Any? = null
 
     var currentAvailableDevices: List<AudioDeviceOption> = emptyList()
         private set
@@ -130,7 +129,6 @@ class AudioRouteManager(
             }
         } catch (_: Exception) {}
 
-        applySamsungVoiceFocusIfAvailable()
         refreshAvailableAudioDevices(defaultCallType = callType)
     }
 
@@ -701,32 +699,6 @@ class AudioRouteManager(
         }
     }
 
-    private fun applySamsungVoiceFocusIfAvailable() {
-        try {
-            val effects = android.media.audiofx.AudioEffect.queryEffects() ?: return
-            val samsungEffect = effects.firstOrNull { descriptor ->
-                val name = descriptor.name?.lowercase() ?: ""
-                val implementor = descriptor.implementor?.lowercase() ?: ""
-                name.contains("voice focus") || name.contains("voicefocus") ||
-                    name.contains("samsung") && name.contains("focus") ||
-                    implementor.contains("samsung") && name.contains("noise")
-            }
-            if (samsungEffect != null) {
-                val ctor = android.media.audiofx.AudioEffect::class.java
-                    .getDeclaredConstructor(java.util.UUID::class.java, java.util.UUID::class.java, Int::class.java, Int::class.java)
-                ctor.isAccessible = true
-                val effect = ctor.newInstance(samsungEffect.type, samsungEffect.uuid, 0, 0)
-                val setEnabled = android.media.audiofx.AudioEffect::class.java.getDeclaredMethod("setEnabled", Boolean::class.java)
-                setEnabled.isAccessible = true
-                setEnabled.invoke(effect, true)
-                samsungVoiceFocusEffect = effect
-                Log.i(TAG, "✅ Samsung Voice Focus effect enabled: ${samsungEffect.name}")
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "Samsung Voice Focus not available: ${e.message}")
-        }
-    }
-
     fun resetAudioRouting() {
         unregisterAudioDeviceListeners()
         mainHandler.removeCallbacksAndMessages(null)
@@ -758,13 +730,6 @@ class AudioRouteManager(
             audioManager.isSpeakerphoneOn = false
         } catch (_: Exception) {}
 
-        try {
-            if (samsungVoiceFocusEffect != null) {
-                val releaseMethod = samsungVoiceFocusEffect?.javaClass?.getMethod("release")
-                releaseMethod?.invoke(samsungVoiceFocusEffect)
-            }
-        } catch (_: Exception) {}
-        samsungVoiceFocusEffect = null
         isCellularCallInterrupting = false
     }
 }
