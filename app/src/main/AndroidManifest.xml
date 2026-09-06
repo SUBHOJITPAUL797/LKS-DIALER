@@ -80,13 +80,15 @@
         <service
             android:name=".services.FloatingCallBubbleService"
             android:foregroundServiceType="microphone"
-            android:exported="false" />
+            android:exported="false"
+            android:stopWithTask="false" />
 
         <!-- 24/7 Keep-Alive Service for instant FCM call delivery -->
         <service
             android:name=".services.LksKeepAliveService"
             android:foregroundServiceType="specialUse"
-            android:exported="false">
+            android:exported="false"
+            android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the app process alive to receive VoIP call push notifications instantly" />
@@ -111,7 +113,9 @@
         <!-- FCM Service — receives push notifications for incoming calls -->
         <service
             android:name=".services.CallMessagingService"
-            android:exported="true">
+            android:exported="true"
+            android:directBootAware="true"
+            android:stopWithTask="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
@@ -135,6 +139,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.USER_PRESENT" />
             </intent-filter>
         </receiver>
 

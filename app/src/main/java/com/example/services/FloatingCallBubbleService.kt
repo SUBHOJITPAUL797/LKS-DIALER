@@ -515,6 +515,18 @@ class FloatingCallBubbleService : Service() {
                 stopRinging()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
+
+                // Instantly notify Firestore of ANSWERED so caller switches to Speak Mode immediately (<100ms)
+                try {
+                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        .collection("calls")
+                        .document(callId)
+                        .update(
+                            "status", com.example.data.model.CallStatus.ANSWERED.name,
+                            "answeredAt", System.currentTimeMillis()
+                        )
+                } catch (_: Exception) {}
+
                 // Answer directly via WebRtcEngine in background
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
                 engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)

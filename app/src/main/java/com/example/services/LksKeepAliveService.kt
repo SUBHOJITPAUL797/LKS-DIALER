@@ -1,5 +1,6 @@
 package com.example.services
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -314,11 +315,50 @@ class LksKeepAliveService : Service() {
         handler.postDelayed(tokenRefreshRunnable!!, TOKEN_REFRESH_INTERVAL)
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "Task removed (app swiped from recents) — scheduling immediate service resurrection")
+        scheduleServiceRestart(delayMillis = 500L)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         instance = null
         stopRingingInternal()
         tokenRefreshRunnable?.let { handler.removeCallbacks(it) }
         Log.d(TAG, "LKS Keep-Alive Service destroyed")
+
+        // Resurrect service if unexpectedly killed by OS or RAM clear
+        scheduleServiceRestart(delayMillis = 1000L)
+    }
+
+    private fun scheduleServiceRestart(delayMillis: Long) {
+        try {
+            val restartIntent = Intent(applicationContext, LksKeepAliveService::class.java)
+            val pendingIntent = PendingIntent.getService(
+                applicationContext,
+                101,
+                restartIntent,
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            val triggerAt = System.currentTimeMillis() + delayMillis
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager?.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAt,
+                    pendingIntent
+                )
+            } else {
+                alarmManager?.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAt,
+                    pendingIntent
+                )
+            }
+            Log.d(TAG, "Watchdog restart scheduled in ${delayMillis}ms")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to schedule restart alarm: ${e.message}")
+        }
     }
 }

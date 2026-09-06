@@ -26,6 +26,17 @@ class CallNotificationReceiver : BroadcastReceiver() {
                 com.example.util.LksIncomingRingtonePlayer.stop()
                 FloatingCallBubbleService.silenceRingtone(context)
 
+                // Instantly mark status as ANSWERED in Firestore so caller screen switches immediately (<100ms)
+                try {
+                    FirebaseFirestore.getInstance()
+                        .collection("calls")
+                        .document(callId)
+                        .update(
+                            "status", CallStatus.ANSWERED.name,
+                            "answeredAt", System.currentTimeMillis()
+                        )
+                } catch (_: Exception) {}
+
                 // Open MainActivity and pass the call info to answer
                 val launchIntent = Intent(context, MainActivity::class.java).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP

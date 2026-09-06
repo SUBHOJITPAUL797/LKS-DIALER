@@ -404,6 +404,12 @@ class WebRtcEngine {
     this.activeCallId = callId;
     const callDoc = doc(db, 'calls', callId);
 
+    // Immediately mark status as ANSWERED in Firestore so caller screen switches to Speak Mode immediately (<100ms)
+    updateDoc(callDoc, {
+      status: "ANSWERED",
+      answeredAt: Date.now()
+    }).catch(e => console.warn("Initial answered status update:", e));
+
     let offerObj = offer;
     if (!offerObj) {
       const snap = await getDoc(callDoc);

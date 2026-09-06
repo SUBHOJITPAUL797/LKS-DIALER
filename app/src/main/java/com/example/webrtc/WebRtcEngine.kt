@@ -533,34 +533,32 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
         
-        // Fetch fresh TURN credentials from Worker before creating PeerConnection.
-        // Falls back to static TURN list automatically if Worker is unreachable.
-        fetchIceServersAsync {
-            scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                createPeerConnection(isCaller = true, callId = newCall.callId)
+        // Refresh TURN credentials in background for future calls / reconnects (non-blocking)
+        fetchIceServersAsync {}
 
-                val constraints = MediaConstraints()
-                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-                constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
+        // Create PeerConnection and generate Offer IMMEDIATELY using cached ICE servers (no network stall)
+        createPeerConnection(isCaller = true, callId = newCall.callId)
 
-                peerConnection?.createOffer(object : SdpObserver {
-                    override fun onCreateSuccess(desc: SessionDescription?) {
-                        if (desc != null) {
-                            val tunedSdp = preferOpusAndEnableFec(desc.description)
-                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
-                            firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
-                        }
-                    }
-                    override fun onSetSuccess() {}
-                    override fun onCreateFailure(p0: String?) {}
-                    override fun onSetFailure(p0: String?) {}
-                }, constraints)
+        val constraints = MediaConstraints()
+        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
 
-                listenToActiveCall(newCall.callId, isCaller = true)
-                listenForIceCandidates(newCall.callId, isCaller = true)
+        peerConnection?.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(desc: SessionDescription?) {
+                if (desc != null) {
+                    val tunedSdp = preferOpusAndEnableFec(desc.description)
+                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                    peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                    firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
+                }
             }
-        }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(p0: String?) {}
+            override fun onSetFailure(p0: String?) {}
+        }, constraints)
+
+        listenToActiveCall(newCall.callId, isCaller = true)
+        listenForIceCandidates(newCall.callId, isCaller = true)
     } // end initiateCall
 
     fun listenForIncomingCalls(phoneNumber: String) {
@@ -736,9 +734,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                 ),
                 callStatus = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING,
                 callType = type,
-                connectionStatusText = if (autoAnswer) "Connecting..." else "Incoming Call"
+                connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming Call"
             )
             headsetButtonManager.startListening()
+        }
+
+        if (autoAnswer) {
+            // Instantly mark status as ANSWERED in Firestore so caller screen switches immediately (<100ms)
+            try {
+                firestore.collection("calls").document(callId).update(
+                    "status", CallStatus.ANSWERED.name,
+                    "answeredAt", System.currentTimeMillis()
+                )
+            } catch (_: Exception) {}
+
+            if (_state.value.activeCall != null) {
+                answerCall()
+            }
         }
         
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
@@ -750,24 +762,34 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addOnSuccessListener
                 }
 
-                // AttachToCall is only used by the callee, so if the status is still CALLING, it should be RINGING
-                val resolvedStatus = if (autoAnswer) CallStatus.ANSWERED 
-                                     else if (call.status == CallStatus.CALLING) CallStatus.RINGING
-                                     else call.status
-                                     
-                if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING) {
-                    firestore.collection("calls").document(callId).update("status", CallStatus.RINGING.name)
-                }
+                if (_state.value.callStatus != CallStatus.ANSWERED) {
+                    // AttachToCall is only used by the callee, so if the status is still CALLING, it should be RINGING
+                    val resolvedStatus = if (autoAnswer) CallStatus.ANSWERED 
+                                         else if (call.status == CallStatus.CALLING) CallStatus.RINGING
+                                         else call.status
+                                         
+                    if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING) {
+                        firestore.collection("calls").document(callId).update("status", CallStatus.RINGING.name)
+                    }
 
-                _state.value = _state.value.copy(
-                    activeCall = call.copy(status = resolvedStatus),
-                    callType = call.callType,
-                    callStatus = resolvedStatus,
-                    connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming  Call"
-                )
-                headsetButtonManager.startListening()
-                listenToActiveCall(callId, isCaller = false)
-                if (autoAnswer) answerCall()
+                    _state.value = _state.value.copy(
+                        activeCall = call.copy(status = resolvedStatus),
+                        callType = call.callType,
+                        callStatus = resolvedStatus,
+                        connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming  Call"
+                    )
+                    headsetButtonManager.startListening()
+                    listenToActiveCall(callId, isCaller = false)
+                    if (autoAnswer) answerCall()
+                } else {
+                    _state.value = _state.value.copy(
+                        activeCall = call.copy(status = CallStatus.ANSWERED)
+                    )
+                    listenToActiveCall(callId, isCaller = false)
+                    if (call.offerSdp != null && !hasProcessedOffer) {
+                        processOfferSdpIfAvailable()
+                    }
+                }
             }
         }
     }
