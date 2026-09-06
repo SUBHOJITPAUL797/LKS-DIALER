@@ -141,16 +141,6 @@ export default function CallScreen({ callData, onEndCall }) {
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-color)', overflow: 'hidden' }}>
       
-      {/* Outgoing Ringback Tone */}
-      {isRingingOut && (
-        <audio 
-          src={localStorage.getItem('customRingtone') || "https://actions.google.com/sounds/v1/alarms/phone_ringing.ogg"} 
-          autoPlay 
-          loop 
-          style={{ display: 'none' }} 
-        />
-      )}
-
       {/* Remote Video / Audio (Full Screen) */}
       {isVideoCall ? (
         <video

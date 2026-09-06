@@ -513,6 +513,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             com.example.services.LksTelecomManager.reportOutgoingCall(context, newCall.callId, calleeName, calleeNumber, callType)
         } catch (_: Exception) {}
         configureAudio(callType)
+        com.example.util.CallSoundEffectsManager.startRingbackTone(context)
         
         // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
         scope.launch {
@@ -805,6 +806,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         notificationManager.cancel(1001)
         com.example.util.LksIncomingRingtonePlayer.stop()
+        com.example.util.CallSoundEffectsManager.stopRingbackTone()
         
         com.example.services.ActiveCallService.start(context, call.callId, call.callType.name)
         headsetButtonManager.startListening()
@@ -905,6 +907,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 callStatus = CallStatus.RINGING,
                                 connectionStatusText = "Ringing..."
                             )
+                            com.example.util.CallSoundEffectsManager.startRingbackTone(context)
                         }
 
                         // Video Upgrade Logic
@@ -944,6 +947,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
 
                         if (isCaller && call.status == CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ANSWERED) {
+                            com.example.util.CallSoundEffectsManager.stopRingbackTone()
                             _state.value = _state.value.copy(
                                 callStatus = CallStatus.ANSWERED,
                                 connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
@@ -968,6 +972,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
 
                         if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
+                            com.example.util.CallSoundEffectsManager.stopRingbackTone()
                             hasProcessedAnswer = true
                             val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
                             peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
@@ -1019,9 +1024,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 connectionStatusText = statusMsg
                             )
                             if (remoteHold) {
+                                com.example.util.CallSoundEffectsManager.playHoldTone(context)
                                 localAudioTrack?.setEnabled(false)
                                 _state.value.localVideoTrack?.setEnabled(false)
                             } else {
+                                com.example.util.CallSoundEffectsManager.playUnholdTone(context)
                                 localAudioTrack?.setEnabled(!_state.value.isMuted)
                                 _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
                             }
@@ -1208,9 +1215,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (onHold) {
             localAudioTrack?.setEnabled(false)
             _state.value.localVideoTrack?.setEnabled(false)
+            com.example.util.CallSoundEffectsManager.playHoldTone(context)
         } else {
             localAudioTrack?.setEnabled(!_state.value.isMuted)
             _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
+            com.example.util.CallSoundEffectsManager.playUnholdTone(context)
         }
         
         // 2. Update local UI state
@@ -1341,6 +1350,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
         
+        com.example.util.CallSoundEffectsManager.stopRingbackTone()
+        com.example.util.CallSoundEffectsManager.stopHoldReminder()
+
         timerJob?.cancel()
         timerJob = null
         reconnectJob?.cancel()
@@ -1459,6 +1471,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
         com.example.services.FloatingCallBubbleService.hide(context)
         com.example.util.LksIncomingRingtonePlayer.stop()
+        com.example.util.CallSoundEffectsManager.stopRingbackTone()
+        com.example.util.CallSoundEffectsManager.stopHoldReminder()
+        if (status != CallStatus.IDLE) {
+            com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
+        }
 
         // Phase 1 — Security: delete Firestore SDP/ICE data 5s after call ends.
         // The call document contains offerSdp, answerSdp and ICE candidates with network topology.

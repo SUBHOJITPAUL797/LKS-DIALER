@@ -4,6 +4,7 @@ import {
   collection, doc, setDoc, getDoc, updateDoc, onSnapshot, 
   query, where, getDocs, addDoc, serverTimestamp 
 } from 'firebase/firestore';
+import { callSounds } from './CallSounds';
 
 const servers = {
   iceServers: [
@@ -331,6 +332,9 @@ class WebRtcEngine {
 
     await setDoc(callDoc, callData);
     
+    // Play supervisory outgoing ringback tone immediately
+    callSounds.startRingbackTone();
+
     // Trigger Push Notification via Cloudflare Worker
     this.triggerPushNotification(callee, callType, this.activeCallId);
 
@@ -402,6 +406,7 @@ class WebRtcEngine {
 
   async acceptCall(callId, offer, callType) {
     this.activeCallId = callId;
+    callSounds.stopRingbackTone();
     const callDoc = doc(db, 'calls', callId);
 
     // Immediately mark status as ANSWERED in Firestore so caller screen switches to Speak Mode immediately (<100ms)
@@ -455,6 +460,8 @@ class WebRtcEngine {
   }
 
   async endCall() {
+    callSounds.stopRingbackTone();
+    callSounds.playCallEndedTone();
     if (this.activeCallId) {
       const callDocRef = doc(db, 'calls', this.activeCallId);
       const callSnap = await getDoc(callDocRef);
@@ -480,11 +487,15 @@ class WebRtcEngine {
   }
 
   async declineCall(callId) {
+    callSounds.stopRingbackTone();
+    callSounds.playCallEndedTone();
     await updateDoc(doc(db, 'calls', callId), { status: 'DECLINED' });
     this.cleanup();
   }
 
   cleanup() {
+    callSounds.resetAll();
+    this.isOnHold = false;
     if (this.peerConnection) {
       this.peerConnection.close();
       this.peerConnection = null;
@@ -573,7 +584,27 @@ class WebRtcEngine {
         }
       }
 
-      if (data.status === 'ENDED' || data.status === 'DECLINED') {
+      if (isCaller && data.status === 'RINGING') {
+        callSounds.startRingbackTone();
+      }
+      if (isCaller && data.status === 'ANSWERED') {
+        callSounds.stopRingbackTone();
+      }
+
+      // Hold state audio synchronization
+      const remoteHold = data.isOnHold === true || data.onHold === true;
+      if (remoteHold !== this.isOnHold) {
+        this.isOnHold = remoteHold;
+        if (remoteHold) {
+          callSounds.playHoldTone();
+        } else {
+          callSounds.playUnholdTone();
+        }
+      }
+
+      if (data.status === 'ENDED' || data.status === 'DECLINED' || data.status === 'MISSED') {
+        callSounds.stopRingbackTone();
+        callSounds.playCallEndedTone();
         this.cleanup();
       }
     });
