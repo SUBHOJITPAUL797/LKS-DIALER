@@ -368,6 +368,20 @@ class MainActivity : ComponentActivity() {
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
                         }
+
+                        // Battery optimization exemption for 24/7 background call reception & battery saver mode
+                        val hasPromptedBattery = prefs.getBoolean("battery_optimization_prompted", false)
+                        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+                        val isIgnoring = powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+                        if (!hasPromptedBattery && !isIgnoring) {
+                            prefs.edit().putBoolean("battery_optimization_prompted", true).apply()
+                            try {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = android.net.Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
                     }
                     
                     // Check for updates

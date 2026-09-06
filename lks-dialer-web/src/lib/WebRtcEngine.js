@@ -70,8 +70,18 @@ class WebRtcEngine {
     }
     
     try {
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        googEchoCancellation: true,
+        googAutoGainControl: true,
+        googNoiseSuppression: true,
+        googHighpassFilter: true,
+        channelCount: 1
+      };
       const constraints = {
-        audio: true,
+        audio: audioConstraints,
         video: callType === 'VIDEO' ? { facingMode: this.isFrontCamera ? 'user' : 'environment' } : false
       };
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -649,7 +659,16 @@ class WebRtcEngine {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }, 
-        audio: true 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          googEchoCancellation: true,
+          googAutoGainControl: true,
+          googNoiseSuppression: true,
+          googHighpassFilter: true,
+          channelCount: 1
+        }
       });
       const videoTrack = stream.getVideoTracks()[0];
       

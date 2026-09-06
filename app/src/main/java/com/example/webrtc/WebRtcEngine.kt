@@ -198,13 +198,19 @@ class WebRtcEngine private constructor(private val context: Context) {
         val defaultVideoEncoderFactory = DefaultVideoEncoderFactory(eglBaseContext, true, true)
         val defaultVideoDecoderFactory = DefaultVideoDecoderFactory(eglBaseContext)
         
-        // Use software AEC/NS via WebRTC's own DSP rather than hardware variants.
-        // Hardware AEC on Samsung (and many OEMs) over-suppresses mic input, making the remote
-        // party hear very low/quiet audio. WebRTC's built-in software processing is more consistent.
+        // Hardware Acoustic Echo Cancellation (AEC) and Noise Suppression (NS)
+        // Check OEM DSP hardware support and enable them to completely cancel speaker echo
+        // and background noise on both parties' devices.
+        val isAecSupported = JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
+        val isNsSupported = JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+        Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
+
         val audioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(false)
-            .setUseHardwareNoiseSuppressor(false)
+            .setUseHardwareAcousticEchoCanceler(isAecSupported)
+            .setUseHardwareNoiseSuppressor(isNsSupported)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setUseStereoInput(false)
+            .setUseStereoOutput(false)
             .setAudioAttributes(
                 android.media.AudioAttributes.Builder()
                     .setUsage(android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -430,6 +436,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (line.startsWith("a=fmtp:$opusPayloadType")) {
                 fmtpFound = true
                 var newLine = line
+                if (!newLine.contains("stereo=")) newLine += ";stereo=0;sprop-stereo=0"
                 if (!newLine.contains("useinbandfec=")) newLine += ";useinbandfec=1"
                 if (!newLine.contains("usedtx=")) newLine += ";usedtx=1"
                 if (!newLine.contains("maxaveragebitrate=")) newLine += ";maxaveragebitrate=64000"
@@ -442,7 +449,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (!fmtpFound) {
             for (i in lines.indices) {
                 if (lines[i].startsWith("a=rtpmap:$opusPayloadType")) {
-                    lines.add(i + 1, "a=fmtp:$opusPayloadType minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000")
+                    lines.add(i + 1, "a=fmtp:$opusPayloadType stereo=0;sprop-stereo=0;minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=64000")
                     break
                 }
             }
@@ -1467,6 +1474,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         put("callType", callType)
                         put("callId", callId)
                         put("type", type)
+                        val myPic = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.profilePictureUrl ?: ""
+                        if (myPic.isNotBlank()) put("callerProfilePic", myPic)
                     }
                     val json = jsonObj.toString()
                     

@@ -31,6 +31,21 @@ class CallMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
+        // 1. Immediately hold CPU awake for up to 35 seconds to prevent Battery Saver / Doze from freezing execution
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val wakeLock = try {
+            powerManager?.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "lksdialer:fcm_incoming_wakelock"
+            )?.apply {
+                setReferenceCounted(false)
+                acquire(35_000L)
+            }
+        } catch (e: Exception) {
+            Log.w("FCM", "Failed to acquire CPU wake lock: ${e.message}")
+            null
+        }
+
         Log.d("FCM", "Message received from: ${remoteMessage.from}")
 
         if (remoteMessage.data.isNotEmpty()) {
@@ -49,6 +64,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 FloatingCallBubbleService.silenceRingtone(this)
                 FloatingCallBubbleService.hide(this)
                 com.example.util.LksIncomingRingtonePlayer.stop()
+                LksKeepAliveService.stopRingtone(this)
                 
                 val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
@@ -281,45 +297,37 @@ class CallMessagingService : FirebaseMessagingService() {
 
         val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
 
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val isInteractive = powerManager?.isInteractive == true
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         val isLocked = keyguardManager?.isKeyguardLocked == true
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
         val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-        // Fresh channel ID forces Android to apply null sound so LksIncomingRingtonePlayer handles audio exclusively
-        val targetChannelId = if (isLocked) "lks_incoming_call_fgs_v4" else "incoming_call_silent_channel"
+        val needsFullScreen = !isInteractive || isLocked
+
+        // Unified high-importance channel with silent sound so LksIncomingRingtonePlayer & LksKeepAliveService handle audio
+        val targetChannelId = "lks_incoming_call_v5"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (isLocked) {
-                val lockedChannel = NotificationChannel(
-                    "lks_incoming_call_fgs_v4",
-                    "Incoming Calls (Full Screen Alert)",
-                    NotificationManager.IMPORTANCE_HIGH
-                ).apply {
-                    description = "Incoming VoIP call full-screen alert on locked screen"
-                    setSound(null, null)
-                    enableVibration(false)
-                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-                }
-                notificationManager.createNotificationChannel(lockedChannel)
-            } else {
-                val silentChannel = NotificationChannel(
-                    "incoming_call_silent_channel",
-                    "Incoming Calls (Floating Overlay)",
-                    NotificationManager.IMPORTANCE_LOW
-                ).apply {
-                    description = "Silent background notification for floating call pill"
-                    setShowBadge(false)
-                }
-                notificationManager.createNotificationChannel(silentChannel)
+            val highChannel = NotificationChannel(
+                targetChannelId,
+                "Incoming Calls",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "High-priority incoming call alerts"
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
+            notificationManager.createNotificationChannel(highChannel)
         }
 
         val builder = NotificationCompat.Builder(this, targetChannelId)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-            .setPriority(if (isLocked) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
@@ -341,9 +349,8 @@ class CallMessagingService : FirebaseMessagingService() {
                 ).build()
             )
 
-        // BUG-24: Always attach fullScreenIntent. When locked → high priority forces full-screen.
-        // When unlocked → false priority still re-shows activity when screen turns back on after Power button press.
-        builder.setFullScreenIntent(fullScreenPendingIntent, isLocked)
+        // Always attach fullScreenIntent with true so Android wakes the display in battery saver and lockscreen
+        builder.setFullScreenIntent(fullScreenPendingIntent, true)
 
         val notification = builder.build()
         notificationManager.notify(NOTIFICATION_ID, notification)
@@ -360,14 +367,12 @@ class CallMessagingService : FirebaseMessagingService() {
             Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
         }
 
-        // ─── Start ringtone via LksIncomingRingtonePlayer (in-process, 100% reliable) ───
-        // Plays directly in process memory on STREAM_RING with CPU WakeLock.
-        // Works on locked screen, unlocked screen, idle, Doze mode — always.
+        // ─── Start ringtone via LksIncomingRingtonePlayer & LksKeepAliveService (100% redundant) ───
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
+        LksKeepAliveService.startRingtone(this, callerNumber)
 
-        // ─── Start FloatingCallBubbleService (Foreground Service with Microphone type) ───
-        // Only show floating incoming pill if unlocked and NOT already showing in foreground
-        if (!isLocked && !com.example.MainActivity.isForeground) {
+        // Only show floating incoming pill if unlocked, screen is on, and NOT already showing in foreground
+        if (isInteractive && !isLocked && !com.example.MainActivity.isForeground) {
             try {
                 FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
             } catch (e: Exception) {
@@ -375,19 +380,25 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         }
 
-        // Wake screen if locked
-        if (isLocked) {
+        // If screen is dark or phone is locked, aggressively wake display and launch full-screen UI
+        if (needsFullScreen) {
             try {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-                val wakeLock = powerManager?.newWakeLock(
+                val screenWake = powerManager?.newWakeLock(
                     android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
                     android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
                     android.os.PowerManager.ON_AFTER_RELEASE,
-                    "lksdialer:incoming_call_wake"
+                    "lksdialer:screen_wake_call"
                 )
-                wakeLock?.acquire(20000)
+                screenWake?.acquire(20000L)
             } catch (e: Exception) {
-                Log.w("FCM", "WakeLock acquisition failed: ${e.message}")
+                Log.w("FCM", "Screen WakeLock acquisition failed: ${e.message}")
+            }
+
+            try {
+                fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                applicationContext.startActivity(fullScreenIntent)
+            } catch (e: Exception) {
+                Log.w("FCM", "Direct activity start failed: ${e.message}")
             }
         }
 

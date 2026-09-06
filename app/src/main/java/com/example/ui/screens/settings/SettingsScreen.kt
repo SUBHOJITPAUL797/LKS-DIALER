@@ -65,6 +65,15 @@ fun SettingsScreen(
     var isVibrateOn by remember { mutableStateOf(true) }
     var showDeveloperModal by remember { mutableStateOf(false) }
 
+    val powerManager = remember { context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager }
+    var isIgnoringBattery by remember {
+        mutableStateOf(
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
+            } else true
+        )
+    }
+
     // Ringtone States
     var appRingtoneState by remember { mutableStateOf(LksRingtoneManager.getAppRingtone(context)) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
@@ -524,6 +533,79 @@ fun SettingsScreen(
                         checked = isVibrateOn,
                         onCheckedChange = { isVibrateOn = it }
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Background Calls & Battery Saver Section
+            SettingsSectionHeader("Background Calls & Battery Saver")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = (if (isIgnoringBattery) GreenCall else currentThemeColor.primary).copy(alpha = 0.15f),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isIgnoringBattery) Icons.Default.BatteryChargingFull else Icons.Default.BatteryAlert,
+                                    contentDescription = null,
+                                    tint = if (isIgnoringBattery) GreenCall else currentThemeColor.primary,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "24/7 Call Reception",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = if (isIgnoringBattery)
+                                    "Unrestricted — calls ring instantly even in Battery Saver & Deep Sleep mode."
+                                else
+                                    "Optimized — incoming calls may be delayed when Battery Saver is active.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (!isIgnoringBattery && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                try {
+                                    val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    try {
+                                        val intent = Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                        context.startActivity(intent)
+                                    } catch (_: Exception) {}
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary)
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Allow Unrestricted Background Calling", fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
 

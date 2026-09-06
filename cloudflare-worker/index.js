@@ -78,6 +78,7 @@ export default {
               callerName: callerName || "Unknown",
               callerNumber: callerNumber || "",
               callType: callType || "AUDIO",
+              callerProfilePic: body.callerProfilePic || "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { headers: { TTL: webTtl, Urgency: "high" } },
