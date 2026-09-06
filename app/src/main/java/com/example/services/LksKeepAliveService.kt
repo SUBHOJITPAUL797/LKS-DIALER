@@ -53,6 +53,7 @@ class LksKeepAliveService : Service() {
         const val ACTION_START_RINGTONE = "com.example.action.START_RINGTONE"
         const val ACTION_STOP_RINGTONE = "com.example.action.STOP_RINGTONE"
         const val ACTION_SILENCE_RINGTONE = "com.example.action.SILENCE_RINGTONE"
+        const val ACTION_RESURRECT_KEEP_ALIVE = "com.example.action.RESURRECT_KEEP_ALIVE"
 
         @Volatile
         var instance: LksKeepAliveService? = null
@@ -334,12 +335,14 @@ class LksKeepAliveService : Service() {
 
     private fun scheduleServiceRestart(delayMillis: Long) {
         try {
-            val restartIntent = Intent(applicationContext, LksKeepAliveService::class.java)
-            val pendingIntent = PendingIntent.getService(
+            val restartIntent = Intent(applicationContext, BootReceiver::class.java).apply {
+                action = ACTION_RESURRECT_KEEP_ALIVE
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
                 applicationContext,
                 101,
                 restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
             val triggerAt = System.currentTimeMillis() + delayMillis
@@ -356,7 +359,7 @@ class LksKeepAliveService : Service() {
                     pendingIntent
                 )
             }
-            Log.d(TAG, "Watchdog restart scheduled in ${delayMillis}ms")
+            Log.d(TAG, "Watchdog restart broadcast scheduled in ${delayMillis}ms")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to schedule restart alarm: ${e.message}")
         }

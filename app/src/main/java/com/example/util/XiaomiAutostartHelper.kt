@@ -109,4 +109,33 @@ object XiaomiAutostartHelper {
             context.startActivity(appDetailsIntent)
         } catch (_: Exception) {}
     }
+
+    /**
+     * Attempts to open the MIUI "Other permissions" screen where "Show on Lock screen"
+     * and "Display pop-up windows while running in the background" are configured.
+     */
+    fun openOtherPermissionsSettings(context: Context) {
+        val intents = listOf(
+            Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity")
+                putExtra("extra_pkgname", context.packageName)
+            },
+            Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.AppPermissionsEditorActivity")
+                putExtra("extra_pkgname", context.packageName)
+            },
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${context.packageName}")
+            }
+        )
+
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                Log.i(TAG, "Launched Other Permissions intent: ${intent.component ?: intent.action}")
+                return
+            } catch (_: Exception) {}
+        }
+    }
 }

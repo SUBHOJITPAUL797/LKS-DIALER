@@ -678,6 +678,19 @@ fun SettingsScreen(
                             Text("2. Set Battery to 'No Restrictions'")
                         }
 
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // 1-Tap Other Permissions (Lock Screen & Pop-up Windows)
+                        OutlinedButton(
+                            onClick = { com.example.util.XiaomiAutostartHelper.openOtherPermissionsSettings(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("3. Allow 'Show on Lock screen' & Pop-ups")
+                        }
+
                         Spacer(modifier = Modifier.height(10.dp))
 
                         // Tip: Lock in Recents

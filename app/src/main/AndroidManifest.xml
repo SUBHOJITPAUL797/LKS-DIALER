@@ -141,6 +141,7 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="com.example.action.RESURRECT_KEEP_ALIVE" />
             </intent-filter>
         </receiver>
 
