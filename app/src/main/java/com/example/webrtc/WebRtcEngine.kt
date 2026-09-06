@@ -201,8 +201,16 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Hardware Acoustic Echo Cancellation (AEC) and Noise Suppression (NS)
         // Check OEM DSP hardware support and enable them to completely cancel speaker echo
         // and background noise on both parties' devices.
-        val isAecSupported = JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
-        val isNsSupported = JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+        val isAecSupported = try {
+            android.media.audiofx.AcousticEchoCanceler.isAvailable()
+        } catch (_: Exception) {
+            JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
+        }
+        val isNsSupported = try {
+            android.media.audiofx.NoiseSuppressor.isAvailable()
+        } catch (_: Exception) {
+            JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+        }
         Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
 
         val audioDeviceModule = JavaAudioDeviceModule.builder(context)
@@ -1463,6 +1471,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
         com.example.services.FloatingCallBubbleService.hide(context)
         com.example.util.LksIncomingRingtonePlayer.stop()
+        com.example.util.SamsungVoiceFocusManager.stop()
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
         com.example.util.CallSoundEffectsManager.stopHoldReminder()
         if (status != CallStatus.IDLE) {

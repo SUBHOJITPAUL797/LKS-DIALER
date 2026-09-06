@@ -95,6 +95,9 @@ class AudioRouteManager(
         lastNonBluetoothAudioDevice = if (callType == CallType.VIDEO) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
+        // Activate Samsung One UI Voice Focus hardware noise suppression pipeline
+        com.example.util.SamsungVoiceFocusManager.start(context)
+
         registerAudioDeviceListeners()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -700,6 +703,9 @@ class AudioRouteManager(
     }
 
     fun resetAudioRouting() {
+        // Release Samsung One UI Voice Focus pipeline
+        com.example.util.SamsungVoiceFocusManager.stop()
+
         unregisterAudioDeviceListeners()
         mainHandler.removeCallbacksAndMessages(null)
         try {
