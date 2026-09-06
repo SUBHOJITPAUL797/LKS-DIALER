@@ -393,15 +393,6 @@ class CallMessagingService : FirebaseMessagingService() {
         // Also trigger fallback in-app audio player in case system sound stream is ducked
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
 
-        // Only show floating incoming pill if unlocked, screen is on, and NOT already showing in foreground
-        if (isInteractive && !isLocked && !com.example.MainActivity.isForeground) {
-            try {
-                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-            } catch (e: Exception) {
-                Log.e("FCM", "Failed to start FloatingCallBubbleService: ${e.message}")
-            }
-        }
-
         // Aggressively wake display for incoming call
         try {
             val screenWake = powerManager?.newWakeLock(
@@ -425,7 +416,7 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
 
-        // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s,
+        // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s on locked screen,
         // show UI ourselves
         val appCtx = applicationContext
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -443,14 +434,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 val currentlyLocked = km?.isKeyguardLocked == true
                 if (currentlyLocked) {
                     // Full-screen activity should already be launched by Telecom or fullScreenIntent.
-                    // If not visible yet, try launching it.
                     try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
-                } else if (!com.example.MainActivity.isForeground && !com.example.services.FloatingCallBubbleService.isShowingPill) {
-                    // Pill not shown yet — try again
-                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
-                    if (canOverlay) {
-                        FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
-                    }
                 }
             } catch (_: Exception) {}
         }, 1500)

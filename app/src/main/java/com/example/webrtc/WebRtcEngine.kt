@@ -679,14 +679,6 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 putExtra("call_type", incomingCall.callType.name)
                             }
                             context.startActivity(launchIntent)
-                        } else if (!com.example.MainActivity.isForeground) {
-                            com.example.services.FloatingCallBubbleService.showIncoming(
-                                context,
-                                incomingCall.callId,
-                                incomingCall.callerName,
-                                incomingCall.callerNumber,
-                                incomingCall.callType
-                            )
                         }
                     } catch (_: Exception) {}
 

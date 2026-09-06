@@ -82,31 +82,8 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-            val isLocked = km?.isKeyguardLocked == true
-            if (com.example.MainActivity.isForeground || isLocked) {
-                Log.d(TAG, "Full screen incoming call is showing (isForeground=${com.example.MainActivity.isForeground}, isLocked=$isLocked) - suppressing pill")
-                return
-            }
-            // NOTE: Don't block on canDrawOverlays here — the service must start
-            // for ringtone playback even without overlay permission. The pill UI
-            // rendering is gated inside onStartCommand.
-            val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
-                action = ACTION_SHOW_INCOMING
-                putExtra(EXTRA_CALL_ID, callId)
-                putExtra(EXTRA_CALLER_NAME, callerName)
-                putExtra(EXTRA_CALLER_NUMBER, callerNumber)
-                putExtra(EXTRA_CALL_TYPE, callType.name)
-            }
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FloatingCallBubbleService", e)
-            }
+            // Disabled: Incoming calls are handled natively via Android's CallStyle notification.
+            return
         }
 
         fun showActive(
@@ -293,7 +270,7 @@ class FloatingCallBubbleService : Service() {
                     }
                     CallStatus.ANSWERED -> {
                         stopRinging()
-                        if (currentMode == ACTION_SHOW_INCOMING) {
+                        if (!com.example.MainActivity.isForeground) {
                             showActiveCallPill()
                         }
                     }
@@ -308,7 +285,6 @@ class FloatingCallBubbleService : Service() {
 
         if (action == ACTION_HIDE) {
             // Only remove the floating overlay UI, do NOT stop ringtone here.
-            // Ringtone should keep playing even when MainActivity takes over on the lock screen.
             stateObserverJob?.cancel()
             removeFloatingView()
             stopSelf()
@@ -323,24 +299,12 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            startRinging(callerNumber)
-            val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-            val isLocked = km?.isKeyguardLocked == true
-            val isAppInForeground = com.example.MainActivity.isForeground
-            // Only show floating pill overlay if unlocked AND MainActivity is NOT showing full screen in foreground
-            val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
-            if (canOverlay && !isLocked && !isAppInForeground) {
-                showIncomingCallPill()
-            } else {
-                removeFloatingView()
-            }
+            // Incoming pill is disabled in favor of native CallStyle notification
+            removeFloatingView()
+            return START_NOT_STICKY
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
-            if (!com.example.MainActivity.isForeground) {
-                showActiveCallPill()
-            } else {
-                removeFloatingView()
-            }
+            showActiveCallPill()
         }
 
         return START_NOT_STICKY
@@ -604,7 +568,15 @@ class FloatingCallBubbleService : Service() {
     @SuppressLint("ClickableViewAccessibility")
     private fun showActiveCallPill() {
         if (com.example.MainActivity.isForeground) {
-            Log.d(TAG, "MainActivity is in foreground - suppressing active call pill overlay")
+            Log.d(TAG, "MainActivity is in foreground - checking again in 150ms")
+            handler.postDelayed({
+                if (!com.example.MainActivity.isForeground) {
+                    val status = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
+                    if (status == CallStatus.ANSWERED || status == CallStatus.CALLING) {
+                        showActiveCallPill()
+                    }
+                }
+            }, 150)
             removeFloatingView()
             return
         }
