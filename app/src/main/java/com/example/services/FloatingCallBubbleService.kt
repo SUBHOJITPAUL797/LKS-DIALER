@@ -82,9 +82,25 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            // Disabled per user request: Incoming calls alert via native Heads-Up Notification (HUN) banner.
-            // Floating pill is reserved strictly for active calls (showActive) after answering.
-            Log.d(TAG, "showIncoming disabled: using native heads-up notification instead")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                return
+            }
+            val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
+                action = ACTION_SHOW_INCOMING
+                putExtra(EXTRA_CALL_ID, callId)
+                putExtra(EXTRA_CALLER_NAME, callerName)
+                putExtra(EXTRA_CALLER_NUMBER, callerNumber)
+                putExtra(EXTRA_CALL_TYPE, callType.name)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start incoming FloatingCallBubbleService", e)
+            }
         }
 
         fun showActive(
@@ -300,9 +316,7 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            // Incoming calls use native heads-up notification; remove any existing pill and ignore
-            removeFloatingView()
-            return START_NOT_STICKY
+            showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
             showActiveCallPill()

@@ -120,12 +120,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun dismissIncomingCallNotificationBanner() {
+        // CRITICAL: NEVER dismiss notification 1001 when MainActivity is in background/on home screen!
+        // The user relies on the heads-up notification card to see and answer incoming calls.
+        if (!isForeground) return
         val nm = getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager ?: return
         nm.cancel(1001)
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
-        handler.postDelayed({ nm.cancel(1001) }, 300L)
-        handler.postDelayed({ nm.cancel(1001) }, 800L)
-        handler.postDelayed({ nm.cancel(1001) }, 1500L)
+        handler.postDelayed({ if (isForeground) nm.cancel(1001) }, 300L)
+        handler.postDelayed({ if (isForeground) nm.cancel(1001) }, 800L)
+        handler.postDelayed({ if (isForeground) nm.cancel(1001) }, 1500L)
     }
 
     override fun onStart() {
@@ -144,6 +147,7 @@ class MainActivity : ComponentActivity() {
         isForeground = false
         if (!isChangingConfigurations) {
             com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
+            com.example.util.LksIncomingRingtonePlayer.stop()
         }
     }
 
@@ -258,8 +262,10 @@ class MainActivity : ComponentActivity() {
                     val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing
 
                     if (isIncomingRinging) {
-                        com.example.services.FloatingCallBubbleService.hide(context)
-                        (context as? MainActivity)?.dismissIncomingCallNotificationBanner()
+                        if (isForeground) {
+                            com.example.services.FloatingCallBubbleService.hide(context)
+                            (context as? MainActivity)?.dismissIncomingCallNotificationBanner()
+                        }
                         if (!LksIncomingRingtonePlayer.isRinging) {
                             val callerNumber = rtcState.activeCall?.callerNumber ?: ""
                             LksIncomingRingtonePlayer.start(context, callerNumber)
@@ -414,6 +420,8 @@ class MainActivity : ComponentActivity() {
                         if (autoAnswer) {
                             val notificationManager = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
                             notificationManager.cancel(1001) // NOTIFICATION_ID
+                            com.example.util.LksIncomingRingtonePlayer.stop()
+                            com.example.services.FloatingCallBubbleService.silenceRingtone(context)
                         }
                         
                         val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -650,7 +658,7 @@ class MainActivity : ComponentActivity() {
                                                 durationSeconds = rtcState.callDurationSeconds,
                                                 callId = activeCall.callId
                                             )
-                                            webRtcEngine.endCall()
+                                            webRtcEngine.declineCall()
                                         }
                                     )
                                 } else {

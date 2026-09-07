@@ -1329,6 +1329,22 @@ class WebRtcEngine private constructor(private val context: Context) {
         endCallInternalLocal(CallStatus.ENDED)
     }
 
+    fun declineCall() {
+        val call = _state.value.activeCall
+        if (call != null) {
+            firestore.collection("calls").document(call.callId).update(
+                "status", CallStatus.DECLINED.name,
+                "endedAt", System.currentTimeMillis()
+            )
+            val callIdToDelete = call.callId
+            scope.launch {
+                delay(30000)
+                deleteCallAndCandidates(callIdToDelete)
+            }
+        }
+        endCallInternalLocal(CallStatus.DECLINED)
+    }
+
     private fun deleteCallAndCandidates(callId: String) {
         signalingManager.deleteCallAndCandidates(callId)
     }
@@ -1337,12 +1353,12 @@ class WebRtcEngine private constructor(private val context: Context) {
      * Forces the engine to end the call immediately when a 'cancel_call' or 'missed_call' push notification
      * is received, preventing the UI from lingering in a ringing state.
      */
-    fun forceEndCallFromPush(callId: String) {
+    fun forceEndCallFromPush(callId: String, status: CallStatus = CallStatus.MISSED) {
         scope.launch {
             val activeCallId = _state.value.activeCall?.callId
             if (activeCallId == null || activeCallId == callId || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.CALLING) {
-                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId")
-                endCallInternalLocal(CallStatus.MISSED)
+                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status")
+                endCallInternalLocal(status)
             }
         }
     }

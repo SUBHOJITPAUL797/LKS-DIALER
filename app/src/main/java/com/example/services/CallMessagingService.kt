@@ -65,6 +65,9 @@ class CallMessagingService : FirebaseMessagingService() {
                 FloatingCallBubbleService.hide(this)
                 com.example.util.LksIncomingRingtonePlayer.stop()
                 LksKeepAliveService.stopRingtone(this)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                }
                 
                 val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
@@ -305,9 +308,30 @@ class CallMessagingService : FirebaseMessagingService() {
 
         // Fresh high-importance channel WITH real system ringtone & vibration
         // Crucial: Must be IMPORTANCE_HIGH with sound & vibration so Android displays native heads-up banner when unlocked!
-        val targetChannelId = "lks_incoming_call_v9"
+        val targetChannelId = "lks_incoming_call_v10"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Delete all legacy channels so stale settings/importance don't interfere
+            val oldChannels = listOf(
+                "incoming_call_channel",
+                "incoming_call_silent_channel",
+                "lks_incoming_call_v1",
+                "lks_incoming_call_v2",
+                "lks_incoming_call_v3",
+                "lks_incoming_call_v4",
+                "lks_incoming_call_v5",
+                "lks_incoming_call_v6",
+                "lks_incoming_call_v7",
+                "lks_incoming_call_v8",
+                "lks_incoming_call_v9"
+            )
+            for (oldChannel in oldChannels) {
+                try { notificationManager.deleteNotificationChannel(oldChannel) } catch (_: Exception) {}
+            }
+
+            // CRITICAL: Always use systemSafeRingtoneUri (content://). Never a private file:// URI which system_server rejects.
+            val systemSafeRingtoneUri = com.example.util.LksRingtoneManager.getSystemSafeRingtoneUri(this)
+
             val highChannel = NotificationChannel(
                 targetChannelId,
                 "Incoming Calls",
@@ -315,7 +339,7 @@ class CallMessagingService : FirebaseMessagingService() {
             ).apply {
                 description = "Incoming VoIP call alerts with sound and ring"
                 setSound(
-                    ringtoneUri,
+                    systemSafeRingtoneUri,
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -330,41 +354,36 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
         // WhatsApp / Telegram style CallStyle notification for guaranteed lockscreen and heads-up visibility
+        // CallStyle automatically creates Answer and Decline actions internally.
         val callStyle = NotificationCompat.CallStyle.forIncomingCall(
             caller,
             declinePendingIntent,
             acceptPendingIntent
         )
 
+        val canUseFullScreen = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            notificationManager.canUseFullScreenIntent()
+        } else {
+            true
+        }
+
         val builder = NotificationCompat.Builder(this, targetChannelId)
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
             .setStyle(callStyle)
-            .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                "Decline",
-                declinePendingIntent
-            )
-            .addAction(
-                android.R.drawable.sym_action_call,
-                "Answer",
-                acceptPendingIntent
-            )
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setSound(ringtoneUri)
-            .setVibrate(vibrationPattern)
             .setContentIntent(fullScreenPendingIntent)
             .setFullScreenIntent(fullScreenPendingIntent, true) // ALWAYS attached: HUN banner when unlocked, full-screen when locked!
 
         try {
             val notification = builder.build()
             notificationManager.notify(NOTIFICATION_ID, notification)
-            Log.i("FCM", "✅ Incoming call notification successfully posted (targetChannel=$targetChannelId)")
+            Log.i("FCM", "✅ Incoming call notification successfully posted (targetChannel=$targetChannelId, canUseFullScreen=$canUseFullScreen)")
         } catch (e: Exception) {
             Log.e("FCM", "Failed to post incoming call notification: ${e.message}", e)
         }
@@ -422,7 +441,12 @@ class CallMessagingService : FirebaseMessagingService() {
             // Device is UNLOCKED: Android's native heads-up notification card (HUN) with Answer and Decline
             // is displayed at the top of the screen by setFullScreenIntent(..., true).
             // Zero screen hijacking; user can tap Answer or Decline directly from the top banner.
-            Log.i("FCM", "Device is unlocked: Native Heads-Up Notification banner displayed without full-screen disruption")
+            Log.i("FCM", "Device is unlocked: Native Heads-Up Notification banner displayed without full-screen disruption (canUseFullScreen=$canUseFullScreen)")
+            if (!canUseFullScreen && canDrawOverlays) {
+                // If Android 14+ revoked USE_FULL_SCREEN_INTENT, fallback to floating pill so user is not left with no UI!
+                Log.w("FCM", "USE_FULL_SCREEN_INTENT is restricted on this device, launching pill overlay fallback")
+                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+            }
         }
 
         // Safety fallback: Check status after 800ms

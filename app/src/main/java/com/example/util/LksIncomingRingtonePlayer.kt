@@ -47,35 +47,47 @@ object LksIncomingRingtonePlayer {
         private set
 
     /**
+     * Safety timeout: auto-stop ringing after 45 seconds to prevent infinite loops
+     * (e.g. when FCM cancel_call push is delayed by Doze mode).
+     */
+    private var stopTimeoutRunnable: Runnable? = null
+
+    /**
      * Active Loop Monitor:
      * System ringtones played via RingtoneManager often play once for 3-4 seconds and stop because
      * Android's IRingtonePlayer IPC ignores isLooping for 3rd-party apps.
      * This monitor checks every 800ms: if the ringtone stopped playing while isRinging is true,
      * it immediately restarts it, ensuring an unbroken, continuous ring until answered.
+     *
+     * CRITICAL: The body is synchronized to prevent a race condition where stop() runs on a
+     * worker thread, nullifies mediaPlayer/ringtone, and the monitor concurrently falls into
+     * startToneGeneratorFallback(), creating an unstoppable hardware tone.
      */
     private val loopMonitorRunnable = object : Runnable {
         override fun run() {
-            if (!isRinging) return
-            try {
-                if (mediaPlayer != null) {
-                    if (!mediaPlayer!!.isPlaying) {
-                        Log.d(TAG, "MediaPlayer paused or finished loop cycle, restarting...")
-                        mediaPlayer!!.start()
+            synchronized(LksIncomingRingtonePlayer) {
+                if (!isRinging) return
+                try {
+                    if (mediaPlayer != null) {
+                        if (!mediaPlayer!!.isPlaying) {
+                            Log.d(TAG, "MediaPlayer paused or finished loop cycle, restarting...")
+                            mediaPlayer!!.start()
+                        }
+                    } else if (ringtone != null) {
+                        if (!ringtone!!.isPlaying) {
+                            Log.d(TAG, "Ringtone completed 3-second cycle, replaying loop...")
+                            ringtone!!.play()
+                        }
+                    } else if (toneGenerator == null) {
+                        Log.d(TAG, "No active audio player found during ring, activating ToneGenerator fallback...")
+                        startToneGeneratorFallback()
                     }
-                } else if (ringtone != null) {
-                    if (!ringtone!!.isPlaying) {
-                        Log.d(TAG, "Ringtone completed 3-second cycle, replaying loop...")
-                        ringtone!!.play()
-                    }
-                } else if (toneGenerator == null) {
-                    Log.d(TAG, "No active audio player found during ring, activating ToneGenerator fallback...")
-                    startToneGeneratorFallback()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Loop monitor error: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Loop monitor error: ${e.message}")
-            }
-            if (isRinging) {
-                mainHandler.postDelayed(this, 800L)
+                if (isRinging) {
+                    mainHandler.postDelayed(this, 800L)
+                }
             }
         }
     }
@@ -243,6 +255,15 @@ object LksIncomingRingtonePlayer {
         // 6. Start Loop Monitor to guarantee playback never cuts out
         mainHandler.removeCallbacks(loopMonitorRunnable)
         mainHandler.postDelayed(loopMonitorRunnable, 800L)
+
+        // 7. Safety timeout: auto-stop after 45s to prevent infinite ringing
+        stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        val timeout = Runnable {
+            Log.w(TAG, "⏰ 45-second safety timeout reached — force stopping ringtone")
+            stop()
+        }
+        stopTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, 45_000L)
     }
 
     private fun playFallbackRingtone(appCtx: Context, uri: Uri) {
@@ -278,6 +299,7 @@ object LksIncomingRingtonePlayer {
     }
 
     private fun startToneGeneratorFallback() {
+        if (!isRinging) return
         try {
             if (toneGenerator == null) {
                 toneGenerator = ToneGenerator(AudioManager.STREAM_RING, 100)
@@ -301,6 +323,8 @@ object LksIncomingRingtonePlayer {
         isRinging = false
         Log.i(TAG, "⏹️ STOPPING RINGTONE and vibration")
         mainHandler.removeCallbacks(loopMonitorRunnable)
+        stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        stopTimeoutRunnable = null
 
         try {
             mediaPlayer?.stop()

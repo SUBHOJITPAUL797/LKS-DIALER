@@ -168,6 +168,25 @@ object LksRingtoneManager {
         return appRingtone.first
     }
 
+    /**
+     * Returns a ringtone URI that is SAFE to pass to NotificationChannel.setSound().
+     * Android's system_server cannot access file:// URIs from app-private directories,
+     * so this method always returns a content:// or android.resource:// URI.
+     * Custom/per-contact ringtones are handled separately by LksIncomingRingtonePlayer.
+     */
+    fun getSystemSafeRingtoneUri(context: Context): Uri {
+        return try {
+            val actualUri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+            if (actualUri != null && actualUri.scheme != "file") {
+                actualUri
+            } else {
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            }
+        } catch (_: Exception) {
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
     // 4. TITLE LOOKUP & UTILS
     // ─────────────────────────────────────────────────────────────────────────────

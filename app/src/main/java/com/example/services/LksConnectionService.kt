@@ -181,7 +181,7 @@ class LksCallConnection(
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
         destroy()
         LksConnectionService.clearActiveConnection()
-        WebRtcEngine.getInstanceIfCreated()?.endCall()
+        WebRtcEngine.getInstanceIfCreated()?.declineCall()
     }
 
     override fun onDisconnect() {

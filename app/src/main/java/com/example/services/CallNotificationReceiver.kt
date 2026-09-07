@@ -69,7 +69,7 @@ class CallNotificationReceiver : BroadcastReceiver() {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.forceEndCallFromPush(callId)
+                engine?.forceEndCallFromPush(callId, CallStatus.DECLINED)
                 FloatingCallBubbleService.hide(context)
                 com.example.util.LksIncomingRingtonePlayer.stop()
             }

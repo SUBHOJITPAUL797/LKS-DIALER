@@ -167,7 +167,7 @@ class HeadsetButtonManager(context: Context) {
                 KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                     if (callStatus == CallStatus.RINGING) {
                         Log.i("HeadsetButtonManager", "Declining call via Bluetooth/Headset button!")
-                        rtcEngine.endCall()
+                        rtcEngine.declineCall()
                         return true
                     } else if (callStatus == CallStatus.ANSWERED || callStatus == CallStatus.CALLING) {
                         Log.i("HeadsetButtonManager", "Ending call via Bluetooth/Headset button!")
