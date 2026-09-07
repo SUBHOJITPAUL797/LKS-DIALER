@@ -97,6 +97,7 @@ class AudioRouteManager(
 
         // Activate Samsung One UI Voice Focus hardware noise suppression pipeline
         com.example.util.SamsungVoiceFocusManager.start(context)
+        com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = callType == CallType.VIDEO, context = context)
 
         registerAudioDeviceListeners()
 
@@ -530,6 +531,7 @@ class AudioRouteManager(
                     }
                     @Suppress("DEPRECATION")
                     audioManager.isSpeakerphoneOn = true
+                    com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = true, context = context)
                 }
                 AudioDeviceType.EARPIECE -> {
                     @Suppress("DEPRECATION")
@@ -558,6 +560,7 @@ class AudioRouteManager(
                             audioManager.clearCommunicationDevice()
                         }
                     }
+                    com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = false, context = context)
                 }
                 AudioDeviceType.BLUETOOTH -> {
                     @Suppress("DEPRECATION")

@@ -82,8 +82,30 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            // Disabled: Incoming calls are handled natively via Android's CallStyle notification.
-            return
+            if (MainActivity.isForeground) {
+                Log.d(TAG, "MainActivity is foreground - skipping incoming pill")
+                return
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                Log.d(TAG, "No overlay permission - skipping incoming pill")
+                return
+            }
+            val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
+                action = ACTION_SHOW_INCOMING
+                putExtra(EXTRA_CALL_ID, callId)
+                putExtra(EXTRA_CALLER_NAME, callerName)
+                putExtra(EXTRA_CALLER_NUMBER, callerNumber)
+                putExtra(EXTRA_CALL_TYPE, callType.name)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start FloatingCallBubbleService for incoming call", e)
+            }
         }
 
         fun showActive(
@@ -299,9 +321,12 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            // Incoming pill is disabled in favor of native CallStyle notification
-            removeFloatingView()
-            return START_NOT_STICKY
+            val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
+            if (canOverlay && !MainActivity.isForeground) {
+                showIncomingCallPill()
+            } else {
+                removeFloatingView()
+            }
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
             showActiveCallPill()

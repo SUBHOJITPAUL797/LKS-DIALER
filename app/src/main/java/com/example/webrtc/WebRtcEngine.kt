@@ -674,19 +674,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                             "lksdialer:incoming_call_wake_engine"
                         )?.apply { acquire(15000) }
 
-                        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-                        val isLocked = km?.isKeyguardLocked == true
-
-                        if (isLocked) {
-                            val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                                putExtra("incoming_call", true)
-                                putExtra("call_id", incomingCall.callId)
-                                putExtra("caller_name", incomingCall.callerName)
-                                putExtra("caller_number", incomingCall.callerNumber)
-                                putExtra("call_type", incomingCall.callType.name)
-                            }
-                            context.startActivity(launchIntent)
+                        val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            putExtra("incoming_call", true)
+                            putExtra("call_id", incomingCall.callId)
+                            putExtra("caller_name", incomingCall.callerName)
+                            putExtra("caller_number", incomingCall.callerNumber)
+                            putExtra("call_type", incomingCall.callType.name)
+                        }
+                        context.startActivity(launchIntent)
+                        if (!com.example.MainActivity.isForeground) {
+                            com.example.services.FloatingCallBubbleService.showIncoming(
+                                context,
+                                incomingCall.callId,
+                                incomingCall.callerName,
+                                incomingCall.callerNumber,
+                                incomingCall.callType
+                            )
                         }
                     } catch (_: Exception) {}
 

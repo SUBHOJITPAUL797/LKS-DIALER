@@ -206,36 +206,24 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
         if (com.example.MainActivity.isForeground) {
-            Log.d("FCM", "MainActivity is already visible in foreground. Ringing directly without heads-up card.")
-            com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
-            return
+            Log.d("FCM", "MainActivity is already in foreground. Forwarding intent to show call screen.")
+            try {
+                val directIntent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    putExtra("incoming_call", true)
+                    putExtra("call_id", callId)
+                    putExtra("caller_name", callerName)
+                    putExtra("caller_number", callerNumber)
+                    putExtra("call_type", callType)
+                }
+                startActivity(directIntent)
+            } catch (e: Exception) {
+                Log.w("FCM", "Failed to forward incoming call intent: ${e.message}")
+            }
         }
 
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
-        // Create the notification channel with maximum importance + ringtone
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Incoming Calls",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Incoming VoIP call alerts with Accept & Decline"
-                setSound(
-                    ringtoneUri,
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
-                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-            }
-            notificationManager.createNotificationChannel(channel)
-        }
 
         // 🔲 Full-screen intent - opens MainActivity (call screen) when tapped 🔲
         val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
@@ -281,13 +269,14 @@ class CallMessagingService : FirebaseMessagingService() {
             .setName(callerName)
             .setImportant(true)
             
-        // Load Profile Picture if available (Base64 decoded locally)
+        // Load Profile Picture if available (Base64 decoded locally & downscaled to safe icon size)
         if (callerProfilePic.isNotEmpty() && !callerProfilePic.startsWith("http")) {
             try {
                 val decodedBytes = android.util.Base64.decode(callerProfilePic, android.util.Base64.DEFAULT)
-                val bitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                if (bitmap != null) {
-                    callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bitmap))
+                val originalBitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                if (originalBitmap != null) {
+                    val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, 128, 128, true)
+                    callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(scaledBitmap))
                 }
             } catch (e: Exception) {
                 Log.e("FCM", "Failed to decode profile picture for notification", e)
@@ -316,7 +305,7 @@ class CallMessagingService : FirebaseMessagingService() {
 
         // Fresh high-importance channel WITH real system ringtone & vibration
         // Crucial: A silent channel will suppress fullScreenIntent and heads-up banner on Xiaomi/Samsung/Android 12+!
-        val targetChannelId = "lks_incoming_call_v7"
+        val targetChannelId = "lks_incoming_call_v8"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val highChannel = NotificationChannel(
@@ -352,7 +341,22 @@ class CallMessagingService : FirebaseMessagingService() {
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
             .setStyle(callStyle)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+
+        // On Android 11 and below, CallStyle does not automatically attach action buttons
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            builder.addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Decline",
+                declinePendingIntent
+            )
+            builder.addAction(
+                android.R.drawable.sym_action_call,
+                "Answer",
+                acceptPendingIntent
+            )
+        }
+
+        builder.setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
@@ -362,8 +366,13 @@ class CallMessagingService : FirebaseMessagingService() {
             .setContentIntent(fullScreenPendingIntent)
             .setFullScreenIntent(fullScreenPendingIntent, true)
 
-        val notification = builder.build()
-        notificationManager.notify(NOTIFICATION_ID, notification)
+        try {
+            val notification = builder.build()
+            notificationManager.notify(NOTIFICATION_ID, notification)
+            Log.i("FCM", "✅ Incoming call notification successfully posted")
+        } catch (e: Exception) {
+            Log.e("FCM", "Failed to post incoming call notification: ${e.message}", e)
+        }
 
         // Ensure keep-alive service is active to prevent process kill during incoming ring
         try {
@@ -406,18 +415,23 @@ class CallMessagingService : FirebaseMessagingService() {
             Log.w("FCM", "Screen WakeLock acquisition failed: ${e.message}")
         }
 
-        if (needsFullScreen) {
-            try {
-                fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                applicationContext.startActivity(fullScreenIntent)
-            } catch (e: Exception) {
-                Log.w("FCM", "Direct activity start failed: ${e.message}")
-            }
+        // Always attempt direct full-screen activity launch
+        try {
+            fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            applicationContext.startActivity(fullScreenIntent)
+            Log.i("FCM", "Direct incoming call activity launched")
+        } catch (e: Exception) {
+            Log.w("FCM", "Direct activity start failed: ${e.message}")
         }
 
+        // If MainActivity is not in foreground, show incoming floating pill banner
+        // so user has immediate, interactive Answer/Decline overlay even if background activity was blocked
+        if (!MainActivity.isForeground && canDrawOverlays) {
+            Log.i("FCM", "Displaying floating incoming pill overlay banner")
+            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+        }
 
-        // Safety fallback: If Telecom doesn't fire onShowIncomingCallUi within 1.5s on locked screen,
-        // show UI ourselves
+        // Safety fallback: If Telecom or system hasn't brought UI to foreground within 800ms, retry
         val appCtx = applicationContext
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
@@ -430,14 +444,13 @@ class CallMessagingService : FirebaseMessagingService() {
                 if (com.example.MainActivity.isForeground) {
                     return@postDelayed
                 }
-                val km = appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
-                val currentlyLocked = km?.isKeyguardLocked == true
-                if (currentlyLocked) {
-                    // Full-screen activity should already be launched by Telecom or fullScreenIntent.
-                    try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
+                try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
+                val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
+                if (canOverlay && !FloatingCallBubbleService.isShowingPill) {
+                    FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
                 }
             } catch (_: Exception) {}
-        }, 1500)
+        }, 800)
 
         try {
             LksTelecomManager.reportIncomingCall(this, callId, callerName, callerNumber, callTypeEnum)

@@ -56,15 +56,8 @@ object SamsungVoiceFocusManager {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
             Log.i(TAG, "Activating Samsung Voice Focus audio pipeline")
 
-            // 1. Send Samsung Audio HAL vendor parameters
-            try {
-                audioManager.setParameters("voice_focus=on")
-                audioManager.setParameters("voice_focus_enable=true")
-                audioManager.setParameters("call_noise_reduction=on")
-                audioManager.setParameters("voip=on")
-            } catch (e: Exception) {
-                Log.d(TAG, "Audio parameters warning: ${e.message}")
-            }
+            // 1. Send initial Samsung Audio HAL vendor parameters
+            updateRoute(isSpeaker = false, context = context)
 
             // 2. Configure AudioRecord with VOICE_COMMUNICATION
             val sampleRate = 48000
@@ -177,6 +170,43 @@ object SamsungVoiceFocusManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error activating Samsung Voice Focus", e)
             stop()
+        }
+    }
+
+    /**
+     * Dynamically update Samsung Voice Focus parameters when switching between Earpiece and Speakerphone (Loudspeaker).
+     */
+    fun updateRoute(isSpeaker: Boolean, context: Context) {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        Log.i(TAG, "Updating Samsung Voice Focus parameters: isSpeaker=$isSpeaker")
+        try {
+            if (isSpeaker) {
+                // LOUDSPEAKER (Speakerphone) Voice Focus
+                audioManager.setParameters("voice_focus=on")
+                audioManager.setParameters("voice_focus_enable=true")
+                audioManager.setParameters("voice_focus_mode=speaker")
+                audioManager.setParameters("mic_mode=voice_focus")
+                audioManager.setParameters("situation=voip;device=speaker")
+                audioManager.setParameters("call_state=incall")
+                audioManager.setParameters("voip=on")
+            } else {
+                // EARPIECE Voice Focus (Handset Receiver)
+                audioManager.setParameters("voice_focus=on")
+                audioManager.setParameters("voice_focus_enable=true")
+                audioManager.setParameters("voice_focus_mode=earpiece")
+                audioManager.setParameters("voice_focus_mode=1")
+                audioManager.setParameters("voice_focus_earpiece=on")
+                audioManager.setParameters("mic_mode=voice_focus")
+                audioManager.setParameters("situation=voip;device=earpiece")
+                audioManager.setParameters("call_state=incall")
+                audioManager.setParameters("voip=on")
+                audioManager.setParameters("voip_earpiece=on")
+                audioManager.setParameters("dual_mic_noise_reduction=on")
+                audioManager.setParameters("samsung_voice_focus=on")
+                audioManager.setParameters("samsung_voice_focus=earpiece")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update Voice Focus route parameters: ${e.message}")
         }
     }
 
