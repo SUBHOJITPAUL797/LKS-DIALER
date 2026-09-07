@@ -364,7 +364,12 @@ class CallMessagingService : FirebaseMessagingService() {
             .setSound(ringtoneUri)
             .setVibrate(vibrationPattern)
             .setContentIntent(fullScreenPendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
+
+        // Only attach fullScreenIntent if the device is locked/asleep so Android opens full screen on the lock screen.
+        // On an unlocked device, omitting setFullScreenIntent ensures the OS shows the non-disruptive heads-up banner!
+        if (needsFullScreen) {
+            builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
 
         try {
             val notification = builder.build()
@@ -402,36 +407,37 @@ class CallMessagingService : FirebaseMessagingService() {
         // Also trigger fallback in-app audio player in case system sound stream is ducked
         com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
 
-        // Aggressively wake display for incoming call
-        try {
-            val screenWake = powerManager?.newWakeLock(
-                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
-                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                android.os.PowerManager.ON_AFTER_RELEASE,
-                "lksdialer:screen_wake_call"
-            )
-            screenWake?.acquire(25000L)
-        } catch (e: Exception) {
-            Log.w("FCM", "Screen WakeLock acquisition failed: ${e.message}")
+        if (needsFullScreen) {
+            // Screen is off or phone is locked: Aggressively wake display and launch full-screen UI
+            try {
+                val screenWake = powerManager?.newWakeLock(
+                    android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    android.os.PowerManager.ON_AFTER_RELEASE,
+                    "lksdialer:screen_wake_call"
+                )
+                screenWake?.acquire(25000L)
+            } catch (e: Exception) {
+                Log.w("FCM", "Screen WakeLock acquisition failed: ${e.message}")
+            }
+
+            try {
+                fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                applicationContext.startActivity(fullScreenIntent)
+                Log.i("FCM", "Device is locked: Direct full-screen activity launched")
+            } catch (e: Exception) {
+                Log.w("FCM", "Direct activity start failed: ${e.message}")
+            }
+        } else {
+            // Device is UNLOCKED: Do NOT disrupt the user by launching full-screen activity!
+            // Show the sleek draggable floating incoming pill banner right at the top so the user can answer or decline right there.
+            if (!MainActivity.isForeground && canDrawOverlays) {
+                Log.i("FCM", "Device is unlocked: Showing floating incoming pill overlay banner without interrupting active app")
+                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+            }
         }
 
-        // Always attempt direct full-screen activity launch
-        try {
-            fullScreenIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            applicationContext.startActivity(fullScreenIntent)
-            Log.i("FCM", "Direct incoming call activity launched")
-        } catch (e: Exception) {
-            Log.w("FCM", "Direct activity start failed: ${e.message}")
-        }
-
-        // If MainActivity is not in foreground, show incoming floating pill banner
-        // so user has immediate, interactive Answer/Decline overlay even if background activity was blocked
-        if (!MainActivity.isForeground && canDrawOverlays) {
-            Log.i("FCM", "Displaying floating incoming pill overlay banner")
-            FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-        }
-
-        // Safety fallback: If Telecom or system hasn't brought UI to foreground within 800ms, retry
+        // Safety fallback: Check status after 800ms
         val appCtx = applicationContext
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
@@ -444,10 +450,16 @@ class CallMessagingService : FirebaseMessagingService() {
                 if (com.example.MainActivity.isForeground) {
                     return@postDelayed
                 }
-                try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
-                val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
-                if (canOverlay && !FloatingCallBubbleService.isShowingPill) {
-                    FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
+                val km = appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                val pm = appCtx.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                val currentlyLocked = km?.isKeyguardLocked == true || pm?.isInteractive == false
+                if (currentlyLocked) {
+                    try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
+                } else {
+                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
+                    if (canOverlay && !FloatingCallBubbleService.isShowingPill) {
+                        FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
+                    }
                 }
             } catch (_: Exception) {}
         }, 800)

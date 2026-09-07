@@ -664,26 +664,31 @@ class WebRtcEngine private constructor(private val context: Context) {
                     // Wake screen and route to lockscreen activity or floating pill if unlocked
                     try {
                         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
-                        try {
-                            if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()
-                        } catch (_: Exception) {}
-                        incomingCallWakeLock = pm?.newWakeLock(
-                            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
-                            android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                            android.os.PowerManager.ON_AFTER_RELEASE,
-                            "lksdialer:incoming_call_wake_engine"
-                        )?.apply { acquire(15000) }
+                        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                        val isLocked = km?.isKeyguardLocked == true
+                        val isInteractive = pm?.isInteractive == true
 
-                        val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            putExtra("incoming_call", true)
-                            putExtra("call_id", incomingCall.callId)
-                            putExtra("caller_name", incomingCall.callerName)
-                            putExtra("caller_number", incomingCall.callerNumber)
-                            putExtra("call_type", incomingCall.callType.name)
-                        }
-                        context.startActivity(launchIntent)
-                        if (!com.example.MainActivity.isForeground) {
+                        if (isLocked || !isInteractive) {
+                            try {
+                                if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()
+                            } catch (_: Exception) {}
+                            incomingCallWakeLock = pm?.newWakeLock(
+                                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                                android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                                android.os.PowerManager.ON_AFTER_RELEASE,
+                                "lksdialer:incoming_call_wake_engine"
+                            )?.apply { acquire(15000) }
+
+                            val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                putExtra("incoming_call", true)
+                                putExtra("call_id", incomingCall.callId)
+                                putExtra("caller_name", incomingCall.callerName)
+                                putExtra("caller_number", incomingCall.callerNumber)
+                                putExtra("call_type", incomingCall.callType.name)
+                            }
+                            context.startActivity(launchIntent)
+                        } else if (!com.example.MainActivity.isForeground) {
                             com.example.services.FloatingCallBubbleService.showIncoming(
                                 context,
                                 incomingCall.callId,
