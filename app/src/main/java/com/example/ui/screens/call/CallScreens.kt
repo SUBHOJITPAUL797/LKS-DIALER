@@ -487,7 +487,7 @@ fun ActiveAudioCallScreen(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                         color = GreenCall
                     )
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     val qualityColor = when {
                         state.networkQualityBars >= 4 -> Color(0xFF22C55E)
                         state.networkQualityBars == 3 -> Color(0xFFF59E0B)
@@ -498,10 +498,22 @@ fun ActiveAudioCallScreen(
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
-                            text = "📶 Quality ${state.networkQualityBars}/5",
+                            text = "📶 ${state.networkQualityBars}/5",
                             style = MaterialTheme.typography.labelSmall,
                             color = qualityColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = GreenCall.copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = if (state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE) "🎙️ Voice Focus (Speaker)" else "🎙️ Voice Focus (HD)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = GreenCall,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                         )
                     }
                 }

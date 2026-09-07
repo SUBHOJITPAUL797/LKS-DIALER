@@ -249,9 +249,8 @@ class LksCallConnection(
             } catch (e: Exception) {
                 Log.e("LksCallConnection", "Failed to launch incoming call UI from Telecom", e)
             }
-        } else if (!com.example.MainActivity.isForeground) {
-            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> showing floating pill")
-            com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)
+        } else {
+            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> handled by native heads-up notification")
         }
     }
 }

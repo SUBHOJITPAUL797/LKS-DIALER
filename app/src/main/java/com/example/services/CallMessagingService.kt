@@ -304,8 +304,8 @@ class CallMessagingService : FirebaseMessagingService() {
         val vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
 
         // Fresh high-importance channel WITH real system ringtone & vibration
-        // Crucial: A silent channel will suppress fullScreenIntent and heads-up banner on Xiaomi/Samsung/Android 12+!
-        val targetChannelId = "lks_incoming_call_v8"
+        // Crucial: Must be IMPORTANCE_HIGH with sound & vibration so Android displays native heads-up banner when unlocked!
+        val targetChannelId = "lks_incoming_call_v9"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val highChannel = NotificationChannel(
@@ -341,22 +341,17 @@ class CallMessagingService : FirebaseMessagingService() {
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
             .setStyle(callStyle)
-
-        // On Android 11 and below, CallStyle does not automatically attach action buttons
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            builder.addAction(
+            .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "Decline",
                 declinePendingIntent
             )
-            builder.addAction(
+            .addAction(
                 android.R.drawable.sym_action_call,
                 "Answer",
                 acceptPendingIntent
             )
-        }
-
-        builder.setPriority(NotificationCompat.PRIORITY_MAX)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
@@ -364,17 +359,12 @@ class CallMessagingService : FirebaseMessagingService() {
             .setSound(ringtoneUri)
             .setVibrate(vibrationPattern)
             .setContentIntent(fullScreenPendingIntent)
-
-        // Only attach fullScreenIntent if the device is locked/asleep so Android opens full screen on the lock screen.
-        // On an unlocked device, omitting setFullScreenIntent ensures the OS shows the non-disruptive heads-up banner!
-        if (needsFullScreen) {
-            builder.setFullScreenIntent(fullScreenPendingIntent, true)
-        }
+            .setFullScreenIntent(fullScreenPendingIntent, true) // ALWAYS attached: HUN banner when unlocked, full-screen when locked!
 
         try {
             val notification = builder.build()
             notificationManager.notify(NOTIFICATION_ID, notification)
-            Log.i("FCM", "✅ Incoming call notification successfully posted")
+            Log.i("FCM", "✅ Incoming call notification successfully posted (targetChannel=$targetChannelId)")
         } catch (e: Exception) {
             Log.e("FCM", "Failed to post incoming call notification: ${e.message}", e)
         }
@@ -429,12 +419,10 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.w("FCM", "Direct activity start failed: ${e.message}")
             }
         } else {
-            // Device is UNLOCKED: Do NOT disrupt the user by launching full-screen activity!
-            // Show the sleek draggable floating incoming pill banner right at the top so the user can answer or decline right there.
-            if (!MainActivity.isForeground && canDrawOverlays) {
-                Log.i("FCM", "Device is unlocked: Showing floating incoming pill overlay banner without interrupting active app")
-                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-            }
+            // Device is UNLOCKED: Android's native heads-up notification card (HUN) with Answer and Decline
+            // is displayed at the top of the screen by setFullScreenIntent(..., true).
+            // Zero screen hijacking; user can tap Answer or Decline directly from the top banner.
+            Log.i("FCM", "Device is unlocked: Native Heads-Up Notification banner displayed without full-screen disruption")
         }
 
         // Safety fallback: Check status after 800ms
@@ -455,11 +443,6 @@ class CallMessagingService : FirebaseMessagingService() {
                 val currentlyLocked = km?.isKeyguardLocked == true || pm?.isInteractive == false
                 if (currentlyLocked) {
                     try { appCtx.startActivity(fullScreenIntent) } catch (_: Exception) {}
-                } else {
-                    val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(appCtx) else true
-                    if (canOverlay && !FloatingCallBubbleService.isShowingPill) {
-                        FloatingCallBubbleService.showIncoming(appCtx, callId, callerName, callerNumber, callTypeEnum)
-                    }
                 }
             } catch (_: Exception) {}
         }, 800)
