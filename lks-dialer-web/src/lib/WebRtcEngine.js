@@ -5,6 +5,7 @@ import {
   query, where, getDocs, addDoc, serverTimestamp 
 } from 'firebase/firestore';
 import { callSounds } from './CallSounds';
+import { formatAvatarUrl } from './ImageUtils';
 
 const servers = {
   iceServers: [
@@ -164,14 +165,22 @@ class WebRtcEngine {
     try {
       const q = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
       const snapshot = await getDocs(q);
-      if (!snapshot.empty) return snapshot.docs[0].data();
+      if (!snapshot.empty) {
+        const d = snapshot.docs[0].data();
+        if (d && d.profilePictureUrl) d.profilePictureUrl = formatAvatarUrl(d.profilePictureUrl);
+        return d;
+      }
     } catch (e) {
       console.warn("Query by variations failed, falling back to direct get:", e);
     }
 
     try {
       const docSnap = await getDoc(doc(db, 'users', phoneNumber));
-      if (docSnap.exists()) return docSnap.data();
+      if (docSnap.exists()) {
+        const d = docSnap.data();
+        if (d && d.profilePictureUrl) d.profilePictureUrl = formatAvatarUrl(d.profilePictureUrl);
+        return d;
+      }
     } catch (e) {
       console.warn("Direct lookup failed:", e);
     }
@@ -189,6 +198,7 @@ class WebRtcEngine {
           id: doc.id,
           displayName: data.displayName || phone || 'Unknown User',
           ...data,
+          profilePictureUrl: formatAvatarUrl(data.profilePictureUrl) || '',
           phoneNumber: String(phone)
         };
       });
@@ -208,10 +218,24 @@ class WebRtcEngine {
       const [callerSnap, calleeSnap] = await Promise.all([getDocs(callerQuery), getDocs(calleeQuery)]);
       
       const calls = [];
-      callerSnap.forEach(doc => calls.push({ id: doc.id, ...doc.data() }));
+      callerSnap.forEach(doc => {
+        const d = doc.data() || {};
+        calls.push({
+          id: doc.id,
+          ...d,
+          callerProfilePic: formatAvatarUrl(d.callerProfilePic) || '',
+          calleeProfilePic: formatAvatarUrl(d.calleeProfilePic) || ''
+        });
+      });
       calleeSnap.forEach(doc => {
         if (!calls.find(c => c.id === doc.id)) {
-          calls.push({ id: doc.id, ...doc.data() });
+          const d = doc.data() || {};
+          calls.push({
+            id: doc.id,
+            ...d,
+            callerProfilePic: formatAvatarUrl(d.callerProfilePic) || '',
+            calleeProfilePic: formatAvatarUrl(d.calleeProfilePic) || ''
+          });
         }
       });
       

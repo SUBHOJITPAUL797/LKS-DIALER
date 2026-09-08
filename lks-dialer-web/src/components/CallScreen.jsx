@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Mic, MicOff, Video, VideoOff, PhoneOff, SwitchCamera, Headphones, Volume2, Check, X } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
+import { formatAvatarUrl } from '../lib/ImageUtils';
 
 export default function CallScreen({ callData, onEndCall }) {
   const localVideoRef = useRef(null);
@@ -135,7 +136,8 @@ export default function CallScreen({ callData, onEndCall }) {
 
   const isMeCaller = callData.callerNumber === webRtcEngine.currentUser?.phoneNumber;
   const peerName = isMeCaller ? callData.calleeName : callData.callerName;
-  const peerAvatar = isMeCaller ? callData.calleeProfilePic : callData.callerProfilePic;
+  const rawAvatar = isMeCaller ? callData.calleeProfilePic : callData.callerProfilePic;
+  const peerAvatar = formatAvatarUrl(rawAvatar);
   const isRingingOut = isMeCaller && (callData.status === 'CALLING' || callData.status === 'RINGING');
 
   return (

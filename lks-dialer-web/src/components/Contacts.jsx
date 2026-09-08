@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Phone, Video, Search } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
+import { formatAvatarUrl } from '../lib/ImageUtils';
 
 export default function Contacts({ onStartCall }) {
   const [contacts, setContacts] = useState([]);
@@ -78,6 +79,7 @@ export default function Contacts({ onStartCall }) {
         filtered.map(contact => {
           const displayName = contact.displayName || contact.phoneNumber || "Unknown";
           const phoneNumber = contact.phoneNumber || "";
+          const contactAvatar = formatAvatarUrl(contact.profilePictureUrl);
           const avatarInitial = (displayName || phoneNumber || "?")[0]?.toUpperCase() || "?";
 
           return (
@@ -89,9 +91,9 @@ export default function Contacts({ onStartCall }) {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontWeight: '900', fontSize: '20px', overflow: 'hidden'
                 }}>
-                  {contact.profilePictureUrl && (
+                  {contactAvatar && (
                     <img 
-                      src={contact.profilePictureUrl} 
+                      src={contactAvatar} 
                       alt={displayName} 
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       onError={(e) => {
@@ -100,7 +102,7 @@ export default function Contacts({ onStartCall }) {
                       }}
                     />
                   )}
-                  <span style={{ display: contact.profilePictureUrl ? 'none' : 'block' }}>
+                  <span style={{ display: contactAvatar ? 'none' : 'block' }}>
                     {avatarInitial}
                   </span>
                 </div>

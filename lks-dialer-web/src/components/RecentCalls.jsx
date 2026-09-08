@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
+import { formatAvatarUrl } from '../lib/ImageUtils';
 
 export default function RecentCalls({ onStartCall }) {
   const [calls, setCalls] = useState([]);
@@ -88,7 +89,8 @@ export default function RecentCalls({ onStartCall }) {
           const isCaller = call.callerNumber === webRtcEngine.currentUser?.phoneNumber;
           const peerNumber = (isCaller ? call.calleeNumber : call.callerNumber) || "";
           const peerName = (isCaller ? call.calleeName : call.callerName) || peerNumber || "Unknown";
-          const peerAvatar = isCaller ? call.calleeProfilePic : call.callerProfilePic;
+          const rawAvatar = isCaller ? call.calleeProfilePic : call.callerProfilePic;
+          const peerAvatar = formatAvatarUrl(rawAvatar);
           const avatarInitial = (peerName || peerNumber || "?")[0]?.toUpperCase() || "?";
           
           return (

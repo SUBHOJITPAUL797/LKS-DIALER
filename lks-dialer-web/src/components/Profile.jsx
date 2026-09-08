@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { Camera, Save } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
+import { formatAvatarUrl } from '../lib/ImageUtils';
 
 export default function Profile() {
   const [name, setName] = useState(webRtcEngine.currentUser?.displayName || "");
@@ -102,7 +103,7 @@ export default function Profile() {
         >
           {avatar && (
             <img 
-              src={avatar} 
+              src={formatAvatarUrl(avatar)} 
               alt="Profile" 
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               onError={(e) => {

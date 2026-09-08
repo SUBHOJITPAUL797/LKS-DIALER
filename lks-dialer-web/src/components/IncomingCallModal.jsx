@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
+import { formatAvatarUrl } from '../lib/ImageUtils';
 
 export default function IncomingCallModal({ callData, onAccept, onDecline }) {
   const audioRef = useRef(null);
@@ -13,7 +14,7 @@ export default function IncomingCallModal({ callData, onAccept, onDecline }) {
   if (!callData) return null;
 
   const isVideoCall = callData.callType === 'VIDEO';
-  const callerAvatar = callData.callerProfilePic;
+  const callerAvatar = formatAvatarUrl(callData.callerProfilePic);
 
   return (
     <div style={{

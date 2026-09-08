@@ -8,6 +8,7 @@ import RecentCalls from './components/RecentCalls';
 import Contacts from './components/Contacts';
 import Profile from './components/Profile';
 import { webRtcEngine } from './lib/WebRtcEngine';
+import { formatAvatarUrl } from './lib/ImageUtils';
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -61,9 +62,11 @@ function App() {
         setIncomingCall(callData);
         // Show browser notification if tab is in background
         if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+          const avatarUrl = formatAvatarUrl(callData.callerProfilePic);
+          const iconUrl = (avatarUrl && avatarUrl.startsWith('http')) ? avatarUrl : '/logo192.png';
           const notif = new Notification("Incoming Call", {
             body: `${callData.callerName} is calling you.`,
-            icon: callData.callerProfilePic || '/logo192.png',
+            icon: iconUrl,
             requireInteraction: true
           });
           notif.onclick = () => {
