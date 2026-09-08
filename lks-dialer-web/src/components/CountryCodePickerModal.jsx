@@ -5,10 +5,15 @@ import { allCountries } from '../lib/CountryCodes';
 export default function CountryCodePickerModal({ selectedCountry, onCountrySelected, onDismiss }) {
   const [search, setSearch] = useState("");
 
-  const filtered = allCountries.filter(c => 
-    c.name.toLowerCase().includes(search.toLowerCase()) || 
-    c.dialCode.includes(search)
-  );
+  const searchLower = (search || '').trim().toLowerCase();
+  const searchClean = (search || '').trim();
+
+  const filtered = allCountries.filter(c => {
+    if (!c) return false;
+    const nameMatch = c.name ? c.name.toLowerCase().includes(searchLower) : false;
+    const codeMatch = c.dialCode ? c.dialCode.includes(searchClean) : false;
+    return nameMatch || codeMatch;
+  });
 
   return (
     <div style={{

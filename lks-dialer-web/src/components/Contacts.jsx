@@ -14,20 +14,25 @@ export default function Contacts({ onStartCall }) {
   const loadContacts = async () => {
     try {
       const users = await webRtcEngine.getRegisteredUsers();
-      // Filter out self
-      const others = users.filter(u => u.phoneNumber !== webRtcEngine.currentUser?.phoneNumber);
+      // Filter out self and users without valid phone numbers
+      const myPhone = webRtcEngine.currentUser?.phoneNumber;
+      const others = (users || []).filter(u => u && u.phoneNumber && u.phoneNumber !== myPhone);
       setContacts(others);
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load contacts:", e);
+      setContacts([]);
     } finally {
       setLoading(false);
     }
   };
 
-  const filtered = contacts.filter(c => 
-    c.displayName?.toLowerCase().includes(search.toLowerCase()) || 
-    c.phoneNumber.includes(search)
-  );
+  const searchLower = (search || '').trim().toLowerCase();
+  const filtered = contacts.filter(c => {
+    if (!c) return false;
+    const nameMatch = c.displayName ? String(c.displayName).toLowerCase().includes(searchLower) : false;
+    const phoneMatch = c.phoneNumber ? String(c.phoneNumber).includes(search.trim()) : false;
+    return nameMatch || phoneMatch;
+  });
 
   return (
     <div className="scrollable-content" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -70,9 +75,14 @@ export default function Contacts({ onStartCall }) {
           <h3>No Contacts Found</h3>
         </div>
       ) : (
-        filtered.map(contact => (
-          <div key={contact.phoneNumber} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        filtered.map(contact => {
+          const displayName = contact.displayName || contact.phoneNumber || "Unknown";
+          const phoneNumber = contact.phoneNumber || "";
+          const avatarInitial = (displayName || phoneNumber || "?")[0]?.toUpperCase() || "?";
+
+          return (
+            <div key={contact.phoneNumber || contact.id} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                 <div style={{ 
                   width: '48px', height: '48px', borderRadius: '50%', 
                   backgroundColor: 'var(--secondary)', border: '3px solid #000',
@@ -82,7 +92,7 @@ export default function Contacts({ onStartCall }) {
                   {contact.profilePictureUrl && (
                     <img 
                       src={contact.profilePictureUrl} 
-                      alt={contact.displayName} 
+                      alt={displayName} 
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       onError={(e) => {
                         e.target.style.display = 'none';
@@ -91,43 +101,46 @@ export default function Contacts({ onStartCall }) {
                     />
                   )}
                   <span style={{ display: contact.profilePictureUrl ? 'none' : 'block' }}>
-                    {contact.displayName?.[0]?.toUpperCase()}
+                    {avatarInitial}
                   </span>
                 </div>
-              <div>
-                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '800' }}>{contact.displayName}</h3>
-                <div style={{ fontSize: '14px', fontWeight: '600', color: '#555', marginTop: '4px' }}>
-                  {contact.phoneNumber}
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '18px', fontWeight: '800' }}>{displayName}</h3>
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#555', marginTop: '4px' }}>
+                    {phoneNumber}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button 
-                onClick={() => onStartCall(contact.phoneNumber, 'AUDIO')}
-                className="neo-box"
-                style={{ 
-                  width: '40px', height: '40px', padding: 0, display: 'flex', 
-                  alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                  backgroundColor: 'var(--accent)'
-                }}
-              >
-                <Phone size={20} color="#000" />
-              </button>
-              <button 
-                onClick={() => onStartCall(contact.phoneNumber, 'VIDEO')}
-                className="neo-box"
-                style={{ 
-                  width: '40px', height: '40px', padding: 0, display: 'flex', 
-                  alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                  backgroundColor: 'var(--primary)'
-                }}
-              >
-                <Video size={20} color="#fff" />
-              </button>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button 
+                  onClick={() => phoneNumber && onStartCall(phoneNumber, 'AUDIO')}
+                  className="neo-box"
+                  disabled={!phoneNumber}
+                  style={{ 
+                    width: '40px', height: '40px', padding: 0, display: 'flex', 
+                    alignItems: 'center', justifyContent: 'center', cursor: phoneNumber ? 'pointer' : 'default',
+                    backgroundColor: 'var(--accent)'
+                  }}
+                >
+                  <Phone size={20} color="#000" />
+                </button>
+                <button 
+                  onClick={() => phoneNumber && onStartCall(phoneNumber, 'VIDEO')}
+                  className="neo-box"
+                  disabled={!phoneNumber}
+                  style={{ 
+                    width: '40px', height: '40px', padding: 0, display: 'flex', 
+                    alignItems: 'center', justifyContent: 'center', cursor: phoneNumber ? 'pointer' : 'default',
+                    backgroundColor: 'var(--primary)'
+                  }}
+                >
+                  <Video size={20} color="#fff" />
+                </button>
+              </div>
             </div>
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );

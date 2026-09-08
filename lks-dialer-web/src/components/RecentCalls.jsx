@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Phone, PhoneCall, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video } from 'lucide-react';
+import { Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 
 export default function RecentCalls({ onStartCall }) {
@@ -13,15 +13,17 @@ export default function RecentCalls({ onStartCall }) {
   const loadHistory = async () => {
     try {
       const history = await webRtcEngine.getCallHistory();
-      setCalls(history);
+      setCalls(history || []);
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load call history:", e);
+      setCalls([]);
     } finally {
       setLoading(false);
     }
   };
 
   const getCallIcon = (call) => {
+    if (!call) return <PhoneIncoming size={20} color="var(--accent)" />;
     const isCaller = call.callerNumber === webRtcEngine.currentUser?.phoneNumber;
     
     if (call.status === 'DECLINED' || call.status === 'MISSED' || (call.status === 'CALLING' && !isCaller)) {
@@ -35,8 +37,21 @@ export default function RecentCalls({ onStartCall }) {
 
   const formatTime = (timestamp) => {
     if (!timestamp) return '';
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    try {
+      let date;
+      if (typeof timestamp === 'number') {
+        date = new Date(timestamp);
+      } else if (timestamp?.seconds) {
+        date = new Date(timestamp.seconds * 1000);
+      } else if (typeof timestamp?.toDate === 'function') {
+        date = timestamp.toDate();
+      } else {
+        date = new Date(timestamp);
+      }
+      return isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
   };
 
   return (
@@ -68,14 +83,16 @@ export default function RecentCalls({ onStartCall }) {
           <h3>No Recent Calls</h3>
         </div>
       ) : (
-        calls.map(call => {
+        (calls || []).map(call => {
+          if (!call) return null;
           const isCaller = call.callerNumber === webRtcEngine.currentUser?.phoneNumber;
-          const peerName = isCaller ? call.calleeName : call.callerName;
-          const peerNumber = isCaller ? call.calleeNumber : call.callerNumber;
+          const peerNumber = (isCaller ? call.calleeNumber : call.callerNumber) || "";
+          const peerName = (isCaller ? call.calleeName : call.callerName) || peerNumber || "Unknown";
           const peerAvatar = isCaller ? call.calleeProfilePic : call.callerProfilePic;
+          const avatarInitial = (peerName || peerNumber || "?")[0]?.toUpperCase() || "?";
           
           return (
-            <div key={call.id} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div key={call.id || `${peerNumber}-${call.createdAt || Math.random()}`} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: 0 }}>
                 <div style={{ 
                   width: '48px', height: '48px', borderRadius: '50%', 
@@ -95,7 +112,7 @@ export default function RecentCalls({ onStartCall }) {
                     />
                   )}
                   <span style={{ display: peerAvatar ? 'none' : 'block' }}>
-                    {peerName?.[0]?.toUpperCase()}
+                    {avatarInitial}
                   </span>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -121,22 +138,24 @@ export default function RecentCalls({ onStartCall }) {
 
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button 
-                  onClick={() => onStartCall(peerNumber, 'AUDIO')}
+                  onClick={() => peerNumber && onStartCall(peerNumber, 'AUDIO')}
                   className="neo-box"
+                  disabled={!peerNumber}
                   style={{ 
                     width: '40px', height: '40px', padding: 0, display: 'flex', 
-                    alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
                     backgroundColor: 'var(--accent)'
                   }}
                 >
                   <Phone size={20} color="#000" />
                 </button>
                 <button 
-                  onClick={() => onStartCall(peerNumber, 'VIDEO')}
+                  onClick={() => peerNumber && onStartCall(peerNumber, 'VIDEO')}
                   className="neo-box"
+                  disabled={!peerNumber}
                   style={{ 
                     width: '40px', height: '40px', padding: 0, display: 'flex', 
-                    alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
                     backgroundColor: 'var(--primary)'
                   }}
                 >

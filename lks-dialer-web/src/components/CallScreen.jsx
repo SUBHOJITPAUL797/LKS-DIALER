@@ -118,7 +118,7 @@ export default function CallScreen({ callData, onEndCall }) {
   const isHeadphoneActive = () => {
     const current = audioOutputs.find(d => d.deviceId === selectedDeviceId);
     if (!current) return false;
-    const label = current.label.toLowerCase();
+    const label = (current.label || '').toLowerCase();
     return label.includes('headphone') || label.includes('earphone') || label.includes('headset') || 
            label.includes('bluetooth') || label.includes('airpods') || label.includes('buds');
   };

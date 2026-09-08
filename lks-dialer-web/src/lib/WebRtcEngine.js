@@ -179,33 +179,51 @@ class WebRtcEngine {
   }
 
   async getRegisteredUsers() {
-    const q = query(collection(db, 'users'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => doc.data());
+    try {
+      const q = query(collection(db, 'users'));
+      const snapshot = await getDocs(q);
+      return snapshot.docs.map(doc => {
+        const data = doc.data() || {};
+        const phone = data.phoneNumber || doc.id || '';
+        return {
+          id: doc.id,
+          displayName: data.displayName || phone || 'Unknown User',
+          ...data,
+          phoneNumber: String(phone)
+        };
+      });
+    } catch (e) {
+      console.error("Error fetching registered users:", e);
+      return [];
+    }
   }
 
   async getCallHistory() {
-    if (!this.currentUser) return [];
+    if (!this.currentUser || !this.currentUser.phoneNumber) return [];
     
-    // We fetch where the user is caller OR callee
-    // Firestore requires separate queries or an 'in' query if we had an array of participants, 
-    // but we have callerNumber and calleeNumber. We will fetch all calls and filter locally 
-    // for simplicity since this is a demo/small scale, or fetch both and combine.
-    
-    const callerQuery = query(collection(db, 'calls'), where('callerNumber', '==', this.currentUser.phoneNumber));
-    const calleeQuery = query(collection(db, 'calls'), where('calleeNumber', '==', this.currentUser.phoneNumber));
-    
-    const [callerSnap, calleeSnap] = await Promise.all([getDocs(callerQuery), getDocs(calleeQuery)]);
-    
-    const calls = [];
-    callerSnap.forEach(doc => calls.push({ id: doc.id, ...doc.data() }));
-    calleeSnap.forEach(doc => {
-      if (!calls.find(c => c.id === doc.id)) {
-        calls.push({ id: doc.id, ...doc.data() });
-      }
-    });
-    
-    return calls.sort((a, b) => b.createdAt - a.createdAt);
+    try {
+      const callerQuery = query(collection(db, 'calls'), where('callerNumber', '==', this.currentUser.phoneNumber));
+      const calleeQuery = query(collection(db, 'calls'), where('calleeNumber', '==', this.currentUser.phoneNumber));
+      
+      const [callerSnap, calleeSnap] = await Promise.all([getDocs(callerQuery), getDocs(calleeQuery)]);
+      
+      const calls = [];
+      callerSnap.forEach(doc => calls.push({ id: doc.id, ...doc.data() }));
+      calleeSnap.forEach(doc => {
+        if (!calls.find(c => c.id === doc.id)) {
+          calls.push({ id: doc.id, ...doc.data() });
+        }
+      });
+      
+      return calls.sort((a, b) => {
+        const timeA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : (Number(a.createdAt) || 0);
+        const timeB = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : (Number(b.createdAt) || 0);
+        return timeB - timeA;
+      });
+    } catch (e) {
+      console.error("Error fetching call history:", e);
+      return [];
+    }
   }
 
   async registerUser(phoneNumber, displayName) {
