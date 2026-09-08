@@ -154,6 +154,9 @@ class FloatingCallBubbleService : Service() {
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
     private var currentMode: String? = null
+    private var activeTimerView: TextView? = null
+    private var activeMuteBtn: ImageView? = null
+    private var activeSpeakerBtn: ImageView? = null
 
     private var callId: String = ""
     private var callerName: String = ""
@@ -343,7 +346,11 @@ class FloatingCallBubbleService : Service() {
                         hasSeenActiveCall = true
                         stopRinging()
                         if (!com.example.MainActivity.isForeground) {
-                            showActiveCallPill()
+                            if (currentMode != ACTION_SHOW_ACTIVE || floatingView == null) {
+                                showActiveCallPill()
+                            } else {
+                                updateActivePillControls(rtcState)
+                            }
                         }
                     }
                     CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.FAILED -> {
@@ -657,6 +664,7 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
+            currentMode = ACTION_SHOW_INCOMING
             Log.d(TAG, "Draggable incoming call pill attached successfully")
             // BUG-24: Register screen-on receiver HERE (persistent foreground service) not in
             // CallMessagingService (which is transient and gets destroyed after onMessageReceived).
@@ -941,11 +949,18 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
+            currentMode = ACTION_SHOW_ACTIVE
+            activeTimerView = timerView
+            activeMuteBtn = muteBtn
+            activeSpeakerBtn = speakerBtn
             timerRunnable?.let { handler.post(it) }
             Log.d(TAG, "Active call draggable pill attached to WindowManager")
         } catch (e: Exception) {
             timerRunnable?.let { handler.removeCallbacks(it) }
             timerRunnable = null
+            activeTimerView = null
+            activeMuteBtn = null
+            activeSpeakerBtn = null
             Log.e(TAG, "Failed to add active call pill to WindowManager", e)
         }
     }
@@ -972,6 +987,9 @@ class FloatingCallBubbleService : Service() {
     private fun removeFloatingView() {
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = null
+        activeTimerView = null
+        activeMuteBtn = null
+        activeSpeakerBtn = null
         callDocListener?.remove()
         callDocListener = null
         floatingView?.let { view ->
@@ -984,6 +1002,38 @@ class FloatingCallBubbleService : Service() {
         isShowingPill = false
         // BUG-24: Clean up screen-on receiver when pill is removed
         unregisterScreenOnReceiver()
+    }
+
+    private fun updateActivePillControls(rtcState: com.example.webrtc.WebRtcState) {
+        activeMuteBtn?.let { btn ->
+            val isMuted = rtcState.isMuted
+            btn.setImageResource(if (isMuted) com.example.R.drawable.ic_mic_off else com.example.R.drawable.ic_mic_on)
+            btn.setColorFilter(if (isMuted) 0xFFEF4444.toInt() else Color.WHITE)
+            btn.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (isMuted) 0xFF7F1D1D.toInt() else 0xFF374151.toInt())
+            }
+        }
+        activeSpeakerBtn?.let { btn ->
+            val isSpeaker = rtcState.isSpeakerOn
+            btn.setImageResource(if (isSpeaker) com.example.R.drawable.ic_speaker_on else com.example.R.drawable.ic_speaker_off)
+            btn.setColorFilter(if (isSpeaker) 0xFF00ADB5.toInt() else Color.WHITE)
+            btn.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (isSpeaker) 0xFF134E4A.toInt() else 0xFF374151.toInt())
+            }
+        }
+        if (rtcState.callDurationSeconds > 0) {
+            updateActivePillTimer(rtcState.callDurationSeconds)
+        }
+    }
+
+    private fun updateActivePillTimer(durationSeconds: Int) {
+        activeTimerView?.let { tv ->
+            val mins = durationSeconds / 60
+            val secs = durationSeconds % 60
+            tv.text = String.format("%02d:%02d", mins, secs)
+        }
     }
 
     private fun createNotificationChannel() {
