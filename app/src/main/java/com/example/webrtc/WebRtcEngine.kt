@@ -1516,6 +1516,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.services.ActiveCallService.stop(context)
         com.example.services.FloatingCallBubbleService.hide(context)
         com.example.util.LksIncomingRingtonePlayer.stop()
+        try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
         com.example.util.SamsungVoiceFocusManager.stop()
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
         com.example.util.CallSoundEffectsManager.stopHoldReminder()

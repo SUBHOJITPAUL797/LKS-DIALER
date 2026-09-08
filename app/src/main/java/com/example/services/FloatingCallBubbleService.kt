@@ -37,6 +37,8 @@ import com.example.MainActivity
 import com.example.data.model.CallStatus
 import com.example.data.model.CallType
 import com.example.webrtc.WebRtcEngine
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -85,6 +87,10 @@ class FloatingCallBubbleService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
                 return
             }
+            if (isShowingPill && instance?.currentMode == ACTION_SHOW_INCOMING && instance?.callId == callId) {
+                Log.d(TAG, "showIncoming called but pill already showing for callId $callId — skipping duplicate")
+                return
+            }
             val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
                 action = ACTION_SHOW_INCOMING
                 putExtra(EXTRA_CALL_ID, callId)
@@ -111,6 +117,10 @@ class FloatingCallBubbleService : Service() {
             callType: CallType
         ) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                return
+            }
+            if (isShowingPill && instance?.currentMode == ACTION_SHOW_ACTIVE && instance?.callId == callId) {
+                Log.d(TAG, "showActive called but pill already showing for callId $callId — skipping duplicate")
                 return
             }
             val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
@@ -245,6 +255,39 @@ class FloatingCallBubbleService : Service() {
         observeEngineState()
     }
 
+    private var callDocListener: ListenerRegistration? = null
+
+    private fun listenToCallDocument(cId: String) {
+        callDocListener?.remove()
+        if (cId.isBlank()) return
+        try {
+            callDocListener = FirebaseFirestore.getInstance()
+                .collection("calls")
+                .document(cId)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+                    val status = snapshot.getString("status")
+                    Log.d(TAG, "callDocListener update for $cId: status=$status")
+                    if (status == CallStatus.ENDED.name || status == CallStatus.DECLINED.name || status == CallStatus.MISSED.name) {
+                        Log.i(TAG, "Call $cId ended/declined/missed remotely in Firestore -> instant teardown (<50ms)")
+                        stopRinging()
+                        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                        nm?.cancel(CallMessagingService.NOTIFICATION_ID)
+                        nm?.cancel(1001)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                        }
+                        val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
+                        engine.forceEndCallFromPush(cId, try { CallStatus.valueOf(status) } catch (_: Exception) { CallStatus.ENDED })
+                        removeFloatingView()
+                        stopSelf()
+                    }
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to listen to call document: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         instance = null
@@ -253,6 +296,8 @@ class FloatingCallBubbleService : Service() {
         if (activeStatus != CallStatus.RINGING) {
             stopRinging()
         }
+        callDocListener?.remove()
+        callDocListener = null
         stateObserverJob?.cancel()
         serviceJob.cancel()
         // BUG-23: Unregister volume key receiver
@@ -272,15 +317,21 @@ class FloatingCallBubbleService : Service() {
     private fun stopRinging() {
         try { com.example.util.LksIncomingRingtonePlayer.stop() } catch (_: Exception) {}
         try { LksKeepAliveService.stopRingtone(this) } catch (_: Exception) {}
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am?.mode == AudioManager.MODE_RINGTONE) {
+                am.mode = AudioManager.MODE_NORMAL
+            }
+        } catch (_: Exception) {}
     }
 
     private fun observeEngineState() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
-            val engine = WebRtcEngine.getInstanceIfCreated() ?: return@launch
+            val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
             engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
-                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED -> {
+                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
                         stopRinging()
                         removeFloatingView()
                         stopSelf()
@@ -314,6 +365,10 @@ class FloatingCallBubbleService : Service() {
         val typeStr = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
         callType = try { CallType.valueOf(typeStr) } catch (_: Exception) { CallType.AUDIO }
 
+        if (callId.isNotBlank()) {
+            listenToCallDocument(callId)
+        }
+
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
             showIncomingCallPill()
@@ -345,6 +400,13 @@ class FloatingCallBubbleService : Service() {
             removeFloatingView()
             return
         }
+
+        // Idempotency: avoid removing and re-adding if already showing incoming pill for this call
+        if (isShowingPill && currentMode == ACTION_SHOW_INCOMING && this.callId == callId && floatingView != null) {
+            Log.d(TAG, "Incoming call pill already visible for callId $callId — skipping duplicate addView")
+            return
+        }
+
         removeFloatingView()
         val wm = windowManager ?: return
 
@@ -359,16 +421,15 @@ class FloatingCallBubbleService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
-            // BUG-23: FLAG_NOT_TOUCH_MODAL instead of FLAG_NOT_FOCUSABLE so the window CAN receive
-            // KeyEvents (volume buttons). FLAG_NOT_TOUCH_MODAL passes unhandled touches to windows
-            // behind the overlay, so drag + app interaction still works normally.
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            // Non-focusable so overlay never steals focus from One UI Home / launcher / foreground app
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
             y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
+            windowAnimations = android.R.style.Animation_Translucent
         }
 
         // Pill Card (Dark Teal Glassmorphism with rounded corners & elevation)
@@ -383,23 +444,6 @@ class FloatingCallBubbleService : Service() {
                 setStroke(dpToPx(1.5f), 0xFF00ADB5.toInt()) // Teal border
             }
             elevation = dpToPx(12f).toFloat()
-            // BUG-23: Must be focusable so the overlay window (FLAG_NOT_TOUCH_MODAL) receives KeyEvents.
-            isFocusable = true
-            isFocusableInTouchMode = true
-            // Intercept hardware volume key presses to silence the ringtone while pill is visible.
-            // This fires because FLAG_NOT_FOCUSABLE was replaced with FLAG_NOT_TOUCH_MODAL above.
-            setOnKeyListener { _, keyCode, event ->
-                if (event.action == android.view.KeyEvent.ACTION_DOWN &&
-                    (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                     keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP)) {
-                    Log.d(TAG, "Volume key intercepted on incoming pill — silencing ringtone (BUG-23)")
-                    com.example.util.LksIncomingRingtonePlayer.silence()
-                    stopRinging()
-                    true
-                } else {
-                    false
-                }
-            }
         }
 
         // 🎯 Info Area (Avatar + Text) — Touch/Drag this area to move or tap to expand full-screen
@@ -471,10 +515,29 @@ class FloatingCallBubbleService : Service() {
                 marginEnd = dpToPx(8f)
             }
             setOnClickListener {
+                Log.i(TAG, "Decline pressed on incoming call pill")
                 stopRinging()
-                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).declineCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
+                nm?.cancel(1001)
+
+                if (callId.isNotBlank()) {
+                    try {
+                        FirebaseFirestore.getInstance()
+                            .collection("calls")
+                            .document(callId)
+                            .update(
+                                "status", CallStatus.DECLINED.name,
+                                "endedAt", System.currentTimeMillis()
+                            )
+                    } catch (_: Exception) {}
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                }
+
+                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).declineCall()
                 removeFloatingView()
                 stopSelf()
             }
@@ -491,20 +554,28 @@ class FloatingCallBubbleService : Service() {
             setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
             setOnClickListener {
+                Log.i(TAG, "Answer pressed on incoming call pill")
                 stopRinging()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
+                nm?.cancel(1001)
 
                 // Instantly notify Firestore of ANSWERED so caller switches to Speak Mode immediately (<100ms)
-                try {
-                    com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                        .collection("calls")
-                        .document(callId)
-                        .update(
-                            "status", com.example.data.model.CallStatus.ANSWERED.name,
-                            "answeredAt", System.currentTimeMillis()
-                        )
-                } catch (_: Exception) {}
+                if (callId.isNotBlank()) {
+                    try {
+                        FirebaseFirestore.getInstance()
+                            .collection("calls")
+                            .document(callId)
+                            .update(
+                                "status", CallStatus.ANSWERED.name,
+                                "answeredAt", System.currentTimeMillis()
+                            )
+                    } catch (_: Exception) {}
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try { LksConnectionService.setCallActive() } catch (_: Exception) {}
+                }
 
                 // Answer directly via WebRtcEngine in background
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
@@ -566,8 +637,6 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
-            // BUG-23: Request focus so hardware volume key events are delivered to this overlay window.
-            pill.requestFocus()
             Log.d(TAG, "Draggable incoming call pill attached successfully")
             // BUG-24: Register screen-on receiver HERE (persistent foreground service) not in
             // CallMessagingService (which is transient and gets destroyed after onMessageReceived).
@@ -595,6 +664,13 @@ class FloatingCallBubbleService : Service() {
             removeFloatingView()
             return
         }
+
+        // Idempotency: avoid removing and re-adding if already showing active pill
+        if (isShowingPill && currentMode == ACTION_SHOW_ACTIVE && floatingView != null) {
+            Log.d(TAG, "Active call pill already visible — skipping duplicate addView")
+            return
+        }
+
         removeFloatingView()
         val wm = windowManager ?: return
 
@@ -625,6 +701,7 @@ class FloatingCallBubbleService : Service() {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
             y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
+            windowAnimations = android.R.style.Animation_Translucent
         }
 
         // Draggable In-Call Pill Card
@@ -775,10 +852,17 @@ class FloatingCallBubbleService : Service() {
                 marginStart = dpToPx(8f)
             }
             setOnClickListener {
+                Log.i(TAG, "End Call pressed on active floating pill")
                 stopRinging()
-                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).endCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
+                nm?.cancel(1001)
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                }
+
+                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).endCall()
                 removeFloatingView()
                 stopSelf()
             }
@@ -868,6 +952,8 @@ class FloatingCallBubbleService : Service() {
     private fun removeFloatingView() {
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = null
+        callDocListener?.remove()
+        callDocListener = null
         floatingView?.let { view ->
             try {
                 windowManager?.removeView(view)

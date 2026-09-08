@@ -181,7 +181,10 @@ class LksCallConnection(
         setDisconnected(DisconnectCause(DisconnectCause.REJECTED))
         destroy()
         LksConnectionService.clearActiveConnection()
-        WebRtcEngine.getInstanceIfCreated()?.declineCall()
+        com.example.util.LksIncomingRingtonePlayer.stop()
+        try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
+        com.example.services.FloatingCallBubbleService.hide(context)
+        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).declineCall()
     }
 
     override fun onDisconnect() {
@@ -189,7 +192,10 @@ class LksCallConnection(
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
         destroy()
         LksConnectionService.clearActiveConnection()
-        WebRtcEngine.getInstanceIfCreated()?.endCall()
+        com.example.util.LksIncomingRingtonePlayer.stop()
+        try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
+        com.example.services.FloatingCallBubbleService.hide(context)
+        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).endCall()
     }
 
     override fun onHold() {
