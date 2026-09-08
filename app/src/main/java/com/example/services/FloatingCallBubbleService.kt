@@ -199,8 +199,12 @@ class FloatingCallBubbleService : Service() {
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: return
                 val status = engine.state.value.callStatus
                 if (status == CallStatus.RINGING && !com.example.MainActivity.isForeground) {
-                    Log.d(TAG, "Screen turned on during ringing — relaunching full-screen call UI (BUG-24)")
-                    openFullScreenCallActivity(callId, autoAnswer = false)
+                    val km = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                    val isLocked = km?.isKeyguardLocked == true
+                    if (isLocked) {
+                        Log.d(TAG, "Screen turned on during ringing while locked — relaunching full-screen call UI (BUG-24)")
+                        openFullScreenCallActivity(callId, autoAnswer = false)
+                    }
                 }
             }
         }
@@ -329,20 +333,31 @@ class FloatingCallBubbleService : Service() {
         stateObserverJob?.cancel()
         stateObserverJob = serviceScope.launch {
             val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
+            var hasSeenActiveCall = false
             engine.state.collectLatest { rtcState ->
                 when (rtcState.callStatus) {
-                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.IDLE -> {
-                        stopRinging()
-                        removeFloatingView()
-                        stopSelf()
+                    CallStatus.RINGING, CallStatus.CALLING -> {
+                        hasSeenActiveCall = true
                     }
                     CallStatus.ANSWERED -> {
+                        hasSeenActiveCall = true
                         stopRinging()
                         if (!com.example.MainActivity.isForeground) {
                             showActiveCallPill()
                         }
                     }
-                    else -> {}
+                    CallStatus.ENDED, CallStatus.DECLINED, CallStatus.MISSED, CallStatus.FAILED -> {
+                        stopRinging()
+                        removeFloatingView()
+                        stopSelf()
+                    }
+                    CallStatus.IDLE -> {
+                        if (hasSeenActiveCall) {
+                            stopRinging()
+                            removeFloatingView()
+                            stopSelf()
+                        }
+                    }
                 }
             }
         }
@@ -359,7 +374,12 @@ class FloatingCallBubbleService : Service() {
             return START_NOT_STICKY
         }
 
-        callId = intent.getStringExtra(EXTRA_CALL_ID) ?: ""
+        val incomingCallId = intent.getStringExtra(EXTRA_CALL_ID) ?: ""
+        if (action == ACTION_SHOW_INCOMING && this.callId != incomingCallId) {
+            lastPillX = Int.MIN_VALUE
+            lastPillY = Int.MIN_VALUE
+        }
+        callId = incomingCallId
         callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "LKS User"
         callerNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
         val typeStr = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
@@ -429,7 +449,7 @@ class FloatingCallBubbleService : Service() {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
             y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
-            windowAnimations = android.R.style.Animation_Translucent
+            windowAnimations = 0
         }
 
         // Pill Card (Dark Teal Glassmorphism with rounded corners & elevation)
@@ -701,7 +721,7 @@ class FloatingCallBubbleService : Service() {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = if (lastPillX != Int.MIN_VALUE) lastPillX else 0
             y = if (lastPillY != Int.MIN_VALUE) lastPillY else dpToPx(36f)
-            windowAnimations = android.R.style.Animation_Translucent
+            windowAnimations = 0
         }
 
         // Draggable In-Call Pill Card
