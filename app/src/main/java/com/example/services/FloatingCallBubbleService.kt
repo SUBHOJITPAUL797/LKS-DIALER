@@ -472,7 +472,7 @@ class FloatingCallBubbleService : Service() {
             }
             setOnClickListener {
                 stopRinging()
-                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).endCall()
+                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).declineCall()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 removeFloatingView()

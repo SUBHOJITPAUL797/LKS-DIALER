@@ -250,7 +250,15 @@ class LksCallConnection(
                 Log.e("LksCallConnection", "Failed to launch incoming call UI from Telecom", e)
             }
         } else {
-            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device -> handled by native heads-up notification")
+            Log.d("LksCallConnection", "onShowIncomingCallUi on unlocked device")
+            if (!com.example.MainActivity.isForeground) {
+                val canDrawOverlays = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    android.provider.Settings.canDrawOverlays(context)
+                } else true
+                if (canDrawOverlays) {
+                    com.example.services.FloatingCallBubbleService.showIncoming(context, callId, peerName, peerNumber, callType)
+                }
+            }
         }
     }
 }

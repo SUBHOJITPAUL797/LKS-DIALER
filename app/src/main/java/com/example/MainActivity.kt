@@ -184,7 +184,20 @@ class MainActivity : ComponentActivity() {
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
         val activeCall = rtcState.activeCall ?: return
 
-        if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
+        val myPhone = com.example.data.repository.FirebaseManager.getInstance(this).currentUser.value?.phoneNumber ?: ""
+        val callerNum = activeCall.callerNumber
+        val isMyOutgoing = myPhone.isNotBlank() && callerNum.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(myPhone, callerNum)
+
+        if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing) {
+            // Show Draggable Incoming Call Pill over home screen when app is minimized during ring
+            com.example.services.FloatingCallBubbleService.showIncoming(
+                this,
+                activeCall.callId,
+                activeCall.callerName,
+                activeCall.callerNumber,
+                activeCall.callType
+            )
+        } else if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
             // Show Draggable Active Call Pill over other apps when call is active
             com.example.services.FloatingCallBubbleService.showActive(
                 this,

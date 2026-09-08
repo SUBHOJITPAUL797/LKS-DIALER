@@ -438,14 +438,24 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.w("FCM", "Direct activity start failed: ${e.message}")
             }
         } else {
-            // Device is UNLOCKED: Android's native heads-up notification card (HUN) with Answer and Decline
-            // is displayed at the top of the screen by setFullScreenIntent(..., true).
-            // Zero screen hijacking; user can tap Answer or Decline directly from the top banner.
-            Log.i("FCM", "Device is unlocked: Native Heads-Up Notification banner displayed without full-screen disruption (canUseFullScreen=$canUseFullScreen)")
-            if (!canUseFullScreen && canDrawOverlays) {
-                // If Android 14+ revoked USE_FULL_SCREEN_INTENT, fallback to floating pill so user is not left with no UI!
-                Log.w("FCM", "USE_FULL_SCREEN_INTENT is restricted on this device, launching pill overlay fallback")
-                FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+            // Device is UNLOCKED:
+            Log.i("FCM", "Device is unlocked: Posting notification and launching incoming call pill overlay (canDrawOverlays=$canDrawOverlays)")
+            if (!com.example.MainActivity.isForeground) {
+                if (canDrawOverlays) {
+                    FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
+                } else {
+                    // Fallback to launching call screen if overlay permission is missing
+                    Log.i("FCM", "Overlay permission not granted -> launching call activity as fallback")
+                    val directIntent = Intent(this, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        putExtra("incoming_call", true)
+                        putExtra("call_id", callId)
+                        putExtra("caller_name", callerName)
+                        putExtra("caller_number", callerNumber)
+                        putExtra("call_type", callType)
+                    }
+                    try { applicationContext.startActivity(directIntent) } catch (_: Exception) {}
+                }
             }
         }
 

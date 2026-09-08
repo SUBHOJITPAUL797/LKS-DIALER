@@ -688,6 +688,34 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 putExtra("call_type", incomingCall.callType.name)
                             }
                             context.startActivity(launchIntent)
+                        } else if (!com.example.MainActivity.isForeground) {
+                            // Phone is UNLOCKED & user is on home screen / outside the app:
+                            // Display the incoming call popup pill banner directly on screen!
+                            val canDrawOverlays = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                android.provider.Settings.canDrawOverlays(context)
+                            } else true
+
+                            if (canDrawOverlays) {
+                                Log.i("WebRtcEngine", "Phone unlocked & on home screen -> showing incoming call overlay pill")
+                                com.example.services.FloatingCallBubbleService.showIncoming(
+                                    context,
+                                    incomingCall.callId,
+                                    incomingCall.callerName,
+                                    incomingCall.callerNumber,
+                                    incomingCall.callType
+                                )
+                            } else {
+                                Log.i("WebRtcEngine", "Overlay permission not granted -> launching call activity as fallback")
+                                val launchIntent = Intent(context, com.example.MainActivity::class.java).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                    putExtra("incoming_call", true)
+                                    putExtra("call_id", incomingCall.callId)
+                                    putExtra("caller_name", incomingCall.callerName)
+                                    putExtra("caller_number", incomingCall.callerNumber)
+                                    putExtra("call_type", incomingCall.callType.name)
+                                }
+                                context.startActivity(launchIntent)
+                            }
                         }
                     } catch (_: Exception) {}
 
