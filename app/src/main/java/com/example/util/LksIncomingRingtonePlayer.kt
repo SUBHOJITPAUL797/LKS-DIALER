@@ -128,10 +128,10 @@ object LksIncomingRingtonePlayer {
         val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
 
         try {
-            audioManager?.mode = AudioManager.MODE_RINGTONE
-            audioManager?.isSpeakerphoneOn = true
+            // Keep MODE_NORMAL so Android routes STREAM_RING directly through the loudspeaker at full ringtone volume
+            audioManager?.mode = AudioManager.MODE_NORMAL
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to set MODE_RINGTONE: ${e.message}")
+            Log.w(TAG, "Failed to set audio mode: ${e.message}")
         }
 
         // Start Vibration (if not in silent mode)
@@ -198,12 +198,28 @@ object LksIncomingRingtonePlayer {
                 if (file.exists() && file.length() > 0) {
                     player.setDataSource(file.absolutePath)
                     dataSourceSet = true
+                    Log.d(TAG, "MediaPlayer dataSource set from file: ${file.absolutePath} (${file.length()} bytes)")
+                }
+            }
+
+            if (!dataSourceSet && resolvedUri.scheme == "content") {
+                try {
+                    val pfd = appCtx.contentResolver.openFileDescriptor(resolvedUri, "r")
+                    if (pfd != null) {
+                        player.setDataSource(pfd.fileDescriptor)
+                        pfd.close()
+                        dataSourceSet = true
+                        Log.d(TAG, "MediaPlayer dataSource set from FileDescriptor: $resolvedUri")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to open FileDescriptor for $resolvedUri: ${e.message}")
                 }
             }
 
             if (!dataSourceSet) {
                 player.setDataSource(appCtx, resolvedUri)
                 dataSourceSet = true
+                Log.d(TAG, "MediaPlayer dataSource set from Context URI: $resolvedUri")
             }
 
             player.setAudioAttributes(

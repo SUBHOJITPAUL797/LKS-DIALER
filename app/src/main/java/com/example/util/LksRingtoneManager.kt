@@ -90,9 +90,30 @@ object LksRingtoneManager {
                 val uri = Uri.parse(uriStr)
                 val title = prefs.getString(PREFIX_CONTACT_TITLE + varNumber, null)
                     ?: getRingtoneTitle(context, uri)
+                Log.d(TAG, "Found contact ringtone by variation ($varNumber): $title -> $uri")
                 return Pair(uri, title)
             }
         }
+
+        // Deep fallback: Scan all stored contact ringtones using ContactsHelper.numbersMatch
+        try {
+            val all = prefs.all
+            for ((key, value) in all) {
+                if (key.startsWith(PREFIX_CONTACT_URI) && value is String && value.isNotBlank()) {
+                    val storedNum = key.removePrefix(PREFIX_CONTACT_URI)
+                    if (ContactsHelper.numbersMatch(storedNum, phoneNumber)) {
+                        val uri = Uri.parse(value)
+                        val title = prefs.getString(PREFIX_CONTACT_TITLE + storedNum, null)
+                            ?: getRingtoneTitle(context, uri)
+                        Log.d(TAG, "Found contact ringtone by numbersMatch ($storedNum matches $phoneNumber): $title -> $uri")
+                        return Pair(uri, title)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Fallback contact ringtone match error: ${e.message}")
+        }
+
         return null
     }
 

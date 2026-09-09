@@ -399,6 +399,8 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
+            val ringNumber = callerNumber.ifBlank { currentCallerNumber }
+            startRinging(ringNumber)
             showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()

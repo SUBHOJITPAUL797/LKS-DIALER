@@ -659,6 +659,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         val isLocked = km?.isKeyguardLocked == true
                         val isInteractive = pm?.isInteractive == true
 
+                        // Start custom incoming ringtone immediately (<10ms)
+                        com.example.util.LksIncomingRingtonePlayer.start(context, incomingCall.callerNumber)
+
                         if (isLocked || !isInteractive) {
                             try {
                                 if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()
