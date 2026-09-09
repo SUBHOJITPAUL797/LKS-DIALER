@@ -432,24 +432,12 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         } else {
             // Device is UNLOCKED:
-            Log.i("FCM", "Device is unlocked: Posting notification and launching incoming call pill overlay (canDrawOverlays=$canDrawOverlays)")
-            if (!com.example.MainActivity.isForeground) {
-                if (canDrawOverlays) {
-                    FloatingCallBubbleService.showIncoming(this, callId, callerName, callerNumber, callTypeEnum)
-                } else {
-                    // Fallback to launching call screen if overlay permission is missing
-                    Log.i("FCM", "Overlay permission not granted -> launching call activity as fallback")
-                    val directIntent = Intent(this, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        putExtra("incoming_call", true)
-                        putExtra("call_id", callId)
-                        putExtra("caller_name", callerName)
-                        putExtra("caller_number", callerNumber)
-                        putExtra("call_type", callType)
-                    }
-                    try { applicationContext.startActivity(directIntent) } catch (_: Exception) {}
-                }
-            }
+            // Register call metadata so if the user opens the app from launcher, it adopts the call.
+            FloatingCallBubbleService.registerIncomingCallInfo(callId, callerName, callerNumber, callTypeEnum)
+            // The CallStyle Heads-Up Notification (posted above) already displays the native
+            // top banner with Answer and Decline actions (WhatsApp/Telegram standard).
+            // We do NOT launch FloatingCallBubbleService overlay here so that there is strictly ONE notification on screen.
+            Log.i("FCM", "Device is unlocked: CallStyle Heads-Up Notification is active (single notification, no overlapping pill)")
         }
 
         // Safety fallback: Check status after 800ms

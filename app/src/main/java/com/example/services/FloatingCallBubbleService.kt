@@ -81,6 +81,24 @@ class FloatingCallBubbleService : Service() {
             LksKeepAliveService.silenceRingtone(context)
         }
 
+        fun registerIncomingCallInfo(
+            callId: String,
+            callerName: String,
+            callerNumber: String,
+            callType: CallType
+        ) {
+            currentCallId = callId
+            currentCallerName = callerName
+            currentCallerNumber = callerNumber
+            currentCallType = callType
+        }
+
+        fun clearIncomingCallInfo() {
+            currentCallId = ""
+            currentCallerName = ""
+            currentCallerNumber = ""
+        }
+
         fun showIncoming(
             context: Context,
             callId: String,
@@ -88,29 +106,11 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-                return
-            }
-            if (isShowingPill && instance?.currentMode == ACTION_SHOW_INCOMING && instance?.callId == callId) {
-                Log.d(TAG, "showIncoming called but pill already showing for callId $callId — skipping duplicate")
-                return
-            }
-            val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
-                action = ACTION_SHOW_INCOMING
-                putExtra(EXTRA_CALL_ID, callId)
-                putExtra(EXTRA_CALLER_NAME, callerName)
-                putExtra(EXTRA_CALLER_NUMBER, callerNumber)
-                putExtra(EXTRA_CALL_TYPE, callType.name)
-            }
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start incoming FloatingCallBubbleService", e)
-            }
+            // Register call metadata so MainActivity can adopt the call if opened from launcher
+            registerIncomingCallInfo(callId, callerName, callerNumber, callType)
+            // Note: Floating overlay pill is disabled on incoming calls to prevent collision with Android's native
+            // CallStyle Heads-Up Notification banner. The native banner provides a clean, single notification.
+            Log.d(TAG, "showIncoming: Registered call $callId info, floating pill omitted to keep single notification")
         }
 
         fun showActive(
@@ -146,6 +146,7 @@ class FloatingCallBubbleService : Service() {
         }
 
         fun hide(context: Context) {
+            clearIncomingCallInfo()
             val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
                 action = ACTION_HIDE
             }
@@ -378,7 +379,8 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            showIncomingCallPill()
+            Log.i(TAG, "ACTION_SHOW_INCOMING received: Floating overlay pill disabled during incoming ringing to guarantee strictly ONE notification banner")
+            removeFloatingView()
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
             showActiveCallPill()
