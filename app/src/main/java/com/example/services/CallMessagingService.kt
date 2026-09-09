@@ -365,13 +365,23 @@ class CallMessagingService : FirebaseMessagingService() {
             .setContentTitle("Incoming $callTypeLabel Call")
             .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
             .setStyle(callStyle)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true) // ALWAYS attached: HUN banner when unlocked, full-screen when locked!
+
+        if (needsFullScreen || !canDrawOverlays) {
+            // Locked screen OR overlay not permitted: attach fullScreenIntent + MAX priority to wake/alert device
+            builder.setPriority(NotificationCompat.PRIORITY_MAX)
+            builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        } else {
+            // Unlocked screen WITH overlay permission:
+            // The Floating Pill is the single, clean visual banner on screen!
+            // Post with LOW priority and WITHOUT fullScreenIntent so Android SystemUI
+            // does NOT pop up a competing heads-up notification card over the pill.
+            builder.setPriority(NotificationCompat.PRIORITY_LOW)
+        }
 
         try {
             val notification = builder.build()
@@ -432,12 +442,27 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         } else {
             // Device is UNLOCKED:
-            // Register call metadata so if the user opens the app from launcher, it adopts the call.
-            FloatingCallBubbleService.registerIncomingCallInfo(callId, callerName, callerNumber, callTypeEnum)
-            // The CallStyle Heads-Up Notification (posted above) already displays the native
-            // top banner with Answer and Decline actions (WhatsApp/Telegram standard).
-            // We do NOT launch FloatingCallBubbleService overlay here so that there is strictly ONE notification on screen.
-            Log.i("FCM", "Device is unlocked: CallStyle Heads-Up Notification is active (single notification, no overlapping pill)")
+            if (canDrawOverlays) {
+                Log.i("FCM", "Device is unlocked & overlay permission granted -> showing single draggable floating pill")
+                FloatingCallBubbleService.showIncoming(
+                    this,
+                    callId,
+                    callerName,
+                    callerNumber,
+                    callTypeEnum
+                )
+            } else {
+                Log.i("FCM", "Overlay permission not granted -> launching call activity as fallback")
+                val directIntent = Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra("incoming_call", true)
+                    putExtra("call_id", callId)
+                    putExtra("caller_name", callerName)
+                    putExtra("caller_number", callerNumber)
+                    putExtra("call_type", callType)
+                }
+                try { applicationContext.startActivity(directIntent) } catch (_: Exception) {}
+            }
         }
 
         // Safety fallback: Check status after 800ms

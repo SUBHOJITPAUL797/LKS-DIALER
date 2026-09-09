@@ -106,11 +106,31 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            // Register call metadata so MainActivity can adopt the call if opened from launcher
             registerIncomingCallInfo(callId, callerName, callerNumber, callType)
-            // Note: Floating overlay pill is disabled on incoming calls to prevent collision with Android's native
-            // CallStyle Heads-Up Notification banner. The native banner provides a clean, single notification.
-            Log.d(TAG, "showIncoming: Registered call $callId info, floating pill omitted to keep single notification")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                Log.w(TAG, "Cannot show incoming pill: overlay permission not granted")
+                return
+            }
+            if (isShowingPill && instance?.currentMode == ACTION_SHOW_INCOMING && instance?.callId == callId) {
+                Log.d(TAG, "showIncoming called but pill already showing for callId $callId — skipping duplicate")
+                return
+            }
+            val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
+                action = ACTION_SHOW_INCOMING
+                putExtra(EXTRA_CALL_ID, callId)
+                putExtra(EXTRA_CALLER_NAME, callerName)
+                putExtra(EXTRA_CALLER_NUMBER, callerNumber)
+                putExtra(EXTRA_CALL_TYPE, callType.name)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start incoming FloatingCallBubbleService", e)
+            }
         }
 
         fun showActive(
@@ -379,8 +399,7 @@ class FloatingCallBubbleService : Service() {
 
         currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            Log.i(TAG, "ACTION_SHOW_INCOMING received: Floating overlay pill disabled during incoming ringing to guarantee strictly ONE notification banner")
-            removeFloatingView()
+            showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
             showActiveCallPill()
