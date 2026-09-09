@@ -112,6 +112,26 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
+
+        // Seamless handoff: If user opened the app from the launcher while a call was incoming/active in the floating pill, adopt it!
+        val bubbleCallId = com.example.services.FloatingCallBubbleService.currentCallId
+        if (bubbleCallId.isNotBlank()) {
+            val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() ?: com.example.webrtc.WebRtcEngine.getInstance(this)
+            if (engine.state.value.activeCall == null) {
+                val bCallerName = com.example.services.FloatingCallBubbleService.currentCallerName
+                val bCallerNumber = com.example.services.FloatingCallBubbleService.currentCallerNumber
+                val bCallType = com.example.services.FloatingCallBubbleService.currentCallType
+                android.util.Log.i("MainActivity", "Seamless handoff: adopting call from FloatingCallBubbleService: callId=$bubbleCallId, caller=$bCallerName")
+                engine.attachToCall(
+                    callId = bubbleCallId,
+                    autoAnswer = false,
+                    callerName = bCallerName,
+                    callerNumber = bCallerNumber,
+                    callTypeStr = bCallType.name
+                )
+            }
+        }
+
         // Dismiss floating pill when user is viewing the full-screen MainActivity
         com.example.services.FloatingCallBubbleService.hide(this)
         
@@ -147,7 +167,10 @@ class MainActivity : ComponentActivity() {
         isForeground = false
         if (!isChangingConfigurations) {
             com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
-            com.example.util.LksIncomingRingtonePlayer.stop()
+            val currentStatus = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
+            if (currentStatus != com.example.data.model.CallStatus.RINGING) {
+                com.example.util.LksIncomingRingtonePlayer.stop()
+            }
         }
     }
 

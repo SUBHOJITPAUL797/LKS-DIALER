@@ -70,6 +70,10 @@ class FloatingCallBubbleService : Service() {
 
         @Volatile var instance: FloatingCallBubbleService? = null
         @Volatile var isShowingPill: Boolean = false
+        @Volatile var currentCallId: String = ""
+        @Volatile var currentCallerName: String = ""
+        @Volatile var currentCallerNumber: String = ""
+        @Volatile var currentCallType: CallType = CallType.AUDIO
 
         fun silenceRingtone(context: Context) {
             com.example.util.LksIncomingRingtonePlayer.silence()
@@ -173,21 +177,6 @@ class FloatingCallBubbleService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
     private var stateObserverJob: Job? = null
 
-    // BUG-23: Volume key receiver — FLAG_NOT_FOCUSABLE overlays cannot receive KeyEvents,
-    // so we intercept AudioManager.VOLUME_CHANGED_ACTION broadcasts instead.
-    private val volumeKeyReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != "android.media.VOLUME_CHANGED_ACTION") return
-            val engine = WebRtcEngine.getInstanceIfCreated() ?: return
-            if (engine.state.value.callStatus == CallStatus.RINGING) {
-                Log.d(TAG, "Volume key pressed while ringing — silencing ringtone")
-                com.example.util.LksIncomingRingtonePlayer.silence()
-                instance?.stopRinging()
-            }
-        }
-    }
-    private var volumeReceiverRegistered = false
-
     // BUG-24: Screen-on receiver — registered in FloatingCallBubbleService (persistent foreground
     // service) so it survives after CallMessagingService (transient FCM service) is destroyed.
     private var screenOnReceiver: BroadcastReceiver? = null
@@ -246,19 +235,6 @@ class FloatingCallBubbleService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground in onCreate: ${e.message}")
         }
-        // BUG-23: Register volume key broadcast receiver so incoming ringtone is silenced
-        // when user presses volume keys while the floating pill overlay is displayed.
-        try {
-            val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(volumeKeyReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(volumeKeyReceiver, filter)
-            }
-            volumeReceiverRegistered = true
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to register volume key receiver: ${e.message}")
-        }
         observeEngineState()
     }
 
@@ -299,6 +275,10 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
+        currentCallId = ""
+        currentCallerName = ""
+        currentCallerNumber = ""
+        currentCallType = CallType.AUDIO
         val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
         if (activeStatus != CallStatus.RINGING) {
             stopRinging()
@@ -307,11 +287,6 @@ class FloatingCallBubbleService : Service() {
         callDocListener = null
         stateObserverJob?.cancel()
         serviceJob.cancel()
-        // BUG-23: Unregister volume key receiver
-        if (volumeReceiverRegistered) {
-            try { unregisterReceiver(volumeKeyReceiver) } catch (_: Exception) {}
-            volumeReceiverRegistered = false
-        }
         // BUG-24: Unregister screen-on receiver
         unregisterScreenOnReceiver()
         removeFloatingView()
@@ -391,6 +366,11 @@ class FloatingCallBubbleService : Service() {
         callerNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
         val typeStr = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
         callType = try { CallType.valueOf(typeStr) } catch (_: Exception) { CallType.AUDIO }
+
+        currentCallId = callId
+        currentCallerName = callerName
+        currentCallerNumber = callerNumber
+        currentCallType = callType
 
         if (callId.isNotBlank()) {
             listenToCallDocument(callId)
@@ -1000,6 +980,10 @@ class FloatingCallBubbleService : Service() {
         floatingView = null
         currentMode = null
         isShowingPill = false
+        currentCallId = ""
+        currentCallerName = ""
+        currentCallerNumber = ""
+        currentCallType = CallType.AUDIO
         // BUG-24: Clean up screen-on receiver when pill is removed
         unregisterScreenOnReceiver()
     }

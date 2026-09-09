@@ -74,6 +74,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val savedName = prefs.getString("user_name", "")
         val savedDeviceId = prefs.getString("device_id", "")
         val savedStatus = prefs.getString("user_status", "Available on LKS DIALER")
+        val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
         if (savedPhone != null) {
             val savedProfilePic = prefs.getString("user_profile_pic", "") ?: ""
             val user = UserDto(
@@ -82,6 +83,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 statusMessage = savedStatus ?: "Available on LKS DIALER",
                 profilePictureUrl = savedProfilePic,
                 registeredDeviceId = savedDeviceId ?: "",
+                fcmToken = savedFcmToken,
                 isOnline = true,
                 lastSeen = System.currentTimeMillis(),
                 blockedNumbers = _blockedNumbers.value,
@@ -96,7 +98,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 Log.d(TAG, "Syncing restored user $savedPhone to Firestore on startup")
                 FirebaseFirestore.getInstance().collection("users")
                     .document(savedPhone)
-                    .set(user)
+                    .set(user, com.google.firebase.firestore.SetOptions.merge())
                     .addOnSuccessListener {
                         Log.d(TAG, "User $savedPhone synced to Firestore successfully on startup")
                     }
@@ -395,12 +397,16 @@ class FirebaseManager private constructor(private val context: Context) {
         // BUG-24 FIX: Use the provided status, fall back to existing/default
         val finalStatus = status.ifBlank { existing?.statusMessage ?: "Available on LKS DIALER" }
 
+        val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
+        val finalFcmToken = existing?.fcmToken?.ifBlank { savedFcmToken } ?: savedFcmToken
+
         val user = UserDto(
             phoneNumber = phoneNumber,
             displayName = name.ifBlank { existing?.displayName ?: "User ${phoneNumber.takeLast(4)}" },
             statusMessage = finalStatus,
             profilePictureUrl = existing?.profilePictureUrl ?: "",
             registeredDeviceId = finalDeviceId,
+            fcmToken = finalFcmToken,
             isOnline = true,
             lastSeen = System.currentTimeMillis(),
             createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
@@ -415,6 +421,7 @@ class FirebaseManager private constructor(private val context: Context) {
             .putString("user_status", user.statusMessage)
             .putString("user_profile_pic", user.profilePictureUrl)
             .putString("device_id", user.registeredDeviceId)
+            .putString("fcm_token", user.fcmToken)
             .putBoolean("dnd_enabled", user.isDndEnabled)
             .putStringSet("blocked_numbers", user.blockedNumbers.toSet())
             .apply()
@@ -431,7 +438,7 @@ class FirebaseManager private constructor(private val context: Context) {
             try {
                 FirebaseFirestore.getInstance().collection("users")
                     .document(phoneNumber)
-                    .set(user)
+                    .set(user, com.google.firebase.firestore.SetOptions.merge())
                     .addOnSuccessListener {
                         Log.d(TAG, "User $phoneNumber saved to Firestore successfully.")
                     }
@@ -475,7 +482,7 @@ class FirebaseManager private constructor(private val context: Context) {
         if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
             FirebaseFirestore.getInstance().collection("users")
                 .document(updated.phoneNumber)
-                .set(updated)
+                .set(updated, com.google.firebase.firestore.SetOptions.merge())
                 .addOnSuccessListener {
                     Log.d(TAG, "Profile successfully updated in Firestore.")
                 }
@@ -603,30 +610,36 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     fun updateFcmToken(token: String) {
-        val current = _currentUser.value ?: return
-        if (current.fcmToken == token) return
-        
-        val updated = current.copy(fcmToken = token)
-        _currentUser.value = updated
+        if (token.isBlank()) return
 
-        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
-            // Use set with merge=true so this works even if the document doesn't exist yet
+        // Always persist to SharedPreferences so token survives app restarts and reboots
+        prefs.edit().putString("fcm_token", token).apply()
+
+        val current = _currentUser.value
+        if (current != null) {
+            val updated = current.copy(fcmToken = token)
+            _currentUser.value = updated
+        }
+
+        val phone = current?.phoneNumber ?: prefs.getString("user_phone", null) ?: return
+        if (_isFirebaseConfigured.value && phone.isNotBlank()) {
             val db = FirebaseFirestore.getInstance()
+            val tokenData = mapOf("fcmToken" to token, "lastSeen" to System.currentTimeMillis())
             db.collection("users")
-                .document(updated.phoneNumber)
-                .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
+                .document(phone)
+                .set(tokenData, com.google.firebase.firestore.SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.d(TAG, "FCM token updated in Firestore for ${updated.phoneNumber}")
+                    Log.d(TAG, "FCM token updated in Firestore for $phone")
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to update FCM token in Firestore: ${e.message}")
                 }
 
-            val cleanDigits = updated.phoneNumber.replace(Regex("[^0-9]"), "")
-            if (cleanDigits.isNotBlank() && cleanDigits != updated.phoneNumber) {
+            val cleanDigits = phone.replace(Regex("[^0-9]"), "")
+            if (cleanDigits.isNotBlank() && cleanDigits != phone) {
                 db.collection("users")
                     .document(cleanDigits)
-                    .set(mapOf("fcmToken" to token), com.google.firebase.firestore.SetOptions.merge())
+                    .set(tokenData, com.google.firebase.firestore.SetOptions.merge())
             }
         }
     }

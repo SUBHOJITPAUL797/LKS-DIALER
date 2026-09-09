@@ -202,17 +202,8 @@ object LksIncomingRingtonePlayer {
             }
 
             if (!dataSourceSet) {
-                // Try opening AssetFileDescriptor for content:// media/settings URIs
-                try {
-                    appCtx.contentResolver.openAssetFileDescriptor(resolvedUri, "r")?.use { afd ->
-                        player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-                        dataSourceSet = true
-                    }
-                } catch (_: Exception) {}
-            }
-
-            if (!dataSourceSet) {
                 player.setDataSource(appCtx, resolvedUri)
+                dataSourceSet = true
             }
 
             player.setAudioAttributes(

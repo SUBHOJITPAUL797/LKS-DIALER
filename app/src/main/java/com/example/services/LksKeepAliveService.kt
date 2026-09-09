@@ -54,6 +54,8 @@ class LksKeepAliveService : Service() {
         const val ACTION_STOP_RINGTONE = "com.example.action.STOP_RINGTONE"
         const val ACTION_SILENCE_RINGTONE = "com.example.action.SILENCE_RINGTONE"
         const val ACTION_RESURRECT_KEEP_ALIVE = "com.example.action.RESURRECT_KEEP_ALIVE"
+        const val ACTION_WATCHDOG_HEARTBEAT = "com.example.action.WATCHDOG_HEARTBEAT"
+        private const val WATCHDOG_INTERVAL = 60 * 60 * 1000L // 1 hour
 
         @Volatile
         var instance: LksKeepAliveService? = null
@@ -125,6 +127,7 @@ class LksKeepAliveService : Service() {
         createNotificationChannel()
         startServiceForeground()
         scheduleTokenRefresh()
+        schedulePeriodicWatchdog()
         Log.d(TAG, "LKS Keep-Alive Service started")
     }
 
@@ -139,6 +142,11 @@ class LksKeepAliveService : Service() {
             }
             ACTION_SILENCE_RINGTONE -> {
                 stopRingingInternal()
+            }
+            ACTION_WATCHDOG_HEARTBEAT -> {
+                Log.d(TAG, "Watchdog heartbeat received — refreshing token & scheduling next watchdog")
+                schedulePeriodicWatchdog()
+                FirebaseManager.getInstance(this).fetchAndUpdateFcmToken()
             }
         }
         return START_STICKY
@@ -346,22 +354,84 @@ class LksKeepAliveService : Service() {
             )
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
             val triggerAt = System.currentTimeMillis() + delayMillis
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (alarmManager?.canScheduleExactAlarms() == true) {
+                        alarmManager.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            triggerAt,
+                            pendingIntent
+                        )
+                    } else {
+                        alarmManager?.setAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            triggerAt,
+                            pendingIntent
+                        )
+                    }
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager?.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAt,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager?.setExact(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAt,
+                        pendingIntent
+                    )
+                }
+            } catch (_: SecurityException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager?.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAt,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager?.set(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAt,
+                        pendingIntent
+                    )
+                }
+            }
+            Log.d(TAG, "Watchdog restart broadcast scheduled in ${delayMillis}ms")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to schedule restart alarm: ${e.message}")
+        }
+    }
+
+    private fun schedulePeriodicWatchdog() {
+        try {
+            val heartbeatIntent = Intent(applicationContext, BootReceiver::class.java).apply {
+                action = ACTION_WATCHDOG_HEARTBEAT
+            }
+            val pendingIntent = PendingIntent.getBroadcast(
+                applicationContext,
+                102,
+                heartbeatIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+            val triggerAt = System.currentTimeMillis() + WATCHDOG_INTERVAL
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager?.setExactAndAllowWhileIdle(
+                alarmManager?.setAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     triggerAt,
                     pendingIntent
                 )
             } else {
-                alarmManager?.setExact(
+                alarmManager?.set(
                     AlarmManager.RTC_WAKEUP,
                     triggerAt,
                     pendingIntent
                 )
             }
-            Log.d(TAG, "Watchdog restart broadcast scheduled in ${delayMillis}ms")
+            Log.d(TAG, "Periodic 1-hour watchdog scheduled via AlarmManager")
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to schedule restart alarm: ${e.message}")
+            Log.w(TAG, "Failed to schedule periodic watchdog: ${e.message}")
         }
     }
 }
