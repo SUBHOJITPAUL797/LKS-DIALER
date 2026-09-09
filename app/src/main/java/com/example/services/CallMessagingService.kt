@@ -307,8 +307,9 @@ class CallMessagingService : FirebaseMessagingService() {
         val vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
 
         // Fresh high-importance channel WITH real system ringtone & vibration
-        // Crucial: Must be IMPORTANCE_HIGH with sound & vibration so Android displays native heads-up banner when unlocked!
-        val targetChannelId = "lks_incoming_call_v10"
+        // Fresh high-importance silent channel: Audio is managed exclusively by LksIncomingRingtonePlayer
+        // Crucial: Must be IMPORTANCE_HIGH with vibration so Android displays native heads-up banner when unlocked!
+        val targetChannelId = "lks_incoming_call_v11"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Delete all legacy channels so stale settings/importance don't interfere
@@ -323,28 +324,20 @@ class CallMessagingService : FirebaseMessagingService() {
                 "lks_incoming_call_v6",
                 "lks_incoming_call_v7",
                 "lks_incoming_call_v8",
-                "lks_incoming_call_v9"
+                "lks_incoming_call_v9",
+                "lks_incoming_call_v10"
             )
             for (oldChannel in oldChannels) {
                 try { notificationManager.deleteNotificationChannel(oldChannel) } catch (_: Exception) {}
             }
-
-            // CRITICAL: Always use systemSafeRingtoneUri (content://). Never a private file:// URI which system_server rejects.
-            val systemSafeRingtoneUri = com.example.util.LksRingtoneManager.getSystemSafeRingtoneUri(this)
 
             val highChannel = NotificationChannel(
                 targetChannelId,
                 "Incoming Calls",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Incoming VoIP call alerts with sound and ring"
-                setSound(
-                    systemSafeRingtoneUri,
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                )
+                description = "Incoming VoIP call alerts"
+                setSound(null, null) // Silent channel: audio is managed exclusively by LksIncomingRingtonePlayer
                 enableVibration(true)
                 this.vibrationPattern = vibrationPattern
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
@@ -480,9 +473,5 @@ class CallMessagingService : FirebaseMessagingService() {
                 }
             } catch (_: Exception) {}
         }, 800)
-
-        try {
-            LksTelecomManager.reportIncomingCall(this, callId, callerName, callerNumber, callTypeEnum)
-        } catch (_: Exception) {}
     }
 }

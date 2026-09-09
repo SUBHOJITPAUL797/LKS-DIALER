@@ -56,34 +56,11 @@ object LksTelecomManager {
         callerNumber: String,
         callType: CallType
     ) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        if (callId.isNotBlank()) {
-            if (reportedIncomingCalls.size > 50) reportedIncomingCalls.clear()
-            if (!reportedIncomingCalls.add(callId)) {
-                Log.d(TAG, "Incoming call $callId already reported to Telecom, skipping duplicate")
-                return
-            }
-        }
-        try {
-            registerPhoneAccount(context)
-            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
-            val handle = getPhoneAccountHandle(context)
-
-            val extras = Bundle().apply {
-                putString("call_id", callId)
-                putString("caller_name", callerName)
-                putString("caller_number", callerNumber)
-                putString("call_type", callType.name)
-                val uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, callerNumber.ifBlank { "LKS" }, null)
-                putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, uri)
-                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
-            }
-
-            telecomManager.addNewIncomingCall(handle, extras)
-            Log.i(TAG, "Reported incoming call to TelecomManager: callId=$callId, caller=$callerName")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to report incoming call to TelecomManager", e)
-        }
+        // Disabled: Calling addNewIncomingCall causes the device's system dialer (Google Phone / Samsung InCallUI / MIUI)
+        // to show a duplicate "phone own" incoming call notification and play the system telephone ringtone.
+        // LKS Dialer handles its own incoming call UI (CallStyle notification + full-screen / floating pill)
+        // and its own audio ringtone via LksIncomingRingtonePlayer.
+        Log.d(TAG, "reportIncomingCall skipped to avoid duplicate system dialer notification and ringtone")
     }
 
     fun reportOutgoingCall(

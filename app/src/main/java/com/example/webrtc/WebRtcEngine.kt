@@ -644,15 +644,6 @@ class WebRtcEngine private constructor(private val context: Context) {
                     
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     headsetButtonManager.startListening()
-                    try {
-                        com.example.services.LksTelecomManager.reportIncomingCall(
-                            context,
-                            incomingCall.callId,
-                            incomingCall.callerName,
-                            incomingCall.callerNumber,
-                            incomingCall.callType
-                        )
-                    } catch (_: Exception) {}
                     
                     _state.value = WebRtcState(
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
