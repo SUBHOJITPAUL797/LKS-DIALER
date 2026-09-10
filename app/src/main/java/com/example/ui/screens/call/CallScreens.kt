@@ -692,6 +692,7 @@ fun ActiveVideoCallScreen(
         return
     }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isPipMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
         context.findActivity()?.isInPictureInPictureMode == true
     } else false
@@ -841,40 +842,40 @@ fun ActiveVideoCallScreen(
             }
         }
 
-        if (!isPipMode) {
-            // Local PiP Hardware Camera Preview (Top Right)
-            if (state.isCameraOn && state.localVideoTrack != null) {
-                Surface(
-                    modifier = Modifier
-                        .size(width = 110.dp, height = 160.dp)
-                        .padding(12.dp)
-                        .align(Alignment.TopEnd)
-                        .clip(RoundedCornerShape(16.dp)),
-                    shadowElevation = 8.dp,
-                    color = Color.Black
-                ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        WebRtcVideoRenderer(
-                            videoTrack = state.localVideoTrack,
-                            eglBaseContext = webRtcEngine.eglBaseContext,
-                            modifier = Modifier.fillMaxSize(),
-                            mirror = state.isFrontCamera,
-                            isOverlay = true
-                        )
-                        if (state.isOnHold) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.8f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.Pause,
-                                        contentDescription = "Paused",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
-                                    )
+        // Local Camera Preview (Rendered both in fullscreen and inside PiP floating window)
+        if (state.isCameraOn && state.localVideoTrack != null) {
+            Surface(
+                modifier = Modifier
+                    .padding(if (isPipMode) 6.dp else 12.dp)
+                    .size(width = if (isPipMode) 46.dp else 110.dp, height = if (isPipMode) 70.dp else 160.dp)
+                    .align(Alignment.TopEnd)
+                    .clip(RoundedCornerShape(if (isPipMode) 8.dp else 16.dp)),
+                shadowElevation = if (isPipMode) 4.dp else 8.dp,
+                color = Color.Black
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    WebRtcVideoRenderer(
+                        videoTrack = state.localVideoTrack,
+                        eglBaseContext = webRtcEngine.eglBaseContext,
+                        modifier = Modifier.fillMaxSize(),
+                        mirror = state.isFrontCamera,
+                        isOverlay = true
+                    )
+                    if (state.isOnHold) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.8f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Default.Pause,
+                                    contentDescription = "Paused",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(if (isPipMode) 14.dp else 24.dp)
+                                )
+                                if (!isPipMode) {
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
                                         text = "Paused",
@@ -887,7 +888,9 @@ fun ActiveVideoCallScreen(
                     }
                 }
             }
+        }
 
+        if (!isPipMode) {
             // Top Overlay Header
             Row(
                 modifier = Modifier
@@ -897,52 +900,76 @@ fun ActiveVideoCallScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
-                    Text(
-                        text = activeCall.calleeName.ifBlank { activeCall.callerName },
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = GreenCall
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    // Minimize to Floating Window (PiP) button
+                    IconButton(
+                        onClick = {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
+                            }
+                        },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.45f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PictureInPictureAlt,
+                            contentDescription = "Floating Window",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        val qualityColor = when {
-                            state.networkQualityBars >= 4 -> Color(0xFF22C55E)
-                            state.networkQualityBars == 3 -> Color(0xFFF59E0B)
-                            else -> Color(0xFFEF4444)
-                        }
-                        Surface(
-                            color = qualityColor.copy(alpha = 0.25f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = "📶 ${state.networkQualityBars}/5",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = qualityColor,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
                     }
-                    if (state.networkQualityBars < 2) {
-                        Surface(
-                            color = Color(0xFFEF4444).copy(alpha = 0.35f),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.padding(top = 4.dp)
-                        ) {
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = activeCall.calleeName.ifBlank { activeCall.callerName },
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "⚠️ Weak network — video quality reduced",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFFFCA5A5),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = GreenCall
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            val qualityColor = when {
+                                state.networkQualityBars >= 4 -> Color(0xFF22C55E)
+                                state.networkQualityBars == 3 -> Color(0xFFF59E0B)
+                                else -> Color(0xFFEF4444)
+                            }
+                            Surface(
+                                color = qualityColor.copy(alpha = 0.25f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "📶 ${state.networkQualityBars}/5",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = qualityColor,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        if (state.networkQualityBars < 2) {
+                            Surface(
+                                color = Color(0xFFEF4444).copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                Text(
+                                    text = "⚠️ Weak network — video quality reduced",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFFCA5A5),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
                         }
                     }
                 }
-
             }
 
             // Call On Hold Banner (shown during cellular interruption or manual hold)

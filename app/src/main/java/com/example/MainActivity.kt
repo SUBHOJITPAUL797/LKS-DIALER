@@ -179,13 +179,41 @@ class MainActivity : ComponentActivity() {
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
         if (rtcState != null && (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
             if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                try {
-                    enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
-                    return // Successfully triggered PiP mode; do NOT show overlapping floating pill
-                } catch (_: Exception) {}
+                if (enterPipMode()) return // Successfully triggered PiP; do NOT show overlapping floating pill
             }
         }
         triggerFloatingCallBubbleIfActive()
+    }
+
+    /** Enter PiP in portrait (9:16) — call from button or onUserLeaveHint */
+    fun enterPipMode(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        return try {
+            val params = android.app.PictureInPictureParams.Builder()
+                .setAspectRatio(android.util.Rational(9, 16))
+                .also { builder ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        builder.setSeamlessResizeEnabled(false)
+                    }
+                }
+                .build()
+            enterPictureInPictureMode(params)
+            true
+        } catch (_: Exception) { false }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // isForeground is false while in PiP (we are not really "foreground" for the pill)
+        if (isInPictureInPictureMode) {
+            isForeground = false
+        } else {
+            // Returning from PiP back to full screen — restore foreground flag
+            isForeground = true
+        }
     }
 
     override fun onStop() {
@@ -313,6 +341,11 @@ class MainActivity : ComponentActivity() {
                         // Explicitly terminal/answered states stop the ringtone.
                         // Do NOT stop on initial IDLE state so FCM-started ringtone continues uninterrupted!
                         LksIncomingRingtonePlayer.stop()
+                        if (rtcState.callStatus != com.example.data.model.CallStatus.ANSWERED) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && (context as? android.app.Activity)?.isInPictureInPictureMode == true) {
+                                (context as? android.app.Activity)?.moveTaskToBack(true)
+                            }
+                        }
                     }
 
                     val isCallActive = rtcState.callStatus == com.example.data.model.CallStatus.CALLING ||
