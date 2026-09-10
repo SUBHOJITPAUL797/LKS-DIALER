@@ -12,10 +12,12 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.activity.result.contract.ActivityResultContracts
 import android.Manifest
 import android.app.KeyguardManager
@@ -45,9 +47,14 @@ import com.example.ui.components.UpdateDialog
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 
+import com.example.data.repository.ChatRepository
+import com.example.ui.screens.chat.ChatListScreen
+import com.example.ui.screens.chat.ChatConversationScreen
+
 enum class MainTab(val title: String, val icon: ImageVector) {
     DIALER("Dialer", Icons.Default.Dialpad),
     RECENTS("Recents", Icons.Default.History),
+    CHATS("Chats", Icons.Default.ChatBubbleOutline),
     CONTACTS("Contacts", Icons.Default.People),
     PROFILE("Account", Icons.Default.Person)
 }
@@ -57,7 +64,8 @@ enum class AppNavState {
     PHONE_INPUT,
     PROFILE_SETUP,
     MAIN,
-    SETTINGS
+    SETTINGS,
+    CHAT_CONVERSATION
 }
 
 class MainActivity : ComponentActivity() {
@@ -480,13 +488,17 @@ class MainActivity : ComponentActivity() {
                     updateInfo = gitHubUpdater.checkForUpdates()
                 }
 
-                // State declarations MUST come before any LaunchedEffects that use them
                 var navState by remember {
                     mutableStateOf(if (currentUser != null) AppNavState.MAIN else AppNavState.WELCOME)
                 }
                 var selectedTab by remember { mutableStateOf(MainTab.DIALER) }
                 var newPhoneNumber by remember { mutableStateOf("") }
                 var newDeviceId by remember { mutableStateOf("") }
+                var chatPeerNumber by remember { mutableStateOf("") }
+                var chatPeerName by remember { mutableStateOf("") }
+
+                val chatRepo = remember { ChatRepository.getInstance(context) }
+                val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
 
                 LaunchedEffect(currentUser?.phoneNumber) {
                     currentUser?.phoneNumber?.let {
@@ -546,6 +558,29 @@ class MainActivity : ComponentActivity() {
                         if (openTab == "RECENTS") {
                             navState = AppNavState.MAIN
                             selectedTab = MainTab.RECENTS
+                        } else if (openTab == "CHATS") {
+                            navState = AppNavState.MAIN
+                            selectedTab = MainTab.CHATS
+                        }
+
+                        val chatPeer = incoming.getStringExtra("chat_peer_number")
+                        if (!chatPeer.isNullOrBlank()) {
+                            chatPeerNumber = chatPeer
+                            chatPeerName = incoming.getStringExtra("chat_peer_name") ?: chatPeer
+                            navState = AppNavState.CHAT_CONVERSATION
+                        }
+
+                        val remoteInputResults = androidx.core.app.RemoteInput.getResultsFromIntent(incoming)
+                        val replyText = remoteInputResults?.getCharSequence(ChatRepository.KEY_TEXT_REPLY)?.toString()
+                        if (!replyText.isNullOrBlank() && !chatPeer.isNullOrBlank()) {
+                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                chatRepo.sendMessage(
+                                    recipientNumber = chatPeer,
+                                    recipientName = chatPeerName.ifBlank { chatPeer },
+                                    text = replyText,
+                                    mediaType = com.example.data.local.ChatMediaType.TEXT
+                                )
+                            }
                         }
 
                         // Dismiss any notification ID passed in
@@ -649,7 +684,24 @@ class MainActivity : ComponentActivity() {
                                             NavigationBarItem(
                                                 selected = isSelected,
                                                 onClick = { selectedTab = tab },
-                                                icon = { Icon(tab.icon, contentDescription = tab.title) },
+                                                icon = {
+                                                    if (tab == MainTab.CHATS && totalUnreadChats > 0) {
+                                                        BadgedBox(
+                                                            badge = {
+                                                                Badge(
+                                                                    containerColor = com.example.ui.theme.GreenCall,
+                                                                    contentColor = Color.White
+                                                                ) {
+                                                                    Text(if (totalUnreadChats > 99) "99+" else totalUnreadChats.toString())
+                                                                }
+                                                            }
+                                                        ) {
+                                                            Icon(tab.icon, contentDescription = tab.title)
+                                                        }
+                                                    } else {
+                                                        Icon(tab.icon, contentDescription = tab.title)
+                                                    }
+                                                },
                                                 label = { 
                                                     Text(
                                                         text = tab.title,
@@ -698,12 +750,25 @@ class MainActivity : ComponentActivity() {
                                                 webRtcEngine.initiateCall(number, name, myNum, myName, type)
                                             }
                                         )
+                                        MainTab.CHATS -> ChatListScreen(
+                                            firebaseManager = firebaseManager,
+                                            onOpenConversation = { phone, name ->
+                                                chatPeerNumber = phone
+                                                chatPeerName = name
+                                                navState = AppNavState.CHAT_CONVERSATION
+                                            }
+                                        )
                                         MainTab.CONTACTS -> ContactsScreen(
                                             firebaseManager = firebaseManager,
                                             onStartCall = { number, name, type ->
                                                 val myNum = currentUser?.phoneNumber ?: return@ContactsScreen
                                                 val myName = currentUser?.displayName ?: "Me"
                                                 webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                            },
+                                            onOpenChat = { number, name ->
+                                                chatPeerNumber = number
+                                                chatPeerName = name
+                                                navState = AppNavState.CHAT_CONVERSATION
                                             }
                                         )
                                         MainTab.PROFILE -> ProfileScreen(
@@ -712,6 +777,26 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                        }
+                        AppNavState.CHAT_CONVERSATION -> {
+                            androidx.activity.compose.BackHandler {
+                                navState = AppNavState.MAIN
+                                selectedTab = MainTab.CHATS
+                            }
+                            ChatConversationScreen(
+                                peerPhoneNumber = chatPeerNumber,
+                                peerDisplayName = chatPeerName,
+                                firebaseManager = firebaseManager,
+                                onBackClick = {
+                                    navState = AppNavState.MAIN
+                                    selectedTab = MainTab.CHATS
+                                },
+                                onStartCall = { number, name, type ->
+                                    val myNum = currentUser?.phoneNumber ?: return@ChatConversationScreen
+                                    val myName = currentUser?.displayName ?: "Me"
+                                    webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                }
+                            )
                         }
                     }
 

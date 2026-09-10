@@ -51,6 +51,17 @@ class CallMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             Log.d("FCM", "Data payload: ${remoteMessage.data}")
             val type = remoteMessage.data["type"]
+
+            if (type == "chat_message") {
+                Log.d("FCM", "Received chat_message push notification, waking up ChatRepository")
+                val prefs = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+                val myPhone = prefs.getString("user_phone", null)
+                if (!myPhone.isNullOrBlank()) {
+                    com.example.data.repository.ChatRepository.getInstance(this).attachChatListeners(myPhone)
+                }
+                return
+            }
+
             val callId = remoteMessage.data["callId"] ?: return
             
             if (type == "cancel_call" || type == "missed_call") {

@@ -77,6 +77,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
         if (savedPhone != null) {
             val savedProfilePic = prefs.getString("user_profile_pic", "") ?: ""
+            val myPublicKey = com.example.data.crypto.ChatCryptoManager.getInstance(context).getMyPublicKeyBase64()
             val user = UserDto(
                 phoneNumber = savedPhone,
                 displayName = savedName ?: "",
@@ -87,7 +88,8 @@ class FirebaseManager private constructor(private val context: Context) {
                 isOnline = true,
                 lastSeen = System.currentTimeMillis(),
                 blockedNumbers = _blockedNumbers.value,
-                isDndEnabled = _isDndEnabled.value
+                isDndEnabled = _isDndEnabled.value,
+                publicKey = myPublicKey
             )
             _currentUser.value = user
 
@@ -238,6 +240,13 @@ class FirebaseManager private constructor(private val context: Context) {
     private fun attachUserSpecificListeners(phoneNumber: String) {
         if (!_isFirebaseConfigured.value || phoneNumber.isBlank()) return
         
+        // Attach ephemeral E2EE chat listeners
+        try {
+            ChatRepository.getInstance(context).attachChatListeners(phoneNumber)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to attach chat listeners: ${e.message}")
+        }
+
         val db = FirebaseFirestore.getInstance()
 
         // 1. Sync Contacts for user
@@ -458,6 +467,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
         val finalFcmToken = existing?.fcmToken?.ifBlank { savedFcmToken } ?: savedFcmToken
 
+        val myPublicKey = com.example.data.crypto.ChatCryptoManager.getInstance(context).getMyPublicKeyBase64()
         val user = UserDto(
             phoneNumber = phoneNumber,
             displayName = name.ifBlank { existing?.displayName ?: "User ${phoneNumber.takeLast(4)}" },
@@ -469,7 +479,8 @@ class FirebaseManager private constructor(private val context: Context) {
             lastSeen = System.currentTimeMillis(),
             createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
             blockedNumbers = existing?.blockedNumbers?.ifEmpty { _blockedNumbers.value } ?: _blockedNumbers.value,
-            isDndEnabled = existing?.isDndEnabled ?: _isDndEnabled.value
+            isDndEnabled = existing?.isDndEnabled ?: _isDndEnabled.value,
+            publicKey = myPublicKey
         )
         _currentUser.value = user
         

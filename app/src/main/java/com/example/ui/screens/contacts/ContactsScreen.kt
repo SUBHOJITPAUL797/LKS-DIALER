@@ -65,7 +65,8 @@ private enum class ContactFilterTab(val title: String) {
 @Composable
 fun ContactsScreen(
     firebaseManager: FirebaseManager,
-    onStartCall: (number: String, name: String, callType: CallType) -> Unit
+    onStartCall: (number: String, name: String, callType: CallType) -> Unit,
+    onOpenChat: ((number: String, name: String) -> Unit)? = null
 ) {
     val themeColor = LocalThemeColor.current
     val context = LocalContext.current
@@ -450,7 +451,8 @@ fun ContactsScreen(
                             onRingtoneClick = {
                                 lastInteractionTime = System.currentTimeMillis()
                                 ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
-                            }
+                            },
+                            onOpenChat = onOpenChat?.let { fn -> { fn(contact.phoneNumber, contact.name) } }
                         )
                     }
                 }
@@ -599,7 +601,8 @@ private fun SwipeableContactItem(
     demoOffset: Float,
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit,
-    onRingtoneClick: () -> Unit
+    onRingtoneClick: () -> Unit,
+    onOpenChat: (() -> Unit)? = null
 ) {
     val themeColor = LocalThemeColor.current
     val dismissState = rememberSwipeToDismissBoxState(
@@ -655,7 +658,8 @@ private fun SwipeableContactItem(
                     isOnline = isOnline,
                     onAudioCall = onAudioCall,
                     onVideoCall = onVideoCall,
-                    onRingtoneClick = onRingtoneClick
+                    onRingtoneClick = onRingtoneClick,
+                    onOpenChat = onOpenChat
                 )
             }
         } else {
@@ -715,7 +719,8 @@ private fun SwipeableContactItem(
                         isOnline = isOnline,
                         onAudioCall = onAudioCall,
                         onVideoCall = onVideoCall,
-                        onRingtoneClick = onRingtoneClick
+                        onRingtoneClick = onRingtoneClick,
+                        onOpenChat = onOpenChat
                     )
                 }
             }
@@ -729,7 +734,8 @@ private fun ContactItemRow(
     isOnline: Boolean,
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit,
-    onRingtoneClick: () -> Unit
+    onRingtoneClick: () -> Unit,
+    onOpenChat: (() -> Unit)? = null
 ) {
     val themeColor = LocalThemeColor.current
     Row(
@@ -828,6 +834,22 @@ private fun ContactItemRow(
                 tint = themeColor.primary,
                 modifier = Modifier.size(22.dp)
             )
+        }
+
+        // Quick chat shortcut
+        if (onOpenChat != null) {
+            Spacer(modifier = Modifier.width(2.dp))
+            IconButton(
+                onClick = onOpenChat,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    Icons.Default.ChatBubbleOutline,
+                    contentDescription = "Chat",
+                    tint = GreenCall,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }

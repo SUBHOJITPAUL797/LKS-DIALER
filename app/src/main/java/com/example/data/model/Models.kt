@@ -16,7 +16,8 @@ data class UserDto(
     val registeredDeviceId: String = "",
     val blockedNumbers: List<String> = emptyList(),
     @get:PropertyName("isDndEnabled") @set:PropertyName("isDndEnabled")
-    var isDndEnabled: Boolean = false
+    var isDndEnabled: Boolean = false,
+    val publicKey: String = ""
 )
 
 enum class CallType {
@@ -102,4 +103,25 @@ data class BlockedContactInfo(
     val profilePictureUrl: String = "",
     val isLksUser: Boolean = false,
     val statusMessage: String = ""
+)
+
+data class ChatMessageDto(
+    val messageId: String = "",
+    val senderNumber: String = "",
+    val recipientNumber: String = "",
+    val senderPublicKey: String = "",
+    val ciphertext: String = "",
+    val iv: String = "",
+    val mediaType: String = "TEXT",
+    val mediaDurationMs: Long = 0L,
+    val timestamp: Long = 0L
+)
+
+data class ChatReceiptDto(
+    val receiptId: String = "",
+    val messageId: String = "",
+    val senderNumber: String = "",
+    val recipientNumber: String = "",
+    val status: String = "DELIVERED",
+    val timestamp: Long = 0L
 )
