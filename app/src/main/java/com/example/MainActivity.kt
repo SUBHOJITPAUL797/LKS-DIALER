@@ -66,6 +66,10 @@ class MainActivity : ComponentActivity() {
         @Volatile
         var isForeground: Boolean = false
             private set
+
+        @Volatile
+        var isInPipMode: Boolean = false
+            private set
     }
 
     // Needed so FLAG_ACTIVITY_SINGLE_TOP re-delivers the intent
@@ -165,14 +169,27 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         isForeground = false
+        isInPipMode = false
         if (!isChangingConfigurations) {
             com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
             val currentStatus = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
             if (currentStatus != com.example.data.model.CallStatus.RINGING) {
                 com.example.util.LksIncomingRingtonePlayer.stop()
             }
-            if (isFinishing && (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING)) {
-                com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.endCall()
+            // User requested: When closing the PiP window via 'X', DO NOT end the call!
+            // Continue the call in background and show the active floating pill instead!
+            if (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING) {
+                val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
+                val activeCall = rtcState?.activeCall
+                if (activeCall != null) {
+                    com.example.services.FloatingCallBubbleService.showActive(
+                        this,
+                        activeCall.callId,
+                        activeCall.callerName,
+                        activeCall.callerNumber,
+                        activeCall.callType
+                    )
+                }
             }
         }
     }
@@ -200,8 +217,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 .build()
-            enterPictureInPictureMode(params)
-            true
+            val entered = enterPictureInPictureMode(params)
+            if (entered) {
+                isInPipMode = true
+            }
+            entered
         } catch (_: Exception) { false }
     }
 
@@ -210,9 +230,10 @@ class MainActivity : ComponentActivity() {
         newConfig: android.content.res.Configuration
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        // isForeground is false while in PiP (we are not really "foreground" for the pill)
+        isInPipMode = isInPictureInPictureMode
         if (isInPictureInPictureMode) {
             isForeground = false
+            com.example.services.FloatingCallBubbleService.hide(this)
         } else {
             // Returning from PiP back to full screen — restore foreground flag
             isForeground = true
@@ -252,8 +273,8 @@ class MainActivity : ComponentActivity() {
                 activeCall.callType
             )
         } else if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
-            // Show Draggable Active Call Pill over other apps ONLY for AUDIO calls (video uses PiP floating window)
-            if (rtcState.callType != com.example.data.model.CallType.VIDEO && activeCall.callType != com.example.data.model.CallType.VIDEO) {
+            // Show Draggable Active Call Pill over other apps (suppressed only if native PiP window is currently visible)
+            if (!isInPipMode) {
                 com.example.services.FloatingCallBubbleService.showActive(
                     this,
                     activeCall.callId,

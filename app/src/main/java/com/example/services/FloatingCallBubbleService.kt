@@ -140,9 +140,8 @@ class FloatingCallBubbleService : Service() {
             peerNumber: String,
             callType: CallType
         ) {
-            if (callType == CallType.VIDEO) {
-                // Video calls use native Picture-in-Picture (PiP) floating window with live camera/video streams,
-                // NOT the audio timer pill!
+            if (MainActivity.isInPipMode) {
+                // If native Video PiP window is currently visible, do not show overlapping pill
                 return
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
@@ -346,7 +345,7 @@ class FloatingCallBubbleService : Service() {
                     CallStatus.ANSWERED -> {
                         hasSeenActiveCall = true
                         stopRinging()
-                        if (!com.example.MainActivity.isForeground) {
+                        if (!com.example.MainActivity.isForeground && !com.example.MainActivity.isInPipMode) {
                             if (currentMode != ACTION_SHOW_ACTIVE || floatingView == null) {
                                 showActiveCallPill()
                             } else {
@@ -692,10 +691,10 @@ class FloatingCallBubbleService : Service() {
     // ─────────────────────────────────────────────────────────────────────────────
     @SuppressLint("ClickableViewAccessibility")
     private fun showActiveCallPill() {
-        if (com.example.MainActivity.isForeground) {
-            Log.d(TAG, "MainActivity is in foreground - checking again in 150ms")
+        if (com.example.MainActivity.isForeground || com.example.MainActivity.isInPipMode) {
+            Log.d(TAG, "MainActivity is in foreground or PiP mode - checking again in 150ms")
             handler.postDelayed({
-                if (!com.example.MainActivity.isForeground) {
+                if (!com.example.MainActivity.isForeground && !com.example.MainActivity.isInPipMode) {
                     val status = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
                     if (status == CallStatus.ANSWERED || status == CallStatus.CALLING) {
                         showActiveCallPill()
@@ -716,13 +715,6 @@ class FloatingCallBubbleService : Service() {
         val wm = windowManager ?: return
 
         val engine = WebRtcEngine.getInstanceIfCreated()
-        val currentCallType = engine?.state?.value?.callType ?: callType
-        if (currentCallType == CallType.VIDEO) {
-            // Video calls use native Picture-in-Picture (PiP) floating window, do not display audio pill
-            removeFloatingView()
-            return
-        }
-
         val engineStartTime = engine?.state?.value?.callStartedAtMillis ?: 0L
         val currentDuration = engine?.state?.value?.callDurationSeconds ?: 0
         callStartTime = when {
