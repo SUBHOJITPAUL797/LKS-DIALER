@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video } from 'lucide-react';
+import { 
+  Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, Video, 
+  MessageSquare, Ban, RotateCcw 
+} from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 
-export default function RecentCalls({ onStartCall }) {
+export default function RecentCalls({ onStartCall, onOpenChat }) {
   const [calls, setCalls] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [, setBlockedUpdate] = useState(0);
 
   useEffect(() => {
     loadHistory();
@@ -55,6 +59,21 @@ export default function RecentCalls({ onStartCall }) {
     }
   };
 
+  const handleToggleBlock = async (peerNumber) => {
+    if (!peerNumber) return;
+    const isBlocked = webRtcEngine.isNumberBlocked(peerNumber);
+    if (isBlocked) {
+      await webRtcEngine.unblockNumber(peerNumber);
+      alert(`Unblocked ${peerNumber}`);
+    } else {
+      if (confirm(`Block ${peerNumber}? Future calls and messages from this number will be rejected.`)) {
+        await webRtcEngine.blockNumber(peerNumber);
+        alert(`Blocked ${peerNumber}`);
+      }
+    }
+    setBlockedUpdate(v => v + 1);
+  };
+
   return (
     <div className="scrollable-content" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <h2 style={{ fontSize: '32px', fontWeight: '900', borderBottom: '4px solid #000', paddingBottom: '8px' }}>
@@ -92,15 +111,17 @@ export default function RecentCalls({ onStartCall }) {
           const rawAvatar = isCaller ? call.calleeProfilePic : call.callerProfilePic;
           const peerAvatar = formatAvatarUrl(rawAvatar);
           const avatarInitial = (peerName || peerNumber || "?")[0]?.toUpperCase() || "?";
+          const isMissed = (call.status === 'MISSED' || call.status === 'DECLINED' || (call.status === 'CALLING' && !isCaller));
+          const isBlocked = webRtcEngine.isNumberBlocked ? webRtcEngine.isNumberBlocked(peerNumber) : false;
           
           return (
-            <div key={call.id || `${peerNumber}-${call.createdAt || Math.random()}`} className="neo-box" style={{ padding: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flex: 1, minWidth: 0 }}>
+            <div key={call.id || `${peerNumber}-${call.createdAt || Math.random()}`} className="neo-box" style={{ padding: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
                 <div style={{ 
-                  width: '48px', height: '48px', borderRadius: '50%', 
+                  width: '46px', height: '46px', borderRadius: '50%', 
                   backgroundColor: 'var(--accent)', border: '3px solid #000',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontWeight: '900', fontSize: '20px', overflow: 'hidden', flexShrink: 0
+                  fontWeight: '900', fontSize: '18px', overflow: 'hidden', flexShrink: 0
                 }}>
                   {peerAvatar && (
                     <img 
@@ -118,50 +139,112 @@ export default function RecentCalls({ onStartCall }) {
                   </span>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '2px' }}>
                     <h4 style={{ 
-                      margin: 0, fontSize: '18px', fontWeight: 'bold', 
+                      margin: 0, fontSize: '16px', fontWeight: 'bold', 
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                      color: (call.status === 'MISSED' || call.status === 'DECLINED') && !isCaller ? 'var(--primary)' : 'inherit'
+                      color: isMissed && !isCaller ? 'var(--primary)' : 'inherit'
                     }}>
                       {peerName}
                     </h4>
-                    {call.callType === 'VIDEO' && <Video size={16} color="#666" />}
+                    {call.callType === 'VIDEO' && <Video size={15} color="#666" />}
+                    {isBlocked && (
+                      <span style={{
+                        fontSize: '10px', fontWeight: '900', backgroundColor: '#ffebee',
+                        color: '#c62828', border: '1px solid #c62828', padding: '1px 5px',
+                        borderRadius: '6px'
+                      }}>
+                        BLOCKED
+                      </span>
+                    )}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#555', fontWeight: '600' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: '#555', fontWeight: '600' }}>
                     {getCallIcon(call)}
                     <span>
                       {isCaller ? 'Outgoing' : 'Incoming'} • {formatTime(call.createdAt)} 
                       {(call.status === 'MISSED' || call.status === 'DECLINED') ? ` • ${call.status}` : ''}
                     </span>
                   </div>
+
+                  {/* Call Back Action for Missed Calls */}
+                  {isMissed && !isCaller && (
+                    <button
+                      onClick={() => peerNumber && onStartCall(peerNumber, call.callType || 'AUDIO')}
+                      className="neo-box"
+                      style={{
+                        marginTop: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: '900',
+                        backgroundColor: 'var(--primary)', color: '#fff', display: 'inline-flex',
+                        alignItems: 'center', gap: '4px', cursor: 'pointer', borderRadius: '6px'
+                      }}
+                    >
+                      <RotateCcw size={12} strokeWidth={3} /> CALL BACK
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '12px' }}>
+              {/* Action Buttons Row */}
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+                {/* Chat Button */}
+                {onOpenChat && (
+                  <button 
+                    onClick={() => peerNumber && onOpenChat(peerNumber, peerName, rawAvatar || '')}
+                    className="neo-box"
+                    disabled={!peerNumber}
+                    title="Chat"
+                    style={{ 
+                      width: '36px', height: '36px', padding: 0, display: 'flex', 
+                      alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
+                      backgroundColor: 'var(--secondary)'
+                    }}
+                  >
+                    <MessageSquare size={18} color="#000" />
+                  </button>
+                )}
+
+                {/* Audio Call */}
                 <button 
                   onClick={() => peerNumber && onStartCall(peerNumber, 'AUDIO')}
                   className="neo-box"
                   disabled={!peerNumber}
+                  title="Audio Call"
                   style={{ 
-                    width: '40px', height: '40px', padding: 0, display: 'flex', 
+                    width: '36px', height: '36px', padding: 0, display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
                     backgroundColor: 'var(--accent)'
                   }}
                 >
-                  <Phone size={20} color="#000" />
+                  <Phone size={18} color="#000" />
                 </button>
+
+                {/* Video Call */}
                 <button 
                   onClick={() => peerNumber && onStartCall(peerNumber, 'VIDEO')}
                   className="neo-box"
                   disabled={!peerNumber}
+                  title="Video Call"
                   style={{ 
-                    width: '40px', height: '40px', padding: 0, display: 'flex', 
+                    width: '36px', height: '36px', padding: 0, display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
                     backgroundColor: 'var(--primary)'
                   }}
                 >
-                  <Video size={20} color="#fff" />
+                  <Video size={18} color="#fff" />
+                </button>
+
+                {/* Block / Unblock Button */}
+                <button 
+                  onClick={() => handleToggleBlock(peerNumber)}
+                  className="neo-box"
+                  disabled={!peerNumber}
+                  title={isBlocked ? "Unblock Number" : "Block Number"}
+                  style={{ 
+                    width: '36px', height: '36px', padding: 0, display: 'flex', 
+                    alignItems: 'center', justifyContent: 'center', cursor: peerNumber ? 'pointer' : 'default',
+                    backgroundColor: isBlocked ? '#ffcdd2' : '#ffffff'
+                  }}
+                >
+                  <Ban size={16} color={isBlocked ? "#c62828" : "#666"} />
                 </button>
               </div>
             </div>

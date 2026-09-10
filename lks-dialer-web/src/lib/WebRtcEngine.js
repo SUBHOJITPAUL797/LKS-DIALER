@@ -6,6 +6,8 @@ import {
 } from 'firebase/firestore';
 import { callSounds } from './CallSounds';
 import { formatAvatarUrl } from './ImageUtils';
+import { chatCryptoWeb } from './ChatCryptoWeb';
+import { numbersMatch } from './ChatRepositoryWeb';
 
 const servers = {
   iceServers: [
@@ -63,7 +65,27 @@ class WebRtcEngine {
   }
 
   setCurrentUser(user) {
+    if (user) {
+      if (!user.blockedNumbers) user.blockedNumbers = [];
+    }
     this.currentUser = user;
+    this.syncPublicKey();
+  }
+
+  async syncPublicKey() {
+    if (!this.currentUser || !this.currentUser.phoneNumber) return;
+    try {
+      const pubKey = await chatCryptoWeb.getMyPublicKeyBase64();
+      if (pubKey && this.currentUser.publicKey !== pubKey) {
+        const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+        await updateDoc(userRef, { publicKey: pubKey });
+        this.currentUser.publicKey = pubKey;
+        localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
+        console.log("Synced E2EE public key to Firestore for:", this.currentUser.phoneNumber);
+      }
+    } catch (e) {
+      console.warn('Failed to sync public key:', e);
+    }
   }
 
   async setupLocalStream(callType = 'AUDIO') {
@@ -265,24 +287,38 @@ class WebRtcEngine {
       console.error('Failed to get FCM web token', e);
     }
 
+    let publicKey = '';
+    try {
+      publicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+    } catch (e) {
+      console.warn('Failed to get E2EE public key during registration:', e);
+    }
+
     const userRef = doc(db, 'users', phoneNumber);
     const userSnap = await getDoc(userRef);
     const userData = {
       phoneNumber,
       displayName,
       registeredDeviceId: 'web-device-' + Math.random().toString(36).substring(7),
-      ...(webToken && { webToken })
+      ...(webToken && { webToken }),
+      ...(publicKey && { publicKey })
     };
     
     if (userSnap.exists()) {
       await updateDoc(userRef, { 
         registeredDeviceId: userData.registeredDeviceId,
-        ...(webToken && { webToken }) 
+        ...(webToken && { webToken }),
+        ...(publicKey && { publicKey })
       });
-      // Merge existing data back into currentUser so we don't lose profilePictureUrl
+      // Merge existing data back into currentUser so we don't lose profilePictureUrl or blockedNumbers
       const existingData = userSnap.data();
-      this.setCurrentUser({ ...existingData, ...userData });
+      this.setCurrentUser({ 
+        ...existingData, 
+        ...userData,
+        blockedNumbers: existingData.blockedNumbers || [] 
+      });
     } else {
+      userData.blockedNumbers = [];
       await setDoc(userRef, userData);
       this.setCurrentUser(userData);
     }
@@ -329,6 +365,43 @@ class WebRtcEngine {
     });
     
     return this.currentUser;
+  }
+
+  isNumberBlocked(phoneNumber) {
+    if (!this.currentUser || !this.currentUser.blockedNumbers) return false;
+    const clean = String(phoneNumber || '').replace(/[^0-9]/g, '');
+    if (!clean) return false;
+    return this.currentUser.blockedNumbers.some(b => {
+      const bClean = String(b || '').replace(/[^0-9]/g, '');
+      if (!bClean) return false;
+      return bClean === clean || (bClean.length >= 10 && clean.length >= 10 && bClean.slice(-10) === clean.slice(-10));
+    });
+  }
+
+  async blockNumber(phoneNumber) {
+    if (!this.currentUser || !phoneNumber) return;
+    const clean = String(phoneNumber).replace(/[^0-9+]/g, '');
+    const current = this.currentUser.blockedNumbers || [];
+    if (current.includes(clean)) return;
+
+    const updated = [...current, clean];
+    const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+    await updateDoc(userRef, { blockedNumbers: updated });
+
+    this.currentUser.blockedNumbers = updated;
+    localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
+  }
+
+  async unblockNumber(phoneNumber) {
+    if (!this.currentUser || !phoneNumber) return;
+    const current = this.currentUser.blockedNumbers || [];
+    const updated = current.filter(b => !numbersMatch(b, phoneNumber));
+
+    const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+    await updateDoc(userRef, { blockedNumbers: updated });
+
+    this.currentUser.blockedNumbers = updated;
+    localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
   }
 
   async startCall(calleeNumber, callType = 'AUDIO') {
@@ -433,6 +506,12 @@ class WebRtcEngine {
       snapshot.docChanges().forEach(change => {
         if (change.type === 'added' || change.type === 'modified') {
           const data = change.doc.data();
+          // Check if caller is blocked
+          if (data.callerNumber && this.isNumberBlocked(data.callerNumber)) {
+            console.log("Incoming call auto-declined by Blocklist from:", data.callerNumber);
+            updateDoc(change.doc.ref, { status: 'DECLINED', endedAt: Date.now() }).catch(() => {});
+            return;
+          }
           // Update status to RINGING to notify caller
           if (data.status === 'CALLING') {
             updateDoc(change.doc.ref, { status: 'RINGING' });

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Save } from 'lucide-react';
+import { Camera, Save, Ban } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 
@@ -7,9 +7,15 @@ export default function Profile() {
   const [name, setName] = useState(webRtcEngine.currentUser?.displayName || "");
   const [avatar, setAvatar] = useState(webRtcEngine.currentUser?.profilePictureUrl || "");
   const [customRingtone, setCustomRingtone] = useState(localStorage.getItem('customRingtone') || "");
+  const [blockedNumbers, setBlockedNumbers] = useState(webRtcEngine.currentUser?.blockedNumbers || []);
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
+
+  const handleUnblock = async (phoneNumber) => {
+    await webRtcEngine.unblockNumber(phoneNumber);
+    setBlockedNumbers(webRtcEngine.currentUser?.blockedNumbers || []);
+  };
 
   const handleImageUpload = (e) => {
     const file = e.target.files?.[0];
@@ -183,6 +189,34 @@ export default function Profile() {
         {customRingtone && (
           <audio controls src={customRingtone} style={{ width: '100%', marginTop: '8px' }} />
         )}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <label style={{ fontWeight: '800', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Ban size={16} color="#ff3366" /> BLOCKED CONTACTS ({blockedNumbers.length})
+          </label>
+        </div>
+        <div className="neo-box" style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '180px', overflowY: 'auto' }}>
+          {blockedNumbers.length === 0 ? (
+            <div style={{ fontSize: '13px', color: '#666', fontWeight: '600', textAlign: 'center', padding: '8px' }}>
+              No blocked contacts
+            </div>
+          ) : (
+            blockedNumbers.map(num => (
+              <div key={num} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px', borderBottom: '1px solid #eee' }}>
+                <span style={{ fontWeight: '700', fontSize: '14px' }}>{num}</span>
+                <button
+                  className="neo-btn"
+                  style={{ padding: '4px 10px', fontSize: '12px', backgroundColor: 'var(--accent)', color: '#000', borderRadius: '6px' }}
+                  onClick={() => handleUnblock(num)}
+                >
+                  UNBLOCK
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <button 

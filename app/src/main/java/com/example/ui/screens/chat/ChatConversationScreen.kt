@@ -1,12 +1,15 @@
 package com.example.ui.screens.chat
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -27,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -71,8 +75,16 @@ fun ChatConversationScreen(
     val isPeerTyping = typingMap[normPeer] ?: false
 
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+    val syncedContacts by firebaseManager.contacts.collectAsState()
     val peerUser = remember(registeredUsers, normPeer) {
         registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
+    }
+    val peerContact = remember(syncedContacts, normPeer) {
+        syncedContacts.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
+    }
+    val peerProfilePic = remember(peerUser, peerContact) {
+        val userPic = peerUser?.profilePictureUrl ?: ""
+        if (userPic.isNotBlank()) userPic else (peerContact?.profilePictureUrl ?: "")
     }
     val isPeerOnline = peerUser?.isOnline ?: false
 
@@ -151,42 +163,12 @@ fun ChatConversationScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         // Avatar
-                        Box(modifier = Modifier.size(40.dp)) {
-                            val profilePic = peerUser?.profilePictureUrl ?: ""
-                            if (profilePic.isNotBlank()) {
-                                val imageModel = if (profilePic.startsWith("data:image")) {
-                                    try {
-                                        val base64Data = profilePic.substringAfter(",")
-                                        android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-                                    } catch (_: Exception) { profilePic }
-                                } else profilePic
-
-                                AsyncImage(
-                                    model = imageModel,
-                                    contentDescription = peerDisplayName,
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                                    contentScale = ContentScale.Crop
-                                )
-                            } else {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = TealPrimary.copy(alpha = 0.2f),
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = peerDisplayName.take(1).uppercase(),
-                                            fontWeight = FontWeight.Bold,
-                                            color = TealPrimary,
-                                            fontSize = 18.sp
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        ChatAvatar(
+                            name = peerDisplayName,
+                            profilePic = peerProfilePic,
+                            size = 40.dp,
+                            fontSize = 16.sp
+                        )
 
                         Spacer(modifier = Modifier.width(10.dp))
 
@@ -631,3 +613,59 @@ private fun MessageBubble(
         }
     }
 }
+
+@Composable
+fun ChatAvatar(
+    name: String,
+    profilePic: String,
+    size: androidx.compose.ui.unit.Dp = 40.dp,
+    fontSize: androidx.compose.ui.unit.TextUnit = 16.sp
+) {
+    val bitmap = remember(profilePic) {
+        if (profilePic.isNotBlank() && !profilePic.startsWith("http")) {
+            try {
+                val cleanBase64 = if (profilePic.contains(",")) profilePic.substringAfter(",") else profilePic
+                val decoded = Base64.decode(cleanBase64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = name,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
+    } else if (profilePic.startsWith("http")) {
+        AsyncImage(
+            model = profilePic,
+            contentDescription = name,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        Surface(
+            modifier = Modifier.size(size),
+            shape = CircleShape,
+            color = TealPrimary.copy(alpha = 0.15f)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = name.take(1).uppercase().ifBlank { "?" },
+                    fontSize = fontSize,
+                    fontWeight = FontWeight.Bold,
+                    color = TealPrimary
+                )
+            }
+        }
+    }
+}
+

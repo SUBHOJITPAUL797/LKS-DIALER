@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, Grid, User as UserIcon } from 'lucide-react';
+import { Clock, Users, Grid, User as UserIcon, MessageSquare } from 'lucide-react';
 import Onboarding from './components/Onboarding';
 import Dialer from './components/Dialer';
 import CallScreen from './components/CallScreen';
@@ -7,14 +7,19 @@ import IncomingCallModal from './components/IncomingCallModal';
 import RecentCalls from './components/RecentCalls';
 import Contacts from './components/Contacts';
 import Profile from './components/Profile';
+import ChatList from './components/ChatList';
+import ChatConversation from './components/ChatConversation';
 import { webRtcEngine } from './lib/WebRtcEngine';
+import { chatRepositoryWeb } from './lib/ChatRepositoryWeb';
 import { formatAvatarUrl } from './lib/ImageUtils';
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeCall, setActiveCall] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
-  const [activeTab, setActiveTab] = useState('dialer'); // 'recents', 'contacts', 'dialer', 'profile'
+  const [activeTab, setActiveTab] = useState('dialer'); // 'recents', 'contacts', 'chats', 'dialer', 'profile'
+  const [activeConversation, setActiveConversation] = useState(null); // { phoneNumber, contactName, profilePicUrl }
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
@@ -30,9 +35,16 @@ function App() {
       webRtcEngine.setCurrentUser(user);
       webRtcEngine.listenForIncomingCalls();
       webRtcEngine.initWebPush();
+      chatRepositoryWeb.attachChatListeners(user.phoneNumber);
+      setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
       setCurrentUser(user);
     }
     setIsInitializing(false);
+
+    // Subscribe to chat repository updates for unread badge count
+    const unsubChat = chatRepositoryWeb.subscribe(() => {
+      setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
+    });
 
     // Remove splash screen after initialization
     const splash = document.getElementById('splash-screen');
@@ -79,11 +91,18 @@ function App() {
         setActiveCall(callData);
       }
     };
+
+    return () => {
+      unsubChat();
+      chatRepositoryWeb.detachChatListeners();
+    };
   }, []);
 
   const handleRegister = async (phone, name) => {
     const user = await webRtcEngine.registerUser(phone, name);
     localStorage.setItem('lksDialerUser', JSON.stringify(user));
+    chatRepositoryWeb.attachChatListeners(user.phoneNumber);
+    setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
     setCurrentUser(user);
   };
 
@@ -118,6 +137,14 @@ function App() {
     await webRtcEngine.endCall();
   };
 
+  const handleOpenChat = (phoneNumber, contactName, profilePicUrl) => {
+    setActiveConversation({
+      phoneNumber,
+      contactName: contactName || phoneNumber,
+      profilePicUrl: profilePicUrl || ''
+    });
+  };
+
   if (isInitializing) return null;
 
   if (!currentUser) {
@@ -136,41 +163,88 @@ function App() {
     );
   }
 
+  // Active Chat Conversation Screen
+  if (activeConversation) {
+    return (
+      <div className="app-container">
+        <ChatConversation
+          peerNumber={activeConversation.phoneNumber}
+          peerName={activeConversation.contactName}
+          peerAvatar={activeConversation.profilePicUrl}
+          onBack={() => setActiveConversation(null)}
+          onStartCall={handleStartCall}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
-      
-      {activeTab === 'recents' && <RecentCalls onStartCall={handleStartCall} />}
-      {activeTab === 'contacts' && <Contacts onStartCall={handleStartCall} />}
-      {activeTab === 'dialer' && <Dialer onStartCall={handleStartCall} />}
-      {activeTab === 'profile' && <Profile />}
+      {activeTab === 'recents' && (
+        <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+      )}
+      {activeTab === 'contacts' && (
+        <Contacts onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+      )}
+      {activeTab === 'chats' && (
+        <ChatList onOpenChat={handleOpenChat} />
+      )}
+      {activeTab === 'dialer' && (
+        <Dialer onStartCall={handleStartCall} />
+      )}
+      {activeTab === 'profile' && (
+        <Profile />
+      )}
 
+      {/* Bottom Navigation with 5 tabs */}
       <div className="bottom-nav">
         <div 
           className={`nav-item ${activeTab === 'recents' ? 'active' : ''}`}
           onClick={() => setActiveTab('recents')}
         >
-          <Clock size={24} />
+          <Clock size={22} />
           <span>Recents</span>
         </div>
         <div 
           className={`nav-item ${activeTab === 'contacts' ? 'active' : ''}`}
           onClick={() => setActiveTab('contacts')}
         >
-          <Users size={24} />
+          <Users size={22} />
           <span>Contacts</span>
+        </div>
+        <div 
+          className={`nav-item ${activeTab === 'chats' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chats')}
+          style={{ position: 'relative' }}
+        >
+          <div style={{ position: 'relative', display: 'inline-flex' }}>
+            <MessageSquare size={22} />
+            {unreadChatCount > 0 && (
+              <div style={{
+                position: 'absolute', top: '-6px', right: '-10px',
+                backgroundColor: 'var(--primary)', color: '#fff',
+                fontSize: '10px', fontWeight: '900', borderRadius: '10px',
+                padding: '1px 5px', border: '1.5px solid #000',
+                boxShadow: '1px 1px 0 #000'
+              }}>
+                {unreadChatCount > 99 ? '99+' : unreadChatCount}
+              </div>
+            )}
+          </div>
+          <span>Chats</span>
         </div>
         <div 
           className={`nav-item ${activeTab === 'dialer' ? 'active' : ''}`}
           onClick={() => setActiveTab('dialer')}
         >
-          <Grid size={24} />
+          <Grid size={22} />
           <span>Keypad</span>
         </div>
         <div 
           className={`nav-item ${activeTab === 'profile' ? 'active' : ''}`}
           onClick={() => setActiveTab('profile')}
         >
-          <UserIcon size={24} />
+          <UserIcon size={22} />
           <span>Profile</span>
         </div>
       </div>

@@ -185,11 +185,23 @@ fun ChatListScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(filteredConversations, key = { it.phoneNumber }) { conv ->
-                        val isPeerOnline = remember(registeredUsers, conv.phoneNumber) {
-                            registeredUsers.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, conv.phoneNumber) }?.isOnline == true
+                        val matchedUser = remember(registeredUsers, conv.phoneNumber) {
+                            registeredUsers.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, conv.phoneNumber) }
+                        }
+                        val matchedContact = remember(syncedContacts, conv.phoneNumber) {
+                            syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, conv.phoneNumber) }
+                        }
+                        val isPeerOnline = matchedUser?.isOnline == true
+                        val resolvedAvatar = remember(conv.profilePicUrl, matchedUser, matchedContact) {
+                            when {
+                                !matchedUser?.profilePictureUrl.isNullOrBlank() -> matchedUser!!.profilePictureUrl
+                                !matchedContact?.profilePictureUrl.isNullOrBlank() -> matchedContact!!.profilePictureUrl
+                                else -> conv.profilePicUrl
+                            }
                         }
                         ConversationItem(
                             conversation = conv,
+                            avatarPic = resolvedAvatar,
                             isOnline = isPeerOnline,
                             onClick = { onOpenConversation(conv.phoneNumber, conv.contactName) }
                         )
@@ -220,6 +232,7 @@ fun ChatListScreen(
 @Composable
 private fun ConversationItem(
     conversation: ConversationEntity,
+    avatarPic: String,
     isOnline: Boolean,
     onClick: () -> Unit
 ) {
@@ -232,38 +245,12 @@ private fun ConversationItem(
     ) {
         // Avatar with Online dot
         Box(modifier = Modifier.size(52.dp)) {
-            if (conversation.profilePicUrl.isNotBlank()) {
-                val imageModel = if (conversation.profilePicUrl.startsWith("data:image")) {
-                    try {
-                        val base64Data = conversation.profilePicUrl.substringAfter(",")
-                        android.util.Base64.decode(base64Data, android.util.Base64.DEFAULT)
-                    } catch (_: Exception) { conversation.profilePicUrl }
-                } else conversation.profilePicUrl
-
-                AsyncImage(
-                    model = imageModel,
-                    contentDescription = conversation.contactName,
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Surface(
-                    shape = CircleShape,
-                    color = TealPrimary.copy(alpha = 0.15f),
-                    modifier = Modifier.size(52.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = conversation.contactName.take(1).uppercase(),
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = TealPrimary
-                        )
-                    }
-                }
-            }
+            ChatAvatar(
+                name = conversation.contactName,
+                profilePic = avatarPic,
+                size = 52.dp,
+                fontSize = 20.sp
+            )
 
             // Green online indicator
             if (isOnline) {
@@ -501,6 +488,15 @@ private fun NewChatPickerModal(
                     .heightIn(max = 350.dp)
             ) {
                 items(eligibleContacts, key = { it.first }) { (phone, name) ->
+                    val contactUser = remember(phone, registeredUsers) {
+                        registeredUsers.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, phone) }
+                    }
+                    val contactObj = remember(phone, syncedContacts) {
+                        syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, phone) }
+                    }
+                    val pic = remember(contactUser, contactObj) {
+                        contactUser?.profilePictureUrl?.ifBlank { null } ?: contactObj?.profilePictureUrl ?: ""
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -508,19 +504,12 @@ private fun NewChatPickerModal(
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = TealPrimary.copy(alpha = 0.12f),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = name.take(1).uppercase(),
-                                    fontWeight = FontWeight.Bold,
-                                    color = TealPrimary
-                                )
-                            }
-                        }
+                        ChatAvatar(
+                            name = name,
+                            profilePic = pic,
+                            size = 40.dp,
+                            fontSize = 16.sp
+                        )
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(text = name, fontWeight = FontWeight.SemiBold, maxLines = 1)

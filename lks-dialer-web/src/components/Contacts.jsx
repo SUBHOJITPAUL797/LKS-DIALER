@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Phone, Video, Search } from 'lucide-react';
+import { Phone, Video, Search, MessageSquare } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 
-export default function Contacts({ onStartCall }) {
+export default function Contacts({ onStartCall, onOpenChat }) {
   const [contacts, setContacts] = useState([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -114,11 +114,27 @@ export default function Contacts({ onStartCall }) {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '12px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {onOpenChat && (
+                  <button 
+                    onClick={() => phoneNumber && onOpenChat(phoneNumber, displayName, contact.profilePictureUrl)}
+                    className="neo-box"
+                    disabled={!phoneNumber}
+                    title="Chat"
+                    style={{ 
+                      width: '40px', height: '40px', padding: 0, display: 'flex', 
+                      alignItems: 'center', justifyContent: 'center', cursor: phoneNumber ? 'pointer' : 'default',
+                      backgroundColor: 'var(--secondary)'
+                    }}
+                  >
+                    <MessageSquare size={20} color="#000" />
+                  </button>
+                )}
                 <button 
                   onClick={() => phoneNumber && onStartCall(phoneNumber, 'AUDIO')}
                   className="neo-box"
                   disabled={!phoneNumber}
+                  title="Audio Call"
                   style={{ 
                     width: '40px', height: '40px', padding: 0, display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', cursor: phoneNumber ? 'pointer' : 'default',
@@ -131,6 +147,7 @@ export default function Contacts({ onStartCall }) {
                   onClick={() => phoneNumber && onStartCall(phoneNumber, 'VIDEO')}
                   className="neo-box"
                   disabled={!phoneNumber}
+                  title="Video Call"
                   style={{ 
                     width: '40px', height: '40px', padding: 0, display: 'flex', 
                     alignItems: 'center', justifyContent: 'center', cursor: phoneNumber ? 'pointer' : 'default',
