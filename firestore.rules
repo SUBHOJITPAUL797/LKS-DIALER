@@ -26,6 +26,25 @@ service cloud.firestore {
         && data.callType in ['AUDIO', 'VIDEO'];
     }
 
+    function isValidChatMessage(data, id, recipientPhone) {
+      return data.messageId == id
+        && data.recipientNumber == recipientPhone
+        && data.senderNumber is string
+        && data.senderPublicKey is string
+        && data.ciphertext is string
+        && data.ciphertext.size() > 0
+        && data.iv is string
+        && data.iv.size() > 0
+        && data.mediaType in ['TEXT', 'IMAGE', 'AUDIO'];
+    }
+
+    function isValidReceipt(data) {
+      return data.messageId is string
+        && data.senderNumber is string
+        && data.recipientNumber is string
+        && data.status in ['DELIVERED', 'READ'];
+    }
+
     // User profiles & presence
     match /users/{phoneNumber} {
       allow read: if true;
@@ -62,6 +81,40 @@ service cloud.firestore {
         allow create: if isValidCandidate(request.resource.data);
         allow update: if true;
         allow delete: if true;
+      }
+    }
+
+    // Ephemeral End-to-End Encrypted Inboxes (Zero Server Retention)
+    match /inboxes/{recipientPhone} {
+      allow read, write: if true;
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create: if isValidChatMessage(request.resource.data, messageId, recipientPhone);
+        allow update: if false;
+        allow delete: if true;
+      }
+    }
+
+    // Ephemeral Delivery & Read Receipts (Zero Server Retention)
+    match /receipts/{recipientPhone} {
+      allow read, write: if true;
+
+      match /acks/{ackId} {
+        allow read: if true;
+        allow create: if isValidReceipt(request.resource.data);
+        allow update: if false;
+        allow delete: if true;
+      }
+    }
+
+    // Ephemeral Typing Status (5s TTL)
+    match /typingStatus/{targetPhone} {
+      allow read, write: if true;
+
+      match /peers/{peerPhone} {
+        allow read: if true;
+        allow write: if request.resource.data.isTyping is bool;
       }
     }
   }
