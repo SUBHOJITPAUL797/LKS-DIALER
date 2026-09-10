@@ -133,6 +133,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Chat Reply Receiver — handles inline (direct) replies from chat notifications WITHOUT opening the app -->
+        <receiver
+            android:name=".services.ChatReplyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.ACTION_REPLY_CHAT" />
+            </intent-filter>
+        </receiver>
+
         <!-- Boot Receiver — wakes up the app after restart to ensure FCM works -->
         <receiver
             android:name=".services.BootReceiver"

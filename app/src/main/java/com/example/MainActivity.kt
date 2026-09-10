@@ -496,6 +496,7 @@ class MainActivity : ComponentActivity() {
                 var newDeviceId by remember { mutableStateOf("") }
                 var chatPeerNumber by remember { mutableStateOf("") }
                 var chatPeerName by remember { mutableStateOf("") }
+                var chatPeerAvatar by remember { mutableStateOf("") }
 
                 val chatRepo = remember { ChatRepository.getInstance(context) }
                 val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
@@ -757,9 +758,10 @@ class MainActivity : ComponentActivity() {
                                         )
                                         MainTab.CHATS -> ChatListScreen(
                                             firebaseManager = firebaseManager,
-                                            onOpenConversation = { phone, name ->
+                                            onOpenConversation = { phone, name, avatar ->
                                                 chatPeerNumber = phone
                                                 chatPeerName = name
+                                                chatPeerAvatar = avatar
                                                 navState = AppNavState.CHAT_CONVERSATION
                                             }
                                         )
@@ -791,6 +793,7 @@ class MainActivity : ComponentActivity() {
                             ChatConversationScreen(
                                 peerPhoneNumber = chatPeerNumber,
                                 peerDisplayName = chatPeerName,
+                                peerInitialAvatar = chatPeerAvatar,
                                 firebaseManager = firebaseManager,
                                 onBackClick = {
                                     navState = AppNavState.MAIN

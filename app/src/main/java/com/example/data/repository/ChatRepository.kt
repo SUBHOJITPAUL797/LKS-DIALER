@@ -290,13 +290,24 @@ class ChatRepository private constructor(private val context: Context) {
             val existingConv = conversationDao.getConversation(senderNorm)
             val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
 
+            // For TEXT messages that contain reply metadata (JSON), extract just the visible text
+            // so notifications and conversation previews show plain text, not raw JSON
+            val notificationDisplayText = if (dto.mediaType == ChatMediaType.TEXT.name) {
+                try {
+                    val obj = JSONObject(displayText)
+                    obj.optString("text", displayText)
+                } catch (_: Exception) { displayText }
+            } else displayText
+
             val convEntity = ConversationEntity(
                 phoneNumber = senderNorm,
                 contactName = resolvedName,
                 profilePicUrl = profilePic,
-                lastMessageText = if (dto.mediaType == ChatMediaType.IMAGE.name) "📷 Photo"
-                                  else if (dto.mediaType == ChatMediaType.AUDIO.name) "🎤 Voice message"
-                                  else displayText,
+                lastMessageText = when (dto.mediaType) {
+                    ChatMediaType.IMAGE.name -> "📷 Photo"
+                    ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                    else -> notificationDisplayText
+                },
                 lastMessageType = dto.mediaType,
                 lastMessageTimestamp = messageEntity.timestamp,
                 lastMessageStatus = finalStatus,
@@ -327,7 +338,7 @@ class ChatRepository private constructor(private val context: Context) {
                 showIncomingMessageNotification(
                     senderNumber = senderNorm,
                     senderName = resolvedName,
-                    messageText = displayText,
+                    messageText = notificationDisplayText,
                     messageType = dto.mediaType
                 )
             }
@@ -650,13 +661,13 @@ class ChatRepository private constructor(private val context: Context) {
             .setLabel("Reply to $senderName...")
             .build()
 
-        val replyIntent = Intent(context, MainActivity::class.java).apply {
-            action = "com.example.ACTION_REPLY_CHAT_$notifId"
+        val replyIntent = Intent(context, com.example.services.ChatReplyReceiver::class.java).apply {
+            action = "com.example.ACTION_REPLY_CHAT"
             putExtra("chat_peer_number", senderNumber)
             putExtra("chat_peer_name", senderName)
             putExtra("notification_id", notifId)
         }
-        val replyPendingIntent = PendingIntent.getActivity(
+        val replyPendingIntent = PendingIntent.getBroadcast(
             context,
             notifId + 1000,
             replyIntent,

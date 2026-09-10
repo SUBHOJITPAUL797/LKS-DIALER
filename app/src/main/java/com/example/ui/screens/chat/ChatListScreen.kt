@@ -38,7 +38,7 @@ import java.util.*
 @Composable
 fun ChatListScreen(
     firebaseManager: FirebaseManager,
-    onOpenConversation: (phoneNumber: String, contactName: String) -> Unit
+    onOpenConversation: (phoneNumber: String, contactName: String, avatarUrl: String) -> Unit
 ) {
     val context = LocalContext.current
     val chatRepository = remember { ChatRepository.getInstance(context) }
@@ -203,7 +203,7 @@ fun ChatListScreen(
                             conversation = conv,
                             avatarPic = resolvedAvatar,
                             isOnline = isPeerOnline,
-                            onClick = { onOpenConversation(conv.phoneNumber, conv.contactName) }
+                            onClick = { onOpenConversation(conv.phoneNumber, conv.contactName, resolvedAvatar) }
                         )
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 76.dp, end = 16.dp),
@@ -220,9 +220,9 @@ fun ChatListScreen(
         NewChatPickerModal(
             registeredUsers = registeredUsers,
             syncedContacts = syncedContacts,
-            onUserSelected = { phone, name ->
+            onUserSelected = { phone, name, avatar ->
                 showNewChatDialog = false
-                onOpenConversation(phone, name)
+                onOpenConversation(phone, name, avatar)
             },
             onDismiss = { showNewChatDialog = false }
         )
@@ -399,7 +399,7 @@ fun StatusTickIcon(status: String) {
 private fun NewChatPickerModal(
     registeredUsers: List<UserDto>,
     syncedContacts: List<ContactDto>,
-    onUserSelected: (phone: String, name: String) -> Unit,
+    onUserSelected: (phone: String, name: String, avatarUrl: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var manualPhone by remember { mutableStateOf("") }
@@ -441,7 +441,7 @@ private fun NewChatPickerModal(
             )
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Direct Number Input
+            // Direct Number Input — no avatar available for manual entry
             OutlinedTextField(
                 value = manualPhone,
                 onValueChange = { manualPhone = it.filter { ch -> ch.isDigit() || ch == '+' } },
@@ -450,7 +450,7 @@ private fun NewChatPickerModal(
                 leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = TealPrimary) },
                 trailingIcon = {
                     if (manualPhone.length >= 7) {
-                        IconButton(onClick = { onUserSelected(manualPhone, manualPhone) }) {
+                        IconButton(onClick = { onUserSelected(manualPhone, manualPhone, "") }) {
                             Icon(Icons.Default.ArrowForward, contentDescription = "Start", tint = GreenCall)
                         }
                     }
@@ -500,7 +500,7 @@ private fun NewChatPickerModal(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onUserSelected(phone, name) }
+                            .clickable { onUserSelected(phone, name, pic) }
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {

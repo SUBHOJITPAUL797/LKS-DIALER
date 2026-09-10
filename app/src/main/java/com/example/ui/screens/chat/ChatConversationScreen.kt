@@ -78,6 +78,7 @@ data class ReplyContext(
 fun ChatConversationScreen(
     peerPhoneNumber: String,
     peerDisplayName: String,
+    peerInitialAvatar: String = "",   // pre-resolved avatar passed from ChatListScreen
     firebaseManager: FirebaseManager,
     onBackClick: () -> Unit,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
@@ -100,9 +101,12 @@ fun ChatConversationScreen(
     val peerContact = remember(syncedContacts, normPeer) {
         syncedContacts.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
     }
-    val peerProfilePic = remember(peerUser, peerContact) {
-        val userPic = peerUser?.profilePictureUrl ?: ""
-        if (userPic.isNotBlank()) userPic else (peerContact?.profilePictureUrl ?: "")
+    // ── Avatar resolution: use peerInitialAvatar immediately, then upgrade from registeredUsers/contacts ──
+    val peerProfilePic = remember(peerUser, peerContact, peerInitialAvatar) {
+        val userPic     = peerUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
+        val contactPic  = peerContact?.profilePictureUrl?.takeIf { it.isNotBlank() }
+        // Priority: live Firestore user > synced contact > avatar passed from ChatListScreen
+        userPic ?: contactPic ?: peerInitialAvatar
     }
     val isPeerOnline = peerUser?.isOnline ?: false
 
@@ -325,9 +329,11 @@ fun ChatConversationScreen(
                     }
 
                     items(messages, key = { it.id }) { msg ->
+                        val myDisplayName = firebaseManager.currentUser.collectAsState().value?.displayName ?: "Me"
                         SwipeableMessageWrapper(
                             message = msg,
                             peerDisplayName = peerDisplayName,
+                            myDisplayName = myDisplayName,
                             onReply = { replyCtx -> replyingTo = replyCtx }
                         ) {
                             MessageBubble(
@@ -637,6 +643,7 @@ fun ChatConversationScreen(
 private fun SwipeableMessageWrapper(
     message: MessageEntity,
     peerDisplayName: String,
+    myDisplayName: String,
     onReply: (ReplyContext) -> Unit,
     content: @Composable () -> Unit
 ) {
@@ -672,7 +679,8 @@ private fun SwipeableMessageWrapper(
                                     } catch (_: Exception) { message.text }
                                 }
                             }
-                            val senderLabel = if (message.isOutgoing) "You" else peerDisplayName
+                            // Use absolute names so both sender and receiver see the correct name
+                            val senderLabel = if (message.isOutgoing) myDisplayName else peerDisplayName
                             onReply(
                                 ReplyContext(
                                     messageId = message.id,
