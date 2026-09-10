@@ -56,7 +56,8 @@ import java.util.Locale
 @Composable
 fun CallHistoryScreen(
     firebaseManager: FirebaseManager,
-    onStartCall: (number: String, name: String, callType: CallType) -> Unit
+    onStartCall: (number: String, name: String, callType: CallType) -> Unit,
+    onOpenChat: ((number: String, name: String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val themeColor = LocalThemeColor.current
@@ -211,10 +212,10 @@ fun CallHistoryScreen(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(Icons.Default.Call, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Audio Call")
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Audio")
                     }
-                    Spacer(modifier = Modifier.width(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
                             selectedLogForDetail = null
@@ -225,8 +226,24 @@ fun CallHistoryScreen(
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(Icons.Default.Videocam, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Video")
+                    }
+                    if (onOpenChat != null) {
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Video Call")
+                        Button(
+                            onClick = {
+                                selectedLogForDetail = null
+                                onOpenChat(log.otherPartyNumber, log.otherPartyName)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(Icons.Default.ChatBubbleOutline, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Chat")
+                        }
                     }
                 }
 

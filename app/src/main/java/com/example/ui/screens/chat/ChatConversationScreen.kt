@@ -131,6 +131,17 @@ fun ChatConversationScreen(
         }
     }
 
+    // Mic Permission Launcher for Voice Notes
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            voiceHelper.startRecording()
+        } else {
+            Toast.makeText(context, "Microphone permission is required to record voice notes", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -441,9 +452,15 @@ fun ChatConversationScreen(
                             // Mic for voice note
                             IconButton(
                                 onClick = {
-                                    val started = voiceHelper.startRecording()
-                                    if (!started) {
-                                        Toast.makeText(context, "Microphone permission required", Toast.LENGTH_SHORT).show()
+                                    val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                        context,
+                                        android.Manifest.permission.RECORD_AUDIO
+                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                                    if (hasMicPermission) {
+                                        voiceHelper.startRecording()
+                                    } else {
+                                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                                     }
                                 },
                                 modifier = Modifier

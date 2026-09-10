@@ -543,7 +543,56 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     private fun sendFcmWakeup(recipientPhone: String, senderPhone: String, previewText: String) {
-        // FCM is broadcasted or triggered via Firestore trigger/function if configured
+        val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+        val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
+        if (workerUrl.isBlank()) return
+
+        val firebaseManager = FirebaseManager.getInstance(context)
+        val recipientUser = firebaseManager.lookupUserByNumber(recipientPhone)
+        val myName = firebaseManager.currentUser.value?.displayName ?: senderPhone
+
+        fun postPush(token: String) {
+            if (token.isBlank()) return
+            Thread {
+                var conn: java.net.HttpURLConnection? = null
+                try {
+                    val url = java.net.URL(workerUrl)
+                    conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("X-Worker-Secret", workerSecret)
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        doOutput = true
+                    }
+                    val json = JSONObject().apply {
+                        put("token", token)
+                        put("callerName", myName)
+                        put("callerNumber", senderPhone)
+                        put("type", "chat_message")
+                    }.toString()
+
+                    conn.outputStream.use { it.write(json.toByteArray()) }
+                    Log.d(TAG, "Chat push notification triggered, response code: ${conn.responseCode}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send chat push trigger: ${e.message}")
+                } finally {
+                    conn?.disconnect()
+                }
+            }.start()
+        }
+
+        val fcmToken = recipientUser?.fcmToken ?: ""
+        if (fcmToken.isNotBlank()) {
+            postPush(fcmToken)
+        } else {
+            firestore.collection("users").document(recipientPhone).get().addOnSuccessListener { doc ->
+                val fetchedToken = doc.getString("fcmToken") ?: ""
+                if (fetchedToken.isNotBlank()) {
+                    postPush(fetchedToken)
+                }
+            }
+        }
     }
 
     /**

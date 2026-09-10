@@ -748,6 +748,11 @@ class MainActivity : ComponentActivity() {
                                                 val myNum = currentUser?.phoneNumber ?: return@CallHistoryScreen
                                                 val myName = currentUser?.displayName ?: "Me"
                                                 webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                            },
+                                            onOpenChat = { number, name ->
+                                                chatPeerNumber = number
+                                                chatPeerName = name
+                                                navState = AppNavState.CHAT_CONVERSATION
                                             }
                                         )
                                         MainTab.CHATS -> ChatListScreen(
