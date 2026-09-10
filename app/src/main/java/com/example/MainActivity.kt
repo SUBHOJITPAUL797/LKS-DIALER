@@ -171,6 +171,9 @@ class MainActivity : ComponentActivity() {
             if (currentStatus != com.example.data.model.CallStatus.RINGING) {
                 com.example.util.LksIncomingRingtonePlayer.stop()
             }
+            if (isFinishing && (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING)) {
+                com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.endCall()
+            }
         }
     }
 
@@ -249,14 +252,16 @@ class MainActivity : ComponentActivity() {
                 activeCall.callType
             )
         } else if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
-            // Show Draggable Active Call Pill over other apps when call is active
-            com.example.services.FloatingCallBubbleService.showActive(
-                this,
-                activeCall.callId,
-                activeCall.callerName,
-                activeCall.callerNumber,
-                activeCall.callType
-            )
+            // Show Draggable Active Call Pill over other apps ONLY for AUDIO calls (video uses PiP floating window)
+            if (rtcState.callType != com.example.data.model.CallType.VIDEO && activeCall.callType != com.example.data.model.CallType.VIDEO) {
+                com.example.services.FloatingCallBubbleService.showActive(
+                    this,
+                    activeCall.callId,
+                    activeCall.callerName,
+                    activeCall.callerNumber,
+                    activeCall.callType
+                )
+            }
         }
     }
 

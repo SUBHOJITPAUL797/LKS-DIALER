@@ -846,14 +846,18 @@ fun ActiveVideoCallScreen(
         if (state.isCameraOn && state.localVideoTrack != null) {
             Surface(
                 modifier = Modifier
-                    .padding(if (isPipMode) 6.dp else 12.dp)
-                    .size(width = if (isPipMode) 46.dp else 110.dp, height = if (isPipMode) 70.dp else 160.dp)
                     .align(Alignment.TopEnd)
-                    .clip(RoundedCornerShape(if (isPipMode) 8.dp else 16.dp)),
+                    .padding(if (isPipMode) 6.dp else 12.dp)
+                    .size(width = if (isPipMode) 46.dp else 110.dp, height = if (isPipMode) 70.dp else 160.dp),
+                shape = RoundedCornerShape(if (isPipMode) 8.dp else 16.dp),
                 shadowElevation = if (isPipMode) 4.dp else 8.dp,
                 color = Color.Black
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(if (isPipMode) 8.dp else 16.dp))
+                ) {
                     WebRtcVideoRenderer(
                         videoTrack = state.localVideoTrack,
                         eglBaseContext = webRtcEngine.eglBaseContext,

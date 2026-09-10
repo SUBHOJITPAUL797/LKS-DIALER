@@ -140,6 +140,11 @@ class FloatingCallBubbleService : Service() {
             peerNumber: String,
             callType: CallType
         ) {
+            if (callType == CallType.VIDEO) {
+                // Video calls use native Picture-in-Picture (PiP) floating window with live camera/video streams,
+                // NOT the audio timer pill!
+                return
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
                 return
             }
@@ -610,8 +615,13 @@ class FloatingCallBubbleService : Service() {
                 // Answer directly via WebRtcEngine in background
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
                 engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
-                // Switch pill to active in-call pill
-                showActiveCallPill()
+                if (callType == CallType.VIDEO) {
+                    openFullScreenCallActivity(callId, autoAnswer = true)
+                    removeFloatingView()
+                } else {
+                    // Switch pill to active in-call pill
+                    showActiveCallPill()
+                }
             }
         }
 
@@ -706,6 +716,13 @@ class FloatingCallBubbleService : Service() {
         val wm = windowManager ?: return
 
         val engine = WebRtcEngine.getInstanceIfCreated()
+        val currentCallType = engine?.state?.value?.callType ?: callType
+        if (currentCallType == CallType.VIDEO) {
+            // Video calls use native Picture-in-Picture (PiP) floating window, do not display audio pill
+            removeFloatingView()
+            return
+        }
+
         val engineStartTime = engine?.state?.value?.callStartedAtMillis ?: 0L
         val currentDuration = engine?.state?.value?.callDurationSeconds ?: 0
         callStartTime = when {
