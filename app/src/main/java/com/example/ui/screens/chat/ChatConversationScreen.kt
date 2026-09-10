@@ -13,6 +13,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -31,8 +33,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,7 +58,21 @@ import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.absoluteValue
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Data class for reply context
+// ──────────────────────────────────────────────────────────────────────────────
+data class ReplyContext(
+    val messageId: Long,
+    val text: String,         // preview text / "(Photo)" / "(Voice)"
+    val senderLabel: String,  // "You" or peer display name
+    val isOutgoing: Boolean   // direction of the ORIGINAL message being replied to
+)
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Main Screen
+// ──────────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatConversationScreen(
@@ -92,6 +110,11 @@ fun ChatConversationScreen(
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
 
+    // Swipe-to-reply state
+    var replyingTo by remember { mutableStateOf<ReplyContext?>(null) }
+    // One-time swipe gesture hint
+    var showSwipeHint by remember { mutableStateOf(false) }
+
     val isRecording by voiceHelper.isRecording.collectAsState()
     val recordingDurationMs by voiceHelper.recordingDurationMs.collectAsState()
     val isPlaying by voiceHelper.isPlaying.collectAsState()
@@ -113,6 +136,16 @@ fun ChatConversationScreen(
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    // Show swipe hint once
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty() && !showSwipeHint) {
+            delay(900)
+            showSwipeHint = true
+            delay(3000)
+            showSwipeHint = false
         }
     }
 
@@ -143,14 +176,14 @@ fun ChatConversationScreen(
         }
     }
 
-    // Mic Permission Launcher for Voice Notes
+    // Mic Permission Launcher
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
             voiceHelper.startRecording()
         } else {
-            Toast.makeText(context, "Microphone permission is required to record voice notes", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Microphone permission is required", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -162,17 +195,13 @@ fun ChatConversationScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Avatar
                         ChatAvatar(
                             name = peerDisplayName,
                             profilePic = peerProfilePic,
                             size = 40.dp,
                             fontSize = 16.sp
                         )
-
                         Spacer(modifier = Modifier.width(10.dp))
-
-                        // Name & Status Subtitle
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = peerDisplayName,
@@ -202,15 +231,12 @@ fun ChatConversationScreen(
                     }
                 },
                 actions = {
-                    // Audio Call
                     IconButton(onClick = { onStartCall(normPeer, peerDisplayName, CallType.AUDIO) }) {
                         Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = GreenCall)
                     }
-                    // Video Call
                     IconButton(onClick = { onStartCall(normPeer, peerDisplayName, CallType.VIDEO) }) {
                         Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = TealPrimary)
                     }
-                    // Overflow menu
                     Box {
                         IconButton(onClick = { showOptionsMenu = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "Options")
@@ -250,64 +276,165 @@ fun ChatConversationScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                // ── KEY FIX: push content up when the IME (soft keyboard) appears
+                .imePadding()
                 .background(if (isSystemInDarkTheme()) Color(0xFF0B141A) else Color(0xFFEFEAE2))
         ) {
-            // Messages List
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                item {
-                    // E2EE Info banner
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Surface(
-                            color = if (isSystemInDarkTheme()) Color(0xFF182229) else Color(0xFFFFF3C4),
-                            shape = RoundedCornerShape(12.dp),
-                            shadowElevation = 1.dp
+            // ── Messages List ────────────────────────────────────────────────
+            Box(modifier = Modifier.weight(1f)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    item {
+                        // E2EE Info banner
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                color = if (isSystemInDarkTheme()) Color(0xFF182229) else Color(0xFFFFF3C4),
+                                shape = RoundedCornerShape(12.dp),
+                                shadowElevation = 1.dp
                             ) {
-                                Icon(
-                                    Icons.Default.Lock,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(13.dp),
-                                    tint = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Lock,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(13.dp),
+                                        tint = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Messages are End-to-End Encrypted and deleted from server once delivered.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    items(messages, key = { it.id }) { msg ->
+                        SwipeableMessageWrapper(
+                            message = msg,
+                            peerDisplayName = peerDisplayName,
+                            onReply = { replyCtx -> replyingTo = replyCtx }
+                        ) {
+                            MessageBubble(
+                                message = msg,
+                                isPlaying = (isPlaying && currentPlayingPath == msg.mediaPath),
+                                playbackProgress = if (currentPlayingPath == msg.mediaPath) playbackProgress else 0f,
+                                onPlayAudio = { path -> voiceHelper.playAudio(path) },
+                                onImageClick = { path -> selectedImagePreviewPath = path }
+                            )
+                        }
+                    }
+                }
+
+                // ── One-shot swipe hint overlay ──────────────────────────────
+                AnimatedVisibility(
+                    visible = showSwipeHint,
+                    enter = fadeIn() + slideInVertically(initialOffsetY = { -20 }),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                ) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.78f),
+                        shape = RoundedCornerShape(24.dp),
+                        shadowElevation = 4.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Reply,
+                                contentDescription = null,
+                                tint = Color(0xFFFFCC00),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Column {
                                 Text(
-                                    text = "Messages are End-to-End Encrypted and deleted from server once delivered.",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404),
-                                    textAlign = TextAlign.Center
+                                    "Swipe right on received messages to reply",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Swipe left on your own messages to reply",
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    fontSize = 11.sp
                                 )
                             }
                         }
                     }
                 }
+            }
 
-                items(messages, key = { it.id }) { msg ->
-                    MessageBubble(
-                        message = msg,
-                        isPlaying = (isPlaying && currentPlayingPath == msg.mediaPath),
-                        playbackProgress = if (currentPlayingPath == msg.mediaPath) playbackProgress else 0f,
-                        onPlayAudio = { path -> voiceHelper.playAudio(path) },
-                        onImageClick = { path -> selectedImagePreviewPath = path }
-                    )
+            // ── Reply Preview Bar ────────────────────────────────────────────
+            AnimatedVisibility(visible = replyingTo != null) {
+                if (replyingTo != null) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (isSystemInDarkTheme()) Color(0xFF1F2C34) else Color(0xFFE0F7FA),
+                        tonalElevation = 2.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Accent bar
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .height(40.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(if (replyingTo!!.isOutgoing) TealPrimary else GreenCall)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Replying to ${replyingTo!!.senderLabel}",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = if (replyingTo!!.isOutgoing) TealPrimary else GreenCall
+                                    )
+                                )
+                                Text(
+                                    text = replyingTo!!.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(
+                                onClick = { replyingTo = null },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
                 }
             }
 
-            // Bottom Input Bar
+            // ── Bottom Input Bar ─────────────────────────────────────────────
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surface,
@@ -392,7 +519,12 @@ fun ChatConversationScreen(
                                 inputText = text
                                 chatRepository.setTyping(normPeer, text.isNotBlank())
                             },
-                            placeholder = { Text("Message...") },
+                            placeholder = {
+                                Text(
+                                    if (replyingTo != null) "Reply to ${replyingTo!!.senderLabel}…"
+                                    else "Message…"
+                                )
+                            },
                             modifier = Modifier
                                 .weight(1f)
                                 .padding(horizontal = 4.dp),
@@ -410,14 +542,22 @@ fun ChatConversationScreen(
                             IconButton(
                                 onClick = {
                                     val textToSend = inputText.trim()
+                                    val currentReply = replyingTo
                                     if (textToSend.isNotEmpty()) {
                                         inputText = ""
+                                        replyingTo = null
                                         chatRepository.setTyping(normPeer, false)
                                         coroutineScope.launch {
+                                            // Embed reply metadata in message text as JSON if replying
+                                            val payload = if (currentReply != null) {
+                                                """{"text":${escapeJson(textToSend)},"replyTo":{"id":${currentReply.messageId},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                                            } else {
+                                                textToSend
+                                            }
                                             chatRepository.sendMessage(
                                                 recipientNumber = normPeer,
                                                 recipientName = peerDisplayName,
-                                                text = textToSend,
+                                                text = payload,
                                                 mediaType = ChatMediaType.TEXT
                                             )
                                         }
@@ -431,7 +571,6 @@ fun ChatConversationScreen(
                                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
                             }
                         } else {
-                            // Mic for voice note
                             IconButton(
                                 onClick = {
                                     val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
@@ -488,6 +627,127 @@ fun ChatConversationScreen(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Swipeable wrapper composable
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun SwipeableMessageWrapper(
+    message: MessageEntity,
+    peerDisplayName: String,
+    onReply: (ReplyContext) -> Unit,
+    content: @Composable () -> Unit
+) {
+    val density = LocalDensity.current
+    // THRESHOLD in dp -> px
+    val thresholdPx = with(density) { 64.dp.toPx() }
+    val maxDragPx   = with(density) { 84.dp.toPx() }
+
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var triggered by remember { mutableStateOf(false) }
+
+    // Icon opacity / scale based on progress
+    val progress = (offsetX.absoluteValue / thresholdPx).coerceIn(0f, 1f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(message.id) {
+                detectHorizontalDragGestures(
+                    onDragStart = {
+                        triggered = false
+                    },
+                    onDragEnd = {
+                        if (triggered) {
+                            val previewText = when {
+                                message.mediaType == ChatMediaType.IMAGE.name -> "📷 Photo"
+                                message.mediaType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                                else -> run {
+                                    // Strip JSON reply wrapper if present
+                                    try {
+                                        val obj = org.json.JSONObject(message.text)
+                                        obj.optString("text", message.text)
+                                    } catch (_: Exception) { message.text }
+                                }
+                            }
+                            val senderLabel = if (message.isOutgoing) "You" else peerDisplayName
+                            onReply(
+                                ReplyContext(
+                                    messageId = message.id,
+                                    text = previewText,
+                                    senderLabel = senderLabel,
+                                    isOutgoing = message.isOutgoing
+                                )
+                            )
+                        }
+                        offsetX = 0f
+                        triggered = false
+                    },
+                    onDragCancel = {
+                        offsetX = 0f
+                        triggered = false
+                    },
+                    onHorizontalDrag = { _, dragAmount ->
+                        // Incoming (isOutgoing=false) → right swipe → positive drag
+                        // Outgoing (isOutgoing=true)  → left swipe  → negative drag
+                        val correctDirection = if (message.isOutgoing) dragAmount < 0 else dragAmount > 0
+                        if (!correctDirection) return@detectHorizontalDragGestures
+
+                        val newOffset = offsetX + dragAmount
+                        offsetX = newOffset.coerceIn(-maxDragPx, maxDragPx)
+
+                        if (offsetX.absoluteValue >= thresholdPx && !triggered) {
+                            triggered = true
+                        }
+                    }
+                )
+            }
+    ) {
+        // Reply icon — shows on the appropriate side
+        if (!message.isOutgoing) {
+            // Incoming: icon appears on the left as user swipes right
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 4.dp)
+                    .size(36.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = "Reply",
+                    tint = TealPrimary.copy(alpha = progress),
+                    modifier = Modifier.size((16 + 8 * progress).dp)
+                )
+            }
+        } else {
+            // Outgoing: icon appears on the right as user swipes left
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 4.dp)
+                    .size(36.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Reply,
+                    contentDescription = "Reply",
+                    tint = GreenCall.copy(alpha = progress),
+                    modifier = Modifier
+                        .size((16 + 8 * progress).dp)
+                )
+            }
+        }
+
+        // Message bubble, translated by drag
+        Box(modifier = Modifier.offset(x = with(density) { offsetX.toDp() })) {
+            content()
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Message Bubble
+// ──────────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
@@ -501,16 +761,38 @@ private fun MessageBubble(
     val isOutgoing = message.isOutgoing
 
     val bubbleColor = when {
-        isOutgoing && isDark -> Color(0xFF005D4B) // WhatsApp dark green
-        isOutgoing && !isDark -> Color(0xFFE7FFDB) // WhatsApp light green
-        !isOutgoing && isDark -> Color(0xFF1F2C34) // WhatsApp dark incoming
-        else -> Color.White // WhatsApp light incoming
+        isOutgoing && isDark  -> Color(0xFF005D4B)
+        isOutgoing && !isDark -> Color(0xFFE7FFDB)
+        !isOutgoing && isDark -> Color(0xFF1F2C34)
+        else                   -> Color.White
     }
 
     val bubbleShape = if (isOutgoing) {
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
     } else {
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
+    }
+
+    // Try to parse reply context from message text
+    val parsedReply: Pair<String, String>? = remember(message.text) {
+        if (message.mediaType == ChatMediaType.TEXT.name) {
+            try {
+                val obj = org.json.JSONObject(message.text)
+                if (obj.has("replyTo")) {
+                    val replyTo = obj.getJSONObject("replyTo")
+                    Pair(replyTo.optString("senderLabel", ""), replyTo.optString("text", ""))
+                } else null
+            } catch (_: Exception) { null }
+        } else null
+    }
+
+    val displayText = remember(message.text) {
+        if (message.mediaType == ChatMediaType.TEXT.name) {
+            try {
+                val obj = org.json.JSONObject(message.text)
+                obj.optString("text", message.text)
+            } catch (_: Exception) { message.text }
+        } else message.text
     }
 
     Box(
@@ -526,7 +808,52 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
             Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                // Media (Image)
+
+                // ── Reply Quote ──────────────────────────────────────────────
+                if (parsedReply != null) {
+                    val (senderLbl, replyText) = parsedReply
+                    Surface(
+                        color = if (isOutgoing)
+                            TealPrimary.copy(alpha = 0.12f)
+                        else
+                            GreenCall.copy(alpha = 0.10f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .fillMaxHeight()
+                                    .background(if (isOutgoing) TealPrimary else GreenCall)
+                            )
+                            Column(
+                                modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
+                            ) {
+                                if (senderLbl.isNotBlank()) {
+                                    Text(
+                                        senderLbl,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = if (isOutgoing) TealPrimary else GreenCall
+                                        )
+                                    )
+                                }
+                                Text(
+                                    replyText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                // ── Image ────────────────────────────────────────────────────
                 if (message.mediaType == ChatMediaType.IMAGE.name && !message.mediaPath.isNullOrBlank()) {
                     AsyncImage(
                         model = message.mediaPath,
@@ -541,7 +868,7 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // Media (Audio Voice Note)
+                // ── Audio ────────────────────────────────────────────────────
                 if (message.mediaType == ChatMediaType.AUDIO.name && !message.mediaPath.isNullOrBlank()) {
                     Row(
                         modifier = Modifier
@@ -582,10 +909,10 @@ private fun MessageBubble(
                     }
                 }
 
-                // Text Content
-                if (message.text.isNotBlank()) {
+                // ── Text ─────────────────────────────────────────────────────
+                if (displayText.isNotBlank()) {
                     Text(
-                        text = message.text,
+                        text = displayText,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -593,7 +920,7 @@ private fun MessageBubble(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Timestamp & Ticks
+                // ── Timestamp & Ticks ────────────────────────────────────────
                 Row(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
@@ -614,6 +941,9 @@ private fun MessageBubble(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Avatar composable
+// ──────────────────────────────────────────────────────────────────────────────
 @Composable
 fun ChatAvatar(
     name: String,
@@ -669,3 +999,22 @@ fun ChatAvatar(
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────────────────────────────────────
+/** Minimal JSON string escaper — avoids needing Gson/Moshi for a simple string. */
+private fun escapeJson(s: String): String {
+    val sb = StringBuilder("\"")
+    for (ch in s) {
+        when (ch) {
+            '"'  -> sb.append("\\\"")
+            '\\' -> sb.append("\\\\")
+            '\n' -> sb.append("\\n")
+            '\r' -> sb.append("\\r")
+            '\t' -> sb.append("\\t")
+            else -> sb.append(ch)
+        }
+    }
+    sb.append("\"")
+    return sb.toString()
+}
