@@ -42,8 +42,10 @@ import com.example.data.model.CallLogDto
 import com.example.data.model.CallType
 import com.example.data.model.UserDto
 import com.example.data.repository.FirebaseManager
-import com.example.ui.theme.*
 import com.example.util.ContactsHelper
+import com.example.ui.theme.*
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -56,12 +58,15 @@ fun CallHistoryScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
 ) {
+    val context = LocalContext.current
     val themeColor = LocalThemeColor.current
     val callLogs by firebaseManager.callLogs.collectAsState()
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+    val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     var selectedFilter by remember { mutableStateOf("ALL") }
     var selectedLogForDetail by remember { mutableStateOf<CallLogDto?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showBlockConfirmDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // 5-Second Inactivity Swipe Demo State
@@ -118,6 +123,9 @@ fun CallHistoryScreen(
         val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
             registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
         }
+        val isBlocked = remember(log.otherPartyNumber, blockedNumbers) {
+            firebaseManager.isNumberBlocked(log.otherPartyNumber)
+        }
 
         ModalBottomSheet(
             onDismissRequest = { selectedLogForDetail = null }
@@ -142,11 +150,41 @@ fun CallHistoryScreen(
                     text = matchedUser?.displayName ?: log.otherPartyName,
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
-                Text(
-                    text = log.otherPartyNumber,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = log.otherPartyNumber,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (isBlocked) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Block,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Blocked",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
 
                 if (matchedUser != null && matchedUser.statusMessage.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
@@ -157,7 +195,7 @@ fun CallHistoryScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -191,8 +229,121 @@ fun CallHistoryScreen(
                         Text("Video Call")
                     }
                 }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Call metadata card
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Call Type",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${if (log.callType == CallType.VIDEO) "Video" else "Audio"} • ${log.direction.name.lowercase().replaceFirstChar { it.uppercase() }}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Time & Duration",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "${formatTime(log.startedAt)} (${if (log.durationSeconds > 0) formatDuration(log.durationSeconds) else "Missed"})",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Block / Unblock Action Button
+                if (isBlocked) {
+                    OutlinedButton(
+                        onClick = {
+                            firebaseManager.unblockNumber(log.otherPartyNumber)
+                            Toast.makeText(context, "Unblocked ${matchedUser?.displayName ?: log.otherPartyName}", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = themeColor.primary)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Unblock Caller", fontWeight = FontWeight.SemiBold)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            showBlockConfirmDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Block Caller", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
+    }
+
+    if (showBlockConfirmDialog && selectedLogForDetail != null) {
+        val targetLog = selectedLogForDetail!!
+        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
+        val targetName = targetUser?.displayName ?: targetLog.otherPartyName
+        AlertDialog(
+            onDismissRequest = { showBlockConfirmDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.Block,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = { Text("Block $targetName?") },
+            text = {
+                Text("Calls from ${targetLog.otherPartyNumber} will be automatically declined. You will not receive notifications for calls from this number.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        firebaseManager.blockNumber(targetLog.otherPartyNumber)
+                        Toast.makeText(context, "Blocked $targetName", Toast.LENGTH_SHORT).show()
+                        showBlockConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Block", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBlockConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     Column(
@@ -332,12 +483,16 @@ fun CallHistoryScreen(
                     val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
                         registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
                     }
+                    val isBlocked = remember(log.otherPartyNumber, blockedNumbers) {
+                        blockedNumbers.any { it == log.otherPartyNumber || ContactsHelper.numbersMatch(it, log.otherPartyNumber) }
+                    }
                     val isFirstItem = index == 0
                     val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
 
                     SwipeableCallLogItem(
                         log = log,
                         profilePicBase64 = matchedUser?.profilePictureUrl ?: "",
+                        isBlocked = isBlocked,
                         demoOffset = currentOffset,
                         onItemClick = {
                             lastInteractionTime = System.currentTimeMillis()
@@ -369,6 +524,7 @@ fun CallHistoryScreen(
 private fun SwipeableCallLogItem(
     log: CallLogDto,
     profilePicBase64: String,
+    isBlocked: Boolean = false,
     demoOffset: Float,
     onItemClick: () -> Unit,
     onAudioCall: () -> Unit,
@@ -432,6 +588,7 @@ private fun SwipeableCallLogItem(
                 CallLogItemContent(
                     log = log,
                     profilePicBase64 = profilePicBase64,
+                    isBlocked = isBlocked,
                     onItemClick = onItemClick
                 )
             }
@@ -490,6 +647,7 @@ private fun SwipeableCallLogItem(
                     CallLogItemContent(
                         log = log,
                         profilePicBase64 = profilePicBase64,
+                        isBlocked = isBlocked,
                         onItemClick = onItemClick
                     )
                 }
@@ -502,6 +660,7 @@ private fun SwipeableCallLogItem(
 private fun CallLogItemContent(
     log: CallLogDto,
     profilePicBase64: String,
+    isBlocked: Boolean = false,
     onItemClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
@@ -561,6 +720,21 @@ private fun CallLogItemContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                if (isBlocked) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "Blocked",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
             }
         }
 

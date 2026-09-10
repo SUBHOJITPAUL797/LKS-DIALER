@@ -40,8 +40,17 @@ import com.example.ui.theme.LocalThemeColor
 import com.example.ui.theme.ThemeManager
 
 import android.media.RingtoneManager
+import android.graphics.BitmapFactory
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.data.model.BlockedContactInfo
+import com.example.util.ContactsHelper
 import com.example.util.LksRingtoneManager
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,8 +65,10 @@ fun SettingsScreen(
 
     val isDndEnabled by firebaseManager.isDndEnabled.collectAsState()
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
+    val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+    val syncedContacts by firebaseManager.syncedContacts.collectAsState()
+    val callLogs by firebaseManager.callLogs.collectAsState()
     var showBlockNumberDialog by remember { mutableStateOf(false) }
-    var numberToBlockInput by remember { mutableStateOf("") }
 
     var isNoiseSuppressionOn by remember { mutableStateOf(true) }
     var isEchoCancellationOn by remember { mutableStateOf(true) }
@@ -116,55 +127,9 @@ fun SettingsScreen(
     }
 
     if (showBlockNumberDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                showBlockNumberDialog = false
-                numberToBlockInput = ""
-            },
-            title = { Text("Block Phone Number") },
-            text = {
-                Column {
-                    Text(
-                        "Enter the phone number you want to block. Any incoming calls from this number will be rejected silently.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = numberToBlockInput,
-                        onValueChange = { numberToBlockInput = it },
-                        label = { Text("Phone Number") },
-                        placeholder = { Text("+1234567890") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val clean = numberToBlockInput.trim()
-                        if (clean.isNotBlank()) {
-                            firebaseManager.blockNumber(clean)
-                            Toast.makeText(context, "Blocked $clean", Toast.LENGTH_SHORT).show()
-                            showBlockNumberDialog = false
-                            numberToBlockInput = ""
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Block", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showBlockNumberDialog = false
-                        numberToBlockInput = ""
-                    }
-                ) {
-                    Text("Cancel")
-                }
-            }
+        BlockNumberPickerModal(
+            firebaseManager = firebaseManager,
+            onDismiss = { showBlockNumberDialog = false }
         )
     }
 
@@ -789,47 +754,119 @@ fun SettingsScreen(
                             }
                         }
 
-                        if (blockedNumbers.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(10.dp))
+                        val blockedUsersInfo = remember(blockedNumbers, registeredUsers, syncedContacts) {
+                            blockedNumbers.map { firebaseManager.resolveBlockedContactInfo(it) }
+                        }
+
+                        if (blockedUsersInfo.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(12.dp))
                             Column(
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                blockedNumbers.forEach { number ->
+                                blockedUsersInfo.forEach { info ->
                                     Surface(
-                                        shape = RoundedCornerShape(12.dp),
+                                        shape = RoundedCornerShape(14.dp),
                                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Icon(
-                                                Icons.Default.PhoneDisabled,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(16.dp)
+                                            BlockedContactAvatar(
+                                                name = info.displayName,
+                                                profilePicBase64 = info.profilePictureUrl,
+                                                size = 42.dp
                                             )
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Text(
-                                                text = number,
-                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            TextButton(
-                                                onClick = {
-                                                    firebaseManager.unblockNumber(number)
-                                                    Toast.makeText(context, "Unblocked $number", Toast.LENGTH_SHORT).show()
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = info.displayName,
+                                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    if (info.isLksUser) {
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Surface(
+                                                            color = GreenCall.copy(alpha = 0.15f),
+                                                            shape = RoundedCornerShape(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "LKS",
+                                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                                color = GreenCall,
+                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                            )
+                                                        }
+                                                    }
                                                 }
-                                            ) {
+                                                Spacer(modifier = Modifier.height(2.dp))
                                                 Text(
-                                                    "Unblock",
-                                                    color = MaterialTheme.colorScheme.error,
-                                                    style = MaterialTheme.typography.labelMedium
+                                                    text = info.phoneNumber,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
+                                                if (info.statusMessage.isNotBlank() && info.statusMessage != "Available on LKS DIALER") {
+                                                    Text(
+                                                        text = info.statusMessage,
+                                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            OutlinedButton(
+                                                onClick = {
+                                                    firebaseManager.unblockNumber(info.phoneNumber)
+                                                    Toast.makeText(context, "Unblocked ${info.displayName}", Toast.LENGTH_SHORT).show()
+                                                },
+                                                colors = ButtonDefaults.outlinedButtonColors(
+                                                    contentColor = MaterialTheme.colorScheme.error
+                                                ),
+                                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                modifier = Modifier.height(34.dp)
+                                            ) {
+                                                Text("Unblock", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold))
                                             }
                                         }
+                                    }
+                                }
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.35f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = GreenCall,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "No Blocked Callers",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                        )
+                                        Text(
+                                            text = "All callers can reach you normally.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }
@@ -1062,3 +1099,423 @@ private fun SettingsSwitchTile(
         )
     }
 }
+
+@Composable
+private fun BlockedContactAvatar(
+    name: String,
+    profilePicBase64: String,
+    size: androidx.compose.ui.unit.Dp
+) {
+    val bitmap = remember(profilePicBase64) {
+        if (profilePicBase64.isNotBlank()) {
+            try {
+                val decoded = Base64.decode(profilePicBase64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(decoded, 0, decoded.size)?.asImageBitmap()
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = name,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        val initial = name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "#"
+        Surface(
+            modifier = Modifier.size(size),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    text = initial,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BlockNumberPickerModal(
+    firebaseManager: FirebaseManager,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val currentThemeColor = LocalThemeColor.current
+    val callLogs by firebaseManager.callLogs.collectAsState()
+    val syncedContacts by firebaseManager.syncedContacts.collectAsState()
+    val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
+
+    var selectedTab by remember { mutableStateOf(0) }
+    val tabTitles = listOf("Recent Calls", "Contacts", "Manual")
+
+    var manualNumberInput by remember { mutableStateOf("") }
+    var contactSearchQuery by remember { mutableStateOf("") }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.80f)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                // Header
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Block,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Block a Caller",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "Blocked numbers cannot ring your phone",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Tab Selector
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp)),
+                    indicator = {},
+                    divider = {}
+                ) {
+                    tabTitles.forEachIndexed { index, title ->
+                        val isSelected = selectedTab == index
+                        Tab(
+                            selected = isSelected,
+                            onClick = { selectedTab = index },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (isSelected) currentThemeColor.primary
+                                    else Color.Transparent
+                                ),
+                            text = {
+                                Text(
+                                    text = title,
+                                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    maxLines = 1
+                                )
+                            }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Tab Content
+                Box(modifier = Modifier.weight(1f)) {
+                    when (selectedTab) {
+                        0 -> {
+                            // Recent Calls Tab
+                            val distinctRecents = remember(callLogs) {
+                                callLogs.distinctBy { it.otherPartyNumber }
+                            }
+
+                            if (distinctRecents.isEmpty()) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            Icons.Default.History,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(44.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            "No recent calls found",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            } else {
+                                LazyColumn(
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(distinctRecents, key = { it.id.ifBlank { it.otherPartyNumber } }) { log ->
+                                        val isBlocked = blockedNumbers.any {
+                                            it == log.otherPartyNumber || ContactsHelper.numbersMatch(it, log.otherPartyNumber)
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(10.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                BlockedContactAvatar(
+                                                    name = log.otherPartyName,
+                                                    profilePicBase64 = log.otherPartyProfilePic,
+                                                    size = 38.dp
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = log.otherPartyName,
+                                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = log.otherPartyNumber,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                if (isBlocked) {
+                                                    Surface(
+                                                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "Blocked",
+                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                            color = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                } else {
+                                                    Button(
+                                                        onClick = {
+                                                            firebaseManager.blockNumber(log.otherPartyNumber)
+                                                            Toast.makeText(context, "Blocked ${log.otherPartyName}", Toast.LENGTH_SHORT).show()
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = MaterialTheme.colorScheme.error
+                                                        ),
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                                        modifier = Modifier.height(32.dp)
+                                                    ) {
+                                                        Text("Block", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        1 -> {
+                            // Contacts Tab
+                            val filteredContacts = remember(syncedContacts, contactSearchQuery) {
+                                if (contactSearchQuery.isBlank()) syncedContacts
+                                else syncedContacts.filter {
+                                    it.name.contains(contactSearchQuery, ignoreCase = true) ||
+                                    it.phoneNumber.contains(contactSearchQuery)
+                                }
+                            }
+
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                OutlinedTextField(
+                                    value = contactSearchQuery,
+                                    onValueChange = { contactSearchQuery = it },
+                                    placeholder = { Text("Search contacts...", fontSize = 13.sp) },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    },
+                                    trailingIcon = {
+                                        if (contactSearchQuery.isNotEmpty()) {
+                                            IconButton(onClick = { contactSearchQuery = "" }) {
+                                                Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+                                )
+
+                                if (filteredContacts.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            "No contacts found",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                } else {
+                                    LazyColumn(
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        items(filteredContacts, key = { it.id.ifBlank { it.phoneNumber } }) { contact ->
+                                            val isBlocked = blockedNumbers.any {
+                                                it == contact.phoneNumber || ContactsHelper.numbersMatch(it, contact.phoneNumber)
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(12.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    BlockedContactAvatar(
+                                                        name = contact.name,
+                                                        profilePicBase64 = contact.profilePictureUrl,
+                                                        size = 38.dp
+                                                    )
+                                                    Spacer(modifier = Modifier.width(10.dp))
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = contact.name,
+                                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        Text(
+                                                            text = contact.phoneNumber,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    if (isBlocked) {
+                                                        Surface(
+                                                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                                            shape = RoundedCornerShape(6.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = "Blocked",
+                                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                                                color = MaterialTheme.colorScheme.error,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Button(
+                                                            onClick = {
+                                                                firebaseManager.blockNumber(contact.phoneNumber)
+                                                                Toast.makeText(context, "Blocked ${contact.name}", Toast.LENGTH_SHORT).show()
+                                                            },
+                                                            colors = ButtonDefaults.buttonColors(
+                                                                containerColor = MaterialTheme.colorScheme.error
+                                                            ),
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                                            modifier = Modifier.height(32.dp)
+                                                        ) {
+                                                            Text("Block", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        2 -> {
+                            // Manual Input Tab
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(vertical = 12.dp)
+                            ) {
+                                Text(
+                                    text = "Enter any phone number to block. Calls from this number will be rejected automatically.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                OutlinedTextField(
+                                    value = manualNumberInput,
+                                    onValueChange = { manualNumberInput = it },
+                                    label = { Text("Phone Number") },
+                                    placeholder = { Text("+1234567890") },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Phone, contentDescription = null)
+                                    },
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(20.dp))
+                                Button(
+                                    onClick = {
+                                        val clean = manualNumberInput.trim()
+                                        if (clean.isNotBlank()) {
+                                            firebaseManager.blockNumber(clean)
+                                            Toast.makeText(context, "Blocked $clean", Toast.LENGTH_SHORT).show()
+                                            onDismiss()
+                                        }
+                                    },
+                                    enabled = manualNumberInput.isNotBlank(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Block This Number", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

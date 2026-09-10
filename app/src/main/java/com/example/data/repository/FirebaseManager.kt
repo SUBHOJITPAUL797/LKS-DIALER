@@ -609,6 +609,39 @@ class FirebaseManager private constructor(private val context: Context) {
         return _blockedNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
     }
 
+    /**
+     * Resolves rich details for a blocked number (display name, avatar, LKS status).
+     */
+    fun resolveBlockedContactInfo(phoneNumber: String): com.example.data.model.BlockedContactInfo {
+        val lksUser = _registeredUsers.value.find { ContactsHelper.numbersMatch(it.phoneNumber, phoneNumber) }
+        if (lksUser != null) {
+            return com.example.data.model.BlockedContactInfo(
+                phoneNumber = phoneNumber,
+                displayName = lksUser.displayName.ifBlank { phoneNumber },
+                profilePictureUrl = lksUser.profilePictureUrl,
+                isLksUser = true,
+                statusMessage = lksUser.statusMessage
+            )
+        }
+        val nativeContact = _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, phoneNumber) }
+        if (nativeContact != null) {
+            return com.example.data.model.BlockedContactInfo(
+                phoneNumber = phoneNumber,
+                displayName = nativeContact.name.ifBlank { phoneNumber },
+                profilePictureUrl = nativeContact.profilePictureUrl,
+                isLksUser = nativeContact.isVoiceLinkUser,
+                statusMessage = nativeContact.statusMessage
+            )
+        }
+        return com.example.data.model.BlockedContactInfo(
+            phoneNumber = phoneNumber,
+            displayName = phoneNumber,
+            profilePictureUrl = "",
+            isLksUser = false,
+            statusMessage = ""
+        )
+    }
+
     fun updateFcmToken(token: String) {
         if (token.isBlank()) return
 
