@@ -89,61 +89,13 @@ class CallMessagingService : FirebaseMessagingService() {
                     Log.w("FCM", "Failed to log missed call locally: ${e.message}")
                 }
 
-                // Create high-importance channel for missed calls
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val missedChannel = NotificationChannel(
-                        MISSED_CALL_CHANNEL_ID,
-                        "Missed Calls",
-                        NotificationManager.IMPORTANCE_HIGH
-                    ).apply {
-                        description = "Notifications for missed VoIP calls"
-                        enableVibration(true)
-                        enableLights(true)
-                        lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-                    }
-                    notificationManager.createNotificationChannel(missedChannel)
-                }
-
-                // Tap notification opens Recents tab
-                val openIntent = Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra("open_tab", "RECENTS")
-                }
-                val pendingIntent = PendingIntent.getActivity(
-                    this,
-                    callId.hashCode(),
-                    openIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                // Show unified missed call notification with Call Back action
+                com.example.data.repository.FirebaseManager.getInstance(this).showMissedCallNotification(
+                    callerNumber = callerNumber,
+                    callerName = callerName,
+                    callType = callTypeEnum,
+                    callId = callId
                 )
-
-                // Call Back action
-                val callBackIntent = Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    putExtra("call_back_number", callerNumber)
-                    putExtra("call_back_name", callerName)
-                    putExtra("call_back_type", callType)
-                }
-                val callBackPendingIntent = PendingIntent.getActivity(
-                    this,
-                    (callId + "_cb").hashCode(),
-                    callBackIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-
-                val builder = NotificationCompat.Builder(this, MISSED_CALL_CHANNEL_ID)
-                    .setSmallIcon(android.R.drawable.sym_call_missed)
-                    .setContentTitle("Missed $callTypeLabel Call")
-                    .setContentText("Missed call from $callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setAutoCancel(true)
-                    .setContentIntent(pendingIntent)
-                    .addAction(
-                        android.R.drawable.sym_action_call,
-                        "Call Back",
-                        callBackPendingIntent
-                    )
-                    
-                notificationManager.notify(callId.hashCode(), builder.build())
                 return
             }
             

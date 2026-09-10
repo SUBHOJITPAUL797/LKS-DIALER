@@ -544,17 +544,31 @@ class MainActivity : ComponentActivity() {
 
                         val openTab = incoming.getStringExtra("open_tab")
                         if (openTab == "RECENTS") {
+                            navState = AppNavState.MAIN
                             selectedTab = MainTab.RECENTS
                         }
 
+                        // Dismiss any notification ID passed in
+                        val notifIdToCancel = incoming.getIntExtra("notification_id", -1)
+                        if (notifIdToCancel != -1) {
+                            val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                            nm?.cancel(notifIdToCancel)
+                        }
+
                         val callBackNumber = incoming.getStringExtra("call_back_number")
-                        if (!callBackNumber.isNullOrBlank() && hasMicPermission) {
-                            val myNum = currentUser?.phoneNumber ?: ""
-                            val myName = currentUser?.displayName ?: "Me"
+                        if (!callBackNumber.isNullOrBlank()) {
+                            val prefs = context.getSharedPreferences("dialer_prefs", android.content.Context.MODE_PRIVATE)
+                            val myNum = currentUser?.phoneNumber?.ifBlank { null }
+                                ?: prefs.getString("user_phone", "") ?: ""
+                            val myName = currentUser?.displayName?.ifBlank { null }
+                                ?: prefs.getString("user_name", "") ?: "Me"
                             val callBackName = incoming.getStringExtra("call_back_name") ?: callBackNumber
                             val callBackTypeStr = incoming.getStringExtra("call_back_type") ?: "AUDIO"
                             val callBackType = try { CallType.valueOf(callBackTypeStr) } catch (_: Exception) { CallType.AUDIO }
+
                             if (myNum.isNotBlank()) {
+                                navState = AppNavState.MAIN
+                                kotlinx.coroutines.delay(200)
                                 webRtcEngine.initiateCall(callBackNumber, callBackName, myNum, myName, callBackType)
                             }
                         }
@@ -563,10 +577,15 @@ class MainActivity : ComponentActivity() {
                         val dataUri = incoming.data
                         if (dataUri?.scheme == "lksdialer" && dataUri.host == "call") {
                             val targetNumber = dataUri.lastPathSegment
-                            if (!targetNumber.isNullOrBlank() && hasMicPermission) {
-                                val myNum = currentUser?.phoneNumber ?: ""
-                                val myName = currentUser?.displayName ?: "Me"
+                            if (!targetNumber.isNullOrBlank()) {
+                                val prefs = context.getSharedPreferences("dialer_prefs", android.content.Context.MODE_PRIVATE)
+                                val myNum = currentUser?.phoneNumber?.ifBlank { null }
+                                    ?: prefs.getString("user_phone", "") ?: ""
+                                val myName = currentUser?.displayName?.ifBlank { null }
+                                    ?: prefs.getString("user_name", "") ?: "Me"
                                 if (myNum.isNotBlank()) {
+                                    navState = AppNavState.MAIN
+                                    kotlinx.coroutines.delay(200)
                                     webRtcEngine.initiateCall(targetNumber, targetNumber, myNum, myName, CallType.AUDIO)
                                 }
                             }

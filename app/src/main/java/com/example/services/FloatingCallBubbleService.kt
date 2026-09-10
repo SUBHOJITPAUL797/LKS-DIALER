@@ -36,6 +36,7 @@ import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.data.model.CallStatus
 import com.example.data.model.CallType
+import com.example.data.repository.FirebaseManager
 import com.example.webrtc.WebRtcEngine
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -278,6 +279,11 @@ class FloatingCallBubbleService : Service() {
                     Log.d(TAG, "callDocListener update for $cId: status=$status")
                     if (status == CallStatus.ENDED.name || status == CallStatus.DECLINED.name || status == CallStatus.MISSED.name) {
                         Log.i(TAG, "Call $cId ended/declined/missed remotely in Firestore -> instant teardown (<50ms)")
+                        val wasIncoming = currentMode == ACTION_SHOW_INCOMING
+                        val callerNum = currentCallerNumber
+                        val callerNm = currentCallerName
+                        val cType = currentCallType
+
                         stopRinging()
                         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                         nm?.cancel(CallMessagingService.NOTIFICATION_ID)
@@ -289,6 +295,19 @@ class FloatingCallBubbleService : Service() {
                         engine.forceEndCallFromPush(cId, try { CallStatus.valueOf(status) } catch (_: Exception) { CallStatus.ENDED })
                         removeFloatingView()
                         stopSelf()
+
+                        if (wasIncoming && callerNum.isNotBlank()) {
+                            try {
+                                FirebaseManager.getInstance(applicationContext).showMissedCallNotification(
+                                    callerNumber = callerNum,
+                                    callerName = callerNm,
+                                    callType = cType,
+                                    callId = cId
+                                )
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to show missed call notification from bubble: ${e.message}")
+                            }
+                        }
                     }
                 }
         } catch (e: Exception) {

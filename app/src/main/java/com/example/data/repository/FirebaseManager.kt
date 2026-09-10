@@ -286,35 +286,93 @@ class FirebaseManager private constructor(private val context: Context) {
             }
     }
 
-    private fun showMissedCallNotification(missedCall: CallLogDto) {
+    fun showMissedCallNotification(
+        callerNumber: String,
+        callerName: String,
+        callType: CallType = CallType.AUDIO,
+        callId: String = ""
+    ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = android.app.NotificationChannel(
                 "missed_call_channel",
                 "Missed Calls",
-                android.app.NotificationManager.IMPORTANCE_DEFAULT
-            )
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for missed VoIP calls"
+                enableVibration(true)
+                enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
             notificationManager.createNotificationChannel(channel)
         }
 
-        val intent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
-            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
+        val resolvedName = if (callerName.isNotBlank() && callerName != "Unknown Caller") {
+            callerName
+        } else {
+            val contact = _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, callerNumber) }
+            val reg = _registeredUsers.value.find { ContactsHelper.numbersMatch(it.phoneNumber, callerNumber) }
+            reg?.displayName?.ifBlank { null } ?: contact?.name?.ifBlank { null } ?: callerNumber
+        }
+
+        val notifId = if (callId.isNotBlank()) callId.hashCode() else (callerNumber + System.currentTimeMillis()).hashCode()
+
+        // Tap notification opens Recents tab in MainActivity
+        val openIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+            action = "com.example.ACTION_OPEN_RECENTS_$notifId"
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_tab", "RECENTS")
+            putExtra("notification_id", notifId)
         }
         val pendingIntent = android.app.PendingIntent.getActivity(
-            context, 0, intent, android.app.PendingIntent.FLAG_IMMUTABLE
+            context,
+            notifId,
+            openIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Call Back Action: directly triggers outgoing call back to the person
+        val callBackIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+            action = "com.example.ACTION_CALL_BACK_$notifId"
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("call_back_number", callerNumber)
+            putExtra("call_back_name", resolvedName)
+            putExtra("call_back_type", callType.name)
+            putExtra("notification_id", notifId)
+        }
+        val callBackPendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            notifId + 1,
+            callBackIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val callTypeLabel = if (callType == CallType.VIDEO) "Video" else "Audio"
         val notification = androidx.core.app.NotificationCompat.Builder(context, "missed_call_channel")
-            .setSmallIcon(android.R.drawable.stat_notify_missed_call)
-            .setContentTitle("Missed Call")
-            .setContentText("Missed call from ${missedCall.otherPartyName.ifBlank { missedCall.otherPartyNumber }}")
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
-            .setContentIntent(pendingIntent)
+            .setSmallIcon(android.R.drawable.sym_call_missed)
+            .setContentTitle("Missed $callTypeLabel Call")
+            .setContentText("Missed call from $resolvedName${if (callerNumber.isNotBlank() && resolvedName != callerNumber) " • $callerNumber" else ""}")
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .addAction(
+                android.R.drawable.sym_action_call,
+                "Call Back",
+                callBackPendingIntent
+            )
             .build()
 
-        notificationManager.notify(missedCall.callId.hashCode(), notification)
+        notificationManager.notify(notifId, notification)
+    }
+
+    fun showMissedCallNotification(missedCall: CallLogDto) {
+        showMissedCallNotification(
+            callerNumber = missedCall.otherPartyNumber,
+            callerName = missedCall.otherPartyName,
+            callType = missedCall.callType,
+            callId = missedCall.callId
+        )
     }
 
     fun lookupUserByNumber(phoneNumber: String): UserDto? {
