@@ -64,7 +64,7 @@ import kotlin.math.absoluteValue
 // Data class for reply context
 // ──────────────────────────────────────────────────────────────────────────────
 data class ReplyContext(
-    val messageId: Long,
+    val messageId: String,    // message.id is String in MessageEntity
     val text: String,         // preview text / "(Photo)" / "(Voice)"
     val senderLabel: String,  // "You" or peer display name
     val isOutgoing: Boolean   // direction of the ORIGINAL message being replied to
@@ -342,42 +342,45 @@ fun ChatConversationScreen(
                 }
 
                 // ── One-shot swipe hint overlay ──────────────────────────────
-                AnimatedVisibility(
-                    visible = showSwipeHint,
-                    enter = fadeIn() + slideInVertically(initialOffsetY = { -20 }),
-                    exit = fadeOut(),
+                Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 8.dp)
                 ) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.78f),
-                        shape = RoundedCornerShape(24.dp),
-                        shadowElevation = 4.dp
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showSwipeHint,
+                        enter = fadeIn() + slideInVertically(initialOffsetY = { -20 }),
+                        exit = fadeOut()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.78f),
+                            shape = RoundedCornerShape(24.dp),
+                            shadowElevation = 4.dp
                         ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Reply,
-                                contentDescription = null,
-                                tint = Color(0xFFFFCC00),
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Column {
-                                Text(
-                                    "Swipe right on received messages to reply",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Reply,
+                                    contentDescription = null,
+                                    tint = Color(0xFFFFCC00),
+                                    modifier = Modifier.size(20.dp)
                                 )
-                                Text(
-                                    "Swipe left on your own messages to reply",
-                                    color = Color.White.copy(alpha = 0.75f),
-                                    fontSize = 11.sp
-                                )
+                                Column {
+                                    Text(
+                                        "Swipe right on received messages to reply",
+                                        color = Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        "Swipe left on your own messages to reply",
+                                        color = Color.White.copy(alpha = 0.75f),
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                         }
                     }
