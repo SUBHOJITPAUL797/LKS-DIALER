@@ -250,6 +250,28 @@ class ChatRepository private constructor(private val context: Context) {
             val senderNorm = ContactsHelper.normalizePhoneNumber(dto.senderNumber)
             val isCurrentPeer = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
 
+            // Handle incoming Message Edit packets
+            if (dto.mediaType == ChatMediaType.EDIT.name) {
+                try {
+                    val json = JSONObject(decryptedRaw)
+                    val originalMessageId = json.optString("originalMessageId", "")
+                    val newText = json.optString("newText", "")
+                    if (originalMessageId.isNotBlank()) {
+                        messageDao.updateMessageText(originalMessageId, newText)
+                        val lastMsg = messageDao.getLastMessageForConversation(senderNorm)
+                        if (lastMsg != null && lastMsg.id == originalMessageId) {
+                            conversationDao.updateLastMessageText(senderNorm, newText)
+                        }
+                        Log.d(TAG, "Message $originalMessageId updated via edit packet from $senderNorm")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to parse message edit packet: ${e.message}")
+                }
+                // Zero retention: delete ephemeral edit doc immediately
+                try { docRef.delete().await() } catch (_: Exception) {}
+                return
+            }
+
             var displayText = decryptedRaw
             var localMediaPath: String? = null
             var durationMs = dto.mediaDurationMs
@@ -508,9 +530,14 @@ class ChatRepository private constructor(private val context: Context) {
         var localSavedPath: String? = null
 
         if (mediaType == ChatMediaType.IMAGE && mediaFile != null && mediaFile.exists()) {
-            // Copy file to persistent app media folder
+            // Compress and copy file to persistent app media folder (guarantees < 450KB and max 1600px HD)
             val savedFile = File(ensureMediaDirectory(), "img_$messageId.jpg")
-            mediaFile.copyTo(savedFile, overwrite = true)
+            com.example.util.ImageUtils.compressAndSaveChatImage(
+                inputFile = mediaFile,
+                outputFile = savedFile,
+                maxDimension = 1600,
+                targetMaxBytes = 450 * 1024
+            )
             localSavedPath = savedFile.absolutePath
 
             val fileBytes = savedFile.readBytes()
@@ -633,6 +660,93 @@ class ChatRepository private constructor(private val context: Context) {
         )
 
         Result.success(messageEntity)
+    }
+
+    /**
+     * Public API: Edits an outgoing message within 10 minutes of sending.
+     * Updates local Room DB immediately, then sends an ephemeral edit packet to peer.
+     */
+    suspend fun editMessage(
+        originalMessageId: String,
+        newText: String,
+        recipientNumber: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val originalMsg = messageDao.getMessageById(originalMessageId)
+            ?: return@withContext Result.failure(IllegalArgumentException("Message not found"))
+
+        if (!originalMsg.isOutgoing) {
+            return@withContext Result.failure(IllegalStateException("Cannot edit incoming messages"))
+        }
+
+        val elapsed = System.currentTimeMillis() - originalMsg.timestamp
+        val tenMinutesMs = 10 * 60 * 1000L
+        if (elapsed > tenMinutesMs) {
+            return@withContext Result.failure(IllegalStateException("Message can only be edited within 10 minutes of sending"))
+        }
+
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
+
+        val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+
+        // 1. Update Room DB locally
+        messageDao.updateMessageText(originalMessageId, newText)
+
+        // 2. If it was the last message, update conversation summary
+        val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
+        if (lastMsg != null && lastMsg.id == originalMessageId) {
+            conversationDao.updateLastMessageText(normRecipient, newText)
+        }
+
+        // 3. Resolve recipient public key and encrypt edit packet
+        val recipientPublicKey = resolvePeerPublicKey(normRecipient)
+        if (recipientPublicKey != null) {
+            val payload = JSONObject().apply {
+                put("type", "MESSAGE_EDIT")
+                put("originalMessageId", originalMessageId)
+                put("newText", newText)
+                put("editedAt", System.currentTimeMillis())
+            }.toString()
+
+            val (ciphertext, iv) = cryptoManager.encrypt(payload, recipientPublicKey)
+            val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+            val editPacketId = UUID.randomUUID().toString()
+
+            val chatDto = ChatMessageDto(
+                messageId = editPacketId,
+                senderNumber = myPhone,
+                recipientNumber = normRecipient,
+                senderPublicKey = myPublicKey,
+                ciphertext = ciphertext,
+                iv = iv,
+                mediaType = ChatMediaType.EDIT.name,
+                timestamp = System.currentTimeMillis()
+            )
+
+            firestore.collection("inboxes")
+                .document(normRecipient)
+                .collection("messages")
+                .document(editPacketId)
+                .set(chatDto)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Edit packet $editPacketId delivered to ephemeral inbox for $normRecipient")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to upload edit packet: ${e.message}")
+                }
+
+            // Send FCM wakeup push
+            sendFcmWakeup(
+                recipientPhone = normRecipient,
+                senderPhone = myPhone,
+                previewText = newText,
+                mediaType = ChatMediaType.EDIT.name,
+                messageId = editPacketId
+            )
+        }
+
+        Result.success(Unit)
     }
 
     private suspend fun resolvePeerPublicKey(phoneNumber: String): String? {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
-  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply
+  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2
 } from 'lucide-react';
 import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine } from '../lib/WebRtcEngine';
@@ -136,6 +136,9 @@ export default function ChatConversation({
   // Swipe-to-reply state
   const [replyingTo, setReplyingTo] = useState(null); // { id, text, isOutgoing }
 
+  // Message edit state (10 min window)
+  const [editingMessage, setEditingMessage] = useState(null); // msg object
+
   // Swipe hint state (show briefly on first open)
   const [showSwipeHint, setShowSwipeHint] = useState(false);
 
@@ -248,11 +251,27 @@ export default function ChatConversation({
     chatRepositoryWeb.setTyping(normPeer, text.length > 0);
   };
 
-  // ── Send text ───────────────────────────────────────────────────────────────
+  // ── Send text or Save edit ──────────────────────────────────────────────────
   const handleSendText = async (e) => {
     if (e) e.preventDefault();
     const trimmed = inputText.trim();
     if (!trimmed || sending) return;
+
+    if (editingMessage) {
+      const msgId = editingMessage.id;
+      setEditingMessage(null);
+      setInputText('');
+      setSending(true);
+      try {
+        await chatRepositoryWeb.editMessage(msgId, trimmed, normPeer);
+      } catch (err) {
+        alert(err.message || 'Failed to edit message');
+      } finally {
+        setSending(false);
+        setTimeout(() => scrollToBottom('smooth'), 50);
+      }
+      return;
+    }
 
     const replyContext = replyingTo;
     setSending(true);
@@ -659,8 +678,36 @@ export default function ChatConversation({
 
                     {/* Timestamp + ticks */}
                     <div style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 700, color: '#555', marginTop: 2 }}>
+                      {Boolean(msg.isEdited) && (
+                        <span style={{ fontStyle: 'italic', opacity: 0.75, marginRight: 4, fontSize: 10, color: '#2e7d32' }}>
+                          Edited •
+                        </span>
+                      )}
                       {timeStr}
                       {isOut && renderTicks(msg.status)}
+                      {isOut && msg.mediaType === 'TEXT' && (Date.now() - (msg.timestamp || 0) <= 10 * 60 * 1000) && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingMessage(msg);
+                            setInputText(text);
+                            inputRef.current?.focus();
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '0 0 0 5px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            opacity: 0.6
+                          }}
+                          title="Edit message (10 min window)"
+                        >
+                          <Edit2 size={12} color="#00838f" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -719,24 +766,47 @@ export default function ChatConversation({
             </div>
           )}
 
+          {/* Edit Preview Bar */}
+          {editingMessage && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              backgroundColor: '#e8f5e9', border: '2px solid #2e7d32',
+              borderRadius: 10, padding: '6px 12px', marginBottom: 8
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <Edit2 size={16} color="#2e7d32" style={{ flexShrink: 0 }} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 900, color: '#2e7d32' }}>
+                    Editing message (10 min window)
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#444', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>
+                    {editingMessage.text}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setEditingMessage(null); setInputText(''); }}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', flexShrink: 0, padding: 4 }}
+              >
+                <X size={18} color="#555" />
+              </button>
+            </div>
+          )}
+
           {isRecording ? (
             /* RECORDING BAR */
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{
-                  width: 12, height: 12, borderRadius: '50%', backgroundColor: '#ff3366',
-                  boxShadow: '0 0 8px #ff3366', animation: 'pulse 1s infinite'
-                }} />
-                <span style={{ fontWeight: 900, fontSize: 15, color: '#ff3366' }}>
-                  {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60) < 10 ? '0' : ''}{recordSeconds % 60}
-                </span>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: '#f44336', display: 'inline-block', animation: 'pulse 1s infinite' }} />
+                <span style={{ fontWeight: 800, fontSize: 14 }}>{formatDur(recordSeconds * 1000)}</span>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={cancelRecording} className="neo-box"
-                  style={{ padding: '8px 14px', backgroundColor: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 13 }}>
-                  <Trash2 size={16} color="#ff3366" /> Cancel
+                <button type="button" onClick={cancelRecording} className="neo-box"
+                  style={{ padding: '8px 14px', backgroundColor: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4, fontWeight: 800, fontSize: 12 }}>
+                  <Trash2 size={16} color="#f44336" /> Cancel
                 </button>
-                <button onClick={stopAndSendRecording} className="neo-box"
+                <button type="button" onClick={stopAndSendRecording} className="neo-box"
                   style={{ padding: '8px 18px', backgroundColor: '#00E5FF', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 900, fontSize: 13 }}>
                   <Send size={16} /> Send
                 </button>
@@ -760,7 +830,7 @@ export default function ChatConversation({
                 ref={inputRef}
                 type="text"
                 className="neo-input"
-                placeholder={replyingTo ? `Reply to ${replyingTo.senderLabel}...` : 'Encrypted message...'}
+                placeholder={editingMessage ? 'Edit message...' : (replyingTo ? `Reply to ${replyingTo.senderLabel}...` : 'Encrypted message...')}
                 value={inputText}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
@@ -770,10 +840,10 @@ export default function ChatConversation({
               <button type="submit" disabled={!inputText.trim() || sending} className="neo-btn"
                 style={{
                   width: 46, height: 46, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  backgroundColor: inputText.trim() ? 'var(--primary)' : '#ccc',
+                  backgroundColor: editingMessage ? '#2e7d32' : (inputText.trim() ? 'var(--primary)' : '#ccc'),
                   cursor: inputText.trim() ? 'pointer' : 'default', flexShrink: 0
                 }}>
-                <Send size={20} color="#fff" />
+                {editingMessage ? <Check size={20} color="#fff" /> : <Send size={20} color="#fff" />}
               </button>
             </form>
           )}

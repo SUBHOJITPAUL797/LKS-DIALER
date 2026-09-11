@@ -16,7 +16,8 @@ enum class ChatMediaType {
     TEXT,
     IMAGE,
     AUDIO,
-    DOCUMENT
+    DOCUMENT,
+    EDIT
 }
 
 @Entity(
@@ -38,7 +39,8 @@ data class MessageEntity(
     val mediaDurationMs: Long = 0L, // Duration in milliseconds for audio notes
     val timestamp: Long = System.currentTimeMillis(),
     val status: String = MessageStatus.PENDING.name,
-    val isOutgoing: Boolean = false
+    val isOutgoing: Boolean = false,
+    val isEdited: Boolean = false
 )
 
 @Entity(

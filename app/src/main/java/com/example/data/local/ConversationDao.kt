@@ -33,6 +33,9 @@ interface ConversationDao {
     @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber")
     suspend fun updateLastMessageStatus(phoneNumber: String, status: String)
 
+    @Query("UPDATE conversations SET lastMessageText = :text WHERE phoneNumber = :phoneNumber")
+    suspend fun updateLastMessageText(phoneNumber: String, text: String)
+
     @Query("SELECT * FROM conversations")
     suspend fun getConversationsList(): List<ConversationEntity>
 }

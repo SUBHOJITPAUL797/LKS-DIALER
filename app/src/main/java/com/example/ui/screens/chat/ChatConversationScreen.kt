@@ -62,6 +62,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
+import org.json.JSONObject
 import kotlin.math.absoluteValue
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -145,6 +146,8 @@ fun ChatConversationScreen(
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
     var photosToPreview by remember { mutableStateOf<List<File>?>(null) }
+    var selectedMessageForOptions by remember { mutableStateOf<MessageEntity?>(null) }
+    var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
 
     val listState = rememberLazyListState()
 
@@ -414,7 +417,8 @@ fun ChatConversationScreen(
                                 playbackProgress = if (currentPlayingPath == msg.mediaPath) playbackProgress else 0f,
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
                                 onImageClick = { path -> selectedImagePreviewPath = path },
-                                onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) }
+                                onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
+                                onMessageLongClick = { selectedMessageForOptions = it }
                             )
                         }
                     }
@@ -510,6 +514,64 @@ fun ChatConversationScreen(
                                 modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(Icons.Default.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Edit Preview Bar ──────────────────────────────────────────────
+            AnimatedVisibility(visible = editingMessage != null) {
+                if (editingMessage != null) {
+                    val editPreviewText = remember(editingMessage!!.text) {
+                        try {
+                            val obj = JSONObject(editingMessage!!.text)
+                            obj.optString("text", editingMessage!!.text)
+                        } catch (_: Exception) { editingMessage!!.text }
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = if (isSystemInDarkTheme()) Color(0xFF1B2A32) else Color(0xFFE8F5E9),
+                        tonalElevation = 2.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(4.dp)
+                                    .height(40.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(GreenCall)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Editing message (10 min window)",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = GreenCall
+                                    )
+                                )
+                                Text(
+                                    text = editPreviewText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    editingMessage = null
+                                    inputText = ""
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Cancel edit", modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -651,7 +713,31 @@ fun ChatConversationScreen(
                             )
                         )
 
-                        if (inputText.isNotBlank()) {
+                        if (editingMessage != null) {
+                            IconButton(
+                                onClick = {
+                                    val textToEdit = inputText.trim()
+                                    if (textToEdit.isNotEmpty()) {
+                                        val targetId = editingMessage!!.id
+                                        editingMessage = null
+                                        inputText = ""
+                                        chatRepository.setTyping(normPeer, false)
+                                        coroutineScope.launch {
+                                            val res = chatRepository.editMessage(targetId, textToEdit, normPeer)
+                                            if (res.isFailure) {
+                                                Toast.makeText(context, res.exceptionOrNull()?.message ?: "Failed to edit message", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(GreenCall)
+                            ) {
+                                Icon(Icons.Default.Check, contentDescription = "Save edit", tint = Color.White)
+                            }
+                        } else if (inputText.isNotBlank()) {
                             IconButton(
                                 onClick = {
                                     val textToSend = inputText.trim()
@@ -844,6 +930,92 @@ fun ChatConversationScreen(
             onClose = { photosToPreview = null }
         )
     }
+
+    // ── Message Options Bottom Sheet (Reply, Copy, Edit, Delete) ──
+    if (selectedMessageForOptions != null) {
+        val targetMsg = selectedMessageForOptions!!
+        val isEligibleForEdit = targetMsg.isOutgoing &&
+                targetMsg.mediaType == ChatMediaType.TEXT.name &&
+                (System.currentTimeMillis() - targetMsg.timestamp <= 10 * 60 * 1000L)
+
+        ModalBottomSheet(
+            onDismissRequest = { selectedMessageForOptions = null }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+            ) {
+                // Reply
+                ListItem(
+                    headlineContent = { Text("Reply") },
+                    leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        val previewText = try {
+                            val obj = org.json.JSONObject(targetMsg.text)
+                            obj.optString("text", targetMsg.text)
+                        } catch (_: Exception) { targetMsg.text }
+                        replyingTo = ReplyContext(
+                            messageId = targetMsg.id,
+                            text = previewText,
+                            senderLabel = if (targetMsg.isOutgoing) (firebaseManager.currentUser.value?.displayName ?: "You") else peerDisplayName,
+                            isOutgoing = targetMsg.isOutgoing
+                        )
+                        selectedMessageForOptions = null
+                    }
+                )
+
+                // Copy (if text)
+                if (targetMsg.mediaType == ChatMediaType.TEXT.name) {
+                    val rawText = try {
+                        val obj = org.json.JSONObject(targetMsg.text)
+                        obj.optString("text", targetMsg.text)
+                    } catch (_: Exception) { targetMsg.text }
+                    ListItem(
+                        headlineContent = { Text("Copy") },
+                        leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                        modifier = Modifier.clickable {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("Copied message", rawText)
+                            clipboard?.setPrimaryClip(clip)
+                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                            selectedMessageForOptions = null
+                        }
+                    )
+                }
+
+                // Edit (if outgoing, text, and within 10 min)
+                if (isEligibleForEdit) {
+                    val rawText = try {
+                        val obj = org.json.JSONObject(targetMsg.text)
+                        obj.optString("text", targetMsg.text)
+                    } catch (_: Exception) { targetMsg.text }
+                    ListItem(
+                        headlineContent = { Text("Edit (10 min window)") },
+                        leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = GreenCall) },
+                        modifier = Modifier.clickable {
+                            editingMessage = targetMsg
+                            inputText = rawText
+                            selectedMessageForOptions = null
+                        }
+                    )
+                }
+
+                // Delete message
+                ListItem(
+                    headlineContent = { Text("Delete for me", color = MaterialTheme.colorScheme.error) },
+                    leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.clickable {
+                        val idToDelete = targetMsg.id
+                        selectedMessageForOptions = null
+                        coroutineScope.launch {
+                            chatRepository.deleteMessage(idToDelete)
+                        }
+                    }
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -1002,7 +1174,8 @@ private fun MessageBubble(
     playbackProgress: Float,
     onPlayAudio: (path: String) -> Unit,
     onImageClick: (path: String) -> Unit,
-    onMarkMessageRead: (messageId: String) -> Unit
+    onMarkMessageRead: (messageId: String) -> Unit,
+    onMessageLongClick: (message: MessageEntity) -> Unit = {}
 ) {
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
@@ -1055,7 +1228,16 @@ private fun MessageBubble(
             color = bubbleColor,
             shape = bubbleShape,
             shadowElevation = 1.dp,
-            modifier = Modifier.widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name) 200.dp else 0.dp)
+            modifier = Modifier
+                .widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name) 200.dp else 0.dp)
+                .combinedClickable(
+                    onClick = {
+                        if (message.mediaType == ChatMediaType.TEXT.name) {
+                            // normal tap on text message does nothing
+                        }
+                    },
+                    onLongClick = { onMessageLongClick(message) }
+                )
         ) {
             Column(modifier = Modifier.padding(bubblePadding)) {
 
@@ -1291,6 +1473,17 @@ private fun MessageBubble(
                         .padding(end = 4.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (message.isEdited) {
+                        Text(
+                            text = "Edited",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 9.sp,
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
                     val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
                     Text(
                         text = timeString,

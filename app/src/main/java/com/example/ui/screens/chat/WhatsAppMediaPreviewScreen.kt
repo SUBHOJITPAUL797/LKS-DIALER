@@ -613,7 +613,8 @@ private fun bakeImageEdits(
     item: EditablePhotoItem
 ): File {
     try {
-        val original = BitmapFactory.decodeFile(item.originalFile.absolutePath) ?: return item.originalFile
+        val original = com.example.util.ImageUtils.decodeSampledBitmapFromFile(item.originalFile.absolutePath, 2048, 2048)
+            ?: return item.originalFile
 
         // 1. Apply rotation
         val rotated = if (item.rotationAngle != 0f) {

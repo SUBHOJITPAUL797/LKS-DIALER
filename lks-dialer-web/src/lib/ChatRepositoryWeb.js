@@ -248,6 +248,37 @@ class ChatRepositoryWeb {
       const senderNorm = normalizePhoneNumber(dto.senderNumber);
       const isCurrentPeer = (this.activeChatPeerNumber === senderNorm);
 
+      // Handle EDIT message packet
+      if (dto.mediaType === 'EDIT') {
+        try {
+          const parsed = JSON.parse(decryptedRaw);
+          const originalId = parsed.originalMessageId;
+          const newText = parsed.newText;
+          if (originalId && newText) {
+            const messages = this.getMessages(senderNorm);
+            const targetMsg = messages.find(m => m.id === originalId);
+            if (targetMsg) {
+              targetMsg.text = newText;
+              targetMsg.isEdited = true;
+              this.saveMessages(senderNorm, messages);
+            }
+            // Update conversation lastMessageText if it was this message
+            const conversations = this.getConversations();
+            const conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+            if (conv) {
+              conv.lastMessageText = newText;
+              this.saveConversations(conversations);
+            }
+          }
+        } catch (editErr) {
+          console.warn('[ChatRepositoryWeb] Failed to parse EDIT payload:', editErr);
+        }
+        // Zero retention: delete from Firestore immediately
+        try { await deleteDoc(docRef); } catch {}
+        this.notifySubscribers();
+        return;
+      }
+
       let displayText = decryptedRaw;
       let mediaData = null;
       let durationMs = Number(dto.mediaDurationMs) || 0;
@@ -631,6 +662,80 @@ class ChatRepositoryWeb {
     this.sendFcmWakeup(normRecipient, this.currentListeningPhone, text || (mediaType === 'IMAGE' ? 'Photo' : 'Voice message'));
 
     return localMsg;
+  }
+
+  // --- PUBLIC API: EDIT MESSAGE ---
+  async editMessage(originalMessageId, newText, recipientNumber) {
+    if (!this.currentListeningPhone) {
+      throw new Error('Current user is not logged in');
+    }
+
+    const normRecipient = normalizePhoneNumber(recipientNumber);
+    const messages = this.getMessages(normRecipient);
+    const targetMsg = messages.find(m => m.id === originalMessageId);
+    if (!targetMsg) {
+      throw new Error('Message not found');
+    }
+
+    const now = Date.now();
+    if (now - (targetMsg.timestamp || 0) > 10 * 60 * 1000) {
+      throw new Error('Editing allowed only within 10 minutes');
+    }
+
+    // 1. Update locally
+    targetMsg.text = newText;
+    targetMsg.isEdited = true;
+    this.saveMessages(normRecipient, messages);
+
+    // Update conversation if this was the last message
+    const conversations = this.getConversations();
+    const conv = conversations.find(c => numbersMatch(c.phoneNumber, normRecipient));
+    if (conv) {
+      const last = messages[messages.length - 1];
+      if (last && last.id === originalMessageId) {
+        conv.lastMessageText = newText;
+        this.saveConversations(conversations);
+      }
+    }
+    this.notifySubscribers();
+
+    // 2. Transmit edit packet over ephemeral relay
+    const editPayload = JSON.stringify({
+      type: 'MESSAGE_EDIT',
+      originalMessageId,
+      newText,
+      editedAt: now
+    });
+
+    const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);
+    if (!recipientPublicKey) {
+      return; // local edit done
+    }
+
+    const { ciphertext, iv } = await chatCryptoWeb.encrypt(editPayload, recipientPublicKey);
+    const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+    const editPacketId = generateUuid();
+
+    const editDto = {
+      messageId: editPacketId,
+      senderNumber: this.currentListeningPhone,
+      recipientNumber: normRecipient,
+      senderPublicKey: myPublicKey,
+      ciphertext,
+      iv,
+      mediaType: 'EDIT',
+      timestamp: now,
+      isEncrypted: true
+    };
+
+    try {
+      await setDoc(doc(db, 'inboxes', normRecipient, 'messages', editPacketId), editDto);
+    } catch (e) {
+      console.warn('Failed to upload edit packet:', e);
+    }
+
+    // 3. Send FCM wakeup push
+    this.sendFcmWakeup(normRecipient, this.currentListeningPhone, newText);
   }
 
   // --- RESOLVE PEER PUBLIC KEY ---

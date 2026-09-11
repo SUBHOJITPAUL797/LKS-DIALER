@@ -78,11 +78,11 @@ fun WhatsAppPhotoCropper(
     val context = LocalContext.current
     val density = LocalDensity.current
 
-    // Load initial bitmap from file
+    // Load initial bitmap from file safely with downsampling to prevent OutOfMemory on 50MP/108MP photos
     val rawBitmap = remember(imageFile) {
         try {
-            BitmapFactory.decodeFile(imageFile.absolutePath)
-        } catch (e: Exception) {
+            com.example.util.ImageUtils.decodeSampledBitmapFromFile(imageFile.absolutePath, 2048, 2048)
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to decode bitmap: ${e.message}")
             null
         }
