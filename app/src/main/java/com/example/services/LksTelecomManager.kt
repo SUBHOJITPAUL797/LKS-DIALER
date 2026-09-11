@@ -37,6 +37,7 @@ object LksTelecomManager {
                 .setIcon(android.graphics.drawable.Icon.createWithResource(context, com.example.R.mipmap.ic_launcher))
                 .setHighlightColor(0xFF00ADB5.toInt())
                 .setShortDescription("LKS VoIP Calls")
+                .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
                 .build()
 
@@ -82,7 +83,7 @@ object LksTelecomManager {
                 putString("callee_number", calleeNumber)
                 putString("call_type", callType.name)
             }
-            val uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, calleeNumber.ifBlank { "LKS" }, null)
+            val uri = Uri.fromParts(PhoneAccount.SCHEME_SIP, calleeNumber.ifBlank { "LKS" }, null)
             val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
                 putParcelable(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, outgoingExtras)

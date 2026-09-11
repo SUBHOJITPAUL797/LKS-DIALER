@@ -53,11 +53,20 @@ class CallMessagingService : FirebaseMessagingService() {
             val type = remoteMessage.data["type"]
 
             if (type == "chat_message") {
-                Log.d("FCM", "Received chat_message push notification, waking up ChatRepository")
-                val prefs = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
-                val myPhone = prefs.getString("user_phone", null)
-                if (!myPhone.isNullOrBlank()) {
-                    com.example.data.repository.ChatRepository.getInstance(this).attachChatListeners(myPhone)
+                Log.d("FCM", "Received chat_message push notification, handling via ChatRepository")
+                try {
+                    kotlinx.coroutines.runBlocking {
+                        kotlinx.coroutines.withTimeoutOrNull(8000L) {
+                            com.example.data.repository.ChatRepository.getInstance(applicationContext)
+                                .handlePushMessageReceived(remoteMessage.data)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("FCM", "Error handling chat_message push: ${e.message}", e)
+                } finally {
+                    try {
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    } catch (_: Exception) {}
                 }
                 return
             }

@@ -90,6 +90,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private val seenCallIds = mutableSetOf<String>()
     private val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
+    private var lastProcessedIceRestartTimestamp = 0L
 
     // WebRTC Core
     private val eglBase = EglBase.create()
@@ -293,6 +294,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+            iceCandidatePoolSize = 2
         }
         
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
@@ -309,9 +311,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
                         if (reconnectJob == null || reconnectJob?.isActive == false) {
                             reconnectJob = scope.launch {
-                                delay(15000)
+                                delay(25000)
                                 if (_state.value.callStatus == CallStatus.ANSWERED) {
-                                    Log.w("WebRtcEngine", "ICE DISCONNECTED 15s timeout — ending call")
+                                    Log.w("WebRtcEngine", "ICE DISCONNECTED 25s timeout — ending call")
                                     endCallInternalLocal(CallStatus.ENDED)
                                 }
                             }
@@ -337,10 +339,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     }
                                 }, constraints)
                             }
+                        } else {
+                            // If callee experiences ICE failure (e.g. cellular network dropped to No Service),
+                            // request the caller to trigger an ICE restart via Firestore signaling!
+                            scope.launch {
+                                try {
+                                    firestore.collection("calls").document(callId)
+                                        .update("iceRestartRequested", System.currentTimeMillis())
+                                } catch (_: Exception) {}
+                            }
                         }
                         if (reconnectJob == null || reconnectJob?.isActive == false) {
                             reconnectJob = scope.launch {
-                                delay(12000)
+                                delay(20000)
                                 if (_state.value.callStatus == CallStatus.ANSWERED) {
                                     Log.w("WebRtcEngine", "ICE FAILED timeout — ending call")
                                     endCallInternalLocal(CallStatus.FAILED)
@@ -965,6 +976,30 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 }
                                 // Reset the status so we can request again
                                 firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
+                            }
+                        }
+
+                        // ICE Restart Requested by Peer (e.g. mobile network dropped to No Service while on Wi-Fi)
+                        val iceRestartTs = snapshot.getLong("iceRestartRequested") ?: 0L
+                        if (isCaller && iceRestartTs > lastProcessedIceRestartTimestamp && _state.value.callStatus == CallStatus.ANSWERED) {
+                            lastProcessedIceRestartTimestamp = iceRestartTs
+                            Log.i("WebRtcEngine", "Peer requested ICE restart ($iceRestartTs) — initiating IceRestart as caller")
+                            scope.launch {
+                                try {
+                                    peerConnection?.restartIce()
+                                } catch (_: Exception) {}
+                                val constraints = MediaConstraints().apply {
+                                    mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+                                }
+                                peerConnection?.createOffer(object : SimpleSdpObserver() {
+                                    override fun onCreateSuccess(desc: SessionDescription?) {
+                                        peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
+                                        desc?.let {
+                                            firestore.collection("calls").document(call.callId)
+                                                .update("offerSdp", it.description)
+                                        }
+                                    }
+                                }, constraints)
                             }
                         }
 

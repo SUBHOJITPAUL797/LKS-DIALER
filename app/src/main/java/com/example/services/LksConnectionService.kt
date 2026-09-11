@@ -97,7 +97,7 @@ class LksConnectionService : ConnectionService() {
 
         val connection = LksCallConnection(this, callId, callerName, callerNumber, callType, isIncoming = true)
         connection.setCallerDisplayName(callerName, TelecomManager.PRESENTATION_ALLOWED)
-        val addressUri = Uri.fromParts(PhoneAccount.SCHEME_TEL, callerNumber.ifBlank { "LKS" }, null)
+        val addressUri = Uri.fromParts(PhoneAccount.SCHEME_SIP, callerNumber.ifBlank { "LKS" }, null)
         connection.setAddress(addressUri, TelecomManager.PRESENTATION_ALLOWED)
         connection.setRinging()
         connection.extras = extras
@@ -127,7 +127,7 @@ class LksConnectionService : ConnectionService() {
 
         val connection = LksCallConnection(this, callId, calleeName, calleeNumber, callType, isIncoming = false)
         connection.setCallerDisplayName(calleeName, TelecomManager.PRESENTATION_ALLOWED)
-        val addressUri = Uri.fromParts(PhoneAccount.SCHEME_TEL, calleeNumber.ifBlank { "LKS" }, null)
+        val addressUri = Uri.fromParts(PhoneAccount.SCHEME_SIP, calleeNumber.ifBlank { "LKS" }, null)
         connection.setAddress(addressUri, TelecomManager.PRESENTATION_ALLOWED)
         connection.setDialing()
         connection.extras = extras
@@ -188,6 +188,27 @@ class LksCallConnection(
     }
 
     override fun onDisconnect() {
+        val cause = disconnectCause
+        Log.i("LksCallConnection", "Telecom onDisconnect called: causeCode=${cause?.code}, causeDesc=${cause?.description}, callId=$callId")
+
+        // Guard: If Android OS Telecom kills this connection because of cellular radio/telephony drop
+        // (ERROR, RESTRICTED, CANCELED, OTHER), DO NOT terminate the WebRTC call!
+        // The VoIP call is active over Wi-Fi / IP and has nothing to do with cellular radio status.
+        if (cause != null && (
+            cause.code == DisconnectCause.ERROR ||
+            cause.code == DisconnectCause.RESTRICTED ||
+            cause.code == DisconnectCause.CANCELED ||
+            cause.code == DisconnectCause.OTHER
+        )) {
+            Log.w("LksCallConnection", "🛡️ Telecom disconnect triggered by cellular/radio state change (${cause.code}). Preserving active VoIP call!")
+            try {
+                setDisconnected(cause)
+                destroy()
+                LksConnectionService.clearActiveConnection()
+            } catch (_: Exception) {}
+            return
+        }
+
         Log.i("LksCallConnection", "🎯 Bluetooth Headset / System hung up the call via Telecom! callId=$callId")
         setDisconnected(DisconnectCause(DisconnectCause.LOCAL))
         destroy()

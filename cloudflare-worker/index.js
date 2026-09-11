@@ -35,17 +35,6 @@ export default {
       return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
     }
 
-    // Rate limiting: max 10 pushes per IP per minute
-    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-    const rateLimitResult = await checkRateLimit(env, `rate:${ip}`);
-    if (!rateLimitResult.allowed) {
-      console.warn(`Rate limit exceeded for IP ${ip}`);
-      return new Response(
-        JSON.stringify({ success: false, error: "Rate limit exceeded. Try again in a minute." }),
-        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...corsHeaders } }
-      );
-    }
-
     let body;
     try {
       body = await request.json();
@@ -59,9 +48,22 @@ export default {
     }
 
     const pushType = type || (isCancel ? "cancel_call" : "incoming_call");
-    // Cancel pushes: 5s TTL. Incoming call pushes: 60s TTL.
-    const ttlSeconds = pushType === "cancel_call" ? "5s" : "60s";
-    const webTtl = pushType === "cancel_call" ? "5" : "60";
+
+    // Rate limiting: max 120 chat messages or 15 call pushes per IP per minute
+    const isChat = pushType === "chat_message";
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    const rateLimitResult = await checkRateLimit(env, `rate:${ip}:${isChat ? "chat" : "call"}`, isChat ? 120 : 15);
+    if (!rateLimitResult.allowed) {
+      console.warn(`Rate limit exceeded for IP ${ip} (type=${pushType})`);
+      return new Response(
+        JSON.stringify({ success: false, error: "Rate limit exceeded. Try again in a minute." }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...corsHeaders } }
+      );
+    }
+
+    // Cancel pushes: 5s TTL. Incoming call pushes: 60s TTL. Chat messages: 4 weeks (2419200s, max FCM allowed)
+    const ttlSeconds = pushType === "cancel_call" ? "5s" : (isChat ? "2419200s" : "60s");
+    const webTtl = pushType === "cancel_call" ? "5" : (isChat ? "2419200" : "60");
 
     try {
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
@@ -79,6 +81,9 @@ export default {
               callerNumber: callerNumber || "",
               callType: callType || "AUDIO",
               callerProfilePic: body.callerProfilePic || "",
+              messageText: body.messageText || "",
+              mediaType: body.mediaType || "TEXT",
+              messageId: body.messageId || "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { headers: { TTL: webTtl, Urgency: "high" } },
@@ -181,12 +186,11 @@ async function handleTurnCredentials(env, corsHeaders) {
 }
 
 // Rate Limiting via Cloudflare KV
-async function checkRateLimit(env, key) {
+async function checkRateLimit(env, key, maxRequests = 10) {
   if (!env.RATE_LIMIT_KV) return { allowed: true }; // skip if KV not configured
   try {
     const now = Date.now();
     const windowMs = 60_000;
-    const maxRequests = 10;
     const existing = await env.RATE_LIMIT_KV.get(key, { type: "json" });
     const windowStart = existing?.windowStart || now;
     const count = existing?.count || 0;

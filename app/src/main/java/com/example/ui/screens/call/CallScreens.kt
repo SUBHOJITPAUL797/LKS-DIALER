@@ -13,6 +13,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -698,6 +701,30 @@ fun ActiveVideoCallScreen(
     } else false
 
     var showAudioDialog by remember { mutableStateOf(false) }
+    var isRemoteFirstFrameRendered by remember(state.remoteVideoTrack) { mutableStateOf(false) }
+    val avatarImageBitmap = remember(profilePicUrl) {
+        if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseScale"
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 0.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
 
     if (showAudioDialog) {
         AudioOutputSelectionDialog(
@@ -809,35 +836,126 @@ fun ActiveVideoCallScreen(
                         }
                     }
                 }
-            } else if (state.remoteVideoTrack != null) {
-                WebRtcVideoRenderer(
-                    videoTrack = state.remoteVideoTrack,
-                    eglBaseContext = webRtcEngine.eglBaseContext,
-                    modifier = Modifier.fillMaxSize(),
-                    mirror = false
-                )
             } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Surface(
-                        modifier = Modifier.size(100.dp),
-                        shape = CircleShape,
-                        color = TealPrimary
+                // Remote Video Renderer: Mounted as soon as track arrives so WebRTC starts decoding
+                if (state.remoteVideoTrack != null) {
+                    WebRtcVideoRenderer(
+                        videoTrack = state.remoteVideoTrack,
+                        eglBaseContext = webRtcEngine.eglBaseContext,
+                        modifier = Modifier.fillMaxSize(),
+                        mirror = false,
+                        onFirstFrameRendered = {
+                            isRemoteFirstFrameRendered = true
+                        }
+                    )
+                }
+
+                // WhatsApp-Grade Connecting Overlay: stays on top of the black SurfaceViewRenderer
+                // until the very millisecond the first video frame is decoded and painted, then fades out smoothly.
+                // Absolutely ZERO black screen at any point!
+                AnimatedVisibility(
+                    visible = !isRemoteFirstFrameRendered || state.remoteVideoTrack == null,
+                    enter = fadeIn(tween(200)),
+                    exit = fadeOut(tween(400)),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    listOf(
+                                        Color(0xFF0B141B),
+                                        Color(0xFF111B21),
+                                        Color(0xFF0B141B)
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            // Pulsing Avatar
+                            Box(contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(140.dp)
+                                        .graphicsLayer {
+                                            scaleX = pulseScale
+                                            scaleY = pulseScale
+                                            alpha = pulseAlpha
+                                        }
+                                        .clip(CircleShape)
+                                        .background(TealPrimary.copy(alpha = 0.4f))
+                                )
+                                Surface(
+                                    modifier = Modifier.size(108.dp),
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shadowElevation = 8.dp
+                                ) {
+                                    if (avatarImageBitmap != null) {
+                                        Image(
+                                            bitmap = avatarImageBitmap,
+                                            contentDescription = displayName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(TealPrimary),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = displayName.take(1).uppercase().ifBlank { "?" },
+                                                fontSize = 46.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(20.dp))
+
                             Text(
-                                text = displayName.take(1).uppercase().ifBlank { "?" },
-                                fontSize = 44.sp,
-                                fontWeight = FontWeight.Bold,
+                                text = displayName.ifBlank { displayNumber },
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                                 color = Color.White
                             )
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Glassmorphic "Connecting video..." pill badge with spinner
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = Color.White.copy(alpha = 0.12f),
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(13.dp),
+                                        strokeWidth = 2.dp,
+                                        color = TealPrimary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Connecting video...",
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                        color = Color.White.copy(alpha = 0.9f)
+                                    )
+                                }
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "Connecting video...",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color.White.copy(alpha = 0.7f)
-                    )
                 }
             }
         }
@@ -1233,12 +1351,18 @@ fun WebRtcVideoRenderer(
     eglBaseContext: org.webrtc.EglBase.Context,
     modifier: Modifier = Modifier,
     mirror: Boolean = false,
-    isOverlay: Boolean = false
+    isOverlay: Boolean = false,
+    onFirstFrameRendered: (() -> Unit)? = null
 ) {
     AndroidView(
         factory = { context ->
             org.webrtc.SurfaceViewRenderer(context).apply {
-                init(eglBaseContext, null)
+                init(eglBaseContext, object : org.webrtc.RendererCommon.RendererEvents {
+                    override fun onFirstFrameRendered() {
+                        post { onFirstFrameRendered?.invoke() }
+                    }
+                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {}
+                })
                 setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
                 setEnableHardwareScaler(true)
                 setMirror(mirror)

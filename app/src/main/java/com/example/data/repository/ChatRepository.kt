@@ -596,7 +596,19 @@ class ChatRepository private constructor(private val context: Context) {
             }
 
         // Send high-priority FCM notification wakeup if recipient has token
-        sendFcmWakeup(normRecipient, myPhone, text)
+        val preview = when (mediaType) {
+            ChatMediaType.IMAGE -> if (text.isNotBlank()) text else "📷 Photo"
+            ChatMediaType.AUDIO -> "🎤 Voice message"
+            ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
+            else -> text
+        }
+        sendFcmWakeup(
+            recipientPhone = normRecipient,
+            senderPhone = myPhone,
+            previewText = preview,
+            mediaType = mediaType.name,
+            messageId = messageId
+        )
 
         Result.success(messageEntity)
     }
@@ -619,7 +631,13 @@ class ChatRepository private constructor(private val context: Context) {
         }
     }
 
-    private fun sendFcmWakeup(recipientPhone: String, senderPhone: String, previewText: String) {
+    private fun sendFcmWakeup(
+        recipientPhone: String,
+        senderPhone: String,
+        previewText: String,
+        mediaType: String = "TEXT",
+        messageId: String = ""
+    ) {
         val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
         val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
         if (workerUrl.isBlank()) return
@@ -647,6 +665,9 @@ class ChatRepository private constructor(private val context: Context) {
                         put("callerName", myName)
                         put("callerNumber", senderPhone)
                         put("type", "chat_message")
+                        put("messageText", previewText)
+                        put("mediaType", mediaType)
+                        put("messageId", messageId)
                     }.toString()
 
                     conn.outputStream.use { it.write(json.toByteArray()) }
@@ -804,5 +825,77 @@ class ChatRepository private constructor(private val context: Context) {
 
     suspend fun deleteMessage(messageId: String) {
         messageDao.deleteMessage(messageId)
+    }
+
+    /**
+     * Called directly by CallMessagingService when an FCM 'chat_message' push arrives.
+     * 1. If not currently viewing the conversation, INSTANTLY posts the rich notification
+     *    with sound, vibration, and Direct Reply so aggressive OEM task-killers cannot drop it.
+     * 2. Direct-fetches any pending messages in inboxes/{myPhone}/messages, decrypts them,
+     *    stores them in local Room DB, deletes them from Firestore (zero retention),
+     *    and sends DELIVERED receipts back to the sender.
+     */
+    suspend fun handlePushMessageReceived(data: Map<String, String>) = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return@withContext
+
+        val senderNumber = data["callerNumber"] ?: ""
+        val senderName = data["callerName"] ?: senderNumber
+        val messageText = data["messageText"] ?: ""
+        val mediaType = data["mediaType"] ?: "TEXT"
+        val senderNorm = ContactsHelper.normalizePhoneNumber(senderNumber)
+
+        Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
+
+        // Step 1: Immediately show notification if user is not in this conversation right now
+        val isWatchingConversation = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
+        if (!isWatchingConversation && senderNorm.isNotBlank()) {
+            val firebaseManager = FirebaseManager.getInstance(context)
+            val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
+            val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
+            val resolvedName = registeredUser?.displayName?.ifBlank { null }
+                ?: contactInfo?.name?.ifBlank { null }
+                ?: senderName.ifBlank { senderNorm }
+
+            val displayPreview = when (mediaType) {
+                ChatMediaType.IMAGE.name -> if (messageText.isNotBlank()) "📷 $messageText" else "📷 Photo"
+                ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                ChatMediaType.DOCUMENT.name -> if (messageText.isNotBlank()) "📄 $messageText" else "📄 Document"
+                else -> messageText.ifBlank { "New message" }
+            }
+            showIncomingMessageNotification(
+                senderNumber = senderNorm,
+                senderName = resolvedName,
+                messageText = displayPreview,
+                messageType = mediaType
+            )
+        }
+
+        // Also ensure snapshot listener is attached for continuous updates
+        attachChatListeners(myPhone)
+
+        // Step 2: Direct-fetch ephemeral messages from Firestore while FCM holds the process alive
+        try {
+            val snapshot = firestore.collection("inboxes")
+                .document(myPhone)
+                .collection("messages")
+                .get()
+                .await()
+
+            if (!snapshot.isEmpty) {
+                Log.d(TAG, "📥 Direct fetch found ${snapshot.size()} pending messages for $myPhone")
+                for (doc in snapshot.documents) {
+                    val dto = doc.toObject(ChatMessageDto::class.java)
+                    if (dto != null) {
+                        processIncomingMessage(dto, doc.reference)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct fetch failed on push message: ${e.message}")
+        }
     }
 }
