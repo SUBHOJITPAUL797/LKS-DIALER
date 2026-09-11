@@ -258,7 +258,17 @@ class ChatRepositoryWeb {
             const messages = this.getMessages(senderNorm);
             const targetMsg = messages.find(m => m.id === originalId);
             if (targetMsg) {
-              targetMsg.text = newText;
+              try {
+                const existingJson = JSON.parse(targetMsg.text);
+                if (existingJson && existingJson.replyTo) {
+                  existingJson.text = newText;
+                  targetMsg.text = JSON.stringify(existingJson);
+                } else {
+                  targetMsg.text = newText;
+                }
+              } catch {
+                targetMsg.text = newText;
+              }
               targetMsg.isEdited = true;
               this.saveMessages(senderNorm, messages);
             }
@@ -683,7 +693,15 @@ class ChatRepositoryWeb {
     }
 
     // 1. Update locally
-    targetMsg.text = newText;
+    let textToStore = newText;
+    try {
+      const existingJson = JSON.parse(targetMsg.text);
+      if (existingJson && existingJson.replyTo) {
+        existingJson.text = newText;
+        textToStore = JSON.stringify(existingJson);
+      }
+    } catch {}
+    targetMsg.text = textToStore;
     targetMsg.isEdited = true;
     this.saveMessages(normRecipient, messages);
 

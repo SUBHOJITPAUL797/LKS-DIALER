@@ -257,7 +257,18 @@ class ChatRepository private constructor(private val context: Context) {
                     val originalMessageId = json.optString("originalMessageId", "")
                     val newText = json.optString("newText", "")
                     if (originalMessageId.isNotBlank()) {
-                        messageDao.updateMessageText(originalMessageId, newText)
+                        val existing = messageDao.getMessageById(originalMessageId)
+                        val textToUpdate = if (existing != null) {
+                            try {
+                                val existingJson = JSONObject(existing.text)
+                                if (existingJson.has("replyTo")) {
+                                    existingJson.put("text", newText)
+                                    existingJson.toString()
+                                } else newText
+                            } catch (_: Exception) { newText }
+                        } else newText
+
+                        messageDao.updateMessageText(originalMessageId, textToUpdate)
                         val lastMsg = messageDao.getLastMessageForConversation(senderNorm)
                         if (lastMsg != null && lastMsg.id == originalMessageId) {
                             conversationDao.updateLastMessageText(senderNorm, newText)
@@ -690,8 +701,19 @@ class ChatRepository private constructor(private val context: Context) {
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
 
-        // 1. Update Room DB locally
-        messageDao.updateMessageText(originalMessageId, newText)
+        // 1. Update Room DB locally (preserve replyTo if present)
+        val textToSave = try {
+            val json = JSONObject(originalMsg.text)
+            if (json.has("replyTo")) {
+                json.put("text", newText)
+                json.toString()
+            } else {
+                newText
+            }
+        } catch (_: Exception) {
+            newText
+        }
+        messageDao.updateMessageText(originalMessageId, textToSave)
 
         // 2. If it was the last message, update conversation summary
         val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
