@@ -258,9 +258,31 @@ class ChatRepository private constructor(private val context: Context) {
                 } catch (_: Exception) {
                     displayText = "Voice message"
                 }
+            } else if (dto.mediaType == ChatMediaType.DOCUMENT.name) {
+                try {
+                    val json = JSONObject(decryptedRaw)
+                    val fileName = json.optString("fileName", "Document")
+                    displayText = fileName
+                    val base64Data = json.optString("bytes", "")
+                    if (base64Data.isNotBlank()) {
+                        val ext = fileName.substringAfterLast('.', "bin")
+                        val docFile = File(ensureMediaDirectory(), "doc_${dto.messageId}.$ext")
+                        val bytes = Base64.decode(base64Data, Base64.NO_WRAP)
+                        FileOutputStream(docFile).use { it.write(bytes) }
+                        localMediaPath = docFile.absolutePath
+                    }
+                } catch (_: Exception) {
+                    displayText = "Document"
+                }
             }
 
-            val finalStatus = if (isCurrentPeer) MessageStatus.READ.name else MessageStatus.DELIVERED.name
+            // Only auto-mark TEXT messages as READ when in active conversation.
+            // AUDIO, IMAGE, and DOCUMENT require explicit user interaction (play/tap) to mark READ.
+            val finalStatus = if (isCurrentPeer && dto.mediaType == ChatMediaType.TEXT.name) {
+                MessageStatus.READ.name
+            } else {
+                MessageStatus.DELIVERED.name
+            }
 
             // STEP 2: Save to local Room DB
             val messageEntity = MessageEntity(
@@ -306,6 +328,7 @@ class ChatRepository private constructor(private val context: Context) {
                 lastMessageText = when (dto.mediaType) {
                     ChatMediaType.IMAGE.name -> "📷 Photo"
                     ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                    ChatMediaType.DOCUMENT.name -> "📄 $displayText"
                     else -> notificationDisplayText
                 },
                 lastMessageType = dto.mediaType,
@@ -317,14 +340,8 @@ class ChatRepository private constructor(private val context: Context) {
             )
             conversationDao.upsertConversation(convEntity)
 
-            // STEP 3: CRITICAL ZERO-RETENTION — Immediately delete from Firestore!
-            try {
-                docRef.delete().addOnSuccessListener {
-                    Log.d(TAG, "Ephemeral message ${dto.messageId} permanently deleted from Firestore")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to delete message doc from Firestore: ${e.message}")
-            }
+            // STEP 3: Delete ephemeral message from Firestore
+            docRef.delete().await()
 
             // STEP 4: Send ACK back to sender
             sendReceipt(
@@ -338,7 +355,12 @@ class ChatRepository private constructor(private val context: Context) {
                 showIncomingMessageNotification(
                     senderNumber = senderNorm,
                     senderName = resolvedName,
-                    messageText = notificationDisplayText,
+                    messageText = when (dto.mediaType) {
+                        ChatMediaType.IMAGE.name -> "📷 Photo"
+                        ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                        ChatMediaType.DOCUMENT.name -> "📄 $displayText"
+                        else -> notificationDisplayText
+                    },
                     messageType = dto.mediaType
                 )
             }
@@ -461,6 +483,20 @@ class ChatRepository private constructor(private val context: Context) {
                 put("bytes", base64Data)
             }
             payloadToEncrypt = json.toString()
+        } else if (mediaType == ChatMediaType.DOCUMENT && mediaFile != null && mediaFile.exists()) {
+            val ext = mediaFile.extension.ifBlank { "bin" }
+            val savedFile = File(ensureMediaDirectory(), "doc_${messageId}.$ext")
+            mediaFile.copyTo(savedFile, overwrite = true)
+            localSavedPath = savedFile.absolutePath
+
+            val fileBytes = savedFile.readBytes()
+            val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+            val json = JSONObject().apply {
+                put("fileName", text.ifBlank { mediaFile.name })
+                put("fileSize", savedFile.length())
+                put("bytes", base64Data)
+            }
+            payloadToEncrypt = json.toString()
         }
 
         // 3. Encrypt via ChatCryptoManager
@@ -489,9 +525,12 @@ class ChatRepository private constructor(private val context: Context) {
             phoneNumber = normRecipient,
             contactName = recipientName.ifBlank { existingConv?.contactName ?: normRecipient },
             profilePicUrl = existingConv?.profilePicUrl ?: "",
-            lastMessageText = if (mediaType == ChatMediaType.IMAGE) "📷 Photo"
-                              else if (mediaType == ChatMediaType.AUDIO) "🎤 Voice message"
-                              else text,
+            lastMessageText = when (mediaType) {
+                ChatMediaType.IMAGE -> "📷 Photo"
+                ChatMediaType.AUDIO -> "🎤 Voice message"
+                ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
+                else -> text
+            },
             lastMessageType = mediaType.name,
             lastMessageTimestamp = now,
             lastMessageStatus = MessageStatus.SENT.name,
@@ -627,6 +666,18 @@ class ChatRepository private constructor(private val context: Context) {
             .collection("peers")
             .document(myPhone)
             .set(mapOf("isTyping" to isTyping, "timestamp" to System.currentTimeMillis()))
+    }
+
+    /** Called by UI when user actually plays a voice note or taps an image — upgrades status to READ */
+    fun markMessageRead(messageId: String, peerNumber: String) {
+        repositoryScope.launch {
+            try {
+                messageDao.updateMessageStatus(messageId, MessageStatus.READ.name)
+                sendReceipt(peerNumber, messageId, MessageStatus.READ.name)
+            } catch (e: Exception) {
+                Log.w(TAG, "markMessageRead failed: ${e.message}")
+            }
+        }
     }
 
     /**

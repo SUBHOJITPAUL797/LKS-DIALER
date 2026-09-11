@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -15,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -46,6 +49,7 @@ import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
 import com.example.data.local.ChatMediaType
 import com.example.data.local.MessageEntity
+import com.example.data.local.MessageStatus
 import com.example.data.model.CallType
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
@@ -116,14 +120,21 @@ fun ChatConversationScreen(
 
     // Swipe-to-reply state
     var replyingTo by remember { mutableStateOf<ReplyContext?>(null) }
-    // One-time swipe gesture hint
+    // One-time swipe gesture hint — persisted via SharedPreferences
+    val prefs = remember { context.getSharedPreferences("lks_chat_prefs", android.content.Context.MODE_PRIVATE) }
+    val hintAlreadySeen = remember { prefs.getBoolean("swipe_hint_seen", false) }
     var showSwipeHint by remember { mutableStateOf(false) }
 
     val isRecording by voiceHelper.isRecording.collectAsState()
     val recordingDurationMs by voiceHelper.recordingDurationMs.collectAsState()
+    val amplitudeSamples by voiceHelper.amplitudeSamples.collectAsState()
     val isPlaying by voiceHelper.isPlaying.collectAsState()
     val currentPlayingPath by voiceHelper.currentPlayingPath.collectAsState()
     val playbackProgress by voiceHelper.playbackProgress.collectAsState()
+
+    var showAttachmentMenu by remember { mutableStateOf(false) }
+    var imageToEditFile by remember { mutableStateOf<File?>(null) }
+    var cameraTempFile by remember { mutableStateOf<File?>(null) }
 
     val listState = rememberLazyListState()
 
@@ -131,6 +142,7 @@ fun ChatConversationScreen(
     DisposableEffect(normPeer) {
         chatRepository.setActiveChatPeer(normPeer)
         onDispose {
+            chatRepository.setTyping(normPeer, false)   // always clear typing on screen exit
             chatRepository.setActiveChatPeer(null)
             voiceHelper.release()
         }
@@ -143,18 +155,53 @@ fun ChatConversationScreen(
         }
     }
 
-    // Show swipe hint once
+    // Auto-clear typing after 3 seconds of no keystrokes
+    LaunchedEffect(inputText) {
+        if (inputText.isNotBlank()) {
+            delay(3000)
+            chatRepository.setTyping(normPeer, false)
+        }
+    }
+
+    // Show swipe hint only once ever (persisted in SharedPreferences)
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && !showSwipeHint) {
+        if (messages.isNotEmpty() && !hintAlreadySeen && !showSwipeHint) {
             delay(900)
             showSwipeHint = true
-            delay(3000)
+            prefs.edit().putBoolean("swipe_hint_seen", true).apply()
+            delay(3500)
             showSwipeHint = false
         }
     }
 
-    // Image Picker Launcher
-    val imagePickerLauncher = rememberLauncherForActivityResult(
+    // Camera Launcher
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success && cameraTempFile != null && cameraTempFile!!.exists() && cameraTempFile!!.length() > 0) {
+            imageToEditFile = cameraTempFile
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            try {
+                val tempFile = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
+                cameraTempFile = tempFile
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
+                cameraLauncher.launch(uri)
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to start camera: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "Camera permission is required", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Gallery Picker Launcher (opens ImageEditorDialog before sending)
+    val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
@@ -165,16 +212,45 @@ fun ChatConversationScreen(
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
                     if (tempFile.exists() && tempFile.length() > 0) {
+                        imageToEditFile = tempFile
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Failed to load image: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // Document Picker Launcher (PDFs, Word docs, Excel, TXT, etc.)
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    var displayName = "document.pdf"
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (nameIdx != -1) displayName = cursor.getString(nameIdx) ?: "document.pdf"
+                        }
+                    }
+                    val ext = displayName.substringAfterLast('.', "bin")
+                    val tempFile = File(context.cacheDir, "doc_${System.currentTimeMillis()}.$ext")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                    }
+                    if (tempFile.exists() && tempFile.length() > 0) {
                         chatRepository.sendMessage(
                             recipientNumber = normPeer,
                             recipientName = peerDisplayName,
-                            text = "",
-                            mediaType = ChatMediaType.IMAGE,
+                            text = displayName,
+                            mediaType = ChatMediaType.DOCUMENT,
                             mediaFile = tempFile
                         )
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Failed to load image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Failed to send document: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -341,7 +417,8 @@ fun ChatConversationScreen(
                                 isPlaying = (isPlaying && currentPlayingPath == msg.mediaPath),
                                 playbackProgress = if (currentPlayingPath == msg.mediaPath) playbackProgress else 0f,
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
-                                onImageClick = { path -> selectedImagePreviewPath = path }
+                                onImageClick = { path -> selectedImagePreviewPath = path },
+                                onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) }
                             )
                         }
                     }
@@ -467,16 +544,27 @@ fun ChatConversationScreen(
                         Row(
                             modifier = Modifier
                                 .weight(1f)
-                                .padding(horizontal = 8.dp),
+                                .padding(horizontal = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Pulsing recording indicator dot
+                            val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
+                            val pulseAlpha by infiniteTransition.animateFloat(
+                                initialValue = 0.35f,
+                                targetValue = 1f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(550, easing = LinearEasing),
+                                    repeatMode = RepeatMode.Reverse
+                                ),
+                                label = "pulse"
+                            )
                             Box(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(Color.Red)
+                                    .background(Color.Red.copy(alpha = pulseAlpha))
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             val seconds = (recordingDurationMs / 1000) % 60
                             val minutes = (recordingDurationMs / 1000) / 60
                             Text(
@@ -485,11 +573,31 @@ fun ChatConversationScreen(
                                 color = Color.Red
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Recording voice note...",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+
+                            // Animated live audio waveform spikes
+                            Canvas(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(28.dp)
+                            ) {
+                                val barWidth = 3.dp.toPx()
+                                val barGap = 2.dp.toPx()
+                                val totalBarWidth = barWidth + barGap
+                                val maxBars = (size.width / totalBarWidth).toInt().coerceAtLeast(1)
+                                val samples = amplitudeSamples.takeLast(maxBars)
+                                val centerY = size.height / 2f
+
+                                samples.forEachIndexed { index, amp ->
+                                    val x = size.width - (samples.size - index) * totalBarWidth
+                                    val barHeight = (size.height * amp.coerceIn(0.12f, 1f)).coerceAtLeast(4.dp.toPx())
+                                    drawRoundRect(
+                                        color = GreenCall,
+                                        topLeft = androidx.compose.ui.geometry.Offset(x, centerY - barHeight / 2f),
+                                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                                    )
+                                }
+                            }
                         }
 
                         IconButton(
@@ -517,9 +625,9 @@ fun ChatConversationScreen(
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
                         }
                     } else {
-                        // Standard Input UI
-                        IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
-                            Icon(Icons.Default.AttachFile, contentDescription = "Attach image", tint = TealPrimary)
+                        // Standard Input UI: Attachment button opens options (Camera, Gallery, Document)
+                        IconButton(onClick = { showAttachmentMenu = true }) {
+                            Icon(Icons.Default.AttachFile, contentDescription = "Attach", tint = TealPrimary)
                         }
 
                         OutlinedTextField(
@@ -633,6 +741,136 @@ fun ChatConversationScreen(
                 }
             }
         }
+    }
+
+    // ── Attachment Picker Bottom Sheet ───────────────────────────
+    if (showAttachmentMenu) {
+        ModalBottomSheet(
+            onDismissRequest = { showAttachmentMenu = false },
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 36.dp, top = 8.dp)
+            ) {
+                Text(
+                    text = "Share Content",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(bottom = 20.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Camera
+                    AttachmentOptionItem(
+                        icon = Icons.Default.PhotoCamera,
+                        label = "Camera",
+                        backgroundColor = Color(0xFFE91E63),
+                        onClick = {
+                            showAttachmentMenu = false
+                            val hasCamPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                context,
+                                android.Manifest.permission.CAMERA
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            if (hasCamPermission) {
+                                try {
+                                    val tempFile = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
+                                    cameraTempFile = tempFile
+                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
+                                    cameraLauncher.launch(uri)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Failed to launch camera: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                            }
+                        }
+                    )
+
+                    // Gallery
+                    AttachmentOptionItem(
+                        icon = Icons.Default.Image,
+                        label = "Gallery",
+                        backgroundColor = Color(0xFF9C27B0),
+                        onClick = {
+                            showAttachmentMenu = false
+                            galleryPickerLauncher.launch("image/*")
+                        }
+                    )
+
+                    // Document
+                    AttachmentOptionItem(
+                        icon = Icons.Default.InsertDriveFile,
+                        label = "Document",
+                        backgroundColor = Color(0xFF5E35B1),
+                        onClick = {
+                            showAttachmentMenu = false
+                            documentPickerLauncher.launch(arrayOf(
+                                "application/pdf",
+                                "application/msword",
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                "application/vnd.ms-excel",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "text/plain",
+                                "*/*"
+                            ))
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    // ── Image Editor Dialog (crop/rotate/draw/caption) ─────────────
+    if (imageToEditFile != null) {
+        ImageEditorDialog(
+            imageFile = imageToEditFile!!,
+            onDismiss = { imageToEditFile = null },
+            onSendImage = { finalFile, caption ->
+                val fileToSend = finalFile
+                imageToEditFile = null
+                coroutineScope.launch {
+                    chatRepository.sendMessage(
+                        recipientNumber = normPeer,
+                        recipientName = peerDisplayName,
+                        text = caption,
+                        mediaType = ChatMediaType.IMAGE,
+                        mediaFile = fileToSend
+                    )
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AttachmentOptionItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    backgroundColor: Color,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Surface(
+            modifier = Modifier.size(56.dp),
+            shape = CircleShape,
+            color = backgroundColor
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(28.dp))
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = label, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -766,7 +1004,8 @@ private fun MessageBubble(
     isPlaying: Boolean,
     playbackProgress: Float,
     onPlayAudio: (path: String) -> Unit,
-    onImageClick: (path: String) -> Unit
+    onImageClick: (path: String) -> Unit,
+    onMarkMessageRead: (messageId: String) -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
@@ -864,22 +1103,37 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Image ────────────────────────────────────────────────────
+                // ── Image (Dynamic aspect ratio so image is never cut off) ──
                 if (message.mediaType == ChatMediaType.IMAGE.name && !message.mediaPath.isNullOrBlank()) {
+                    val imageRatio = remember(message.mediaPath) {
+                        try {
+                            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(message.mediaPath, opts)
+                            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                                (opts.outWidth.toFloat() / opts.outHeight.toFloat()).coerceIn(0.55f, 1.85f)
+                            } else null
+                        } catch (_: Exception) { null }
+                    }
+
                     AsyncImage(
                         model = message.mediaPath,
                         contentDescription = "Photo",
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 220.dp)
+                            .aspectRatio(imageRatio ?: 1f)
                             .clip(RoundedCornerShape(12.dp))
-                            .clickable { onImageClick(message.mediaPath) },
+                            .clickable {
+                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                    onMarkMessageRead(message.id)
+                                }
+                                onImageClick(message.mediaPath)
+                            },
                         contentScale = ContentScale.Crop
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Audio ────────────────────────────────────────────────────
+                // ── Audio Note ────────────────────────────────────────────────
                 if (message.mediaType == ChatMediaType.AUDIO.name && !message.mediaPath.isNullOrBlank()) {
                     Row(
                         modifier = Modifier
@@ -888,7 +1142,12 @@ private fun MessageBubble(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { onPlayAudio(message.mediaPath) },
+                            onClick = {
+                                onPlayAudio(message.mediaPath)
+                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                    onMarkMessageRead(message.id)
+                                }
+                            },
                             modifier = Modifier
                                 .size(36.dp)
                                 .clip(CircleShape)
@@ -920,8 +1179,101 @@ private fun MessageBubble(
                     }
                 }
 
+                // ── Document Card ─────────────────────────────────────────────
+                if (message.mediaType == ChatMediaType.DOCUMENT.name && !message.mediaPath.isNullOrBlank()) {
+                    val context = LocalContext.current
+                    val docFile = remember(message.mediaPath) { File(message.mediaPath) }
+                    val ext = remember(docFile) { docFile.extension.uppercase(Locale.getDefault()).ifBlank { "DOC" } }
+                    val fileSizeFormatted = remember(docFile) {
+                        if (docFile.exists()) {
+                            val bytes = docFile.length()
+                            if (bytes < 1024) "$bytes B"
+                            else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
+                            else String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f))
+                        } else ""
+                    }
+
+                    Surface(
+                        color = if (isOutgoing) TealPrimary.copy(alpha = 0.15f) else GreenCall.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                    onMarkMessageRead(message.id)
+                                }
+                                try {
+                                    val fileUri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        docFile
+                                    )
+                                    val mime = android.webkit.MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                        setDataAndType(fileUri, mime)
+                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                color = when (ext) {
+                                    "PDF" -> Color(0xFFE53935)
+                                    "DOC", "DOCX" -> Color(0xFF1E88E5)
+                                    "XLS", "XLSX" -> Color(0xFF43A047)
+                                    else -> TealPrimary
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = ext.take(4),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = displayText.ifBlank { docFile.name },
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (fileSizeFormatted.isNotBlank()) {
+                                    Text(
+                                        text = fileSizeFormatted,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                Icons.Default.FileDownload,
+                                contentDescription = "Open Document",
+                                tint = if (isOutgoing) TealPrimary else GreenCall,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
                 // ── Text ─────────────────────────────────────────────────────
-                if (displayText.isNotBlank()) {
+                if (displayText.isNotBlank() && message.mediaType != ChatMediaType.DOCUMENT.name) {
                     Text(
                         text = displayText,
                         style = MaterialTheme.typography.bodyMedium,

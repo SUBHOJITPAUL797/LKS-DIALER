@@ -15,7 +15,8 @@ enum class MessageStatus {
 enum class ChatMediaType {
     TEXT,
     IMAGE,
-    AUDIO
+    AUDIO,
+    DOCUMENT
 }
 
 @Entity(

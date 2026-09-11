@@ -40,10 +40,22 @@ class VoiceRecorderHelper(private val context: Context) {
     private val _playbackProgress = MutableStateFlow(0f)
     val playbackProgress: StateFlow<Float> = _playbackProgress.asStateFlow()
 
+    // Real-time waveform: list of normalized amplitudes 0f..1f, last 40 bars
+    private val _amplitudeSamples = MutableStateFlow<List<Float>>(emptyList())
+    val amplitudeSamples: StateFlow<List<Float>> = _amplitudeSamples.asStateFlow()
+
     private val recordingTimerRunnable = object : Runnable {
         override fun run() {
             if (_isRecording.value) {
                 _recordingDurationMs.value = System.currentTimeMillis() - recordingStartTime
+                // Sample amplitude for waveform (maxAmplitude resets after each call)
+                val raw = try { mediaRecorder?.maxAmplitude ?: 0 } catch (_: Exception) { 0 }
+                // MediaRecorder maxAmplitude is 0..32767; normalize to 0f..1f with a floor so bars are always visible
+                val normalized = (raw.toFloat() / 32767f).coerceIn(0.05f, 1f)
+                val current = _amplitudeSamples.value.toMutableList()
+                current.add(normalized)
+                if (current.size > 40) current.removeAt(0)
+                _amplitudeSamples.value = current
                 handler.postDelayed(this, 100)
             }
         }
@@ -113,6 +125,7 @@ class VoiceRecorderHelper(private val context: Context) {
         handler.removeCallbacks(recordingTimerRunnable)
         _isRecording.value = false
         _recordingDurationMs.value = 0L
+        _amplitudeSamples.value = emptyList()
 
         try {
             mediaRecorder?.apply {
@@ -136,6 +149,7 @@ class VoiceRecorderHelper(private val context: Context) {
         handler.removeCallbacks(recordingTimerRunnable)
         _isRecording.value = false
         _recordingDurationMs.value = 0L
+        _amplitudeSamples.value = emptyList()
         try {
             mediaRecorder?.apply {
                 stop()
