@@ -117,7 +117,14 @@ function SwipeableMessage({ msg, onSwipeReply, children }) {
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function ChatConversation({ peerNumber, peerName, peerAvatar, onBack, onStartCall }) {
+export default function ChatConversation({
+  peerNumber,
+  peerName,
+  peerAvatar,
+  onBack,
+  onStartCall,
+  isDesktop = false
+}) {
   const normPeer = normalizePhoneNumber(peerNumber);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -410,22 +417,30 @@ export default function ChatConversation({ peerNumber, peerName, peerAvatar, onB
   return (
     <div style={{
       display: 'flex', flexDirection: 'column',
-      // Use dynamic viewport height so it doesn't go behind browser chrome
-      height: '100dvh',
+      height: '100%',
+      width: '100%',
+      flex: 1,
+      minWidth: 0,
       backgroundColor: 'var(--bg-color)', position: 'relative', overflow: 'hidden'
     }}>
       {/* ── TOP BAR ── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '10px 14px', backgroundColor: '#fff',
-        borderBottom: '4px solid #000', zIndex: 10, flexShrink: 0
+        padding: '12px 20px', backgroundColor: '#fff',
+        borderBottom: '4px solid #000', zIndex: 10, flexShrink: 0,
+        width: '100%'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-          <button onClick={onBack} className="neo-box" style={{
-            width: 36, height: 36, padding: 0, display: 'flex',
-            alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', backgroundColor: 'var(--accent)', flexShrink: 0
-          }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+          <button 
+            onClick={onBack} 
+            className="neo-box" 
+            title={isDesktop ? "Close chat" : "Back"}
+            style={{
+              width: 38, height: 38, padding: 0, display: 'flex',
+              alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', backgroundColor: 'var(--accent)', flexShrink: 0
+            }}
+          >
             <ArrowLeft size={20} color="#000" strokeWidth={3} />
           </button>
           <div style={{
@@ -512,16 +527,19 @@ export default function ChatConversation({ peerNumber, peerName, peerAvatar, onB
 
       {/* ── MESSAGES AREA ── */}
       <div style={{
-        flex: 1, overflowY: 'auto', padding: '12px 16px',
-        display: 'flex', flexDirection: 'column', gap: 8,
+        flex: 1, overflowY: 'auto', padding: '16px 20px',
+        display: 'flex', flexDirection: 'column', gap: 10,
         // Extra bottom padding so messages aren't hidden behind the input bar
-        paddingBottom: 16
+        paddingBottom: 20,
+        width: '100%',
+        maxWidth: '920px',
+        margin: '0 auto'
       }}>
         {/* E2EE Banner */}
         <div style={{
           backgroundColor: '#fffbe6', border: '2px dashed #000', borderRadius: 8,
-          padding: '8px 12px', textAlign: 'center', fontSize: 11, fontWeight: 700,
-          color: '#555', margin: '0 auto 4px', maxWidth: 380
+          padding: '8px 16px', textAlign: 'center', fontSize: 12, fontWeight: 700,
+          color: '#555', margin: '0 auto 8px', maxWidth: 440, width: '100%'
         }}>
           🔒 End-to-End Encrypted • Auto-deleted from server after delivery
         </div>
@@ -663,100 +681,103 @@ export default function ChatConversation({ peerNumber, peerName, peerAvatar, onB
 
       {/* ── INPUT BAR (sticks above keyboard using visualViewport paddingBottom) ── */}
       <div style={{
-        padding: '8px 14px',
+        padding: '12px 20px',
         backgroundColor: '#fff',
         borderTop: '4px solid #000',
         zIndex: 20,
         flexShrink: 0,
+        width: '100%',
         // Push up by keyboard height
         marginBottom: inputPaddingBottom,
         transition: 'margin-bottom 0.15s ease-out'
       }}>
-        {/* Reply Preview Bar */}
-        {replyingTo && (
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            backgroundColor: '#e0f7fa', border: '2px solid #00838f',
-            borderRadius: 10, padding: '6px 10px', marginBottom: 8
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <CornerUpLeft size={16} color="#00838f" strokeWidth={2.5} />
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 900, color: '#00838f' }}>
-                  Replying to {replyingTo.senderLabel}
-                </div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#444', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 220 }}>
-                  {replyingTo.text}
+        <div style={{ maxWidth: '920px', margin: '0 auto', width: '100%' }}>
+          {/* Reply Preview Bar */}
+          {replyingTo && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              backgroundColor: '#e0f7fa', border: '2px solid #00838f',
+              borderRadius: 10, padding: '6px 12px', marginBottom: 8
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <CornerUpLeft size={16} color="#00838f" strokeWidth={2.5} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 900, color: '#00838f' }}>
+                    Replying to {replyingTo.senderLabel}
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#444', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 260 }}>
+                    {replyingTo.text}
+                  </div>
                 </div>
               </div>
+              <button
+                onClick={() => setReplyingTo(null)}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', flexShrink: 0, padding: 4 }}
+              >
+                <X size={18} color="#555" />
+              </button>
             </div>
-            <button
-              onClick={() => setReplyingTo(null)}
-              style={{ border: 'none', background: 'none', cursor: 'pointer', flexShrink: 0, padding: 4 }}
-            >
-              <X size={18} color="#555" />
-            </button>
-          </div>
-        )}
+          )}
 
-        {isRecording ? (
-          /* RECORDING BAR */
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{
-                width: 12, height: 12, borderRadius: '50%', backgroundColor: '#ff3366',
-                boxShadow: '0 0 8px #ff3366', animation: 'pulse 1s infinite'
-              }} />
-              <span style={{ fontWeight: 900, fontSize: 15, color: '#ff3366' }}>
-                {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60) < 10 ? '0' : ''}{recordSeconds % 60}
-              </span>
+          {isRecording ? (
+            /* RECORDING BAR */
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 12, height: 12, borderRadius: '50%', backgroundColor: '#ff3366',
+                  boxShadow: '0 0 8px #ff3366', animation: 'pulse 1s infinite'
+                }} />
+                <span style={{ fontWeight: 900, fontSize: 15, color: '#ff3366' }}>
+                  {Math.floor(recordSeconds / 60)}:{(recordSeconds % 60) < 10 ? '0' : ''}{recordSeconds % 60}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={cancelRecording} className="neo-box"
+                  style={{ padding: '8px 14px', backgroundColor: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 13 }}>
+                  <Trash2 size={16} color="#ff3366" /> Cancel
+                </button>
+                <button onClick={stopAndSendRecording} className="neo-box"
+                  style={{ padding: '8px 18px', backgroundColor: '#00E5FF', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 900, fontSize: 13 }}>
+                  <Send size={16} /> Send
+                </button>
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={cancelRecording} className="neo-box"
-                style={{ padding: '8px 12px', backgroundColor: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 13 }}>
-                <Trash2 size={16} color="#ff3366" /> Cancel
+          ) : (
+            /* TEXT / MEDIA BAR */
+            <form onSubmit={handleSendText} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+              <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageSelected} />
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="neo-box"
+                style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}
+                title="Attach Photo">
+                <ImageIcon size={22} />
               </button>
-              <button onClick={stopAndSendRecording} className="neo-box"
-                style={{ padding: '8px 16px', backgroundColor: '#00E5FF', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 900, fontSize: 13 }}>
-                <Send size={16} /> Send
+              <button type="button" onClick={startRecording} className="neo-box"
+                style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer', flexShrink: 0 }}
+                title="Record Voice Note">
+                <Mic size={22} />
               </button>
-            </div>
-          </div>
-        ) : (
-          /* TEXT / MEDIA BAR */
-          <form onSubmit={handleSendText} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageSelected} />
-            <button type="button" onClick={() => fileInputRef.current?.click()} className="neo-box"
-              style={{ width: 42, height: 42, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}
-              title="Attach Photo">
-              <ImageIcon size={20} />
-            </button>
-            <button type="button" onClick={startRecording} className="neo-box"
-              style={{ width: 42, height: 42, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer', flexShrink: 0 }}
-              title="Record Voice Note">
-              <Mic size={20} />
-            </button>
-            <input
-              ref={inputRef}
-              type="text"
-              className="neo-input"
-              placeholder={replyingTo ? `Reply to ${replyingTo.senderLabel}...` : 'Encrypted message...'}
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              style={{ flex: 1, padding: '10px 14px', fontSize: 15 }}
-              // Prevent iOS from zooming in (min font-size 16px avoids that)
-            />
-            <button type="submit" disabled={!inputText.trim() || sending} className="neo-btn"
-              style={{
-                width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                backgroundColor: inputText.trim() ? 'var(--primary)' : '#ccc',
-                cursor: inputText.trim() ? 'pointer' : 'default', flexShrink: 0
-              }}>
-              <Send size={18} color="#fff" />
-            </button>
-          </form>
-        )}
+              <input
+                ref={inputRef}
+                type="text"
+                className="neo-input"
+                placeholder={replyingTo ? `Reply to ${replyingTo.senderLabel}...` : 'Encrypted message...'}
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                style={{ flex: 1, padding: '12px 16px', fontSize: 15 }}
+                // Prevent iOS from zooming in (min font-size 16px avoids that)
+              />
+              <button type="submit" disabled={!inputText.trim() || sending} className="neo-btn"
+                style={{
+                  width: 46, height: 46, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: inputText.trim() ? 'var(--primary)' : '#ccc',
+                  cursor: inputText.trim() ? 'pointer' : 'default', flexShrink: 0
+                }}>
+                <Send size={20} color="#fff" />
+              </button>
+            </form>
+          )}
+        </div>
       </div>
 
       {/* ── IMAGE LIGHTBOX ── */}

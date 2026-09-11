@@ -7,7 +7,7 @@ import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { allCountries, defaultCountry, formatPhoneNumber } from '../lib/CountryCodes';
 
-export default function ChatList({ onOpenChat }) {
+export default function ChatList({ onOpenChat, activePeerNumber }) {
   const [conversations, setConversations] = useState([]);
   const [search, setSearch] = useState('');
   const [showNewChatModal, setShowNewChatModal] = useState(false);
@@ -170,6 +170,7 @@ export default function ChatList({ onOpenChat }) {
         filteredConversations.map(conv => {
           const avatarUrl = formatAvatarUrl(conv.profilePicUrl);
           const initial = (conv.contactName || conv.phoneNumber || '?')[0]?.toUpperCase() || '?';
+          const isSelected = activePeerNumber && numbersMatch(conv.phoneNumber, activePeerNumber);
 
           return (
             <div
@@ -181,7 +182,11 @@ export default function ChatList({ onOpenChat }) {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                cursor: 'pointer'
+                cursor: 'pointer',
+                backgroundColor: isSelected ? '#FFE600' : 'var(--card-bg)',
+                boxShadow: isSelected ? '4px 4px 0 var(--primary)' : 'var(--shadow-offset) var(--shadow-offset) 0 var(--shadow-color)',
+                transform: isSelected ? 'translate(-1px, -1px)' : 'none',
+                borderLeft: isSelected ? '6px solid var(--primary)' : 'var(--border-width) solid var(--border-color)'
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 1, minWidth: 0 }}>

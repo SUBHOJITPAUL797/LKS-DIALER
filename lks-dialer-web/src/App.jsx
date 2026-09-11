@@ -9,9 +9,11 @@ import Contacts from './components/Contacts';
 import Profile from './components/Profile';
 import ChatList from './components/ChatList';
 import ChatConversation from './components/ChatConversation';
+import DesktopChatPlaceholder from './components/DesktopChatPlaceholder';
 import { webRtcEngine } from './lib/WebRtcEngine';
 import { chatRepositoryWeb } from './lib/ChatRepositoryWeb';
 import { formatAvatarUrl } from './lib/ImageUtils';
+import appLogo from './assets/app_logo.png';
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -21,6 +23,15 @@ function App() {
   const [activeConversation, setActiveConversation] = useState(null); // { phoneNumber, contactName, profilePicUrl }
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
+
+  // Responsive desktop detection
+  const [isDesktop, setIsDesktop] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : false));
+
+  useEffect(() => {
+    const handleResize = () => setIsDesktop(window.innerWidth >= 768);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     // Request browser notification permission
@@ -143,6 +154,7 @@ function App() {
       contactName: contactName || phoneNumber,
       profilePicUrl: profilePicUrl || ''
     });
+    setActiveTab('chats');
   };
 
   if (isInitializing) return null;
@@ -163,8 +175,8 @@ function App() {
     );
   }
 
-  // Active Chat Conversation Screen
-  if (activeConversation) {
+  // Mobile full-screen chat conversation view
+  if (!isDesktop && activeConversation) {
     return (
       <div className="app-container">
         <ChatConversation
@@ -173,80 +185,157 @@ function App() {
           peerAvatar={activeConversation.profilePicUrl}
           onBack={() => setActiveConversation(null)}
           onStartCall={handleStartCall}
+          isDesktop={false}
         />
       </div>
     );
   }
 
-  return (
-    <div className="app-container">
-      {activeTab === 'recents' && (
-        <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
-      )}
-      {activeTab === 'contacts' && (
-        <Contacts onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
-      )}
-      {activeTab === 'chats' && (
-        <ChatList onOpenChat={handleOpenChat} />
-      )}
-      {activeTab === 'dialer' && (
-        <Dialer onStartCall={handleStartCall} />
-      )}
-      {activeTab === 'profile' && (
-        <Profile />
+  const renderNavItems = () => (
+    <>
+      {isDesktop && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          padding: '6px 8px 18px 8px',
+          borderBottom: '3px solid #000',
+          marginBottom: '6px'
+        }}>
+          <div className="neo-box" style={{
+            width: '42px',
+            height: '42px',
+            borderRadius: '12px',
+            backgroundColor: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
+            flexShrink: 0
+          }}>
+            <img src={appLogo} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: '16px', fontWeight: '900', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>
+              LKS DIALER
+            </div>
+            <div style={{ fontSize: '11px', fontWeight: '700', color: '#666' }}>
+              Web Edition
+            </div>
+          </div>
+        </div>
       )}
 
-      {/* Bottom Navigation with 5 tabs */}
+      <div 
+        className={`nav-item ${activeTab === 'dialer' ? 'active' : ''}`}
+        onClick={() => setActiveTab('dialer')}
+      >
+        <Grid size={22} />
+        <span>Keypad</span>
+      </div>
+      <div 
+        className={`nav-item ${activeTab === 'recents' ? 'active' : ''}`}
+        onClick={() => setActiveTab('recents')}
+      >
+        <Clock size={22} />
+        <span>Recents</span>
+      </div>
+      <div 
+        className={`nav-item ${activeTab === 'contacts' ? 'active' : ''}`}
+        onClick={() => setActiveTab('contacts')}
+      >
+        <Users size={22} />
+        <span>Contacts</span>
+      </div>
+      <div 
+        className={`nav-item ${activeTab === 'chats' ? 'active' : ''}`}
+        onClick={() => setActiveTab('chats')}
+        style={{ position: 'relative' }}
+      >
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <MessageSquare size={22} />
+          {unreadChatCount > 0 && (
+            <div style={{
+              position: 'absolute', top: '-6px', right: '-10px',
+              backgroundColor: 'var(--primary)', color: '#fff',
+              fontSize: '10px', fontWeight: '900', borderRadius: '10px',
+              padding: '1px 5px', border: '1.5px solid #000',
+              boxShadow: '1px 1px 0 #000'
+            }}>
+              {unreadChatCount > 99 ? '99+' : unreadChatCount}
+            </div>
+          )}
+        </div>
+        <span>Chats</span>
+      </div>
+      <div 
+        className={`nav-item ${activeTab === 'profile' ? 'active' : ''}`}
+        onClick={() => setActiveTab('profile')}
+      >
+        <UserIcon size={22} />
+        <span>Profile</span>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="app-container">
+      {/* Navigation: Sidebar on desktop, bottom bar on mobile */}
       <div className="bottom-nav">
-        <div 
-          className={`nav-item ${activeTab === 'recents' ? 'active' : ''}`}
-          onClick={() => setActiveTab('recents')}
-        >
-          <Clock size={22} />
-          <span>Recents</span>
-        </div>
-        <div 
-          className={`nav-item ${activeTab === 'contacts' ? 'active' : ''}`}
-          onClick={() => setActiveTab('contacts')}
-        >
-          <Users size={22} />
-          <span>Contacts</span>
-        </div>
-        <div 
-          className={`nav-item ${activeTab === 'chats' ? 'active' : ''}`}
-          onClick={() => setActiveTab('chats')}
-          style={{ position: 'relative' }}
-        >
-          <div style={{ position: 'relative', display: 'inline-flex' }}>
-            <MessageSquare size={22} />
-            {unreadChatCount > 0 && (
-              <div style={{
-                position: 'absolute', top: '-6px', right: '-10px',
-                backgroundColor: 'var(--primary)', color: '#fff',
-                fontSize: '10px', fontWeight: '900', borderRadius: '10px',
-                padding: '1px 5px', border: '1.5px solid #000',
-                boxShadow: '1px 1px 0 #000'
-              }}>
-                {unreadChatCount > 99 ? '99+' : unreadChatCount}
+        {renderNavItems()}
+      </div>
+
+      {/* Main Content Workspace */}
+      <div className="desktop-main-workspace" style={{ flex: 1, minWidth: 0, height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {activeTab === 'chats' ? (
+          isDesktop ? (
+            /* Desktop Split View: Left ChatList, Right ChatConversation or Placeholder */
+            <div className="desktop-chats-split">
+              <div className="desktop-chatlist-pane">
+                <ChatList 
+                  onOpenChat={handleOpenChat} 
+                  activePeerNumber={activeConversation?.phoneNumber} 
+                />
               </div>
-            )}
+              <div className="desktop-chatconvo-pane">
+                {activeConversation ? (
+                  <ChatConversation
+                    peerNumber={activeConversation.phoneNumber}
+                    peerName={activeConversation.contactName}
+                    peerAvatar={activeConversation.profilePicUrl}
+                    onBack={() => setActiveConversation(null)}
+                    onStartCall={handleStartCall}
+                    isDesktop={true}
+                  />
+                ) : (
+                  <DesktopChatPlaceholder 
+                    onOpenDialer={() => setActiveTab('dialer')} 
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Mobile View: ChatList (ChatConversation handled by early return if active) */
+            <ChatList onOpenChat={handleOpenChat} />
+          )
+        ) : (
+          <div className={isDesktop ? "desktop-tab-content" : "scrollable-content"} style={{ width: '100%', height: '100%' }}>
+            <div className={isDesktop ? "desktop-card-container" : ""} style={{ width: '100%' }}>
+              {activeTab === 'recents' && (
+                <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+              )}
+              {activeTab === 'contacts' && (
+                <Contacts onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+              )}
+              {activeTab === 'dialer' && (
+                <Dialer onStartCall={handleStartCall} />
+              )}
+              {activeTab === 'profile' && (
+                <Profile />
+              )}
+            </div>
           </div>
-          <span>Chats</span>
-        </div>
-        <div 
-          className={`nav-item ${activeTab === 'dialer' ? 'active' : ''}`}
-          onClick={() => setActiveTab('dialer')}
-        >
-          <Grid size={22} />
-          <span>Keypad</span>
-        </div>
-        <div 
-          className={`nav-item ${activeTab === 'profile' ? 'active' : ''}`}
-          onClick={() => setActiveTab('profile')}
-        >
-          <UserIcon size={22} />
-          <span>Profile</span>
-        </div>
+        )}
       </div>
 
       <IncomingCallModal 
