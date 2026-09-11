@@ -601,8 +601,39 @@ export default function ChatConversation({ peerNumber, peerName, peerAvatar, onB
                       </div>
                     )}
 
+                    {/* Document */}
+                    {msg.mediaType === 'DOCUMENT' && (
+                      <a
+                        href={msg.mediaData ? (msg.mediaData.startsWith('data:') ? msg.mediaData : `data:application/octet-stream;base64,${msg.mediaData}`) : '#'}
+                        download={msg.text || 'document'}
+                        className="neo-box"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '8px 12px',
+                          backgroundColor: '#fff',
+                          textDecoration: 'none',
+                          color: '#000',
+                          borderRadius: 8,
+                          marginBottom: 4,
+                          border: '2px solid #000'
+                        }}
+                      >
+                        <div style={{ width: 36, height: 36, borderRadius: 6, backgroundColor: '#5E35B1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>
+                          {(msg.text || 'DOC').split('.').pop().toUpperCase().slice(0, 4)}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {msg.text || 'Document'}
+                          </div>
+                          <div style={{ fontSize: 10, fontWeight: 700, color: '#666' }}>Tap to download</div>
+                        </div>
+                      </a>
+                    )}
+
                     {/* Text */}
-                    {text ? (
+                    {text && msg.mediaType !== 'DOCUMENT' ? (
                       <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
                         {text}
                       </div>

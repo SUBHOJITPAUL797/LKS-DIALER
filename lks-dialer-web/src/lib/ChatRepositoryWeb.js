@@ -208,6 +208,14 @@ class ChatRepositoryWeb {
         } catch {
           displayText = 'Voice message';
         }
+      } else if (dto.mediaType === 'DOCUMENT') {
+        try {
+          const parsed = JSON.parse(decryptedRaw);
+          displayText = parsed.fileName || 'Document';
+          mediaData = parsed.bytes || '';
+        } catch {
+          displayText = 'Document';
+        }
       }
 
       const finalStatus = isCurrentPeer ? 'READ' : 'DELIVERED';
@@ -260,6 +268,7 @@ class ChatRepositoryWeb {
         profilePicUrl: profilePic,
         lastMessageText: dto.mediaType === 'IMAGE' ? '📷 Photo' 
                        : dto.mediaType === 'AUDIO' ? '🎤 Voice message' 
+                       : dto.mediaType === 'DOCUMENT' ? `📄 ${displayText}`
                        : displayText,
         lastMessageType: dto.mediaType || 'TEXT',
         lastMessageTimestamp: dto.timestamp || Date.now(),
