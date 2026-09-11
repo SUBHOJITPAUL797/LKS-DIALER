@@ -45,6 +45,10 @@ class ChatRepositoryWeb {
     this.unsubReceipts = null;
     this.unsubTyping = null;
     this.typingTimeouts = {};
+
+    try {
+      this.reconcileConversations();
+    } catch {}
   }
 
   // --- PUB / SUB FOR REACTIVE UI ---
@@ -91,7 +95,31 @@ class ChatRepositoryWeb {
     const norm = normalizePhoneNumber(peerPhoneNumber);
     try {
       const raw = localStorage.getItem(`lks_web_chat_messages_${norm}`);
-      return raw ? JSON.parse(raw) : [];
+      const messages = raw ? JSON.parse(raw) : [];
+
+      // Retroactive Read Heal: If peer has replied at timestamp T, all earlier outgoing messages (<= T) were read
+      let lastIncomingTime = 0;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (!messages[i].isOutgoing) {
+          lastIncomingTime = messages[i].timestamp || 0;
+          break;
+        }
+      }
+
+      if (lastIncomingTime > 0) {
+        let healed = false;
+        messages.forEach(m => {
+          if (m.isOutgoing && m.status !== 'READ' && (m.timestamp <= lastIncomingTime)) {
+            m.status = 'READ';
+            healed = true;
+          }
+        });
+        if (healed) {
+          localStorage.setItem(`lks_web_chat_messages_${norm}`, JSON.stringify(messages));
+        }
+      }
+
+      return messages;
     } catch {
       return [];
     }
@@ -106,6 +134,35 @@ class ChatRepositoryWeb {
     }
   }
 
+  // --- RECONCILE & SELF-HEAL CONVERSATIONS ---
+  reconcileConversations() {
+    try {
+      const conversations = this.getConversations();
+      let updatedConvs = false;
+
+      conversations.forEach(c => {
+        const messages = this.getMessages(c.phoneNumber);
+        if (!messages || messages.length === 0) return;
+
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg && lastMsg.isOutgoing) {
+          if (c.lastMessageStatus !== lastMsg.status || !c.lastMessageIsOutgoing) {
+            c.lastMessageStatus = lastMsg.status;
+            c.lastMessageIsOutgoing = true;
+            updatedConvs = true;
+          }
+        }
+      });
+
+      if (updatedConvs) {
+        this.saveConversations(conversations);
+        this.notifySubscribers();
+      }
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] Reconcile error:', e);
+    }
+  }
+
   getTotalUnreadCount() {
     const convs = this.getConversations();
     return convs.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
@@ -115,6 +172,10 @@ class ChatRepositoryWeb {
   attachChatListeners(myPhoneNumber) {
     if (!myPhoneNumber) return;
     const normalizedMyPhone = normalizePhoneNumber(myPhoneNumber);
+
+    // Always run reconcile on attach
+    this.reconcileConversations();
+
     if (this.currentListeningPhone === normalizedMyPhone && this.unsubInbox) return;
 
     this.currentListeningPhone = normalizedMyPhone;
@@ -222,6 +283,16 @@ class ChatRepositoryWeb {
 
       // 2. Persist locally to this peer's message store
       const messages = this.getMessages(senderNorm);
+
+      // Implicit Read Sync: If peer sent a message, all earlier outgoing messages to them were seen/read!
+      let msgsUpgraded = false;
+      messages.forEach(m => {
+        if (m.isOutgoing && m.status !== 'READ') {
+          m.status = 'READ';
+          msgsUpgraded = true;
+        }
+      });
+
       // Avoid duplicates
       if (!messages.some(m => m.id === dto.messageId)) {
         const newMessage = {
@@ -238,6 +309,8 @@ class ChatRepositoryWeb {
           isOutgoing: false
         };
         messages.push(newMessage);
+        this.saveMessages(senderNorm, messages);
+      } else if (msgsUpgraded) {
         this.saveMessages(senderNorm, messages);
       }
 
@@ -314,8 +387,19 @@ class ChatRepositoryWeb {
     }
 
     try {
-      const peerNorm = normalizePhoneNumber(receipt.recipientNumber || receipt.senderNumber);
-      const messages = this.getMessages(peerNorm);
+      // 1. Resolve peer:
+      // Ephemeral receipts arrive in my inbox (receipt.recipientNumber === me).
+      // The peer who generated the receipt is receipt.senderNumber.
+      let peer = receipt.senderNumber;
+      if (!peer || numbersMatch(peer, this.currentListeningPhone)) {
+        peer = receipt.recipientNumber;
+      }
+      const peerNorm = normalizePhoneNumber(peer);
+
+      const conversations = this.getConversations();
+      let conv = conversations.find(c => numbersMatch(c.phoneNumber, peerNorm));
+      let targetPhone = conv ? conv.phoneNumber : peerNorm;
+      let messages = this.getMessages(targetPhone);
 
       let updated = false;
 
@@ -327,34 +411,98 @@ class ChatRepositoryWeb {
             updated = true;
           }
         });
+
+        // Also if receipt is for a specific messageId, ensure that one is explicitly READ
+        if (receipt.messageId !== 'all') {
+          const specific = messages.find(m => m.id === receipt.messageId);
+          if (specific && specific.status !== 'READ') {
+            specific.status = 'READ';
+            updated = true;
+          }
+        }
       } else {
-        const msg = messages.find(m => m.id === receipt.messageId);
-        if (msg && msg.status !== 'READ') {
-          msg.status = receipt.status;
-          updated = true;
+        // DELIVERED receipt: update specific message if found and not already READ
+        let msg = messages.find(m => m.id === receipt.messageId);
+
+        // Fallback: search all conversations if not found in targetPhone
+        if (!msg) {
+          for (const c of conversations) {
+            if (c.phoneNumber === targetPhone) continue;
+            const otherMsgs = this.getMessages(c.phoneNumber);
+            const found = otherMsgs.find(m => m.id === receipt.messageId);
+            if (found) {
+              conv = c;
+              targetPhone = c.phoneNumber;
+              messages = otherMsgs;
+              msg = found;
+              break;
+            }
+          }
+        }
+
+        if (msg) {
+          if (msg.status === 'SENT' || !msg.status) {
+            msg.status = receipt.status;
+            updated = true;
+          }
+        }
+      }
+
+      // Fallback search across all conversations if still not updated and messageId != 'all'
+      if (!updated && receipt.messageId !== 'all') {
+        for (const c of conversations) {
+          if (c.phoneNumber === targetPhone) continue;
+          const otherMsgs = this.getMessages(c.phoneNumber);
+          const found = otherMsgs.find(m => m.id === receipt.messageId);
+          if (found) {
+            if (receipt.status === 'READ') {
+              otherMsgs.forEach(m => {
+                if (m.isOutgoing && m.status !== 'READ') {
+                  m.status = 'READ';
+                }
+              });
+              found.status = 'READ';
+            } else if (found.status === 'SENT' || !found.status) {
+              found.status = receipt.status;
+            }
+            this.saveMessages(c.phoneNumber, otherMsgs);
+            if (c.lastMessageIsOutgoing) {
+              const last = otherMsgs[otherMsgs.length - 1];
+              if (last && last.isOutgoing) {
+                c.lastMessageStatus = last.status;
+                this.saveConversations(conversations);
+              }
+            }
+            updated = true;
+            break;
+          }
         }
       }
 
       if (updated) {
-        this.saveMessages(peerNorm, messages);
+        this.saveMessages(targetPhone, messages);
 
         // Update conversation summary status
-        const conversations = this.getConversations();
-        const conv = conversations.find(c => numbersMatch(c.phoneNumber, peerNorm));
         if (conv && conv.lastMessageIsOutgoing) {
-          conv.lastMessageStatus = receipt.status;
+          const last = messages[messages.length - 1];
+          if (last && last.isOutgoing) {
+            conv.lastMessageStatus = last.status;
+          } else {
+            conv.lastMessageStatus = receipt.status;
+          }
           this.saveConversations(conversations);
         }
       }
 
       // Delete receipt from Firestore immediately
       await deleteDoc(docRef);
-      console.log(`[ChatRepositoryWeb] Processed and deleted receipt for message: ${receipt.messageId}`);
+      console.log(`[ChatRepositoryWeb] Processed and deleted receipt for message: ${receipt.messageId} (${receipt.status}) from peer ${peerNorm}`);
 
       this.notifySubscribers();
 
     } catch (e) {
-      console.warn('Error processing receipt:', e);
+      console.warn('[ChatRepositoryWeb] Error processing receipt:', e);
+      try { await deleteDoc(docRef); } catch {}
     }
   }
 
@@ -546,8 +694,23 @@ class ChatRepositoryWeb {
       this.notifySubscribers();
     }
 
+    // Mark local incoming messages as READ
+    const targetPhone = conv ? conv.phoneNumber : norm;
+    const messages = this.getMessages(targetPhone);
+    let msgsUpdated = false;
+    messages.forEach(m => {
+      if (!m.isOutgoing && m.status !== 'READ') {
+        m.status = 'READ';
+        msgsUpdated = true;
+      }
+    });
+    if (msgsUpdated) {
+      this.saveMessages(targetPhone, messages);
+      this.notifySubscribers();
+    }
+
     // Send read receipt with messageId = 'all'
-    this.sendReceipt(norm, 'all', 'READ');
+    this.sendReceipt(targetPhone, 'all', 'READ');
   }
 
   // --- TYPING INDICATORS ---
