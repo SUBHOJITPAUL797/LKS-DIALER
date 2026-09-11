@@ -1047,11 +1047,11 @@ class FirebaseManager private constructor(private val context: Context) {
         @Volatile
         private var INSTANCE: FirebaseManager? = null
 
-        const val PRESENCE_TIMEOUT_MS = 60_000L // 60s timeout for presence staleness
+        const val PRESENCE_TIMEOUT_MS = 40_000L // 40s timeout for presence staleness
 
         /**
          * Checks if a user is truly online:
-         * Must have isOnline == true AND lastSeen within the last 60 seconds.
+         * Must have isOnline == true AND lastSeen within the last 40 seconds.
          */
         fun isUserOnline(user: UserDto?): Boolean {
             if (user == null) return false
@@ -1062,12 +1062,12 @@ class FirebaseManager private constructor(private val context: Context) {
 
         /**
          * Formats lastSeen timestamp into human-readable WhatsApp-style label:
-         * e.g. "online", "last seen today at 11:42 AM", "last seen yesterday at 9:15 PM"
+         * e.g. "last seen just now", "last seen 1m ago", "last seen today at 11:42 AM"
          */
         fun formatLastSeen(lastSeenMs: Long): String {
             if (lastSeenMs <= 0L) return ""
             val diff = System.currentTimeMillis() - lastSeenMs
-            if (diff < 60_000L) return "online"
+            if (diff < 60_000L) return "last seen just now"
             if (diff < 120_000L) return "last seen 1m ago"
             if (diff < 3600_000L) return "last seen ${diff / 60_000L}m ago"
 

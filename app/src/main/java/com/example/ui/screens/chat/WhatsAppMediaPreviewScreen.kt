@@ -51,6 +51,12 @@ import java.util.UUID
 
 private const val TAG = "WhatsAppMediaPreview"
 
+data class DrawStroke(
+    val points: List<Offset>,
+    val color: Color,
+    val strokeWidth: Float
+)
+
 data class EditablePhotoItem(
     val id: String = UUID.randomUUID().toString(),
     val originalFile: File,
@@ -251,12 +257,12 @@ fun WhatsAppMediaPreviewScreen(
                         val isSelected = (index == safeActiveIndex)
                         Box(
                             modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(8.dp))
+                                .size(60.dp)
+                                .clip(RoundedCornerShape(10.dp))
                                 .border(
                                     width = if (isSelected) 2.5.dp else 1.dp,
-                                    color = if (isSelected) GreenCall else Color.White.copy(alpha = 0.3f),
-                                    shape = RoundedCornerShape(8.dp)
+                                    color = if (isSelected) GreenCall else Color.White.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(10.dp)
                                 )
                                 .clickable {
                                     activeIndex = index
@@ -269,6 +275,30 @@ fun WhatsAppMediaPreviewScreen(
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
                             )
+                            if (photoItems.size > 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.7f))
+                                        .clickable {
+                                            photoItems.removeAt(index)
+                                            if (activeIndex >= photoItems.size) {
+                                                activeIndex = (photoItems.size - 1).coerceAtLeast(0)
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Remove",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -277,19 +307,22 @@ fun WhatsAppMediaPreviewScreen(
                         Surface(
                             onClick = { addPhotosLauncher.launch("image/*") },
                             modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(8.dp)),
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color.White.copy(alpha = 0.15f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
+                                .size(60.dp)
+                                .clip(RoundedCornerShape(10.dp)),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color.White.copy(alpha = 0.12f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.35f))
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    Icons.Default.AddPhotoAlternate,
-                                    contentDescription = "Add more photos",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(26.dp)
-                                )
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "Add more photos",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Text("Add", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
                     }
@@ -308,19 +341,22 @@ fun WhatsAppMediaPreviewScreen(
                             val updated = currentItem.copy(caption = newCaption)
                             photoItems[safeActiveIndex] = updated
                         },
-                        placeholder = { Text("Add a caption…", color = Color.Gray) },
+                        placeholder = { Text("Add a caption…", color = Color.LightGray.copy(alpha = 0.8f)) },
+                        leadingIcon = {
+                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = Color.LightGray, modifier = Modifier.size(20.dp))
+                        },
                         modifier = Modifier
                             .weight(1f)
-                            .padding(end = 8.dp),
-                        shape = RoundedCornerShape(24.dp),
+                            .padding(end = 10.dp),
+                        shape = RoundedCornerShape(26.dp),
                         maxLines = 3,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = Color.White,
-                            unfocusedContainerColor = Color.White.copy(alpha = 0.12f),
-                            focusedContainerColor = Color.White.copy(alpha = 0.16f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.15f),
+                            focusedContainerColor = Color.White.copy(alpha = 0.22f),
                             unfocusedBorderColor = Color.Transparent,
-                            focusedBorderColor = TealPrimary
+                            focusedBorderColor = GreenCall
                         )
                     )
 
@@ -359,6 +395,14 @@ fun WhatsAppMediaPreviewScreen(
             contentAlignment = Alignment.Center
         ) {
             if (previewBitmap != null) {
+                val imgW = previewBitmap.width.toFloat()
+                val imgH = previewBitmap.height.toFloat()
+                val fitScale = minOf(displayWidthPx / imgW, displayHeightPx / imgH)
+                val renderW = (imgW * fitScale).coerceAtLeast(1f)
+                val renderH = (imgH * fitScale).coerceAtLeast(1f)
+                val offsetX = (displayWidthPx - renderW) / 2f
+                val offsetY = (displayHeightPx - renderH) / 2f
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -366,15 +410,19 @@ fun WhatsAppMediaPreviewScreen(
                             displayWidthPx = coordinates.size.width.toFloat().coerceAtLeast(1f)
                             displayHeightPx = coordinates.size.height.toFloat().coerceAtLeast(1f)
                         }
-                        .pointerInput(isDrawMode, selectedColor) {
+                        .pointerInput(isDrawMode, selectedColor, offsetX, offsetY, renderW, renderH) {
                             if (!isDrawMode) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { offset ->
-                                    currentStrokePoints = listOf(offset)
+                                    val nx = ((offset.x - offsetX) / renderW).coerceIn(0f, 1f)
+                                    val ny = ((offset.y - offsetY) / renderH).coerceIn(0f, 1f)
+                                    currentStrokePoints = listOf(Offset(nx, ny))
                                 },
                                 onDrag = { change, _ ->
                                     change.consume()
-                                    currentStrokePoints = currentStrokePoints + change.position
+                                    val nx = ((change.position.x - offsetX) / renderW).coerceIn(0f, 1f)
+                                    val ny = ((change.position.y - offsetY) / renderH).coerceIn(0f, 1f)
+                                    currentStrokePoints = currentStrokePoints + Offset(nx, ny)
                                 },
                                 onDragEnd = {
                                     if (currentStrokePoints.isNotEmpty()) {
@@ -404,10 +452,12 @@ fun WhatsAppMediaPreviewScreen(
                         for (stroke in currentItem.strokes) {
                             val pts = stroke.points
                             for (i in 0 until pts.size - 1) {
+                                val p1 = pts[i]
+                                val p2 = pts[i + 1]
                                 drawLine(
                                     color = stroke.color,
-                                    start = pts[i],
-                                    end = pts[i + 1],
+                                    start = Offset(offsetX + p1.x * renderW, offsetY + p1.y * renderH),
+                                    end = Offset(offsetX + p2.x * renderW, offsetY + p2.y * renderH),
                                     strokeWidth = stroke.strokeWidth,
                                     cap = androidx.compose.ui.graphics.StrokeCap.Round
                                 )
@@ -417,10 +467,12 @@ fun WhatsAppMediaPreviewScreen(
                         // Current active stroke while dragging
                         if (currentStrokePoints.size > 1) {
                             for (i in 0 until currentStrokePoints.size - 1) {
+                                val p1 = currentStrokePoints[i]
+                                val p2 = currentStrokePoints[i + 1]
                                 drawLine(
                                     color = selectedColor,
-                                    start = currentStrokePoints[i],
-                                    end = currentStrokePoints[i + 1],
+                                    start = Offset(offsetX + p1.x * renderW, offsetY + p1.y * renderH),
+                                    end = Offset(offsetX + p2.x * renderW, offsetY + p2.y * renderH),
                                     strokeWidth = 10f,
                                     cap = androidx.compose.ui.graphics.StrokeCap.Round
                                 )
@@ -461,7 +513,7 @@ private fun bakeImageEdits(
             return outputFile
         }
 
-        // 3. Bake strokes onto the bitmap
+        // 3. Bake strokes onto the bitmap using normalized coordinates
         val mutableBitmap = rotated.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = AndroidCanvas(mutableBitmap)
         val paint = Paint().apply {
@@ -471,17 +523,23 @@ private fun bakeImageEdits(
             strokeCap = Paint.Cap.ROUND
         }
 
-        val scaleX = mutableBitmap.width.toFloat() / 1080f.coerceAtLeast(1f)
+        val scaleRatio = (mutableBitmap.width.toFloat() / 1080f).coerceAtLeast(1f)
 
         for (stroke in item.strokes) {
             paint.color = stroke.color.toArgb()
-            paint.strokeWidth = stroke.strokeWidth * scaleX.coerceAtLeast(1f)
+            paint.strokeWidth = stroke.strokeWidth * scaleRatio
 
             val pts = stroke.points
             for (i in 0 until pts.size - 1) {
                 val p1 = pts[i]
                 val p2 = pts[i + 1]
-                canvas.drawLine(p1.x, p1.y, p2.x, p2.y, paint)
+                canvas.drawLine(
+                    p1.x * mutableBitmap.width,
+                    p1.y * mutableBitmap.height,
+                    p2.x * mutableBitmap.width,
+                    p2.y * mutableBitmap.height,
+                    paint
+                )
             }
         }
 

@@ -326,7 +326,12 @@ class LksKeepAliveService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.i(TAG, "Task removed (app swiped from recents) — scheduling immediate service resurrection")
+        Log.i(TAG, "Task removed (app swiped from recents) — marking offline and scheduling service resurrection")
+        try {
+            com.example.data.repository.FirebaseManager.getInstance(applicationContext).updateUserPresence(false)
+            com.example.data.repository.ChatRepository.getInstance(applicationContext).setAppForeground(false)
+            com.example.data.repository.ChatRepository.getInstance(applicationContext).setActiveChatPeer(null)
+        } catch (_: Exception) {}
         scheduleServiceRestart(delayMillis = 500L)
     }
 
