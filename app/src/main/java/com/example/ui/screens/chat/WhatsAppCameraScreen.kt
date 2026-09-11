@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
@@ -63,6 +64,8 @@ fun WhatsAppCameraScreen(
     val view = LocalView.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val density = LocalDensity.current
+
+    BackHandler { onClose() }
 
     var hasCameraPermission by remember {
         mutableStateOf(

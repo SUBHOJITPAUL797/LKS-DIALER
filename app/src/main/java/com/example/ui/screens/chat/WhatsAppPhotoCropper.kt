@@ -391,15 +391,47 @@ fun WhatsAppPhotoCropper(
                                     }
                                     DragHandle.TOP_EDGE -> {
                                         normTop = (normTop + dNormY).coerceIn(0f, normBottom - minSizeNorm)
+                                        if (selectedAspect.ratio != null) {
+                                            val h = (normBottom - normTop) * displayedH
+                                            val targetW = h * selectedAspect.ratio!!
+                                            val normW = (targetW / displayedW).coerceIn(minSizeNorm, 1f)
+                                            val midX = (normLeft + normRight) / 2f
+                                            normLeft = (midX - normW / 2f).coerceIn(0f, 1f - normW)
+                                            normRight = normLeft + normW
+                                        }
                                     }
                                     DragHandle.BOTTOM_EDGE -> {
                                         normBottom = (normBottom + dNormY).coerceIn(normTop + minSizeNorm, 1f)
+                                        if (selectedAspect.ratio != null) {
+                                            val h = (normBottom - normTop) * displayedH
+                                            val targetW = h * selectedAspect.ratio!!
+                                            val normW = (targetW / displayedW).coerceIn(minSizeNorm, 1f)
+                                            val midX = (normLeft + normRight) / 2f
+                                            normLeft = (midX - normW / 2f).coerceIn(0f, 1f - normW)
+                                            normRight = normLeft + normW
+                                        }
                                     }
                                     DragHandle.LEFT_EDGE -> {
                                         normLeft = (normLeft + dNormX).coerceIn(0f, normRight - minSizeNorm)
+                                        if (selectedAspect.ratio != null) {
+                                            val w = (normRight - normLeft) * displayedW
+                                            val targetH = w / selectedAspect.ratio!!
+                                            val normH = (targetH / displayedH).coerceIn(minSizeNorm, 1f)
+                                            val midY = (normTop + normBottom) / 2f
+                                            normTop = (midY - normH / 2f).coerceIn(0f, 1f - normH)
+                                            normBottom = normTop + normH
+                                        }
                                     }
                                     DragHandle.RIGHT_EDGE -> {
                                         normRight = (normRight + dNormX).coerceIn(normLeft + minSizeNorm, 1f)
+                                        if (selectedAspect.ratio != null) {
+                                            val w = (normRight - normLeft) * displayedW
+                                            val targetH = w / selectedAspect.ratio!!
+                                            val normH = (targetH / displayedH).coerceIn(minSizeNorm, 1f)
+                                            val midY = (normTop + normBottom) / 2f
+                                            normTop = (midY - normH / 2f).coerceIn(0f, 1f - normH)
+                                            normBottom = normTop + normH
+                                        }
                                     }
                                     else -> {}
                                 }

@@ -97,6 +97,9 @@ class ChatRepository private constructor(private val context: Context) {
     init {
         createNotificationChannel()
         ensureMediaDirectory()
+        repositoryScope.launch {
+            syncOutdatedConversationStatuses()
+        }
     }
 
     fun setActiveChatPeer(phoneNumber: String?) {
@@ -864,7 +867,12 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     // Exposed Flows for UI
-    fun getConversationsFlow(): Flow<List<ConversationEntity>> = conversationDao.getConversationsFlow()
+    fun getConversationsFlow(): Flow<List<ConversationEntity>> {
+        repositoryScope.launch {
+            syncOutdatedConversationStatuses()
+        }
+        return conversationDao.getConversationsFlow()
+    }
     fun getMessagesFlow(phoneNumber: String): Flow<List<MessageEntity>> =
         messageDao.getMessagesFlow(ContactsHelper.normalizePhoneNumber(phoneNumber))
     fun getTotalUnreadCountFlow(): Flow<Int> = conversationDao.getTotalUnreadCountFlow()
