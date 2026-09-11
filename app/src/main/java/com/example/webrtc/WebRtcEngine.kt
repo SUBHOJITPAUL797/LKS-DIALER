@@ -1438,6 +1438,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        lastProcessedIceRestartTimestamp = 0L
         sentIceCandidateHashes.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()

@@ -230,6 +230,12 @@ class ChatRepository private constructor(private val context: Context) {
             return
         }
 
+        // Deduplication guard: if already processed and saved in Room DB, delete ephemeral relay document and skip
+        if (messageDao.getMessageById(dto.messageId) != null) {
+            try { docRef.delete().await() } catch (_: Exception) {}
+            return
+        }
+
         try {
             // STEP 1: Decrypt message payload
             val decryptedRaw = cryptoManager.decrypt(dto.ciphertext, dto.iv, dto.senderPublicKey)
