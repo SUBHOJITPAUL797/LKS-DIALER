@@ -676,19 +676,39 @@ class ChatRepositoryWeb {
 
   // --- PUBLIC API: EDIT MESSAGE ---
   async editMessage(originalMessageId, newText, recipientNumber) {
-    if (!this.currentListeningPhone) {
+    let myPhone = this.currentListeningPhone;
+    if (!myPhone) {
+      try {
+        const stored = localStorage.getItem('lks_user');
+        if (stored) {
+          const u = JSON.parse(stored);
+          myPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
+        }
+      } catch {}
+    }
+    if (!myPhone) {
       throw new Error('Current user is not logged in');
     }
 
     const normRecipient = normalizePhoneNumber(recipientNumber);
-    const messages = this.getMessages(normRecipient);
-    const targetMsg = messages.find(m => m.id === originalMessageId);
+    let messages = this.getMessages(normRecipient);
+    let targetMsg = messages.find(m => m.id === originalMessageId);
+    let targetPhone = normRecipient;
+    if (!targetMsg) {
+      const conversations = this.getConversations();
+      const conv = conversations.find(c => numbersMatch(c.phoneNumber, normRecipient));
+      if (conv) {
+        messages = this.getMessages(conv.phoneNumber);
+        targetMsg = messages.find(m => m.id === originalMessageId);
+        targetPhone = conv.phoneNumber;
+      }
+    }
     if (!targetMsg) {
       throw new Error('Message not found');
     }
 
     const now = Date.now();
-    if (now - (targetMsg.timestamp || 0) > 10 * 60 * 1000) {
+    if (targetMsg.timestamp && (now - targetMsg.timestamp > 10 * 60 * 1000)) {
       throw new Error('Editing allowed only within 10 minutes');
     }
 
@@ -703,7 +723,7 @@ class ChatRepositoryWeb {
     } catch {}
     targetMsg.text = textToStore;
     targetMsg.isEdited = true;
-    this.saveMessages(normRecipient, messages);
+    this.saveMessages(targetPhone, messages);
 
     // Update conversation if this was the last message
     const conversations = this.getConversations();
@@ -736,7 +756,7 @@ class ChatRepositoryWeb {
 
     const editDto = {
       messageId: editPacketId,
-      senderNumber: this.currentListeningPhone,
+      senderNumber: myPhone,
       recipientNumber: normRecipient,
       senderPublicKey: myPublicKey,
       ciphertext,
@@ -748,12 +768,13 @@ class ChatRepositoryWeb {
 
     try {
       await setDoc(doc(db, 'inboxes', normRecipient, 'messages', editPacketId), editDto);
+      console.log(`[ChatRepositoryWeb] Edit packet ${editPacketId} uploaded for ${normRecipient}`);
     } catch (e) {
       console.warn('Failed to upload edit packet:', e);
     }
 
     // 3. Send FCM wakeup push
-    this.sendFcmWakeup(normRecipient, this.currentListeningPhone, newText);
+    this.sendFcmWakeup(normRecipient, myPhone, newText);
   }
 
   // --- RESOLVE PEER PUBLIC KEY ---

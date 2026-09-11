@@ -524,8 +524,10 @@ class ChatRepository private constructor(private val context: Context) {
         mediaFile: File? = null,
         mediaDurationMs: Long = 0L
     ): Result<MessageEntity> = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
             ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
@@ -691,12 +693,14 @@ class ChatRepository private constructor(private val context: Context) {
 
         val elapsed = System.currentTimeMillis() - originalMsg.timestamp
         val tenMinutesMs = 10 * 60 * 1000L
-        if (elapsed > tenMinutesMs) {
+        if (originalMsg.timestamp > 0L && elapsed > tenMinutesMs) {
             return@withContext Result.failure(IllegalStateException("Message can only be edited within 10 minutes of sending"))
         }
 
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
             ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
@@ -746,17 +750,17 @@ class ChatRepository private constructor(private val context: Context) {
                 timestamp = System.currentTimeMillis()
             )
 
-            firestore.collection("inboxes")
-                .document(normRecipient)
-                .collection("messages")
-                .document(editPacketId)
-                .set(chatDto)
-                .addOnSuccessListener {
-                    Log.d(TAG, "Edit packet $editPacketId delivered to ephemeral inbox for $normRecipient")
-                }
-                .addOnFailureListener { e ->
-                    Log.w(TAG, "Failed to upload edit packet: ${e.message}")
-                }
+            try {
+                firestore.collection("inboxes")
+                    .document(normRecipient)
+                    .collection("messages")
+                    .document(editPacketId)
+                    .set(chatDto)
+                    .await()
+                Log.d(TAG, "Edit packet $editPacketId delivered to ephemeral inbox for $normRecipient")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to upload edit packet: ${e.message}")
+            }
 
             // Send FCM wakeup push
             sendFcmWakeup(
@@ -1046,9 +1050,9 @@ class ChatRepository private constructor(private val context: Context) {
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 
-        // Step 1: Immediately show notification if user is not in this conversation right now
+        // Step 1: Immediately show notification if user is not in this conversation right now (skip for silent edits)
         val isWatchingConversation = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
-        if (!isWatchingConversation && senderNorm.isNotBlank()) {
+        if (!isWatchingConversation && senderNorm.isNotBlank() && mediaType != ChatMediaType.EDIT.name) {
             val firebaseManager = FirebaseManager.getInstance(context)
             val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
             val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
