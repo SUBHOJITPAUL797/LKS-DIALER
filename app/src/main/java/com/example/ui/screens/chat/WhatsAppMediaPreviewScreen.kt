@@ -91,6 +91,50 @@ fun WhatsAppMediaPreviewScreen(
 
     val currentItem = photoItems[safeActiveIndex]
 
+    // States for cropping and adding photos
+    var isCropMode by remember { mutableStateOf(false) }
+    var showAddMediaSheet by remember { mutableStateOf(false) }
+    var showCameraToAdd by remember { mutableStateOf(false) }
+
+    if (isCropMode) {
+        WhatsAppPhotoCropper(
+            imageFile = currentItem.originalFile,
+            initialRotation = currentItem.rotationAngle,
+            onCropDone = { croppedFile ->
+                isCropMode = false
+                val updated = currentItem.copy(
+                    originalFile = croppedFile,
+                    rotationAngle = 0f,
+                    strokes = emptyList()
+                )
+                photoItems[safeActiveIndex] = updated
+            },
+            onCancel = { isCropMode = false }
+        )
+        return
+    }
+
+    if (showCameraToAdd) {
+        WhatsAppCameraScreen(
+            onPhotoCaptured = { capturedFile ->
+                showCameraToAdd = false
+                photoItems.add(EditablePhotoItem(originalFile = capturedFile))
+                activeIndex = photoItems.size - 1
+            },
+            onPhotosSelectedFromGallery = { files ->
+                showCameraToAdd = false
+                files.forEach { file ->
+                    photoItems.add(EditablePhotoItem(originalFile = file))
+                }
+                if (files.isNotEmpty()) {
+                    activeIndex = photoItems.size - 1
+                }
+            },
+            onClose = { showCameraToAdd = false }
+        )
+        return
+    }
+
     // Active item editing states
     var isDrawMode by remember { mutableStateOf(false) }
     val colors = listOf(
@@ -184,6 +228,11 @@ fun WhatsAppMediaPreviewScreen(
                             contentDescription = "Draw",
                             tint = if (isDrawMode) selectedColor else Color.White
                         )
+                    }
+
+                    // Crop & Rotate button
+                    IconButton(onClick = { isCropMode = true }) {
+                        Icon(Icons.Default.Crop, contentDescription = "Crop", tint = Color.White)
                     }
 
                     // Rotate 90 degrees button
@@ -305,7 +354,7 @@ fun WhatsAppMediaPreviewScreen(
                     // "+ Add" More Photos Button in Carousel
                     item {
                         Surface(
-                            onClick = { addPhotosLauncher.launch("image/*") },
+                            onClick = { showAddMediaSheet = true },
                             modifier = Modifier
                                 .size(60.dp)
                                 .clip(RoundedCornerShape(10.dp)),
@@ -482,6 +531,75 @@ fun WhatsAppMediaPreviewScreen(
                 }
             } else {
                 CircularProgressIndicator(color = TealPrimary)
+            }
+        }
+    }
+
+    if (showAddMediaSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAddMediaSheet = false },
+            containerColor = Color(0xFF1E2428),
+            dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Gray) }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .navigationBarsPadding()
+            ) {
+                Text(
+                    text = "Add photos",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Camera Option
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            showAddMediaSheet = false
+                            showCameraToAdd = true
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = GreenCall,
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = "Camera", tint = Color.White, modifier = Modifier.size(28.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Camera", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+
+                    // Gallery Option
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable {
+                            showAddMediaSheet = false
+                            addPhotosLauncher.launch("image/*")
+                        }
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF9C27B0),
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = "Gallery", tint = Color.White, modifier = Modifier.size(28.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Gallery", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
         }
     }

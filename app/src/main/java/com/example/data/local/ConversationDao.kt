@@ -29,4 +29,10 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversations WHERE phoneNumber = :phoneNumber")
     suspend fun deleteConversation(phoneNumber: String)
+
+    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber")
+    suspend fun updateLastMessageStatus(phoneNumber: String, status: String)
+
+    @Query("SELECT * FROM conversations")
+    suspend fun getConversationsList(): List<ConversationEntity>
 }

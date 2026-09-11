@@ -127,7 +127,7 @@ class ChatRepository private constructor(private val context: Context) {
                 description = "End-to-End Encrypted chat notifications"
                 enableVibration(true)
                 enableLights(true)
-                lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             nm?.createNotificationChannel(channel)
@@ -201,6 +201,11 @@ class ChatRepository private constructor(private val context: Context) {
                 }
                 _typingStatus.value = current
             }
+
+        // 4. Reconcile any existing conversation statuses
+        repositoryScope.launch {
+            syncOutdatedConversationStatuses()
+        }
     }
 
     @Synchronized
@@ -381,7 +386,7 @@ class ChatRepository private constructor(private val context: Context) {
                     senderNumber = senderNorm,
                     senderName = resolvedName,
                     messageText = when (dto.mediaType) {
-                        ChatMediaType.IMAGE.name -> "📷 Photo"
+                        ChatMediaType.IMAGE.name -> if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"
                         ChatMediaType.AUDIO.name -> "🎤 Voice message"
                         ChatMediaType.DOCUMENT.name -> "📄 $displayText"
                         else -> notificationDisplayText
@@ -413,20 +418,28 @@ class ChatRepository private constructor(private val context: Context) {
         }
 
         try {
+            val peerNorm = ContactsHelper.normalizePhoneNumber(
+                if (receipt.senderNumber.isNotBlank() && receipt.senderNumber != currentListeningPhone) {
+                    receipt.senderNumber
+                } else {
+                    receipt.recipientNumber
+                }
+            )
+
             if (receipt.messageId != "all") {
                 messageDao.updateMessageStatus(receipt.messageId, receipt.status)
             }
 
             // If READ receipt, also update all earlier outgoing messages with this peer to READ
             if (receipt.status == MessageStatus.READ.name) {
-                val peerNorm = ContactsHelper.normalizePhoneNumber(
-                    if (receipt.senderNumber.isNotBlank() && receipt.senderNumber != currentListeningPhone) {
-                        receipt.senderNumber
-                    } else {
-                        receipt.recipientNumber
-                    }
-                )
                 messageDao.updateOutgoingMessagesStatus(peerNorm, MessageStatus.READ.name)
+            }
+
+            // Sync the conversation entity's lastMessageStatus so the Chat tab list
+            // reflects the updated ticks (Delivered or Read double blue ticks)
+            val lastMsg = messageDao.getLastMessageForConversation(peerNorm)
+            if (lastMsg != null && lastMsg.isOutgoing) {
+                conversationDao.updateLastMessageStatus(peerNorm, lastMsg.status)
             }
 
             // Delete receipt from Firestore immediately
@@ -788,33 +801,66 @@ class ChatRepository private constructor(private val context: Context) {
             .addRemoteInput(remoteInput)
             .build()
 
-        val person = Person.Builder()
+        val myUser = Person.Builder()
+            .setName("You")
+            .setKey("me")
+            .build()
+
+        val senderPerson = Person.Builder()
             .setName(senderName)
             .setKey(senderNumber)
             .build()
 
-        val displayContent = when (messageType) {
-            ChatMediaType.IMAGE.name -> "📷 Photo"
-            ChatMediaType.AUDIO.name -> "🎤 Voice message"
-            else -> messageText
+        val displayContent = when {
+            messageText.isNotBlank() -> messageText
+            messageType == ChatMediaType.IMAGE.name -> "📷 Photo"
+            messageType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
+            messageType == ChatMediaType.DOCUMENT.name -> "📄 Document"
+            else -> "New message"
         }
 
-        val messagingStyle = NotificationCompat.MessagingStyle(person)
-            .addMessage(displayContent, System.currentTimeMillis(), person)
+        val messagingStyle = NotificationCompat.MessagingStyle(myUser)
+            .setConversationTitle(null)
+            .setGroupConversation(false)
+            .addMessage(displayContent, System.currentTimeMillis(), senderPerson)
 
         val builder = NotificationCompat.Builder(context, CHAT_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_chat)
-            .setStyle(messagingStyle)
             .setContentTitle(senderName)
             .setContentText(displayContent)
+            .setTicker("$senderName: $displayContent")
+            .setStyle(messagingStyle)
             .setContentIntent(tapPendingIntent)
             .addAction(replyAction)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
         nm?.notify(notifId, builder.build())
+    }
+
+    /**
+     * Reconciles conversation lastMessageStatus with the latest outgoing message in Room DB.
+     * Ensures that any conversations with outdated ticks (e.g. single tick when read)
+     * are healed immediately.
+     */
+    suspend fun syncOutdatedConversationStatuses() = withContext(Dispatchers.IO) {
+        try {
+            val convs = conversationDao.getConversationsList()
+            for (conv in convs) {
+                if (conv.lastMessageIsOutgoing) {
+                    val lastMsg = messageDao.getLastMessageForConversation(conv.phoneNumber)
+                    if (lastMsg != null && lastMsg.status != conv.lastMessageStatus) {
+                        conversationDao.updateLastMessageStatus(conv.phoneNumber, lastMsg.status)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error syncing conversation statuses: ${e.message}")
+        }
     }
 
     // Exposed Flows for UI
