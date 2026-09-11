@@ -424,7 +424,7 @@ fun ContactsScreen(
 
                     itemsIndexed(filteredLksContacts, key = { index, it -> "lks_${it.phoneNumber}_$index" }) { index, contact ->
                         val userInfo = registeredUsers.find { it.phoneNumber == contact.phoneNumber }
-                        val isOnline = userInfo?.isOnline == true
+                        val isOnline = com.example.data.repository.FirebaseManager.isUserOnline(userInfo)
                         val isFirstItem = index == 0
                         val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
 

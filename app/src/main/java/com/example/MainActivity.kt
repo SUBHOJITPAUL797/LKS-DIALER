@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
+        com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
 
         // Seamless handoff: If user opened the app from the launcher while a call was incoming/active in the floating pill, adopt it!
         val bubbleCallId = com.example.services.FloatingCallBubbleService.currentCallId
@@ -166,12 +167,14 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         isForeground = true
-        com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(true)
+        com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
     }
+
 
     override fun onPause() {
         super.onPause()
         isForeground = false
+        com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
     }
 
     override fun onDestroy() {
@@ -179,7 +182,7 @@ class MainActivity : ComponentActivity() {
         isForeground = false
         isInPipMode = false
         if (!isChangingConfigurations) {
-            com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
+            com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
             val currentStatus = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
             if (currentStatus != com.example.data.model.CallStatus.RINGING) {
                 com.example.util.LksIncomingRingtonePlayer.stop()
@@ -252,7 +255,7 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         if (!isChangingConfigurations) {
             triggerFloatingCallBubbleIfActive()
-            com.example.data.repository.FirebaseManager.getInstance(this).updateUserPresence(false)
+            com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
         }
     }
 

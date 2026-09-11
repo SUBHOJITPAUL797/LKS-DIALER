@@ -11,6 +11,7 @@ import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -561,29 +562,59 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Starts the periodic presence heartbeat while app is in foreground.
+     * Refreshes presence every 25 seconds so peers know this user is actively online.
+     */
+    fun startPresenceHeartbeat() {
+        presenceHeartbeatJob?.cancel()
+        updateUserPresence(true)
+        presenceHeartbeatJob = scope.launch {
+            while (true) {
+                delay(25_000L)
+                updateUserPresence(true)
+            }
+        }
+    }
+
+    /**
+     * Stops presence heartbeat and immediately marks user as offline in Firestore.
+     * Called when app is paused, backgrounded, or quit.
+     */
+    fun stopPresenceHeartbeat() {
+        presenceHeartbeatJob?.cancel()
+        presenceHeartbeatJob = null
+        updateUserPresence(false)
+    }
+
     /**
      * Updates the user's online presence and lastSeen timestamp in Firestore.
      * Called on app foreground (isOnline = true) and background (isOnline = false).
      */
     fun updateUserPresence(isOnline: Boolean) {
-        val user = _currentUser.value ?: return
-        if (user.phoneNumber.isBlank()) return
+        val phone = _currentUser.value?.phoneNumber?.ifBlank { null }
+            ?: prefs.getString("user_phone", "")?.ifBlank { null }
+            ?: return
         val now = System.currentTimeMillis()
-        _currentUser.value = user.copy(isOnline = isOnline, lastSeen = now)
+        _currentUser.value?.let { user ->
+            _currentUser.value = user.copy(isOnline = isOnline, lastSeen = now)
+        }
         if (_isFirebaseConfigured.value) {
             val updates = mapOf<String, Any>(
                 "isOnline" to isOnline,
                 "online" to isOnline,
                 "lastSeen" to now
             )
-            FirebaseFirestore.getInstance().collection("users").document(user.phoneNumber)
+            FirebaseFirestore.getInstance().collection("users").document(phone)
                 .update(updates)
                 .addOnSuccessListener {
-                    Log.d(TAG, "Presence updated: isOnline=$isOnline for ${user.phoneNumber}")
+                    Log.d(TAG, "Presence updated: isOnline=$isOnline for $phone")
                 }
                 .addOnFailureListener {
                     try {
-                        FirebaseFirestore.getInstance().collection("users").document(user.phoneNumber)
+                        FirebaseFirestore.getInstance().collection("users").document(phone)
                             .set(updates, com.google.firebase.firestore.SetOptions.merge())
                     } catch (_: Exception) {}
                 }
@@ -1015,6 +1046,46 @@ class FirebaseManager private constructor(private val context: Context) {
         private const val TAG = "FirebaseManager"
         @Volatile
         private var INSTANCE: FirebaseManager? = null
+
+        const val PRESENCE_TIMEOUT_MS = 60_000L // 60s timeout for presence staleness
+
+        /**
+         * Checks if a user is truly online:
+         * Must have isOnline == true AND lastSeen within the last 60 seconds.
+         */
+        fun isUserOnline(user: UserDto?): Boolean {
+            if (user == null) return false
+            if (!user.isOnline) return false
+            if (user.lastSeen <= 0L) return false
+            return (System.currentTimeMillis() - user.lastSeen) < PRESENCE_TIMEOUT_MS
+        }
+
+        /**
+         * Formats lastSeen timestamp into human-readable WhatsApp-style label:
+         * e.g. "online", "last seen today at 11:42 AM", "last seen yesterday at 9:15 PM"
+         */
+        fun formatLastSeen(lastSeenMs: Long): String {
+            if (lastSeenMs <= 0L) return ""
+            val diff = System.currentTimeMillis() - lastSeenMs
+            if (diff < 60_000L) return "online"
+            if (diff < 120_000L) return "last seen 1m ago"
+            if (diff < 3600_000L) return "last seen ${diff / 60_000L}m ago"
+
+            val calNow = java.util.Calendar.getInstance()
+            val calSeen = java.util.Calendar.getInstance().apply { timeInMillis = lastSeenMs }
+            val timeFormat = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault()).format(java.util.Date(lastSeenMs))
+
+            return if (calNow.get(java.util.Calendar.YEAR) == calSeen.get(java.util.Calendar.YEAR) &&
+                calNow.get(java.util.Calendar.DAY_OF_YEAR) == calSeen.get(java.util.Calendar.DAY_OF_YEAR)) {
+                "last seen today at $timeFormat"
+            } else if (calNow.get(java.util.Calendar.YEAR) == calSeen.get(java.util.Calendar.YEAR) &&
+                calNow.get(java.util.Calendar.DAY_OF_YEAR) - calSeen.get(java.util.Calendar.DAY_OF_YEAR) == 1) {
+                "last seen yesterday at $timeFormat"
+            } else {
+                val dateFormat = java.text.SimpleDateFormat("MMM d", java.util.Locale.getDefault()).format(java.util.Date(lastSeenMs))
+                "last seen $dateFormat at $timeFormat"
+            }
+        }
 
         fun getInstance(context: Context): FirebaseManager {
             return INSTANCE ?: synchronized(this) {

@@ -191,7 +191,7 @@ fun ChatListScreen(
                         val matchedContact = remember(syncedContacts, conv.phoneNumber) {
                             syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, conv.phoneNumber) }
                         }
-                        val isPeerOnline = matchedUser?.isOnline == true
+                        val isPeerOnline = com.example.data.repository.FirebaseManager.isUserOnline(matchedUser)
                         val resolvedAvatar = remember(conv.profilePicUrl, matchedUser, matchedContact) {
                             when {
                                 !matchedUser?.profilePictureUrl.isNullOrBlank() -> matchedUser!!.profilePictureUrl

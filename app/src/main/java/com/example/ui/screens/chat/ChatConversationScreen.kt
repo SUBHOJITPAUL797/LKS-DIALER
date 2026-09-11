@@ -112,7 +112,17 @@ fun ChatConversationScreen(
         // Priority: live Firestore user > synced contact > avatar passed from ChatListScreen
         userPic ?: contactPic ?: peerInitialAvatar
     }
-    val isPeerOnline = peerUser?.isOnline ?: false
+    var currentTimeTick by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000L)
+            currentTimeTick = System.currentTimeMillis()
+        }
+    }
+
+    val isPeerOnline = remember(peerUser, currentTimeTick) {
+        FirebaseManager.isUserOnline(peerUser)
+    }
 
     var inputText by remember { mutableStateOf("") }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
@@ -289,12 +299,14 @@ fun ChatConversationScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            val statusSubtitle = when {
+                                isPeerTyping -> "typing..."
+                                isPeerOnline -> "online"
+                                peerUser != null && peerUser.lastSeen > 0L -> FirebaseManager.formatLastSeen(peerUser.lastSeen)
+                                else -> normPeer
+                            }
                             Text(
-                                text = when {
-                                    isPeerTyping -> "typing..."
-                                    isPeerOnline -> "online"
-                                    else -> normPeer
-                                },
+                                text = statusSubtitle,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = when {
                                     isPeerTyping || isPeerOnline -> GreenCall
