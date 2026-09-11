@@ -73,6 +73,18 @@ class ChatRepository private constructor(private val context: Context) {
     private val _activeChatPeerNumber = MutableStateFlow<String?>(null)
     val activeChatPeerNumber: StateFlow<String?> = _activeChatPeerNumber.asStateFlow()
 
+    @Volatile
+    private var isAppInForeground: Boolean = false
+
+    fun setAppForeground(foreground: Boolean) {
+        isAppInForeground = foreground
+        if (!foreground) {
+            // When app leaves foreground, clear active chat peer so background incoming messages
+            // NEVER get auto-marked as READ or send fake blue ticks!
+            _activeChatPeerNumber.value = null
+        }
+    }
+
     // Real-time typing indicators: peerPhoneNumber -> isTyping
     private val _typingStatus = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val typingStatus: StateFlow<Map<String, Boolean>> = _typingStatus.asStateFlow()
@@ -90,7 +102,7 @@ class ChatRepository private constructor(private val context: Context) {
     fun setActiveChatPeer(phoneNumber: String?) {
         val normalized = phoneNumber?.let { ContactsHelper.normalizePhoneNumber(it) }
         _activeChatPeerNumber.value = normalized
-        if (normalized != null) {
+        if (normalized != null && isAppInForeground) {
             repositoryScope.launch {
                 markConversationAsRead(normalized)
             }
@@ -222,7 +234,7 @@ class ChatRepository private constructor(private val context: Context) {
             // STEP 1: Decrypt message payload
             val decryptedRaw = cryptoManager.decrypt(dto.ciphertext, dto.iv, dto.senderPublicKey)
             val senderNorm = ContactsHelper.normalizePhoneNumber(dto.senderNumber)
-            val isCurrentPeer = (_activeChatPeerNumber.value == senderNorm)
+            val isCurrentPeer = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
 
             var displayText = decryptedRaw
             var localMediaPath: String? = null
@@ -276,13 +288,10 @@ class ChatRepository private constructor(private val context: Context) {
                 }
             }
 
-            // Only auto-mark TEXT messages as READ when in active conversation.
-            // AUDIO, IMAGE, and DOCUMENT require explicit user interaction (play/tap) to mark READ.
-            val finalStatus = if (isCurrentPeer && dto.mediaType == ChatMediaType.TEXT.name) {
-                MessageStatus.READ.name
-            } else {
-                MessageStatus.DELIVERED.name
-            }
+            // Messages upon arrival are ALWAYS DELIVERED first so the sender sees double grey ticks.
+            // Only if user is actively watching this conversation right now in the foreground,
+            // we upgrade TEXT messages to READ.
+            val initialStatus = MessageStatus.DELIVERED.name
 
             // STEP 2: Save to local Room DB
             val messageEntity = MessageEntity(
@@ -295,7 +304,7 @@ class ChatRepository private constructor(private val context: Context) {
                 mediaPath = localMediaPath,
                 mediaDurationMs = durationMs,
                 timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                status = finalStatus,
+                status = if (isCurrentPeer && dto.mediaType == ChatMediaType.TEXT.name) MessageStatus.READ.name else initialStatus,
                 isOutgoing = false
             )
             messageDao.insertMessage(messageEntity)
@@ -333,7 +342,7 @@ class ChatRepository private constructor(private val context: Context) {
                 },
                 lastMessageType = dto.mediaType,
                 lastMessageTimestamp = messageEntity.timestamp,
-                lastMessageStatus = finalStatus,
+                lastMessageStatus = messageEntity.status,
                 lastMessageIsOutgoing = false,
                 unreadCount = unreadCount,
                 isPinned = existingConv?.isPinned ?: false
@@ -343,15 +352,25 @@ class ChatRepository private constructor(private val context: Context) {
             // STEP 3: Delete ephemeral message from Firestore
             docRef.delete().await()
 
-            // STEP 4: Send ACK back to sender
+            // STEP 4: Send ACK back to sender (always confirms DELIVERED first)
             sendReceipt(
                 recipientNumber = dto.senderNumber,
                 messageId = dto.messageId,
-                status = finalStatus
+                status = MessageStatus.DELIVERED.name
             )
 
-            // STEP 5: Show Notification if conversation is not currently open
-            if (!isCurrentPeer) {
+            if (isCurrentPeer) {
+                // If user is actively watching this conversation right now in the foreground,
+                // auto-mark text message as READ and send the READ receipt to the peer.
+                if (dto.mediaType == ChatMediaType.TEXT.name) {
+                    sendReceipt(
+                        recipientNumber = dto.senderNumber,
+                        messageId = dto.messageId,
+                        status = MessageStatus.READ.name
+                    )
+                }
+            } else {
+                // STEP 5: Always show notification if conversation is NOT open in foreground
                 showIncomingMessageNotification(
                     senderNumber = senderNorm,
                     senderName = resolvedName,
@@ -388,11 +407,19 @@ class ChatRepository private constructor(private val context: Context) {
         }
 
         try {
-            messageDao.updateMessageStatus(receipt.messageId, receipt.status)
+            if (receipt.messageId != "all") {
+                messageDao.updateMessageStatus(receipt.messageId, receipt.status)
+            }
 
             // If READ receipt, also update all earlier outgoing messages with this peer to READ
-            if (receipt.status == MessageStatus.READ.name && receipt.recipientNumber.isNotBlank()) {
-                val peerNorm = ContactsHelper.normalizePhoneNumber(receipt.recipientNumber)
+            if (receipt.status == MessageStatus.READ.name) {
+                val peerNorm = ContactsHelper.normalizePhoneNumber(
+                    if (receipt.senderNumber.isNotBlank() && receipt.senderNumber != currentListeningPhone) {
+                        receipt.senderNumber
+                    } else {
+                        receipt.recipientNumber
+                    }
+                )
                 messageDao.updateOutgoingMessagesStatus(peerNorm, MessageStatus.READ.name)
             }
 
@@ -650,6 +677,7 @@ class ChatRepository private constructor(private val context: Context) {
      */
     suspend fun markConversationAsRead(peerPhoneNumber: String) {
         val norm = ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
+        messageDao.updateIncomingMessagesStatus(norm, MessageStatus.READ.name)
         conversationDao.resetUnreadCount(norm)
         sendReceipt(recipientNumber = norm, messageId = "all", status = MessageStatus.READ.name)
     }

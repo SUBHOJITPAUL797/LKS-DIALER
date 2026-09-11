@@ -21,6 +21,9 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, newStatus: String)
 
+    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 0 AND status != :newStatus")
+    suspend fun updateIncomingMessagesStatus(conversationId: String, newStatus: String)
+
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
     fun getMessagesFlow(conversationId: String): Flow<List<MessageEntity>>
 

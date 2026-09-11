@@ -47,6 +47,9 @@ class ChatReplyReceiver : BroadcastReceiver() {
                     mediaType       = ChatMediaType.TEXT
                 )
 
+                // Replying to a message confirms user has read all prior incoming messages
+                chatRepo.markConversationAsRead(peerNumber)
+
                 // Update the notification to show the sent reply (prevents it from disappearing
                 // mid-conversation). Simply cancel it — the outgoing message flow will update UI.
                 if (notifId != -1) {

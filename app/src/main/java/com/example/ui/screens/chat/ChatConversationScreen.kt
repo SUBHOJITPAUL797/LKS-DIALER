@@ -143,8 +143,8 @@ fun ChatConversationScreen(
     val playbackProgress by voiceHelper.playbackProgress.collectAsState()
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
-    var imageToEditFile by remember { mutableStateOf<File?>(null) }
-    var cameraTempFile by remember { mutableStateOf<File?>(null) }
+    var showNativeCamera by remember { mutableStateOf(false) }
+    var photosToPreview by remember { mutableStateOf<List<File>?>(null) }
 
     val listState = rememberLazyListState()
 
@@ -158,10 +158,14 @@ fun ChatConversationScreen(
         }
     }
 
-    // Scroll to bottom when new messages arrive
+    // Scroll to bottom when new messages arrive and auto-read text messages if viewing in foreground
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
+            val hasUnreadText = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name && it.mediaType == ChatMediaType.TEXT.name }
+            if (hasUnreadText) {
+                chatRepository.markConversationAsRead(normPeer)
+            }
         }
     }
 
@@ -184,48 +188,28 @@ fun ChatConversationScreen(
         }
     }
 
-    // Camera Launcher
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        if (success && cameraTempFile != null && cameraTempFile!!.exists() && cameraTempFile!!.length() > 0) {
-            imageToEditFile = cameraTempFile
-        }
-    }
-
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            try {
-                val tempFile = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
-                cameraTempFile = tempFile
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
-                cameraLauncher.launch(uri)
-            } catch (e: Exception) {
-                Toast.makeText(context, "Failed to start camera: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            Toast.makeText(context, "Camera permission is required", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    // Gallery Picker Launcher (opens ImageEditorDialog before sending)
-    val galleryPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        if (uri != null) {
+    // Gallery Multiple Picker Launcher (WhatsApp multi-photo selection)
+    val galleryMultipleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
             coroutineScope.launch {
                 try {
-                    val tempFile = File(context.cacheDir, "picked_${System.currentTimeMillis()}.jpg")
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                    val files = mutableListOf<File>()
+                    uris.forEach { uri ->
+                        val tempFile = File(context.cacheDir, "gallery_${System.currentTimeMillis()}_${files.size}.jpg")
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                        }
+                        if (tempFile.exists() && tempFile.length() > 0) {
+                            files.add(tempFile)
+                        }
                     }
-                    if (tempFile.exists() && tempFile.length() > 0) {
-                        imageToEditFile = tempFile
+                    if (files.isNotEmpty()) {
+                        photosToPreview = files
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Failed to load image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Failed to load images: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -779,40 +763,25 @@ fun ChatConversationScreen(
                     horizontalArrangement = Arrangement.SpaceAround,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Camera
+                    // Camera (Native in-app CameraX just like WhatsApp)
                     AttachmentOptionItem(
                         icon = Icons.Default.PhotoCamera,
                         label = "Camera",
                         backgroundColor = Color(0xFFE91E63),
                         onClick = {
                             showAttachmentMenu = false
-                            val hasCamPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                                context,
-                                android.Manifest.permission.CAMERA
-                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                            if (hasCamPermission) {
-                                try {
-                                    val tempFile = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
-                                    cameraTempFile = tempFile
-                                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
-                                    cameraLauncher.launch(uri)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "Failed to launch camera: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                            }
+                            showNativeCamera = true
                         }
                     )
 
-                    // Gallery
+                    // Gallery (Multi-photo picker just like WhatsApp)
                     AttachmentOptionItem(
                         icon = Icons.Default.Image,
                         label = "Gallery",
                         backgroundColor = Color(0xFF9C27B0),
                         onClick = {
                             showAttachmentMenu = false
-                            galleryPickerLauncher.launch("image/*")
+                            galleryMultipleLauncher.launch("image/*")
                         }
                     )
 
@@ -839,24 +808,40 @@ fun ChatConversationScreen(
         }
     }
 
-    // ── Image Editor Dialog (crop/rotate/draw/caption) ─────────────
-    if (imageToEditFile != null) {
-        ImageEditorDialog(
-            imageFile = imageToEditFile!!,
-            onDismiss = { imageToEditFile = null },
-            onSendImage = { finalFile, caption ->
-                val fileToSend = finalFile
-                imageToEditFile = null
+    // ── Native WhatsApp Camera Screen ─────────────────────────────
+    if (showNativeCamera) {
+        WhatsAppCameraScreen(
+            onPhotoCaptured = { capturedFile ->
+                showNativeCamera = false
+                photosToPreview = listOf(capturedFile)
+            },
+            onPhotosSelectedFromGallery = { files ->
+                showNativeCamera = false
+                photosToPreview = files
+            },
+            onClose = { showNativeCamera = false }
+        )
+    }
+
+    // ── WhatsApp Multi-Photo Review, Carousel & Captions ─────────
+    if (photosToPreview != null && photosToPreview!!.isNotEmpty()) {
+        WhatsAppMediaPreviewScreen(
+            initialPhotos = photosToPreview!!,
+            onSendPhotos = { results ->
+                photosToPreview = null
                 coroutineScope.launch {
-                    chatRepository.sendMessage(
-                        recipientNumber = normPeer,
-                        recipientName = peerDisplayName,
-                        text = caption,
-                        mediaType = ChatMediaType.IMAGE,
-                        mediaFile = fileToSend
-                    )
+                    results.forEach { (file, caption) ->
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = caption,
+                            mediaType = ChatMediaType.IMAGE,
+                            mediaFile = file
+                        )
+                    }
                 }
-            }
+            },
+            onClose = { photosToPreview = null }
         )
     }
 }
@@ -1057,6 +1042,9 @@ private fun MessageBubble(
         } else message.text
     }
 
+    val isImageOnly = message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
+    val bubblePadding = if (isImageOnly) PaddingValues(4.dp) else PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1067,9 +1055,9 @@ private fun MessageBubble(
             color = bubbleColor,
             shape = bubbleShape,
             shadowElevation = 1.dp,
-            modifier = Modifier.widthIn(max = 300.dp)
+            modifier = Modifier.widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name) 200.dp else 0.dp)
         ) {
-            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            Column(modifier = Modifier.padding(bubblePadding)) {
 
                 // ── Reply Quote ──────────────────────────────────────────────
                 if (parsedReply != null) {
@@ -1284,12 +1272,13 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Text ─────────────────────────────────────────────────────
+                // ── Text / Caption ───────────────────────────────────────────
                 if (displayText.isNotBlank() && message.mediaType != ChatMediaType.DOCUMENT.name) {
                     Text(
                         text = displayText,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                     )
                 }
 
@@ -1297,7 +1286,9 @@ private fun MessageBubble(
 
                 // ── Timestamp & Ticks ────────────────────────────────────────
                 Row(
-                    modifier = Modifier.align(Alignment.End),
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .padding(end = 4.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))

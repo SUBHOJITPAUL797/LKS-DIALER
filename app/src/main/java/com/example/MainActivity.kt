@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         isForeground = true
         com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
+        com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(true)
 
         // Seamless handoff: If user opened the app from the launcher while a call was incoming/active in the floating pill, adopt it!
         val bubbleCallId = com.example.services.FloatingCallBubbleService.currentCallId
@@ -168,6 +169,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         isForeground = true
         com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
+        com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(true)
     }
 
 
@@ -175,12 +177,14 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         isForeground = false
         com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
+        com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(false)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         isForeground = false
         isInPipMode = false
+        com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(false)
         if (!isChangingConfigurations) {
             com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
             val currentStatus = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
