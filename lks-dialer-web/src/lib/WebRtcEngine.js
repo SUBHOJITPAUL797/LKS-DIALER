@@ -28,6 +28,54 @@ const servers = {
   iceCandidatePoolSize: 10,
 };
 
+export const PRESENCE_TIMEOUT_MS = 40000; // 40s timeout for presence staleness (matches Android)
+
+/**
+ * Checks if a user is truly online:
+ * Must have isOnline == true AND lastSeen within the last 40 seconds.
+ */
+export function isUserOnline(user) {
+  if (!user) return false;
+  const isOnline = user.isOnline === true || user.online === true;
+  if (!isOnline) return false;
+  const lastSeen = Number(user.lastSeen);
+  if (!lastSeen || isNaN(lastSeen) || lastSeen <= 0) return false;
+  return (Date.now() - lastSeen) < PRESENCE_TIMEOUT_MS;
+}
+
+/**
+ * Formats lastSeen timestamp into human-readable WhatsApp-style label:
+ * e.g. "last seen just now", "last seen 1m ago", "last seen today at 11:42 AM", "last seen yesterday at 3:15 PM"
+ */
+export function formatLastSeen(lastSeenMs) {
+  if (!lastSeenMs || isNaN(lastSeenMs) || Number(lastSeenMs) <= 0) return '';
+  const ms = Number(lastSeenMs);
+  const diff = Date.now() - ms;
+  if (diff < 0 || diff < 60000) return 'last seen just now';
+  if (diff < 120000) return 'last seen 1m ago';
+  if (diff < 3600000) return `last seen ${Math.floor(diff / 60000)}m ago`;
+
+  const seenDate = new Date(ms);
+  const nowDate = new Date();
+  
+  const timeStr = seenDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  const isToday = seenDate.toDateString() === nowDate.toDateString();
+  if (isToday) {
+    return `last seen today at ${timeStr}`;
+  }
+
+  const yesterday = new Date(nowDate);
+  yesterday.setDate(nowDate.getDate() - 1);
+  const isYesterday = seenDate.toDateString() === yesterday.toDateString();
+  if (isYesterday) {
+    return `last seen yesterday at ${timeStr}`;
+  }
+
+  const dateStr = seenDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `last seen ${dateStr} at ${timeStr}`;
+}
+
 class WebRtcEngine {
   constructor() {
     this.peerConnection = null;
@@ -37,6 +85,12 @@ class WebRtcEngine {
     this.currentUser = null;
     this.isFrontCamera = true;
     this.iceServers = servers;
+    
+    // Presence & heartbeat properties
+    this.presenceInterval = null;
+    this.presenceGraceTimer = null;
+    this.boundVisibilityHandler = null;
+    this.boundUnloadHandler = null;
     
     // Callbacks for UI updates
     this.onCallStateChange = null;
@@ -70,6 +124,105 @@ class WebRtcEngine {
     }
     this.currentUser = user;
     this.syncPublicKey();
+    if (user && user.phoneNumber) {
+      this.startPresenceHeartbeat();
+    }
+  }
+
+  /**
+   * Updates user's online presence and lastSeen timestamp in Firestore.
+   */
+  async updateUserPresence(isOnline) {
+    if (!this.currentUser || !this.currentUser.phoneNumber) return;
+    const phone = this.currentUser.phoneNumber;
+    const now = Date.now();
+    const payload = {
+      phoneNumber: phone,
+      isOnline: Boolean(isOnline),
+      online: Boolean(isOnline),
+      lastSeen: now
+    };
+    try {
+      const userRef = doc(db, 'users', phone);
+      await setDoc(userRef, payload, { merge: true });
+    } catch (e) {
+      console.warn('Failed to update presence:', e);
+    }
+  }
+
+  /**
+   * Starts periodic presence heartbeat while user is active on the site.
+   * Heartbeat sends every 20 seconds.
+   * On visibility hidden, waits 10s grace before marking offline.
+   * On page unload, marks offline immediately.
+   */
+  startPresenceHeartbeat() {
+    this.stopPresenceHeartbeat(false);
+    if (!this.currentUser || !this.currentUser.phoneNumber) return;
+
+    // Mark online immediately
+    this.updateUserPresence(true);
+
+    // Periodic heartbeat every 20 seconds
+    this.presenceInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        this.updateUserPresence(true);
+      }
+    }, 20000);
+
+    // Handle tab visibility change
+    if (typeof document !== 'undefined') {
+      this.boundVisibilityHandler = () => {
+        if (document.visibilityState === 'visible') {
+          if (this.presenceGraceTimer) {
+            clearTimeout(this.presenceGraceTimer);
+            this.presenceGraceTimer = null;
+          }
+          this.updateUserPresence(true);
+        } else {
+          // Grace period to prevent flicker on rapid tab switching
+          this.presenceGraceTimer = setTimeout(() => {
+            this.updateUserPresence(false);
+          }, 10000);
+        }
+      };
+      document.addEventListener('visibilitychange', this.boundVisibilityHandler);
+    }
+
+    // Handle tab close / refresh
+    if (typeof window !== 'undefined') {
+      this.boundUnloadHandler = () => {
+        this.updateUserPresence(false);
+      };
+      window.addEventListener('beforeunload', this.boundUnloadHandler);
+      window.addEventListener('pagehide', this.boundUnloadHandler);
+    }
+  }
+
+  /**
+   * Stops presence heartbeat and cleans up listeners.
+   */
+  stopPresenceHeartbeat(markOffline = true) {
+    if (this.presenceInterval) {
+      clearInterval(this.presenceInterval);
+      this.presenceInterval = null;
+    }
+    if (this.presenceGraceTimer) {
+      clearTimeout(this.presenceGraceTimer);
+      this.presenceGraceTimer = null;
+    }
+    if (this.boundVisibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.boundVisibilityHandler);
+      this.boundVisibilityHandler = null;
+    }
+    if (this.boundUnloadHandler && typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.boundUnloadHandler);
+      window.removeEventListener('pagehide', this.boundUnloadHandler);
+      this.boundUnloadHandler = null;
+    }
+    if (markOffline) {
+      this.updateUserPresence(false);
+    }
   }
 
   async syncPublicKey() {
@@ -296,10 +449,14 @@ class WebRtcEngine {
 
     const userRef = doc(db, 'users', phoneNumber);
     const userSnap = await getDoc(userRef);
+    const now = Date.now();
     const userData = {
       phoneNumber,
       displayName,
       registeredDeviceId: 'web-device-' + Math.random().toString(36).substring(7),
+      isOnline: true,
+      online: true,
+      lastSeen: now,
       ...(webToken && { webToken }),
       ...(publicKey && { publicKey })
     };
@@ -307,6 +464,9 @@ class WebRtcEngine {
     if (userSnap.exists()) {
       await updateDoc(userRef, { 
         registeredDeviceId: userData.registeredDeviceId,
+        isOnline: true,
+        online: true,
+        lastSeen: now,
         ...(webToken && { webToken }),
         ...(publicKey && { publicKey })
       });

@@ -106,6 +106,7 @@ function App() {
     return () => {
       unsubChat();
       chatRepositoryWeb.detachChatListeners();
+      webRtcEngine.stopPresenceHeartbeat(true);
     };
   }, []);
 

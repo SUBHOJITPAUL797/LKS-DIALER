@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   MessageSquare, Plus, Search, Check, CheckCheck, X, UserPlus, Phone 
 } from 'lucide-react';
+import { db } from '../lib/firebase';
+import { collection, query, onSnapshot } from 'firebase/firestore';
 import { chatRepositoryWeb, numbersMatch } from '../lib/ChatRepositoryWeb';
-import { webRtcEngine } from '../lib/WebRtcEngine';
+import { webRtcEngine, isUserOnline } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { allCountries, defaultCountry, formatPhoneNumber } from '../lib/CountryCodes';
 
@@ -12,12 +14,62 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
   const [search, setSearch] = useState('');
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [registeredUsers, setRegisteredUsers] = useState([]);
+  const [usersMap, setUsersMap] = useState({});
+  const [nowTick, setNowTick] = useState(Date.now());
   const [loadingUsers, setLoadingUsers] = useState(false);
 
   // New Chat Modal state
   const [selectedCountry, setSelectedCountry] = useState(defaultCountry);
   const [manualPhone, setManualPhone] = useState('');
   const [userSearch, setUserSearch] = useState('');
+
+  // Periodically tick for online staleness calculations
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Real-time listener for users collection to track online presence
+  useEffect(() => {
+    const q = query(collection(db, 'users'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const map = {};
+      const list = [];
+      const myPhone = webRtcEngine.currentUser?.phoneNumber;
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data() || {};
+        const phone = d.phoneNumber || docSnap.id;
+        if (phone) {
+          const userData = { ...d, id: docSnap.id, phoneNumber: String(phone) };
+          map[phone] = userData;
+          const clean = String(phone).replace(/[^0-9]/g, '');
+          if (clean) {
+            map[clean] = userData;
+            if (clean.length >= 10) {
+              map[clean.slice(-10)] = userData;
+            }
+          }
+          if (myPhone && !numbersMatch(phone, myPhone)) {
+            list.push({
+              id: docSnap.id,
+              displayName: d.displayName || phone || 'Unknown User',
+              ...d,
+              profilePictureUrl: formatAvatarUrl(d.profilePictureUrl) || '',
+              phoneNumber: String(phone)
+            });
+          }
+        }
+      });
+      setUsersMap(map);
+      if (list.length > 0) {
+        setRegisteredUsers(list);
+      }
+    }, (err) => {
+      console.warn('Failed to listen to users collection in ChatList:', err);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     // Initial load
@@ -168,14 +220,18 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
         </div>
       ) : (
         filteredConversations.map(conv => {
-          const avatarUrl = formatAvatarUrl(conv.profilePicUrl);
-          const initial = (conv.contactName || conv.phoneNumber || '?')[0]?.toUpperCase() || '?';
+          const cleanPeer = String(conv.phoneNumber || '').replace(/[^0-9]/g, '');
+          const peerUserData = usersMap[conv.phoneNumber] || usersMap[cleanPeer] || (cleanPeer.length >= 10 ? usersMap[cleanPeer.slice(-10)] : null);
+          const isOnline = isUserOnline(peerUserData);
+          const avatarUrl = formatAvatarUrl(peerUserData?.profilePictureUrl) || formatAvatarUrl(conv.profilePicUrl);
+          const contactDisplayName = conv.contactName || peerUserData?.displayName || conv.phoneNumber;
+          const initial = (contactDisplayName || '?')[0]?.toUpperCase() || '?';
           const isSelected = activePeerNumber && numbersMatch(conv.phoneNumber, activePeerNumber);
 
           return (
             <div
               key={conv.phoneNumber}
-              onClick={() => onOpenChat(conv.phoneNumber, conv.contactName, conv.profilePicUrl)}
+              onClick={() => onOpenChat(conv.phoneNumber, contactDisplayName, avatarUrl)}
               className="neo-box"
               style={{
                 padding: '16px',
@@ -191,27 +247,38 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 1, minWidth: 0 }}>
                 {/* Avatar */}
-                <div style={{
-                  width: '50px', height: '50px', borderRadius: '50%',
-                  backgroundColor: 'var(--secondary)', border: '3px solid #000',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontWeight: '900', fontSize: '20px', overflow: 'hidden', flexShrink: 0,
-                  boxShadow: '2px 2px 0 #000'
-                }}>
-                  {avatarUrl && (
-                    <img 
-                      src={avatarUrl} 
-                      alt={conv.contactName} 
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      onError={(e) => {
-                        e.target.style.display = 'none';
-                        if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
-                      }}
-                    />
+                <div style={{ position: 'relative', flexShrink: 0 }}>
+                  <div style={{
+                    width: '50px', height: '50px', borderRadius: '50%',
+                    backgroundColor: 'var(--secondary)', border: '3px solid #000',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: '900', fontSize: '20px', overflow: 'hidden',
+                    boxShadow: '2px 2px 0 #000'
+                  }}>
+                    {avatarUrl && (
+                      <img 
+                        src={avatarUrl} 
+                        alt={contactDisplayName} 
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                          if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
+                        }}
+                      />
+                    )}
+                    <span style={{ display: avatarUrl ? 'none' : 'block' }}>
+                      {initial}
+                    </span>
+                  </div>
+                  {isOnline && (
+                    <span style={{
+                      position: 'absolute', bottom: 1, right: 1,
+                      width: 14, height: 14, borderRadius: '50%',
+                      backgroundColor: '#00e676', border: '2.5px solid #fff',
+                      boxShadow: '0 0 4px rgba(0,0,0,0.3)',
+                      zIndex: 2
+                    }} />
                   )}
-                  <span style={{ display: avatarUrl ? 'none' : 'block' }}>
-                    {initial}
-                  </span>
                 </div>
 
                 {/* Title & Preview */}
@@ -221,7 +288,7 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                       margin: 0, fontSize: '17px', fontWeight: '800',
                       whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
                     }}>
-                      {conv.contactName || conv.phoneNumber}
+                      {contactDisplayName}
                     </h4>
                     <span style={{ fontSize: '12px', fontWeight: '700', color: '#666', flexShrink: 0, marginLeft: '8px' }}>
                       {formatTime(conv.lastMessageTimestamp)}

@@ -3,8 +3,10 @@ import {
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2
 } from 'lucide-react';
-import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWeb';
-import { webRtcEngine } from '../lib/WebRtcEngine';
+import { db } from '../lib/firebase';
+import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
+import { chatRepositoryWeb, normalizePhoneNumber, numbersMatch } from '../lib/ChatRepositoryWeb';
+import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 
 // ─── Swipeable Message Bubble ─────────────────────────────────────────────────
@@ -129,9 +131,58 @@ export default function ChatConversation({
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isTypingPeer, setIsTypingPeer] = useState(false);
+  const [peerUser, setPeerUser] = useState(null);
+  const [nowTick, setNowTick] = useState(Date.now());
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedImageModal, setSelectedImageModal] = useState(null);
   const [sending, setSending] = useState(false);
+
+  // ── Dynamic tick to periodically re-evaluate online staleness and last seen ──
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // ── Real-time presence listener for peer ─────────────────────────────────────
+  useEffect(() => {
+    if (!normPeer) return;
+    let unsub = null;
+
+    const variations = [normPeer];
+    const clean = normPeer.replace(/[^0-9]/g, '');
+    if (clean) {
+      variations.push(clean);
+      if (clean.length > 10) variations.push(clean.slice(-10));
+      if (!normPeer.startsWith('+')) variations.push('+' + clean);
+    }
+    const distinct = Array.from(new Set(variations)).slice(0, 10);
+
+    try {
+      const q = query(collection(db, 'users'), where('phoneNumber', 'in', distinct));
+      unsub = onSnapshot(q, (snapshot) => {
+        if (!snapshot.empty) {
+          const d = snapshot.docs[0].data() || {};
+          setPeerUser({ ...d, id: snapshot.docs[0].id });
+        } else {
+          getDoc(doc(db, 'users', normPeer)).then(snap => {
+            if (snap.exists()) {
+              setPeerUser({ ...snap.data(), id: snap.id });
+            } else {
+              setPeerUser(null);
+            }
+          }).catch(() => {});
+        }
+      }, (err) => {
+        console.warn("Peer presence listener error:", err);
+      });
+    } catch (e) {
+      console.warn("Failed to set up peer presence listener:", e);
+    }
+
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [normPeer]);
 
   // Swipe-to-reply state
   const [replyingTo, setReplyingTo] = useState(null); // { id, text, isOutgoing }
@@ -421,9 +472,12 @@ export default function ChatConversation({
     return { text: msg.text, replyTo: null };
   };
 
-  const avatarUrl = formatAvatarUrl(peerAvatar);
-  const initial = (peerName || normPeer || '?')[0]?.toUpperCase() || '?';
+  const displayAvatar = formatAvatarUrl(peerUser?.profilePictureUrl) || formatAvatarUrl(peerAvatar);
+  const peerDisplayName = peerName || peerUser?.displayName || normPeer;
+  const initial = (peerDisplayName || '?')[0]?.toUpperCase() || '?';
   const isBlocked = webRtcEngine.isNumberBlocked ? webRtcEngine.isNumberBlocked(normPeer) : false;
+  const isPeerOnlineStatus = isUserOnline(peerUser);
+  const lastSeenText = peerUser?.lastSeen ? formatLastSeen(peerUser.lastSeen) : '';
 
   // ── Key press: Enter to send ────────────────────────────────────────────────
   const handleKeyDown = (e) => {
@@ -462,26 +516,50 @@ export default function ChatConversation({
           >
             <ArrowLeft size={20} color="#000" strokeWidth={3} />
           </button>
-          <div style={{
-            width: 42, height: 42, borderRadius: '50%',
-            backgroundColor: 'var(--secondary)', border: '2px solid #000',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 900, fontSize: 18, overflow: 'hidden', flexShrink: 0
-          }}>
-            {avatarUrl ? (
-              <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : initial}
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <div style={{
+              width: 42, height: 42, borderRadius: '50%',
+              backgroundColor: 'var(--secondary)', border: '2px solid #000',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontWeight: 900, fontSize: 18, overflow: 'hidden'
+            }}>
+              {displayAvatar ? (
+                <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : initial}
+            </div>
+            {isPeerOnlineStatus && (
+              <span style={{
+                position: 'absolute', bottom: -1, right: -1,
+                width: 12, height: 12, borderRadius: '50%',
+                backgroundColor: '#00e676', border: '2px solid #fff',
+                boxShadow: '0 0 4px rgba(0,0,0,0.3)',
+                zIndex: 2
+              }} />
+            )}
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontSize: 16, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {peerName || normPeer}
+              {peerDisplayName}
             </div>
             <div style={{ fontSize: 12, fontWeight: 700 }}>
-              {isTypingPeer
-                ? <span style={{ color: '#00838f', fontStyle: 'italic' }}>typing...</span>
-                : <span style={{ color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Shield size={11} color="#00b4d8" /> E2E Encrypted
-                  </span>}
+              {isTypingPeer ? (
+                <span style={{ color: '#00838f', fontStyle: 'italic' }}>typing...</span>
+              ) : isPeerOnlineStatus ? (
+                <span style={{ color: '#00a884', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{
+                    width: 7, height: 7, borderRadius: '50%',
+                    backgroundColor: '#00e676', display: 'inline-block',
+                    boxShadow: '0 0 6px #00e676'
+                  }}></span>
+                  online
+                </span>
+              ) : lastSeenText ? (
+                <span style={{ color: '#666' }}>{lastSeenText}</span>
+              ) : (
+                <span style={{ color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Shield size={11} color="#00b4d8" /> E2E Encrypted
+                </span>
+              )}
             </div>
           </div>
         </div>
