@@ -244,11 +244,26 @@ class CallMessagingService : FirebaseMessagingService() {
             .setName(callerName)
             .setImportant(true)
             
-        // Load Profile Picture if available (Base64 decoded locally & downscaled to safe icon size)
-        if (callerProfilePic.isNotEmpty() && !callerProfilePic.startsWith("http")) {
+        // Load Profile Picture if available (Supports HTTP/HTTPS URLs and Base64)
+        if (callerProfilePic.isNotEmpty()) {
             try {
-                val decodedBytes = android.util.Base64.decode(callerProfilePic, android.util.Base64.DEFAULT)
-                val originalBitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                val originalBitmap = if (callerProfilePic.startsWith("http://") || callerProfilePic.startsWith("https://")) {
+                    val url = java.net.URL(callerProfilePic)
+                    val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                        connectTimeout = 3000
+                        readTimeout = 3000
+                        doInput = true
+                    }
+                    val stream = conn.inputStream
+                    val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                    stream.close()
+                    conn.disconnect()
+                    bmp
+                } else {
+                    val clean = if (callerProfilePic.contains(",")) callerProfilePic.substringAfter(",") else callerProfilePic
+                    val decodedBytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                }
                 if (originalBitmap != null) {
                     val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, 128, 128, true)
                     callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(scaledBitmap))

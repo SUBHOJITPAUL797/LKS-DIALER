@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
-  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2
+  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
@@ -139,43 +139,67 @@ export default function ChatConversation({
 
   // ── Dynamic tick to periodically re-evaluate online staleness and last seen ──
   useEffect(() => {
-    const timer = setInterval(() => setNowTick(Date.now()), 10000);
+    const timer = setInterval(() => setNowTick(Date.now()), 4000);
     return () => clearInterval(timer);
   }, []);
 
   // ── Real-time presence listener for peer ─────────────────────────────────────
   useEffect(() => {
     if (!normPeer) return;
-    let unsub = null;
+    let unsubQuery = null;
+    let unsubDoc = null;
+    let isMounted = true;
 
-    const variations = [normPeer];
+    const variations = [normPeer, peerNumber].filter(Boolean);
     const clean = normPeer.replace(/[^0-9]/g, '');
     if (clean) {
       variations.push(clean);
       if (clean.length > 10) variations.push(clean.slice(-10));
       if (!normPeer.startsWith('+')) variations.push('+' + clean);
     }
+    // Also include existing conversation's saved phone if known
+    try {
+      const convs = chatRepositoryWeb.getConversations();
+      const existing = convs.find(c => numbersMatch(c.phoneNumber, normPeer));
+      if (existing && existing.phoneNumber) variations.push(existing.phoneNumber);
+    } catch {}
+
     const distinct = Array.from(new Set(variations)).slice(0, 10);
+
+    const attachDocListener = (docId) => {
+      if (!docId || unsubDoc) return;
+      try {
+        unsubDoc = onSnapshot(doc(db, 'users', docId), (docSnap) => {
+          if (docSnap.exists() && isMounted) {
+            const d = docSnap.data() || {};
+            setPeerUser({ ...d, id: docSnap.id });
+          }
+        }, (err) => console.warn('Direct user doc listener error:', err));
+      } catch {}
+    };
 
     try {
       const q = query(collection(db, 'users'), where('phoneNumber', 'in', distinct));
-      unsub = onSnapshot(q, (snapshot) => {
+      unsubQuery = onSnapshot(q, (snapshot) => {
+        if (!isMounted) return;
         if (!snapshot.empty) {
-          const d = snapshot.docs[0].data() || {};
-          setPeerUser({ ...d, id: snapshot.docs[0].id });
+          const docSnap = snapshot.docs[0];
+          const d = docSnap.data() || {};
+          setPeerUser({ ...d, id: docSnap.id });
+          attachDocListener(docSnap.id);
         } else {
           // Multi-variation direct doc fallback
           (async () => {
             for (const v of distinct) {
               try {
                 const snap = await getDoc(doc(db, 'users', v));
-                if (snap.exists()) {
+                if (snap.exists() && isMounted) {
                   setPeerUser({ ...snap.data(), id: snap.id });
+                  attachDocListener(snap.id);
                   return;
                 }
               } catch {}
             }
-            setPeerUser(null);
           })();
         }
       }, (err) => {
@@ -186,15 +210,20 @@ export default function ChatConversation({
     }
 
     return () => {
-      if (unsub) unsub();
+      isMounted = false;
+      if (unsubQuery) unsubQuery();
+      if (unsubDoc) unsubDoc();
     };
-  }, [normPeer]);
+  }, [normPeer, peerNumber]);
 
   // Swipe-to-reply state
   const [replyingTo, setReplyingTo] = useState(null); // { id, text, isOutgoing }
 
   // Message edit state (10 min window)
   const [editingMessage, setEditingMessage] = useState(null); // msg object
+
+  // Message delete options modal state
+  const [selectedMessageForDelete, setSelectedMessageForDelete] = useState(null);
 
   // Swipe hint state (show briefly on first open)
   const [showSwipeHint, setShowSwipeHint] = useState(false);
@@ -216,6 +245,7 @@ export default function ChatConversation({
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const docFileInputRef = useRef(null);
 
   const scrollToBottom = (behavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -375,6 +405,28 @@ export default function ChatConversation({
         }
       };
       img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // ── Send document ───────────────────────────────────────────────────────────
+  const handleDocSelected = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      alert('File size exceeds 5MB limit.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const rawBase64 = String(event.target.result || '').split(',')[1] || '';
+      try {
+        await chatRepositoryWeb.sendMessage(normPeer, peerName || normPeer, file.name, 'DOCUMENT', rawBase64);
+      } catch (err) {
+        alert(err.message || 'Failed to send document');
+      } finally {
+        if (docFileInputRef.current) docFileInputRef.current.value = '';
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -802,18 +854,12 @@ export default function ChatConversation({
                           <Edit2 size={12} color="#00838f" />
                         </button>
                       )}
-                      {isOut && !isDeleted && (
+                      {!isDeleted && (
                         <button
                           type="button"
-                          onClick={async (e) => {
+                          onClick={(e) => {
                             e.stopPropagation();
-                            if (window.confirm('Delete this message for everyone?')) {
-                              try {
-                                await chatRepositoryWeb.deleteMessageForEveryone(msg.id, normPeer);
-                              } catch (err) {
-                                alert(err.message || 'Failed to delete message');
-                              }
-                            }
+                            setSelectedMessageForDelete(msg);
                           }}
                           style={{
                             background: 'none',
@@ -824,7 +870,7 @@ export default function ChatConversation({
                             alignItems: 'center',
                             opacity: 0.6
                           }}
-                          title="Delete for everyone"
+                          title="Delete message"
                         >
                           <Trash2 size={12} color="#d32f2f" />
                         </button>
@@ -937,10 +983,16 @@ export default function ChatConversation({
             /* TEXT / MEDIA BAR */
             <form onSubmit={handleSendText} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
               <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageSelected} />
+              <input type="file" ref={docFileInputRef} style={{ display: 'none' }} onChange={handleDocSelected} />
               <button type="button" onClick={() => fileInputRef.current?.click()} className="neo-box"
                 style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}
                 title="Attach Photo">
                 <ImageIcon size={22} />
+              </button>
+              <button type="button" onClick={() => docFileInputRef.current?.click()} className="neo-box"
+                style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#EDE7F6', cursor: 'pointer', flexShrink: 0 }}
+                title="Attach Document">
+                <Paperclip size={22} color="#5E35B1" />
               </button>
               <button type="button" onClick={startRecording} className="neo-box"
                 style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer', flexShrink: 0 }}
@@ -988,6 +1040,115 @@ export default function ChatConversation({
               alt="Enlarged"
               style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', border: '3px solid #000' }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* ── WHATSAPP-STYLE DELETE OPTIONS MODAL ── */}
+      {selectedMessageForDelete && (
+        <div
+          onClick={() => setSelectedMessageForDelete(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 20
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="neo-box"
+            style={{
+              backgroundColor: '#fff',
+              maxWidth: 360,
+              width: '100%',
+              padding: '24px 20px',
+              borderRadius: 16,
+              textAlign: 'center',
+              boxShadow: '0 10px 25px rgba(0,0,0,0.3)'
+            }}
+          >
+            <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 8, color: '#000' }}>
+              Delete message?
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#666', marginBottom: 20 }}>
+              {selectedMessageForDelete.isOutgoing
+                ? 'You can delete this message for everyone or delete it just for yourself.'
+                : 'Delete this message from your chat history.'}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {selectedMessageForDelete.isOutgoing && (
+                <button
+                  type="button"
+                  className="neo-box"
+                  onClick={async () => {
+                    const msg = selectedMessageForDelete;
+                    setSelectedMessageForDelete(null);
+                    try {
+                      await chatRepositoryWeb.deleteMessageForEveryone(msg.id, normPeer);
+                    } catch (err) {
+                      alert(err.message || 'Failed to delete message');
+                    }
+                  }}
+                  style={{
+                    padding: '12px',
+                    backgroundColor: '#fee2e2',
+                    color: '#dc2626',
+                    fontWeight: 900,
+                    fontSize: 14,
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                    border: '2px solid #dc2626'
+                  }}
+                >
+                  Delete for everyone
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="neo-box"
+                onClick={() => {
+                  const msg = selectedMessageForDelete;
+                  setSelectedMessageForDelete(null);
+                  chatRepositoryWeb.deleteMessageLocally(msg.id, normPeer);
+                }}
+                style={{
+                  padding: '12px',
+                  backgroundColor: '#f3f4f6',
+                  color: '#111827',
+                  fontWeight: 900,
+                  fontSize: 14,
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  border: '2px solid #000'
+                }}
+              >
+                Delete for me
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedMessageForDelete(null)}
+                style={{
+                  padding: '10px',
+                  backgroundColor: 'transparent',
+                  color: '#6b7280',
+                  fontWeight: 800,
+                  fontSize: 13,
+                  border: 'none',
+                  cursor: 'pointer',
+                  marginTop: 4
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

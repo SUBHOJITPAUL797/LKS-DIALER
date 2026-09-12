@@ -81,7 +81,7 @@ export default {
               callerNumber: callerNumber || "",
               callType: callType || "AUDIO",
               callerProfilePic: body.callerProfilePic || "",
-              messageText: body.messageText || "",
+              messageText: body.messageText || body.messagePreview || "",
               mediaType: body.mediaType || "TEXT",
               messageId: body.messageId || "",
             },

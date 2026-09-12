@@ -677,6 +677,9 @@ class ChatRepository private constructor(private val context: Context) {
      */
     private fun sendReceipt(recipientNumber: String, messageId: String, status: String) {
         val normalized = ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normalized
+
         val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
             ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
@@ -693,21 +696,21 @@ class ChatRepository private constructor(private val context: Context) {
             receiptId = receiptId,
             messageId = messageId,
             senderNumber = myPhone,
-            recipientNumber = normalized,
+            recipientNumber = canonicalRecipient,
             status = status,
             timestamp = System.currentTimeMillis()
         )
 
         firestore.collection("receipts")
-            .document(normalized)
+            .document(canonicalRecipient)
             .collection("acks")
             .document(receiptId)
             .set(receiptDto)
             .addOnSuccessListener {
-                Log.d(TAG, "Receipt sent successfully to $normalized: msgId=$messageId, status=$status")
+                Log.d(TAG, "Receipt sent successfully to $canonicalRecipient: msgId=$messageId, status=$status")
             }
             .addOnFailureListener { e ->
-                Log.w(TAG, "Failed to send receipt to $normalized: ${e.message}")
+                Log.w(TAG, "Failed to send receipt to $canonicalRecipient: ${e.message}")
             }
     }
 
@@ -729,16 +732,21 @@ class ChatRepository private constructor(private val context: Context) {
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val firebaseManager = FirebaseManager.getInstance(context)
+        val targetUser = firebaseManager.lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
+
         val messageId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
         // Replying or sending to a recipient confirms user has read all prior incoming messages from them
         try {
-            markConversationAsRead(normRecipient)
+            markConversationAsRead(canonicalRecipient)
         } catch (_: Exception) {}
 
         // 1. Resolve Recipient's Public Key
-        val recipientPublicKey = resolvePeerPublicKey(normRecipient)
+        val recipientPublicKey = targetUser?.publicKey?.takeIf { it.isNotBlank() }
+            ?: resolvePeerPublicKey(canonicalRecipient)
             ?: return@withContext Result.failure(IllegalStateException("Recipient does not have E2EE key registered"))
 
         // 2. Prepare Payload and Media
@@ -840,7 +848,7 @@ class ChatRepository private constructor(private val context: Context) {
                         val chunkDto = ChatMessageDto(
                             messageId = chunkDocId,
                             senderNumber = myPhone,
-                            recipientNumber = normRecipient,
+                            recipientNumber = canonicalRecipient,
                             senderPublicKey = myPublicKey,
                             ciphertext = chunkCiphertext,
                             iv = chunkIv,
@@ -849,13 +857,13 @@ class ChatRepository private constructor(private val context: Context) {
                         )
 
                         firestore.collection("inboxes")
-                            .document(normRecipient)
+                            .document(canonicalRecipient)
                             .collection("messages")
                             .document(chunkDocId)
                             .set(chunkDto)
                             .await()
                     }
-                    Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $normRecipient")
+                    Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $canonicalRecipient")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to upload file chunks: ${e.message}", e)
                     messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
@@ -863,7 +871,7 @@ class ChatRepository private constructor(private val context: Context) {
                 }
 
                 sendFcmWakeup(
-                    recipientPhone = normRecipient,
+                    recipientPhone = canonicalRecipient,
                     senderPhone = myPhone,
                     previewText = "📄 ${text.ifBlank { mediaFile.name }}",
                     mediaType = ChatMediaType.DOCUMENT.name,
@@ -892,7 +900,7 @@ class ChatRepository private constructor(private val context: Context) {
             id = messageId,
             conversationId = normRecipient,
             senderNumber = myPhone,
-            recipientNumber = normRecipient,
+            recipientNumber = canonicalRecipient,
             text = text,
             mediaType = mediaType.name,
             mediaPath = localSavedPath,
@@ -907,8 +915,8 @@ class ChatRepository private constructor(private val context: Context) {
         val existingConv = conversationDao.getConversation(normRecipient)
         val convEntity = ConversationEntity(
             phoneNumber = normRecipient,
-            contactName = recipientName.ifBlank { existingConv?.contactName ?: normRecipient },
-            profilePicUrl = existingConv?.profilePicUrl ?: "",
+            contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
+            profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
             lastMessageText = when (mediaType) {
                 ChatMediaType.IMAGE -> "📷 Photo"
                 ChatMediaType.AUDIO -> "🎤 Voice message"
@@ -928,7 +936,7 @@ class ChatRepository private constructor(private val context: Context) {
         val chatDto = ChatMessageDto(
             messageId = messageId,
             senderNumber = myPhone,
-            recipientNumber = normRecipient,
+            recipientNumber = canonicalRecipient,
             senderPublicKey = myPublicKey,
             ciphertext = ciphertext,
             iv = iv,
@@ -938,12 +946,12 @@ class ChatRepository private constructor(private val context: Context) {
         )
 
         firestore.collection("inboxes")
-            .document(normRecipient)
+            .document(canonicalRecipient)
             .collection("messages")
             .document(messageId)
             .set(chatDto)
             .addOnSuccessListener {
-                Log.d(TAG, "Message $messageId delivered to ephemeral inbox for $normRecipient")
+                Log.d(TAG, "Message $messageId delivered to ephemeral inbox for $canonicalRecipient")
             }
             .addOnFailureListener { e ->
                 Log.e(TAG, "Failed to upload message to inbox: ${e.message}")
@@ -960,7 +968,7 @@ class ChatRepository private constructor(private val context: Context) {
             else -> text
         }
         sendFcmWakeup(
-            recipientPhone = normRecipient,
+            recipientPhone = canonicalRecipient,
             senderPhone = myPhone,
             previewText = preview,
             mediaType = mediaType.name,
@@ -1021,7 +1029,9 @@ class ChatRepository private constructor(private val context: Context) {
         }
 
         // 3. Resolve recipient public key and encrypt edit packet
-        val recipientPublicKey = resolvePeerPublicKey(normRecipient)
+        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
+        val recipientPublicKey = targetUser?.publicKey?.takeIf { it.isNotBlank() } ?: resolvePeerPublicKey(canonicalRecipient)
         if (recipientPublicKey != null) {
             val payload = JSONObject().apply {
                 put("type", "MESSAGE_EDIT")
@@ -1037,7 +1047,7 @@ class ChatRepository private constructor(private val context: Context) {
             val chatDto = ChatMessageDto(
                 messageId = editPacketId,
                 senderNumber = myPhone,
-                recipientNumber = normRecipient,
+                recipientNumber = canonicalRecipient,
                 senderPublicKey = myPublicKey,
                 ciphertext = ciphertext,
                 iv = iv,
@@ -1047,19 +1057,19 @@ class ChatRepository private constructor(private val context: Context) {
 
             try {
                 firestore.collection("inboxes")
-                    .document(normRecipient)
+                    .document(canonicalRecipient)
                     .collection("messages")
                     .document(editPacketId)
                     .set(chatDto)
                     .await()
-                Log.d(TAG, "Edit packet $editPacketId delivered to ephemeral inbox for $normRecipient")
+                Log.d(TAG, "Edit packet $editPacketId delivered to ephemeral inbox for $canonicalRecipient")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to upload edit packet: ${e.message}")
             }
 
             // Send FCM wakeup push
             sendFcmWakeup(
-                recipientPhone = normRecipient,
+                recipientPhone = canonicalRecipient,
                 senderPhone = myPhone,
                 previewText = newText,
                 mediaType = ChatMediaType.EDIT.name,
@@ -1096,6 +1106,8 @@ class ChatRepository private constructor(private val context: Context) {
         messageDao.markMessageDeletedForEveryone(messageId, tombstone)
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
 
         // 3. Update conversation summary if this was the last message
         val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
@@ -1110,7 +1122,7 @@ class ChatRepository private constructor(private val context: Context) {
             ?: prefs.getString("user_phone", null)
 
         if (myPhone != null) {
-            val recipientPublicKey = resolvePeerPublicKey(normRecipient)
+            val recipientPublicKey = targetUser?.publicKey?.takeIf { it.isNotBlank() } ?: resolvePeerPublicKey(canonicalRecipient)
             if (recipientPublicKey != null) {
                 val payload = JSONObject().apply {
                     put("type", "MESSAGE_DELETE")
@@ -1125,7 +1137,7 @@ class ChatRepository private constructor(private val context: Context) {
                 val chatDto = ChatMessageDto(
                     messageId = deletePacketId,
                     senderNumber = myPhone,
-                    recipientNumber = normRecipient,
+                    recipientNumber = canonicalRecipient,
                     senderPublicKey = myPublicKey,
                     ciphertext = ciphertext,
                     iv = iv,
@@ -1135,18 +1147,18 @@ class ChatRepository private constructor(private val context: Context) {
 
                 try {
                     firestore.collection("inboxes")
-                        .document(normRecipient)
+                        .document(canonicalRecipient)
                         .collection("messages")
                         .document(deletePacketId)
                         .set(chatDto)
                         .await()
-                    Log.d(TAG, "Delete packet $deletePacketId sent to $normRecipient")
+                    Log.d(TAG, "Delete packet $deletePacketId sent to $canonicalRecipient")
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to upload delete packet: ${e.message}")
                 }
 
                 sendFcmWakeup(
-                    recipientPhone = normRecipient,
+                    recipientPhone = canonicalRecipient,
                     senderPhone = myPhone,
                     previewText = "",
                     mediaType = ChatMediaType.DELETE.name,
@@ -1190,9 +1202,10 @@ class ChatRepository private constructor(private val context: Context) {
         val firebaseManager = FirebaseManager.getInstance(context)
         val recipientUser = firebaseManager.lookupUserByNumber(recipientPhone)
         val myName = firebaseManager.currentUser.value?.displayName ?: senderPhone
+        val myPic = firebaseManager.currentUser.value?.profilePictureUrl ?: ""
 
-        fun postPush(token: String) {
-            if (token.isBlank()) return
+        fun postPush(token: String, webToken: String = "") {
+            if (token.isBlank() && webToken.isBlank()) return
             Thread {
                 var conn: java.net.HttpURLConnection? = null
                 try {
@@ -1206,13 +1219,15 @@ class ChatRepository private constructor(private val context: Context) {
                         doOutput = true
                     }
                     val json = JSONObject().apply {
-                        put("token", token)
+                        if (token.isNotBlank()) put("token", token)
+                        if (webToken.isNotBlank()) put("webToken", webToken)
                         put("callerName", myName)
                         put("callerNumber", senderPhone)
                         put("type", "chat_message")
                         put("messageText", extractCleanText(previewText))
                         put("mediaType", mediaType)
                         put("messageId", messageId)
+                        if (myPic.isNotBlank()) put("callerProfilePic", myPic)
                     }.toString()
 
                     conn.outputStream.use { it.write(json.toByteArray()) }
@@ -1226,13 +1241,27 @@ class ChatRepository private constructor(private val context: Context) {
         }
 
         val fcmToken = recipientUser?.fcmToken ?: ""
-        if (fcmToken.isNotBlank()) {
-            postPush(fcmToken)
+        val webToken = recipientUser?.webToken ?: ""
+        if (fcmToken.isNotBlank() || webToken.isNotBlank()) {
+            postPush(fcmToken, webToken)
         } else {
-            firestore.collection("users").document(recipientPhone).get().addOnSuccessListener { doc ->
-                val fetchedToken = doc.getString("fcmToken") ?: ""
-                if (fetchedToken.isNotBlank()) {
-                    postPush(fetchedToken)
+            val variations = ContactsHelper.generateNumberVariations(recipientPhone)
+            firestore.collection("users").whereIn("phoneNumber", variations).get().addOnSuccessListener { querySnapshot ->
+                val userDoc = querySnapshot.documents.firstOrNull {
+                    !it.getString("fcmToken").isNullOrEmpty() || !it.getString("webToken").isNullOrEmpty()
+                }
+                val fToken = userDoc?.getString("fcmToken") ?: ""
+                val wToken = userDoc?.getString("webToken") ?: ""
+                if (fToken.isNotBlank() || wToken.isNotBlank()) {
+                    postPush(fToken, wToken)
+                }
+            }.addOnFailureListener {
+                firestore.collection("users").document(recipientPhone).get().addOnSuccessListener { doc ->
+                    val fetchedToken = doc.getString("fcmToken") ?: ""
+                    val fetchedWebToken = doc.getString("webToken") ?: ""
+                    if (fetchedToken.isNotBlank() || fetchedWebToken.isNotBlank()) {
+                        postPush(fetchedToken, fetchedWebToken)
+                    }
                 }
             }
         }
@@ -1246,7 +1275,9 @@ class ChatRepository private constructor(private val context: Context) {
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
         messageDao.updateIncomingMessagesStatus(norm, last10, MessageStatus.READ.name)
         conversationDao.resetUnreadCount(norm, last10)
-        sendReceipt(recipientNumber = norm, messageId = "all", status = MessageStatus.READ.name)
+        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(peerPhoneNumber)
+        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: norm
+        sendReceipt(recipientNumber = canonicalRecipient, messageId = "all", status = MessageStatus.READ.name)
     }
 
     /**
@@ -1282,7 +1313,8 @@ class ChatRepository private constructor(private val context: Context) {
         senderNumber: String,
         senderName: String,
         messageText: String,
-        messageType: String
+        messageType: String,
+        profilePicUrl: String? = null
     ) {
         val notifId = senderNumber.hashCode()
 
@@ -1331,7 +1363,8 @@ class ChatRepository private constructor(private val context: Context) {
         val firebaseManager = FirebaseManager.getInstance(context)
         val registeredUser = firebaseManager.lookupUserByNumber(senderNumber)
         val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNumber) }
-        var rawAvatar = registeredUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
+        var rawAvatar = profilePicUrl?.takeIf { it.isNotBlank() }
+            ?: registeredUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
             ?: contactInfo?.profilePictureUrl?.takeIf { it.isNotBlank() }
             ?: ""
 
@@ -1350,10 +1383,24 @@ class ChatRepository private constructor(private val context: Context) {
         var avatarBitmap: Bitmap? = null
         if (rawAvatar.isNotBlank()) {
             avatarBitmap = try {
-                val clean = if (rawAvatar.contains(",")) rawAvatar.substringAfter(",") else rawAvatar
-                val bytes = Base64.decode(clean, Base64.DEFAULT)
-                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (decoded != null) getCircularBitmap(decoded) else null
+                if (rawAvatar.startsWith("http://") || rawAvatar.startsWith("https://")) {
+                    val url = java.net.URL(rawAvatar)
+                    val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                        connectTimeout = 3000
+                        readTimeout = 3000
+                        doInput = true
+                    }
+                    val stream = conn.inputStream
+                    val bmp = BitmapFactory.decodeStream(stream)
+                    stream.close()
+                    conn.disconnect()
+                    if (bmp != null) getCircularBitmap(bmp) else null
+                } else {
+                    val clean = if (rawAvatar.contains(",")) rawAvatar.substringAfter(",") else rawAvatar
+                    val bytes = Base64.decode(clean, Base64.DEFAULT)
+                    val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    if (decoded != null) getCircularBitmap(decoded) else null
+                }
             } catch (_: Exception) {
                 try {
                     val decoded = BitmapFactory.decodeFile(rawAvatar)
@@ -1469,11 +1516,12 @@ class ChatRepository private constructor(private val context: Context) {
             ?: prefs.getString("user_phone", null)
             ?: return@withContext
 
-        val senderNumber = data["callerNumber"] ?: ""
-        val senderName = data["callerName"] ?: senderNumber
-        val rawMessageText = data["messageText"] ?: ""
+        val senderNumber = data["callerNumber"] ?: data["senderNumber"] ?: ""
+        val senderName = data["callerName"] ?: data["senderName"] ?: senderNumber
+        val rawMessageText = data["messageText"] ?: data["messagePreview"] ?: ""
         val messageText = extractCleanText(rawMessageText)
         val mediaType = data["mediaType"] ?: "TEXT"
+        val callerProfilePic = data["callerProfilePic"] ?: data["profilePictureUrl"] ?: ""
         val senderNorm = ContactsHelper.normalizePhoneNumber(senderNumber)
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
@@ -1501,7 +1549,8 @@ class ChatRepository private constructor(private val context: Context) {
                 senderNumber = senderNorm,
                 senderName = resolvedName,
                 messageText = displayPreview,
-                messageType = mediaType
+                messageType = mediaType,
+                profilePicUrl = callerProfilePic
             )
         }
 

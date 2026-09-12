@@ -1410,16 +1410,26 @@ private fun MessageBubble(
                 }
 
                 // ── Document Card ─────────────────────────────────────────────
-                if (message.mediaType == ChatMediaType.DOCUMENT.name && !message.mediaPath.isNullOrBlank()) {
+                if (message.mediaType == ChatMediaType.DOCUMENT.name) {
                     val context = LocalContext.current
-                    val docFile = remember(message.mediaPath) { File(message.mediaPath) }
-                    val ext = remember(docFile) { docFile.extension.uppercase(Locale.getDefault()).ifBlank { "DOC" } }
-                    val fileSizeFormatted = remember(docFile) {
-                        if (docFile.exists()) {
+                    val docFile = remember(message.mediaPath) { message.mediaPath?.takeIf { it.isNotBlank() }?.let { File(it) } }
+                    val hasFile = docFile?.exists() == true
+                    val fileName = remember(displayText, docFile) {
+                        displayText.ifBlank { docFile?.name ?: "Document" }
+                    }
+                    val ext = remember(fileName, docFile) {
+                        (docFile?.extension?.ifBlank { null }
+                            ?: fileName.substringAfterLast('.', "DOC"))
+                            .uppercase(Locale.getDefault()).take(5)
+                    }
+                    val fileSizeFormatted = remember(docFile, hasFile) {
+                        if (hasFile && docFile != null) {
                             val bytes = docFile.length()
                             if (bytes < 1024) "$bytes B"
                             else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
                             else String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f))
+                        } else if (!isOutgoing && !hasFile) {
+                            "Transferring document..."
                         } else ""
                     }
 
@@ -1432,22 +1442,26 @@ private fun MessageBubble(
                                 if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                     onMarkMessageRead(message.id)
                                 }
-                                try {
-                                    val fileUri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.fileprovider",
-                                        docFile
-                                    )
-                                    val mime = android.webkit.MimeTypeMap.getSingleton()
-                                        .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                        setDataAndType(fileUri, mime)
-                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                if (hasFile && docFile != null) {
+                                    try {
+                                        val fileUri = FileProvider.getUriForFile(
+                                            context,
+                                            "${context.packageName}.fileprovider",
+                                            docFile
+                                        )
+                                        val mime = android.webkit.MimeTypeMap.getSingleton()
+                                            .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                            setDataAndType(fileUri, mime)
+                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        context.startActivity(intent)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
                                     }
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
                                 }
                             }
                     ) {
@@ -1477,7 +1491,7 @@ private fun MessageBubble(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = displayText.ifBlank { docFile.name },
+                                    text = fileName,
                                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
@@ -1492,8 +1506,8 @@ private fun MessageBubble(
                             }
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
-                                Icons.Default.FileDownload,
-                                contentDescription = "Open Document",
+                                if (hasFile) Icons.Default.FileDownload else Icons.Default.AttachFile,
+                                contentDescription = if (hasFile) "Open Document" else "Document",
                                 tint = if (isOutgoing) TealPrimary else GreenCall,
                                 modifier = Modifier.size(22.dp)
                             )

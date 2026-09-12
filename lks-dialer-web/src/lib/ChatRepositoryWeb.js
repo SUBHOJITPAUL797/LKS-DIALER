@@ -671,7 +671,7 @@ class ChatRepositoryWeb {
     let myPhone = this.currentListeningPhone;
     if (!myPhone) {
       try {
-        const stored = localStorage.getItem('lks_user');
+        const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
         if (stored) {
           const u = JSON.parse(stored);
           myPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
@@ -683,19 +683,27 @@ class ChatRepositoryWeb {
       this.currentListeningPhone = myPhone;
     }
     const normRecipient = normalizePhoneNumber(recipientNumber);
+    let canonicalRecipient = normRecipient;
+    try {
+      const peer = await this.resolvePeerUser(recipientNumber);
+      if (peer && peer.phoneNumber) {
+        canonicalRecipient = peer.phoneNumber;
+      }
+    } catch {}
+
     const receiptId = generateUuid();
 
     const receiptDto = {
       receiptId,
       messageId,
       senderNumber: myPhone,
-      recipientNumber: normRecipient,
+      recipientNumber: canonicalRecipient,
       status,
       timestamp: Date.now()
     };
 
     try {
-      await setDoc(doc(db, 'receipts', normRecipient, 'acks', receiptId), receiptDto);
+      await setDoc(doc(db, 'receipts', canonicalRecipient, 'acks', receiptId), receiptDto);
     } catch (e) {
       console.warn('Failed to send receipt:', e);
     }
@@ -705,7 +713,7 @@ class ChatRepositoryWeb {
   async sendMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {
     if (!this.currentListeningPhone) {
       try {
-        const stored = localStorage.getItem('lks_user');
+        const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
         if (stored) {
           const u = JSON.parse(stored);
           this.currentListeningPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
@@ -717,19 +725,21 @@ class ChatRepositoryWeb {
     }
 
     const normRecipient = normalizePhoneNumber(recipientNumber);
+    const peerUser = await this.resolvePeerUser(recipientNumber);
+    const canonicalRecipient = peerUser?.phoneNumber || normRecipient;
+    const recipientPublicKey = peerUser?.publicKey || await this.resolvePeerPublicKey(canonicalRecipient);
+
+    if (!recipientPublicKey) {
+      throw new Error('Recipient does not have E2EE key registered yet. They must log in to LKS Dialer first.');
+    }
+
     const messageId = generateUuid();
     const now = Date.now();
 
     // Replying or sending confirms user has read all prior incoming messages from this recipient
     try {
-      await this.markConversationAsRead(normRecipient);
+      await this.markConversationAsRead(canonicalRecipient);
     } catch {}
-
-    // 1. Resolve Recipient's NIST P-256 Public Key
-    const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);
-    if (!recipientPublicKey) {
-      throw new Error('Recipient does not have E2EE key registered yet. They must log in to LKS Dialer first.');
-    }
 
     // 2. Prepare Payload
     let payloadToEncrypt = text || '';
@@ -743,6 +753,11 @@ class ChatRepositoryWeb {
         duration: mediaDurationMs || 0,
         bytes: mediaData || ''
       });
+    } else if (mediaType === 'DOCUMENT') {
+      payloadToEncrypt = JSON.stringify({
+        fileName: text || 'document',
+        bytes: mediaData || ''
+      });
     }
 
     // 3. Encrypt via ChatCryptoWeb
@@ -754,7 +769,7 @@ class ChatRepositoryWeb {
       id: messageId,
       conversationId: normRecipient,
       senderNumber: this.currentListeningPhone,
-      recipientNumber: normRecipient,
+      recipientNumber: canonicalRecipient,
       text: text || '',
       mediaType,
       mediaData,
@@ -773,10 +788,11 @@ class ChatRepositoryWeb {
     const existingConv = conversations.find(c => numbersMatch(c.phoneNumber, normRecipient));
     const updatedConv = {
       phoneNumber: normRecipient,
-      contactName: recipientName || existingConv?.contactName || normRecipient,
-      profilePicUrl: existingConv?.profilePicUrl || '',
+      contactName: recipientName || peerUser?.displayName || existingConv?.contactName || normRecipient,
+      profilePicUrl: peerUser?.profilePictureUrl || existingConv?.profilePicUrl || '',
       lastMessageText: mediaType === 'IMAGE' ? '📷 Photo'
                      : mediaType === 'AUDIO' ? '🎤 Voice message'
+                     : mediaType === 'DOCUMENT' ? `📄 ${text || 'Document'}`
                      : text,
       lastMessageType: mediaType,
       lastMessageTimestamp: now,
@@ -794,7 +810,7 @@ class ChatRepositoryWeb {
     const chatDto = {
       messageId,
       senderNumber: this.currentListeningPhone,
-      recipientNumber: normRecipient,
+      recipientNumber: canonicalRecipient,
       senderPublicKey: myPublicKey,
       ciphertext,
       iv,
@@ -804,8 +820,8 @@ class ChatRepositoryWeb {
     };
 
     try {
-      await setDoc(doc(db, 'inboxes', normRecipient, 'messages', messageId), chatDto);
-      console.log(`[ChatRepositoryWeb] Message ${messageId} posted to ephemeral inbox for ${normRecipient}`);
+      await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', messageId), chatDto);
+      console.log(`[ChatRepositoryWeb] Message ${messageId} posted to ephemeral inbox for ${canonicalRecipient}`);
     } catch (uploadErr) {
       console.error('Failed to post message to ephemeral relay:', uploadErr);
       localMsg.status = 'FAILED';
@@ -815,7 +831,19 @@ class ChatRepositoryWeb {
     }
 
     // 6. Send FCM wakeup push notification via Cloudflare Worker
-    this.sendFcmWakeup(normRecipient, this.currentListeningPhone, text || (mediaType === 'IMAGE' ? 'Photo' : 'Voice message'));
+    const displayPreview = when => {
+      if (mediaType === 'IMAGE') return text || '📷 Photo';
+      if (mediaType === 'AUDIO') return '🎤 Voice message';
+      if (mediaType === 'DOCUMENT') return `📄 ${text || 'Document'}`;
+      return text || 'New message';
+    };
+    this.sendFcmWakeup(
+      canonicalRecipient,
+      this.currentListeningPhone,
+      displayPreview(),
+      mediaType,
+      messageId
+    );
 
     return localMsg;
   }
@@ -825,7 +853,7 @@ class ChatRepositoryWeb {
     let myPhone = this.currentListeningPhone;
     if (!myPhone) {
       try {
-        const stored = localStorage.getItem('lks_user');
+        const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
         if (stored) {
           const u = JSON.parse(stored);
           myPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
@@ -837,6 +865,9 @@ class ChatRepositoryWeb {
     }
 
     const normRecipient = normalizePhoneNumber(recipientNumber);
+    const peerUser = await this.resolvePeerUser(recipientNumber);
+    const canonicalRecipient = peerUser?.phoneNumber || normRecipient;
+
     let messages = this.getMessages(normRecipient);
     let targetMsg = messages.find(m => m.id === originalMessageId);
     let targetPhone = normRecipient;
@@ -891,7 +922,7 @@ class ChatRepositoryWeb {
       editedAt: now
     });
 
-    const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);
+    const recipientPublicKey = peerUser?.publicKey || await this.resolvePeerPublicKey(canonicalRecipient);
     if (!recipientPublicKey) {
       return; // local edit done
     }
@@ -903,7 +934,7 @@ class ChatRepositoryWeb {
     const editDto = {
       messageId: editPacketId,
       senderNumber: myPhone,
-      recipientNumber: normRecipient,
+      recipientNumber: canonicalRecipient,
       senderPublicKey: myPublicKey,
       ciphertext,
       iv,
@@ -913,19 +944,22 @@ class ChatRepositoryWeb {
     };
 
     try {
-      await setDoc(doc(db, 'inboxes', normRecipient, 'messages', editPacketId), editDto);
-      console.log(`[ChatRepositoryWeb] Edit packet ${editPacketId} uploaded for ${normRecipient}`);
+      await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', editPacketId), editDto);
+      console.log(`[ChatRepositoryWeb] Edit packet ${editPacketId} uploaded for ${canonicalRecipient}`);
     } catch (e) {
       console.warn('Failed to upload edit packet:', e);
     }
 
     // 3. Send FCM wakeup push
-    this.sendFcmWakeup(normRecipient, myPhone, newText);
+    this.sendFcmWakeup(canonicalRecipient, myPhone, newText, 'EDIT', editPacketId);
   }
 
   // --- PUBLIC API: DELETE MESSAGE FOR EVERYONE ---
   async deleteMessageForEveryone(originalMessageId, recipientNumber) {
     const normRecipient = normalizePhoneNumber(recipientNumber);
+    const peerUser = await this.resolvePeerUser(recipientNumber);
+    const canonicalRecipient = peerUser?.phoneNumber || normRecipient;
+
     const messages = this.getMessages(normRecipient);
     const targetMsg = messages.find(m => m.id === originalMessageId);
     if (!targetMsg) {
@@ -955,7 +989,7 @@ class ChatRepositoryWeb {
     if (!myPhone) return;
 
     try {
-      const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);
+      const recipientPublicKey = peerUser?.publicKey || await this.resolvePeerPublicKey(canonicalRecipient);
       if (!recipientPublicKey) return;
 
       const deletePayload = JSON.stringify({
@@ -971,7 +1005,7 @@ class ChatRepositoryWeb {
       const deleteDto = {
         messageId: deletePacketId,
         senderNumber: myPhone,
-        recipientNumber: normRecipient,
+        recipientNumber: canonicalRecipient,
         senderPublicKey: myPublicKey,
         ciphertext,
         iv,
@@ -980,43 +1014,122 @@ class ChatRepositoryWeb {
         isEncrypted: true
       };
 
-      await setDoc(doc(db, 'inboxes', normRecipient, 'messages', deletePacketId), deleteDto);
-      console.log(`[ChatRepositoryWeb] Delete packet ${deletePacketId} uploaded for ${normRecipient}`);
+      await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', deletePacketId), deleteDto);
+      console.log(`[ChatRepositoryWeb] Delete packet ${deletePacketId} uploaded for ${canonicalRecipient}`);
 
-      this.sendFcmWakeup(normRecipient, myPhone, '');
+      this.sendFcmWakeup(canonicalRecipient, myPhone, '', 'DELETE', deletePacketId);
     } catch (e) {
       console.warn('Failed to upload delete packet:', e);
     }
   }
 
-  // --- RESOLVE PEER PUBLIC KEY ---
-  async resolvePeerPublicKey(phoneNumber) {
+  // --- PUBLIC API: DELETE MESSAGE LOCALLY (Delete for me) ---
+  deleteMessageLocally(messageId, peerPhoneNumber) {
+    const norm = normalizePhoneNumber(peerPhoneNumber);
+    const messages = this.getMessages(norm);
+    const filtered = messages.filter(m => m.id !== messageId);
+    this.saveMessages(norm, filtered);
+
+    // Update conversation if needed
+    const conversations = this.getConversations();
+    const conv = conversations.find(c => numbersMatch(c.phoneNumber, norm));
+    if (conv) {
+      if (filtered.length > 0) {
+        const last = filtered[filtered.length - 1];
+        conv.lastMessageText = last.text;
+        conv.lastMessageType = last.mediaType;
+        conv.lastMessageTimestamp = last.timestamp;
+        conv.lastMessageStatus = last.status;
+        conv.lastMessageIsOutgoing = last.isOutgoing;
+      } else {
+        conv.lastMessageText = '';
+        conv.lastMessageType = 'TEXT';
+      }
+      this.saveConversations(conversations);
+    }
+    this.notifySubscribers();
+  }
+
+  // --- RESOLVE PEER USER & CANONICAL NUMBER ---
+  async resolvePeerUser(phoneNumber) {
+    if (!phoneNumber) return null;
     const norm = normalizePhoneNumber(phoneNumber);
+    const cleanDigits = String(phoneNumber).replace(/[^0-9]/g, '');
+    const variations = [norm, phoneNumber];
+    if (cleanDigits) {
+      variations.push(cleanDigits);
+      if (cleanDigits.length > 10) {
+        variations.push(cleanDigits.slice(-10));
+      }
+      if (!String(phoneNumber).startsWith('+')) {
+        variations.push('+' + cleanDigits);
+      }
+    }
+    const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
+
+    try {
+      const q = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const docSnap = snapshot.docs[0];
+        const d = docSnap.data();
+        return {
+          id: docSnap.id,
+          phoneNumber: d.phoneNumber || docSnap.id,
+          ...d
+        };
+      }
+    } catch (e) {
+      console.warn("resolvePeerUser variation query failed:", e);
+    }
+
     try {
       const userSnap = await getDoc(doc(db, 'users', norm));
       if (userSnap.exists()) {
-        const data = userSnap.data();
-        if (data.publicKey && typeof data.publicKey === 'string' && data.publicKey.trim().length > 0) {
-          return data.publicKey.trim();
-        }
+        const d = userSnap.data();
+        return {
+          id: userSnap.id,
+          phoneNumber: d.phoneNumber || userSnap.id,
+          ...d
+        };
       }
     } catch (e) {
-      console.warn(`Failed to resolve public key for ${norm}:`, e);
+      console.warn("Direct lookup failed:", e);
+    }
+    return null;
+  }
+
+  // --- RESOLVE PEER PUBLIC KEY ---
+  async resolvePeerPublicKey(phoneNumber) {
+    try {
+      const user = await this.resolvePeerUser(phoneNumber);
+      if (user && user.publicKey && typeof user.publicKey === 'string' && user.publicKey.trim().length > 0) {
+        return user.publicKey.trim();
+      }
+    } catch (e) {
+      console.warn(`Failed to resolve public key for ${phoneNumber}:`, e);
     }
     return null;
   }
 
   // --- CLOUDFLARE WORKER FCM WAKEUP ---
-  async sendFcmWakeup(recipientPhone, senderPhone, previewText) {
+  async sendFcmWakeup(recipientPhone, senderPhone, previewText, mediaType = 'TEXT', messageId = '') {
     const url = "https://lks-dialer-call-notifier.subhojit.workers.dev/call";
     try {
-      const userSnap = await getDoc(doc(db, 'users', recipientPhone));
-      if (!userSnap.exists()) return;
-      const callee = userSnap.data();
+      const callee = await this.resolvePeerUser(recipientPhone);
+      if (!callee) return;
 
-      // Retrieve sender name
-      const mySnap = await getDoc(doc(db, 'users', senderPhone));
-      const senderName = mySnap.exists() ? (mySnap.data().displayName || senderPhone) : senderPhone;
+      // Retrieve sender name and profile picture
+      let senderName = senderPhone;
+      let callerProfilePic = '';
+      try {
+        const mySnap = await getDoc(doc(db, 'users', senderPhone));
+        if (mySnap.exists()) {
+          const myData = mySnap.data();
+          senderName = myData.displayName || senderPhone;
+          callerProfilePic = myData.profilePictureUrl || '';
+        }
+      } catch {}
 
       await fetch(url, {
         method: "POST",
@@ -1029,11 +1142,15 @@ class ChatRepositoryWeb {
           webToken: callee.webToken || null,
           callerName: senderName,
           callerNumber: senderPhone,
+          callerProfilePic: callerProfilePic,
           type: "chat_message",
-          messagePreview: previewText
+          messageText: previewText,
+          messagePreview: previewText,
+          mediaType: mediaType,
+          messageId: messageId
         })
       });
-      console.log(`[ChatRepositoryWeb] FCM chat wakeup triggered for ${recipientPhone}`);
+      console.log(`[ChatRepositoryWeb] FCM chat wakeup triggered for ${callee.phoneNumber || recipientPhone}`);
     } catch (e) {
       console.warn('Failed to send FCM chat wakeup push:', e);
     }

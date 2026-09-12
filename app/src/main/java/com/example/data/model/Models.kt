@@ -8,6 +8,7 @@ data class UserDto(
     val profilePictureUrl: String = "",
     val statusMessage: String = "Available on LKS DIALER",
     val fcmToken: String = "",
+    val webToken: String = "",
     @get:PropertyName("isOnline") @set:PropertyName("isOnline")
     var isOnline: Boolean = true,
     val lastSeen: Long = 0L,

@@ -69,4 +69,26 @@ object ContactsHelper {
         }
         return false
     }
+
+    /**
+     * Generates common variations of a phone number (with +, without +, last 10 digits)
+     * for robust Firestore matching across different user inputs.
+     */
+    fun generateNumberVariations(number: String): List<String> {
+        val variations = mutableListOf<String>()
+        if (number.isNotBlank()) {
+            variations.add(number)
+            val cleanDigits = number.replace(Regex("[^0-9]"), "")
+            if (cleanDigits.isNotBlank()) {
+                variations.add(cleanDigits)
+                if (cleanDigits.length > 10) {
+                    variations.add(cleanDigits.takeLast(10))
+                }
+                if (!number.startsWith("+")) {
+                    variations.add("+$number")
+                }
+            }
+        }
+        return variations.distinct().take(10)
+    }
 }
