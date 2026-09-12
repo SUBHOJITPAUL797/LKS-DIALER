@@ -154,6 +154,9 @@ fun ChatConversationScreen(
     val playbackSpeed by voiceHelper.playbackSpeed.collectAsState()
     val playbackDurationMs by voiceHelper.playbackDurationMs.collectAsState()
 
+    // Active file transfer progress (P2P or relay): messageId → FileTransferProgress
+    val activeTransfers by chatRepository.activeTransfers.collectAsState()
+
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
     var photosToPreview by remember { mutableStateOf<List<File>?>(null) }
@@ -436,7 +439,9 @@ fun ChatConversationScreen(
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
                                 onImageClick = { path -> selectedImagePreviewPath = path },
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
-                                onMessageLongClick = { selectedMessageForOptions = it }
+                                onMessageLongClick = { selectedMessageForOptions = it },
+                                transferProgress = activeTransfers[msg.id],
+                                onCancelTransfer = { chatRepository.cancelTransfer(msg.id) }
                             )
                         }
                     }
@@ -1479,7 +1484,9 @@ private fun MessageBubble(
     onPlayAudio: (path: String) -> Unit,
     onImageClick: (path: String) -> Unit,
     onMarkMessageRead: (messageId: String) -> Unit,
-    onMessageLongClick: (message: MessageEntity) -> Unit = {}
+    onMessageLongClick: (message: MessageEntity) -> Unit = {},
+    transferProgress: com.example.data.p2p.FileTransferProgress? = null,
+    onCancelTransfer: () -> Unit = {}
 ) {
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
@@ -1799,6 +1806,15 @@ private fun MessageBubble(
                                     onCycleSpeed = onCycleSpeed
                                 )
                             }
+
+                            // ── P2P / Relay Transfer Progress ───────────────
+                            if (transferProgress != null) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                FileTransferProgressCard(
+                                    progress = transferProgress,
+                                    onCancel = onCancelTransfer
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(4.dp))
@@ -1927,4 +1943,102 @@ private fun escapeJson(s: String): String {
     }
     sb.append("\"")
     return sb.toString()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// FileTransferProgressCard — inline progress inside DOCUMENT bubble
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun FileTransferProgressCard(
+    progress: com.example.data.p2p.FileTransferProgress,
+    onCancel: () -> Unit
+) {
+    val isP2p = progress.mode == com.example.data.p2p.TransferMode.P2P
+    val badgeColor = if (isP2p) Color(0xFF00E5FF) else Color(0xFFFFB300)     // cyan for P2P, amber for Relay
+    val badgeLabel = if (isP2p) "⚡ P2P Direct" else "☁ Relay"
+    val statusText = when (progress.status) {
+        com.example.data.p2p.TransferStatus.CONNECTING    -> "Connecting…"
+        com.example.data.p2p.TransferStatus.TRANSFERRING  ->
+            "${String.format("%.1f", progress.transferredBytes / 1048576f)} / ${String.format("%.1f", progress.totalBytes / 1048576f)} MB"
+        com.example.data.p2p.TransferStatus.DONE          -> "✓ Done"
+        com.example.data.p2p.TransferStatus.FAILED        -> "✗ Failed"
+        com.example.data.p2p.TransferStatus.CANCELLED     -> "Cancelled"
+    }
+
+    val animatedProgress by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = progress.percent / 100f,
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 400),
+        label = "transfer_progress"
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            // Badge
+            Surface(
+                color = badgeColor.copy(alpha = 0.2f),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text(
+                    text = badgeLabel,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = badgeColor,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            // Show speed when transferring
+            if (progress.status == com.example.data.p2p.TransferStatus.TRANSFERRING && progress.speedBytesPerSec > 0) {
+                Text(
+                    text = "${String.format("%.1f", progress.speedBytesPerSec / 1048576f)} MB/s",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
+            // Cancel button
+            if (progress.status == com.example.data.p2p.TransferStatus.CONNECTING ||
+                progress.status == com.example.data.p2p.TransferStatus.TRANSFERRING) {
+                IconButton(
+                    onClick = onCancel,
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Cancel transfer",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        val isConnecting = progress.status == com.example.data.p2p.TransferStatus.CONNECTING
+        if (isConnecting) {
+            // Indeterminate spinner while connecting
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = badgeColor,
+                trackColor = badgeColor.copy(alpha = 0.2f)
+            )
+        } else {
+            LinearProgressIndicator(
+                progress = { animatedProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)),
+                color = badgeColor,
+                trackColor = badgeColor.copy(alpha = 0.2f)
+            )
+        }
+    }
 }

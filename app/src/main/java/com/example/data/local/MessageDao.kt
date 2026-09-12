@@ -24,6 +24,10 @@ interface MessageDao {
     @Query("UPDATE messages SET text = :tombstoneText, mediaPath = NULL, isEdited = 0 WHERE id = :messageId")
     suspend fun markMessageDeletedForEveryone(messageId: String, tombstoneText: String)
 
+    /** Updates mediaPath for a message after P2P file assembly completes. */
+    @Query("UPDATE messages SET mediaPath = :mediaPath WHERE id = :messageId")
+    suspend fun updateMessageMedia(messageId: String, mediaPath: String)
+
     @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != :newStatus")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
 

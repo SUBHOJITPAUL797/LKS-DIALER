@@ -5,6 +5,7 @@ import {
 import { chatCryptoWeb } from './ChatCryptoWeb';
 import { formatAvatarUrl } from './ImageUtils';
 import { mediaStorageWeb } from './MediaStorageWeb';
+import { P2pFileTransferWeb } from './P2pFileTransferWeb';
 
 /**
  * Normalizes a phone number (digits and plus only).
@@ -46,6 +47,11 @@ class ChatRepositoryWeb {
     this.unsubReceipts = null;
     this.unsubTyping = null;
     this.typingTimeouts = {};
+
+    // Active file transfer progress: { [messageId]: FileTransferProgress }
+    this.activeTransfers = new Map();
+    // Active P2pFileTransferWeb instances for cancel support
+    this._activeP2pInstances = new Map();
 
     try {
       this.reconcileConversations();
@@ -427,6 +433,92 @@ class ChatRepositoryWeb {
         return;
       }
 
+      // Handle P2P_OFFER (incoming WebRTC DataChannel file transfer)
+      if (dto.mediaType === 'P2P_OFFER') {
+        try {
+          const parsed = JSON.parse(decryptedRaw);
+          const { sessionId, messageId: parentMessageId, fileName, fileSize } = parsed;
+
+          console.log('[ChatRepositoryWeb] P2P_OFFER received, sessionId:', sessionId, 'file:', fileName);
+
+          // Insert a placeholder message immediately (shows "Receiving via P2P...")
+          const now = dto.timestamp || Date.now();
+          const placeholder = {
+            id: parentMessageId || sessionId,
+            conversationId: senderNorm,
+            senderNumber: dto.senderNumber,
+            recipientNumber: dto.recipientNumber,
+            text: fileName || 'file',
+            mediaType: 'DOCUMENT',
+            mediaData: null,
+            mediaUrl: null,
+            fileSize: fileSize || 0,
+            fileName: fileName || 'file',
+            mediaDurationMs: 0,
+            timestamp: now,
+            status: isCurrentPeer ? 'READ' : 'DELIVERED',
+            isOutgoing: false,
+            p2pReceiving: true
+          };
+          const msgs = this.getMessages(senderNorm);
+          if (!msgs.some(m => m.id === placeholder.id)) {
+            msgs.push(placeholder);
+            this.saveMessages(senderNorm, msgs);
+          }
+
+          // Emit initial progress
+          this.activeTransfers.set(placeholder.id, {
+            percent: 0, mbTransferred: '0', totalMb: ((fileSize || 0) / 1048576).toFixed(1),
+            speedMbps: '0', status: 'CONNECTING', mode: 'P2P', isIncoming: true,
+            messageId: placeholder.id, fileName: fileName || 'file'
+          });
+          this.notifySubscribers();
+
+          // Start DataChannel receiver
+          const p2p = new P2pFileTransferWeb();
+          this._activeP2pInstances.set(placeholder.id, p2p);
+
+          p2p.receiveFile(
+            sessionId,
+            (progress) => {
+              this.activeTransfers.set(placeholder.id, { ...progress, messageId: placeholder.id });
+              this.notifySubscribers();
+            },
+            (sid, fName, blob) => {
+              this._activeP2pInstances.delete(placeholder.id);
+              if (blob) {
+                // Save to IndexedDB and update message
+                mediaStorageWeb.saveMedia(placeholder.id, blob, fName, blob.type).then(() => {
+                  const blobUrl = URL.createObjectURL(blob);
+                  const allMsgs = this.getMessages(senderNorm);
+                  const idx = allMsgs.findIndex(m => m.id === placeholder.id);
+                  if (idx >= 0) {
+                    allMsgs[idx] = { ...allMsgs[idx], mediaData: `idb:${placeholder.id}`, mediaUrl: blobUrl, p2pReceiving: false };
+                    this.saveMessages(senderNorm, allMsgs);
+                  }
+                  // Clear progress after short delay
+                  setTimeout(() => {
+                    this.activeTransfers.delete(placeholder.id);
+                    this.notifySubscribers();
+                  }, 3000);
+                  this.notifySubscribers();
+                  console.log('[ChatRepositoryWeb] P2P file received:', fName);
+                });
+              } else {
+                this.activeTransfers.delete(placeholder.id);
+                this.notifySubscribers();
+                console.warn('[ChatRepositoryWeb] P2P receive failed for', placeholder.id);
+              }
+            }
+          );
+        } catch (p2pErr) {
+          console.warn('[ChatRepositoryWeb] Failed to handle P2P_OFFER:', p2pErr);
+        }
+        try { await deleteDoc(docRef); } catch {}
+        this.notifySubscribers();
+        return;
+      }
+
       let displayText = decryptedRaw;
       let mediaData = null;
       let durationMs = Number(dto.mediaDurationMs) || 0;
@@ -771,7 +863,7 @@ class ChatRepositoryWeb {
       await this.markConversationAsRead(canonicalRecipient);
     } catch {}
 
-    // 2. Large Document Chunking (> 400 KB)
+    // 2. Large Document: P2P-FIRST then Firestore Chunk Relay fallback (> 400 KB)
     if (mediaType === 'DOCUMENT' && mediaData && mediaData.length > 400 * 1024) {
       const ext = (text.split('.').pop() || '').toLowerCase();
       const mimeMap = {
@@ -784,7 +876,7 @@ class ChatRepositoryWeb {
       const blob = await mediaStorageWeb.saveMedia(messageId, mediaData, text, mimeType);
       const blobUrl = URL.createObjectURL(blob);
 
-      // Save local message as SENT
+      // Save local message as SENT immediately
       const localMsg = {
         id: messageId,
         conversationId: normRecipient,
@@ -825,7 +917,77 @@ class ChatRepositoryWeb {
       this.saveConversations([updatedConv, ...remainingConvs]);
       this.notifySubscribers();
 
-      // Chunk binary into 384 KB parts (matching Android's CHUNK protocol)
+      // ── ATTEMPT P2P (WebRTC DataChannel) ──────────────────────────────────────
+      const isOnline = await this.checkPeerOnline(canonicalRecipient);
+      if (isOnline) {
+        console.log(`[ChatRepositoryWeb] Peer ${canonicalRecipient} ONLINE — trying P2P ⚡`);
+        this.activeTransfers.set(messageId, {
+          percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
+          speedMbps: '0', status: 'CONNECTING', mode: 'P2P', isIncoming: false,
+          messageId, fileName: text || 'Document'
+        });
+        this.notifySubscribers();
+
+        // Create File object from Blob for P2pFileTransferWeb
+        const fileForP2p = new File([blob], text || 'document', { type: mimeType });
+
+        // Send encrypted P2P_OFFER signal to recipient's inbox
+        try {
+          const offerPayload = JSON.stringify({ sessionId: messageId, messageId, fileName: text || 'document', fileSize: blob.size });
+          const { ciphertext: offerCt, iv: offerIv } = await chatCryptoWeb.encrypt(offerPayload, recipientPublicKey);
+          const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+          await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_p2p_offer`), {
+            messageId: `${messageId}_p2p_offer`,
+            senderNumber: this.currentListeningPhone,
+            recipientNumber: canonicalRecipient,
+            senderPublicKey: myPublicKey,
+            ciphertext: offerCt, iv: offerIv,
+            mediaType: 'P2P_OFFER',
+            timestamp: now
+          });
+          console.log(`[ChatRepositoryWeb] P2P_OFFER sent for sessionId=${messageId}`);
+        } catch (e) {
+          console.warn('[ChatRepositoryWeb] Failed to send P2P_OFFER signal:', e);
+        }
+
+        const p2p = new P2pFileTransferWeb();
+        this._activeP2pInstances.set(messageId, p2p);
+        const p2pSuccess = await p2p.sendFile(
+          messageId,
+          this.currentListeningPhone,
+          canonicalRecipient,
+          fileForP2p,
+          (progress) => {
+            this.activeTransfers.set(messageId, { ...progress, messageId });
+            this.notifySubscribers();
+          }
+        );
+        this._activeP2pInstances.delete(messageId);
+
+        if (p2pSuccess) {
+          console.log(`[ChatRepositoryWeb] P2P transfer SUCCEEDED ⚡ ${messageId}`);
+          setTimeout(() => { this.activeTransfers.delete(messageId); this.notifySubscribers(); }, 3000);
+          this.sendFcmWakeup(canonicalRecipient, this.currentListeningPhone, `📄 ${text || 'Document'}`, 'DOCUMENT', messageId);
+          return localMsg;
+        }
+        console.warn('[ChatRepositoryWeb] P2P failed — falling back to relay ☁');
+        this.activeTransfers.set(messageId, {
+          percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
+          speedMbps: '0', status: 'CONNECTING', mode: 'RELAY', isIncoming: false,
+          messageId, fileName: text || 'Document'
+        });
+        this.notifySubscribers();
+      } else {
+        console.log(`[ChatRepositoryWeb] Peer OFFLINE — using relay ☁`);
+        this.activeTransfers.set(messageId, {
+          percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
+          speedMbps: '0', status: 'CONNECTING', mode: 'RELAY', isIncoming: false,
+          messageId, fileName: text || 'Document'
+        });
+        this.notifySubscribers();
+      }
+
+      // ── FALLBACK: Firestore 384 KB Chunk Relay ────────────────────────────────
       const chunkSize = 384 * 1024;
       const cleanBase64 = mediaData.replace(/^data:.*?;base64,/, '').replace(/\s/g, '');
       const binary = atob(cleanBase64);
@@ -1488,6 +1650,33 @@ class ChatRepositoryWeb {
     } catch (e) {
       console.warn('[ChatRepositoryWeb] Fallback window notification failed:', e);
     }
+  }
+
+  /** Checks if a peer user is online (isOnline=true or lastSeen within 60s). */
+  async checkPeerOnline(canonicalPhone) {
+    try {
+      const userSnap = await getDoc(doc(db, 'users', canonicalPhone));
+      if (!userSnap.exists()) return false;
+      const data = userSnap.data();
+      const isOnline = data.isOnline === true;
+      const lastSeen = data.lastSeen || 0;
+      return isOnline || (Date.now() - lastSeen) < 60_000;
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] checkPeerOnline error:', e);
+      return false;
+    }
+  }
+
+  /** Cancel an active P2P or relay file transfer. */
+  cancelTransfer(messageId) {
+    const p2p = this._activeP2pInstances.get(messageId);
+    if (p2p) {
+      p2p.cancel(messageId);
+      this._activeP2pInstances.delete(messageId);
+    }
+    this.activeTransfers.delete(messageId);
+    this.notifySubscribers();
+    console.log('[ChatRepositoryWeb] Transfer cancelled:', messageId);
   }
 }
 

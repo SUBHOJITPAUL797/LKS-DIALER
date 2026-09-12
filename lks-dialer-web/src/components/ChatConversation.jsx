@@ -661,6 +661,9 @@ export default function ChatConversation({
   const playingAudioId = audioPlaybackState.isPlaying ? audioPlaybackState.msgId : null;
   const audioElementRef = useRef(null);
 
+  // Active file transfer progress: Map<messageId, progress>
+  const [activeTransfers, setActiveTransfers] = useState(new Map());
+
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -702,6 +705,10 @@ export default function ChatConversation({
       const msgs = chatRepositoryWeb.getMessages(normPeer);
       setMessages(msgs);
       setIsTypingPeer(Boolean(chatRepositoryWeb.typingStatus[normPeer]));
+      // Snapshot active transfer progress for this conversation's messages
+      if (chatRepositoryWeb.activeTransfers) {
+        setActiveTransfers(new Map(chatRepositoryWeb.activeTransfers));
+      }
     };
 
     updateMessages();
@@ -1554,6 +1561,48 @@ export default function ChatConversation({
                             </div>
                           )
                         )}
+
+                        {/* P2P / Relay Transfer Progress Card */}
+                        {msg.mediaType === 'DOCUMENT' && activeTransfers.has(msg.id) && (() => {
+                          const tp = activeTransfers.get(msg.id);
+                          const isP2p = tp.mode === 'P2P';
+                          const badgeColor = isP2p ? '#00E5FF' : '#FFB300';
+                          const badgeLabel = isP2p ? '⚡ P2P Direct' : '☁ Relay';
+                          const pct = tp.percent || 0;
+                          return (
+                            <div style={{ marginTop: 6, padding: '8px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: 8, border: '1.5px solid rgba(0,0,0,0.1)' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                <span style={{ background: badgeColor + '33', color: badgeColor, border: `1.5px solid ${badgeColor}`, borderRadius: 4, padding: '1px 7px', fontSize: 10, fontWeight: 900 }}>
+                                  {badgeLabel}
+                                </span>
+                                <span style={{ flex: 1, fontSize: 10, fontWeight: 700, color: '#555' }}>
+                                  {tp.status === 'CONNECTING' ? 'Connecting…'
+                                    : tp.status === 'TRANSFERRING' ? `${tp.mbTransferred || '0'} / ${tp.totalMb || '0'} MB`
+                                    : tp.status === 'DONE' ? '✓ Done'
+                                    : tp.status === 'FAILED' ? '✗ Failed'
+                                    : tp.status}
+                                </span>
+                                {tp.speedMbps && tp.speedMbps !== '0' && tp.status === 'TRANSFERRING' && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: '#777' }}>{tp.speedMbps} MB/s</span>
+                                )}
+                                {(tp.status === 'CONNECTING' || tp.status === 'TRANSFERRING') && (
+                                  <button
+                                    onClick={() => chatRepositoryWeb.cancelTransfer(msg.id)}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', color: '#f44336', fontWeight: 900, fontSize: 12 }}
+                                    title="Cancel transfer"
+                                  >✕</button>
+                                )}
+                              </div>
+                              <div style={{ background: badgeColor + '33', borderRadius: 4, height: 4, overflow: 'hidden' }}>
+                                {tp.status === 'CONNECTING' ? (
+                                  <div style={{ height: '100%', background: badgeColor, width: '40%', animation: 'p2pSlide 1.2s ease-in-out infinite alternate', borderRadius: 4 }} />
+                                ) : (
+                                  <div style={{ height: '100%', background: badgeColor, width: `${pct}%`, borderRadius: 4, transition: 'width 0.35s ease' }} />
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         {/* Text */}
                         {text && msg.mediaType !== 'DOCUMENT' ? (

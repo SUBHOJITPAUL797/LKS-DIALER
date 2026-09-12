@@ -293,3 +293,9 @@ body {
     transform: scale(1.22);
   }
 }
+
+/* P2P connecting bar slide animation */
+@keyframes p2pSlide {
+  0%   { margin-left: 0%;   width: 40%; }
+  100% { margin-left: 60%;  width: 40%; }
+}
