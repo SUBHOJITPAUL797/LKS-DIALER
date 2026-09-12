@@ -35,20 +35,25 @@ class ChatReplyReceiver : BroadcastReceiver() {
 
         if (replyText.isNullOrBlank()) return
 
+        val peerNorm = com.example.util.ContactsHelper.normalizePhoneNumber(peerNumber)
         val chatRepo = ChatRepository.getInstance(context)
+
+        // goAsync() ensures Android does NOT kill or freeze this process before
+        // the background network/database operations complete!
+        val pendingResult = goAsync()
 
         // Send the reply message in the background — no Activity launch needed
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                // Replying to a message confirms user has read all prior incoming messages
+                chatRepo.markConversationAsRead(peerNorm)
+
                 chatRepo.sendMessage(
-                    recipientNumber = peerNumber,
+                    recipientNumber = peerNorm,
                     recipientName   = peerName,
                     text            = replyText,
                     mediaType       = ChatMediaType.TEXT
                 )
-
-                // Replying to a message confirms user has read all prior incoming messages
-                chatRepo.markConversationAsRead(peerNumber)
 
                 // Update the notification to show the sent reply (prevents it from disappearing
                 // mid-conversation). Simply cancel it — the outgoing message flow will update UI.
@@ -58,6 +63,8 @@ class ChatReplyReceiver : BroadcastReceiver() {
                 }
             } catch (e: Exception) {
                 android.util.Log.e("ChatReplyReceiver", "Failed to send inline reply: ${e.message}", e)
+            } finally {
+                pendingResult.finish()
             }
         }
     }

@@ -581,10 +581,12 @@ class MainActivity : ComponentActivity() {
                         val remoteInputResults = androidx.core.app.RemoteInput.getResultsFromIntent(incoming)
                         val replyText = remoteInputResults?.getCharSequence(ChatRepository.KEY_TEXT_REPLY)?.toString()
                         if (!replyText.isNullOrBlank() && !chatPeer.isNullOrBlank()) {
+                            val normPeer = com.example.util.ContactsHelper.normalizePhoneNumber(chatPeer)
                             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                chatRepo.markConversationAsRead(normPeer)
                                 chatRepo.sendMessage(
-                                    recipientNumber = chatPeer,
-                                    recipientName = chatPeerName.ifBlank { chatPeer },
+                                    recipientNumber = normPeer,
+                                    recipientName = chatPeerName.ifBlank { normPeer },
                                     text = replyText,
                                     mediaType = com.example.data.local.ChatMediaType.TEXT
                                 )

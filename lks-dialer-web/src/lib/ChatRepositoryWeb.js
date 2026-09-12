@@ -668,14 +668,27 @@ class ChatRepositoryWeb {
 
   // --- SEND EPHEMERAL RECEIPT ---
   async sendReceipt(recipientNumber, messageId, status) {
-    if (!this.currentListeningPhone || !recipientNumber) return;
+    let myPhone = this.currentListeningPhone;
+    if (!myPhone) {
+      try {
+        const stored = localStorage.getItem('lks_user');
+        if (stored) {
+          const u = JSON.parse(stored);
+          myPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
+        }
+      } catch {}
+    }
+    if (!myPhone || !recipientNumber) return;
+    if (!this.currentListeningPhone) {
+      this.currentListeningPhone = myPhone;
+    }
     const normRecipient = normalizePhoneNumber(recipientNumber);
     const receiptId = generateUuid();
 
     const receiptDto = {
       receiptId,
       messageId,
-      senderNumber: this.currentListeningPhone,
+      senderNumber: myPhone,
       recipientNumber: normRecipient,
       status,
       timestamp: Date.now()
@@ -691,12 +704,26 @@ class ChatRepositoryWeb {
   // --- PUBLIC API: SEND MESSAGE ---
   async sendMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {
     if (!this.currentListeningPhone) {
+      try {
+        const stored = localStorage.getItem('lks_user');
+        if (stored) {
+          const u = JSON.parse(stored);
+          this.currentListeningPhone = u.phoneNumber ? normalizePhoneNumber(u.phoneNumber) : null;
+        }
+      } catch {}
+    }
+    if (!this.currentListeningPhone) {
       throw new Error('Current user is not logged in');
     }
 
     const normRecipient = normalizePhoneNumber(recipientNumber);
     const messageId = generateUuid();
     const now = Date.now();
+
+    // Replying or sending confirms user has read all prior incoming messages from this recipient
+    try {
+      await this.markConversationAsRead(normRecipient);
+    } catch {}
 
     // 1. Resolve Recipient's NIST P-256 Public Key
     const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);

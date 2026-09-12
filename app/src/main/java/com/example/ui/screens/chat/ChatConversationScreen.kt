@@ -161,12 +161,18 @@ fun ChatConversationScreen(
         }
     }
 
-    // Scroll to bottom when new messages arrive and auto-read text messages if viewing in foreground
+    // Scroll to bottom when new messages arrive
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
-            val hasUnreadText = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name && it.mediaType == ChatMediaType.TEXT.name }
-            if (hasUnreadText) {
+        }
+    }
+
+    // Auto-mark conversation as read on screen open and whenever incoming messages exist
+    LaunchedEffect(normPeer, messages) {
+        if (messages.isNotEmpty()) {
+            val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
+            if (hasUnread) {
                 chatRepository.markConversationAsRead(normPeer)
             }
         }
@@ -753,6 +759,7 @@ fun ChatConversationScreen(
                                             } else {
                                                 textToSend
                                             }
+                                            chatRepository.markConversationAsRead(normPeer)
                                             chatRepository.sendMessage(
                                                 recipientNumber = normPeer,
                                                 recipientName = peerDisplayName,

@@ -24,8 +24,14 @@ interface MessageDao {
     @Query("UPDATE messages SET text = :tombstoneText, mediaPath = NULL, isEdited = 0 WHERE id = :messageId")
     suspend fun markMessageDeletedForEveryone(messageId: String, tombstoneText: String)
 
+    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != :newStatus")
+    suspend fun updateOutgoingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
+
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, newStatus: String)
+
+    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 0 AND status != :newStatus")
+    suspend fun updateIncomingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
 
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 0 AND status != :newStatus")
     suspend fun updateIncomingMessagesStatus(conversationId: String, newStatus: String)
@@ -41,6 +47,9 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
     suspend fun clearMessagesForConversation(conversationId: String)
+
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits) ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLastMessageForConversation(conversationId: String, last10Digits: String): MessageEntity?
 
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp DESC LIMIT 1")
     suspend fun getLastMessageForConversation(conversationId: String): MessageEntity?

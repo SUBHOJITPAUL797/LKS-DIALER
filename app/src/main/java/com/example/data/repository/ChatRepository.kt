@@ -109,7 +109,13 @@ class ChatRepository private constructor(private val context: Context) {
 
     fun setAppForeground(foreground: Boolean) {
         isAppInForeground = foreground
-        if (!foreground) {
+        if (foreground) {
+            _activeChatPeerNumber.value?.let { activePeer ->
+                repositoryScope.launch {
+                    markConversationAsRead(activePeer)
+                }
+            }
+        } else {
             // When app leaves foreground, clear active chat peer so background incoming messages
             // NEVER get auto-marked as READ or send fake blue ticks!
             _activeChatPeerNumber.value = null
@@ -136,7 +142,7 @@ class ChatRepository private constructor(private val context: Context) {
     fun setActiveChatPeer(phoneNumber: String?) {
         val normalized = phoneNumber?.let { ContactsHelper.normalizePhoneNumber(it) }
         _activeChatPeerNumber.value = normalized
-        if (normalized != null && isAppInForeground) {
+        if (normalized != null) {
             repositoryScope.launch {
                 markConversationAsRead(normalized)
             }
@@ -279,7 +285,17 @@ class ChatRepository private constructor(private val context: Context) {
             // STEP 1: Decrypt message payload
             val decryptedRaw = cryptoManager.decrypt(dto.ciphertext, dto.iv, dto.senderPublicKey)
             val senderNorm = ContactsHelper.normalizePhoneNumber(dto.senderNumber)
-            val isCurrentPeer = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
+            val senderLast10 = senderNorm.filter { it.isDigit() }.takeLast(10)
+            val isCurrentPeer = isAppInForeground && _activeChatPeerNumber.value?.let {
+                ContactsHelper.numbersMatch(it, senderNorm)
+            } == true
+
+            // When peer sends a message to us, all our prior outgoing messages to them MUST have been read by them!
+            messageDao.updateOutgoingMessagesStatus(senderNorm, senderLast10, MessageStatus.READ.name)
+            val lastOutgoing = messageDao.getLastMessageForConversation(senderNorm, senderLast10)
+            if (lastOutgoing != null && lastOutgoing.isOutgoing) {
+                conversationDao.updateLastMessageStatus(senderNorm, senderLast10, MessageStatus.READ.name)
+            }
 
             // Handle incoming Message Edit packets
             if (dto.mediaType == ChatMediaType.EDIT.name) {
@@ -508,7 +524,7 @@ class ChatRepository private constructor(private val context: Context) {
                 mediaPath = localMediaPath,
                 mediaDurationMs = durationMs,
                 timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                status = if (isCurrentPeer && dto.mediaType == ChatMediaType.TEXT.name) MessageStatus.READ.name else initialStatus,
+                status = if (isCurrentPeer) MessageStatus.READ.name else initialStatus,
                 isOutgoing = false
             )
             messageDao.insertMessage(messageEntity)
@@ -565,14 +581,12 @@ class ChatRepository private constructor(private val context: Context) {
 
             if (isCurrentPeer) {
                 // If user is actively watching this conversation right now in the foreground,
-                // auto-mark text message as READ and send the READ receipt to the peer.
-                if (dto.mediaType == ChatMediaType.TEXT.name) {
-                    sendReceipt(
-                        recipientNumber = dto.senderNumber,
-                        messageId = dto.messageId,
-                        status = MessageStatus.READ.name
-                    )
-                }
+                // auto-mark message as READ and send the READ receipt to the peer for all media types!
+                sendReceipt(
+                    recipientNumber = dto.senderNumber,
+                    messageId = dto.messageId,
+                    status = MessageStatus.READ.name
+                )
             } else {
                 // STEP 5: Always show notification if conversation is NOT open in foreground
                 showIncomingMessageNotification(
@@ -611,28 +625,43 @@ class ChatRepository private constructor(private val context: Context) {
         }
 
         try {
-            val peerNorm = ContactsHelper.normalizePhoneNumber(
-                if (receipt.senderNumber.isNotBlank() && receipt.senderNumber != currentListeningPhone) {
-                    receipt.senderNumber
-                } else {
-                    receipt.recipientNumber
-                }
-            )
+            val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+            val myPhone = currentListeningPhone
+                ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+                ?: prefs.getString("user_phone", null)
+                ?: ""
+
+            val isSenderMe = ContactsHelper.numbersMatch(receipt.senderNumber, myPhone)
+            val peerRaw = if (!isSenderMe && receipt.senderNumber.isNotBlank()) {
+                receipt.senderNumber
+            } else {
+                receipt.recipientNumber
+            }
+            val peerNorm = ContactsHelper.normalizePhoneNumber(peerRaw)
+            val last10 = peerNorm.filter { it.isDigit() }.takeLast(10)
 
             if (receipt.messageId != "all") {
                 messageDao.updateMessageStatus(receipt.messageId, receipt.status)
+                val specificMsg = messageDao.getMessageById(receipt.messageId)
+                if (specificMsg != null && receipt.status == MessageStatus.READ.name) {
+                    val cId = specificMsg.conversationId
+                    val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
+                    messageDao.updateOutgoingMessagesStatus(cId, cLast10, MessageStatus.READ.name)
+                    conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
+                }
             }
 
             // If READ receipt, also update all earlier outgoing messages with this peer to READ
             if (receipt.status == MessageStatus.READ.name) {
-                messageDao.updateOutgoingMessagesStatus(peerNorm, MessageStatus.READ.name)
+                messageDao.updateOutgoingMessagesStatus(peerNorm, last10, MessageStatus.READ.name)
+                conversationDao.updateLastMessageStatus(peerNorm, last10, MessageStatus.READ.name)
             }
 
             // Sync the conversation entity's lastMessageStatus so the Chat tab list
             // reflects the updated ticks (Delivered or Read double blue ticks)
-            val lastMsg = messageDao.getLastMessageForConversation(peerNorm)
+            val lastMsg = messageDao.getLastMessageForConversation(peerNorm, last10)
             if (lastMsg != null && lastMsg.isOutgoing) {
-                conversationDao.updateLastMessageStatus(peerNorm, lastMsg.status)
+                conversationDao.updateLastMessageStatus(peerNorm, last10, lastMsg.status)
             }
 
             // Delete receipt from Firestore immediately
@@ -648,7 +677,16 @@ class ChatRepository private constructor(private val context: Context) {
      */
     private fun sendReceipt(recipientNumber: String, messageId: String, status: String) {
         val normalized = ContactsHelper.normalizePhoneNumber(recipientNumber)
-        val myPhone = currentListeningPhone ?: return
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return
+
+        if (currentListeningPhone == null) {
+            currentListeningPhone = ContactsHelper.normalizePhoneNumber(myPhone)
+        }
+
         val receiptId = UUID.randomUUID().toString()
 
         val receiptDto = ChatReceiptDto(
@@ -665,6 +703,9 @@ class ChatRepository private constructor(private val context: Context) {
             .collection("acks")
             .document(receiptId)
             .set(receiptDto)
+            .addOnSuccessListener {
+                Log.d(TAG, "Receipt sent successfully to $normalized: msgId=$messageId, status=$status")
+            }
             .addOnFailureListener { e ->
                 Log.w(TAG, "Failed to send receipt to $normalized: ${e.message}")
             }
@@ -690,6 +731,11 @@ class ChatRepository private constructor(private val context: Context) {
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
         val messageId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
+
+        // Replying or sending to a recipient confirms user has read all prior incoming messages from them
+        try {
+            markConversationAsRead(normRecipient)
+        } catch (_: Exception) {}
 
         // 1. Resolve Recipient's Public Key
         val recipientPublicKey = resolvePeerPublicKey(normRecipient)
@@ -1197,8 +1243,9 @@ class ChatRepository private constructor(private val context: Context) {
      */
     suspend fun markConversationAsRead(peerPhoneNumber: String) {
         val norm = ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
-        messageDao.updateIncomingMessagesStatus(norm, MessageStatus.READ.name)
-        conversationDao.resetUnreadCount(norm)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        messageDao.updateIncomingMessagesStatus(norm, last10, MessageStatus.READ.name)
+        conversationDao.resetUnreadCount(norm, last10)
         sendReceipt(recipientNumber = norm, messageId = "all", status = MessageStatus.READ.name)
     }
 
@@ -1479,7 +1526,28 @@ class ChatRepository private constructor(private val context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Direct fetch failed on push message: ${e.message}")
+            Log.w(TAG, "Direct fetch messages failed on push message: ${e.message}")
+        }
+
+        // Step 3: Direct-fetch ephemeral receipts (DELIVERED / READ) while FCM holds the process alive
+        try {
+            val receiptsSnapshot = firestore.collection("receipts")
+                .document(myPhone)
+                .collection("acks")
+                .get()
+                .await()
+
+            if (!receiptsSnapshot.isEmpty) {
+                Log.d(TAG, "📥 Direct fetch found ${receiptsSnapshot.size()} pending receipts for $myPhone")
+                for (doc in receiptsSnapshot.documents) {
+                    val rDto = doc.toObject(ChatReceiptDto::class.java)
+                    if (rDto != null) {
+                        processIncomingReceipt(rDto, doc.reference)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct fetch receipts failed on push message: ${e.message}")
         }
     }
 }

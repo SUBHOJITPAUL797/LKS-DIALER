@@ -18,6 +18,9 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE phoneNumber = :phoneNumber LIMIT 1")
     suspend fun getConversation(phoneNumber: String): ConversationEntity?
 
+    @Query("UPDATE conversations SET unreadCount = 0 WHERE phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits)")
+    suspend fun resetUnreadCount(phoneNumber: String, last10Digits: String)
+
     @Query("UPDATE conversations SET unreadCount = 0 WHERE phoneNumber = :phoneNumber")
     suspend fun resetUnreadCount(phoneNumber: String)
 
@@ -29,6 +32,9 @@ interface ConversationDao {
 
     @Query("DELETE FROM conversations WHERE phoneNumber = :phoneNumber")
     suspend fun deleteConversation(phoneNumber: String)
+
+    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits)")
+    suspend fun updateLastMessageStatus(phoneNumber: String, last10Digits: String, status: String)
 
     @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber")
     suspend fun updateLastMessageStatus(phoneNumber: String, status: String)
