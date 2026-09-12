@@ -55,6 +55,7 @@ fun OutgoingCallScreen(
     callType: CallType,
     statusText: String,
     webRtcEngine: WebRtcEngine? = null,
+    onMinimize: (() -> Unit)? = null,
     onEndCall: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition()
@@ -109,6 +110,26 @@ fun OutgoingCallScreen(
             )
             // Dim overlay so text stays readable
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+        }
+
+        if (onMinimize != null) {
+            IconButton(
+                onClick = onMinimize,
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(top = 16.dp, start = 16.dp)
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .align(Alignment.TopStart)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Minimize Call",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
         }
 
         Column(
@@ -379,6 +400,7 @@ fun ActiveAudioCallScreen(
     displayName: String,
     displayNumber: String,
     webRtcEngine: WebRtcEngine,
+    onMinimize: (() -> Unit)? = null,
     onEndCall: () -> Unit
 ) {
     // BUG-16 FIX: Never use early 'return' in a Composable - it violates Compose state contract.
@@ -456,6 +478,26 @@ fun ActiveAudioCallScreen(
             )
             // Dim overlay so text stays readable
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+        }
+
+        if (onMinimize != null) {
+            IconButton(
+                onClick = onMinimize,
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(top = 16.dp, start = 16.dp)
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .align(Alignment.TopStart)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Minimize Call",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
         }
 
         Column(
@@ -687,6 +729,7 @@ fun ActiveVideoCallScreen(
     displayName: String,
     displayNumber: String,
     webRtcEngine: WebRtcEngine,
+    onMinimize: (() -> Unit)? = null,
     onEndCall: () -> Unit
 ) {
     val activeCall = state.activeCall
@@ -1026,6 +1069,25 @@ fun ActiveVideoCallScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
+                    // Minimize to in-app ongoing call bar button
+                    if (onMinimize != null) {
+                        IconButton(
+                            onClick = onMinimize,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.45f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize Call",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+
                     // Minimize to Floating Window (PiP) button
                     IconButton(
                         onClick = {

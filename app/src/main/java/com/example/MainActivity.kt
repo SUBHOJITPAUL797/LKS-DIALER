@@ -44,6 +44,7 @@ import com.example.util.GitHubUpdater
 import com.example.util.UpdateInfo
 import com.example.util.LksIncomingRingtonePlayer
 import com.example.ui.components.UpdateDialog
+import com.example.ui.components.OngoingCallTopBar
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 
@@ -504,6 +505,16 @@ class MainActivity : ComponentActivity() {
                 var chatPeerNumber by remember { mutableStateOf("") }
                 var chatPeerName by remember { mutableStateOf("") }
                 var chatPeerAvatar by remember { mutableStateOf("") }
+                var isCallMinimized by remember { mutableStateOf(false) }
+
+                LaunchedEffect(rtcState.callStatus) {
+                    if (rtcState.callStatus == CallStatus.IDLE ||
+                        rtcState.callStatus == CallStatus.ENDED ||
+                        rtcState.callStatus == CallStatus.DECLINED ||
+                        rtcState.callStatus == CallStatus.MISSED) {
+                        isCallMinimized = false
+                    }
+                }
 
                 val chatRepo = remember { ChatRepository.getInstance(context) }
                 val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
@@ -642,254 +653,268 @@ class MainActivity : ComponentActivity() {
 
                 // Check active call overlay
                 val activeCall = rtcState.activeCall
+                val isCallActive = activeCall != null && (rtcState.callStatus == CallStatus.ANSWERED || rtcState.callStatus == CallStatus.CALLING)
+                val isCallRinging = activeCall != null && rtcState.callStatus == CallStatus.RINGING
+
+                val isIncoming = (activeCall?.callerNumber != currentUser?.phoneNumber) ||
+                        (currentUser?.phoneNumber != null && com.example.util.ContactsHelper.numbersMatch(activeCall?.calleeNumber ?: "", currentUser?.phoneNumber ?: ""))
+                val otherPartyNumber = if (isIncoming) (activeCall?.callerNumber ?: "") else (activeCall?.calleeNumber ?: "")
+                val otherPartyUser = remember(otherPartyNumber) {
+                    if (otherPartyNumber.isNotBlank()) firebaseManager.lookupUserByNumber(otherPartyNumber) else null
+                }
+                val otherPartyName = if (isIncoming) (activeCall?.callerName ?: "") else (activeCall?.calleeName ?: "")
+                val otherPartyDisplayName = otherPartyUser?.displayName?.takeIf { it.isNotBlank() } ?: otherPartyName.takeIf { it.isNotBlank() } ?: otherPartyNumber
+                val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
+                val direction = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
 
                 Box(modifier = Modifier.fillMaxSize()) {
-                    when (navState) {
-                        AppNavState.WELCOME -> {
-                            WelcomeScreen(
-                                onGetStartedClick = { navState = AppNavState.PHONE_INPUT }
-                            )
-                        }
-                        AppNavState.PHONE_INPUT -> {
-                            PhoneInputScreen(
-                                firebaseManager = firebaseManager,
-                                onLoginSuccess = { user ->
-                                    navState = AppNavState.MAIN
-                                },
-                                onNewUser = { phone, deviceId ->
-                                    newPhoneNumber = phone
-                                    newDeviceId = deviceId
-                                    navState = AppNavState.PROFILE_SETUP
-                                },
-                                onBackClick = { navState = AppNavState.WELCOME }
-                            )
-                        }
-                        AppNavState.PROFILE_SETUP -> {
-                            ProfileSetupScreen(
-                                phoneNumber = newPhoneNumber,
-                                deviceId = newDeviceId,
-                                onProfileComplete = { name, status ->
-                                    firebaseManager.loginWithPhone(newPhoneNumber, name, newDeviceId, status)
-                                    navState = AppNavState.MAIN
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // WhatsApp-style persistent in-app ongoing call banner when call is minimized
+                        if (isCallActive && isCallMinimized && activeCall != null) {
+                            OngoingCallTopBar(
+                                activeCall = activeCall,
+                                rtcState = rtcState,
+                                webRtcEngine = webRtcEngine,
+                                displayName = otherPartyDisplayName,
+                                displayNumber = otherPartyNumber,
+                                onExpand = { isCallMinimized = false },
+                                onEndCall = {
+                                    firebaseManager.logCall(
+                                        direction = direction,
+                                        otherPartyNumber = otherPartyNumber,
+                                        otherPartyName = otherPartyDisplayName,
+                                        callType = activeCall.callType,
+                                        status = CallStatus.ENDED,
+                                        durationSeconds = rtcState.callDurationSeconds,
+                                        callId = activeCall.callId
+                                    )
+                                    webRtcEngine.endCall()
                                 }
                             )
                         }
-                        AppNavState.SETTINGS -> {
-                            SettingsScreen(
-                                firebaseManager = firebaseManager,
-                                onBackClick = { navState = AppNavState.MAIN }
-                            )
-                        }
-                        AppNavState.MAIN -> {
-                            Scaffold(
-                                modifier = Modifier.fillMaxSize(),
-                                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                                bottomBar = {
-                                    NavigationBar(
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        tonalElevation = 6.dp
-                                    ) {
-                                        MainTab.entries.forEach { tab ->
-                                            val isSelected = selectedTab == tab
-                                            NavigationBarItem(
-                                                selected = isSelected,
-                                                onClick = { selectedTab = tab },
-                                                icon = {
-                                                    if (tab == MainTab.CHATS && totalUnreadChats > 0) {
-                                                        BadgedBox(
-                                                            badge = {
-                                                                Badge(
-                                                                    containerColor = com.example.ui.theme.GreenCall,
-                                                                    contentColor = Color.White
+
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            when (navState) {
+                                AppNavState.WELCOME -> {
+                                    WelcomeScreen(
+                                        onGetStartedClick = { navState = AppNavState.PHONE_INPUT }
+                                    )
+                                }
+                                AppNavState.PHONE_INPUT -> {
+                                    PhoneInputScreen(
+                                        firebaseManager = firebaseManager,
+                                        onLoginSuccess = { user ->
+                                            navState = AppNavState.MAIN
+                                        },
+                                        onNewUser = { phone, deviceId ->
+                                            newPhoneNumber = phone
+                                            newDeviceId = deviceId
+                                            navState = AppNavState.PROFILE_SETUP
+                                        },
+                                        onBackClick = { navState = AppNavState.WELCOME }
+                                    )
+                                }
+                                AppNavState.PROFILE_SETUP -> {
+                                    ProfileSetupScreen(
+                                        phoneNumber = newPhoneNumber,
+                                        deviceId = newDeviceId,
+                                        onProfileComplete = { name, status ->
+                                            firebaseManager.loginWithPhone(newPhoneNumber, name, newDeviceId, status)
+                                            navState = AppNavState.MAIN
+                                        }
+                                    )
+                                }
+                                AppNavState.SETTINGS -> {
+                                    SettingsScreen(
+                                        firebaseManager = firebaseManager,
+                                        onBackClick = { navState = AppNavState.MAIN }
+                                    )
+                                }
+                                AppNavState.MAIN -> {
+                                    Scaffold(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                                        bottomBar = {
+                                            NavigationBar(
+                                                containerColor = MaterialTheme.colorScheme.surface,
+                                                tonalElevation = 6.dp
+                                            ) {
+                                                MainTab.entries.forEach { tab ->
+                                                    val isSelected = selectedTab == tab
+                                                    NavigationBarItem(
+                                                        selected = isSelected,
+                                                        onClick = { selectedTab = tab },
+                                                        icon = {
+                                                            if (tab == MainTab.CHATS && totalUnreadChats > 0) {
+                                                                BadgedBox(
+                                                                    badge = {
+                                                                        Badge(
+                                                                            containerColor = com.example.ui.theme.GreenCall,
+                                                                            contentColor = Color.White
+                                                                        ) {
+                                                                            Text(if (totalUnreadChats > 99) "99+" else totalUnreadChats.toString())
+                                                                        }
+                                                                    }
                                                                 ) {
-                                                                    Text(if (totalUnreadChats > 99) "99+" else totalUnreadChats.toString())
+                                                                    Icon(tab.icon, contentDescription = tab.title)
                                                                 }
+                                                            } else {
+                                                                Icon(tab.icon, contentDescription = tab.title)
                                                             }
-                                                        ) {
-                                                            Icon(tab.icon, contentDescription = tab.title)
+                                                        },
+                                                        label = { 
+                                                            Text(
+                                                                text = tab.title,
+                                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                                            ) 
+                                                        },
+                                                        colors = NavigationBarItemDefaults.colors(
+                                                            selectedIconColor = currentThemeColor.primary,
+                                                            selectedTextColor = currentThemeColor.primary,
+                                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            indicatorColor = currentThemeColor.primary.copy(alpha = 0.18f)
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    ) { mainPadding ->
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(bottom = mainPadding.calculateBottomPadding())
+                                        ) {
+                                            when (selectedTab) {
+                                                MainTab.DIALER -> DialerScreen(
+                                                    firebaseManager = firebaseManager,
+                                                    onStartCall = { number, name, type ->
+                                                        if (isCallActive) {
+                                                            isCallMinimized = false
+                                                        } else {
+                                                            val myNum = currentUser?.phoneNumber ?: return@DialerScreen
+                                                            val myName = currentUser?.displayName ?: "Me"
+                                                            webRtcEngine.initiateCall(
+                                                                calleeNumber = number,
+                                                                calleeName = name,
+                                                                callerNumber = myNum,
+                                                                callerName = myName,
+                                                                callType = type
+                                                            )
                                                         }
-                                                    } else {
-                                                        Icon(tab.icon, contentDescription = tab.title)
-                                                    }
-                                                },
-                                                label = { 
-                                                    Text(
-                                                        text = tab.title,
-                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                                    ) 
-                                                },
-                                                colors = NavigationBarItemDefaults.colors(
-                                                    selectedIconColor = currentThemeColor.primary,
-                                                    selectedTextColor = currentThemeColor.primary,
-                                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    indicatorColor = currentThemeColor.primary.copy(alpha = 0.18f)
+                                                    },
+                                                    onNavigateToSettings = { navState = AppNavState.SETTINGS }
                                                 )
-                                            )
+                                                MainTab.RECENTS -> CallHistoryScreen(
+                                                    firebaseManager = firebaseManager,
+                                                    onStartCall = { number, name, type ->
+                                                        if (isCallActive) {
+                                                            isCallMinimized = false
+                                                        } else {
+                                                            val myNum = currentUser?.phoneNumber ?: return@CallHistoryScreen
+                                                            val myName = currentUser?.displayName ?: "Me"
+                                                            webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                                        }
+                                                    },
+                                                    onOpenChat = { number, name ->
+                                                        chatPeerNumber = number
+                                                        chatPeerName = name
+                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                    }
+                                                )
+                                                MainTab.CHATS -> ChatListScreen(
+                                                    firebaseManager = firebaseManager,
+                                                    activeCallNumber = if (isCallActive) otherPartyNumber else null,
+                                                    activeCallType = if (isCallActive) activeCall?.callType else null,
+                                                    onOpenConversation = { phone, name, avatar ->
+                                                        chatPeerNumber = phone
+                                                        chatPeerName = name
+                                                        chatPeerAvatar = avatar
+                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                    }
+                                                )
+                                                MainTab.CONTACTS -> ContactsScreen(
+                                                    firebaseManager = firebaseManager,
+                                                    onStartCall = { number, name, type ->
+                                                        if (isCallActive) {
+                                                            isCallMinimized = false
+                                                        } else {
+                                                            val myNum = currentUser?.phoneNumber ?: return@ContactsScreen
+                                                            val myName = currentUser?.displayName ?: "Me"
+                                                            webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                                        }
+                                                    },
+                                                    onOpenChat = { number, name ->
+                                                        chatPeerNumber = number
+                                                        chatPeerName = name
+                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                    }
+                                                )
+                                                MainTab.PROFILE -> ProfileScreen(
+                                                    firebaseManager = firebaseManager
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                            ) { mainPadding ->
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(bottom = mainPadding.calculateBottomPadding())
-                                ) {
-                                    when (selectedTab) {
-                                        MainTab.DIALER -> DialerScreen(
-                                            firebaseManager = firebaseManager,
-                                            onStartCall = { number, name, type ->
-                                                // BUG-17 FIX: Don't allow calls without a valid caller number
-                                                val myNum = currentUser?.phoneNumber ?: return@DialerScreen
-                                                val myName = currentUser?.displayName ?: "Me"
-                                                webRtcEngine.initiateCall(
-                                                    calleeNumber = number,
-                                                    calleeName = name,
-                                                    callerNumber = myNum,
-                                                    callerName = myName,
-                                                    callType = type
-                                                )
-                                            },
-                                            onNavigateToSettings = { navState = AppNavState.SETTINGS }
-                                        )
-                                        MainTab.RECENTS -> CallHistoryScreen(
-                                            firebaseManager = firebaseManager,
-                                            onStartCall = { number, name, type ->
-                                                val myNum = currentUser?.phoneNumber ?: return@CallHistoryScreen
-                                                val myName = currentUser?.displayName ?: "Me"
-                                                webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                            },
-                                            onOpenChat = { number, name ->
-                                                chatPeerNumber = number
-                                                chatPeerName = name
-                                                navState = AppNavState.CHAT_CONVERSATION
-                                            }
-                                        )
-                                        MainTab.CHATS -> ChatListScreen(
-                                            firebaseManager = firebaseManager,
-                                            onOpenConversation = { phone, name, avatar ->
-                                                chatPeerNumber = phone
-                                                chatPeerName = name
-                                                chatPeerAvatar = avatar
-                                                navState = AppNavState.CHAT_CONVERSATION
-                                            }
-                                        )
-                                        MainTab.CONTACTS -> ContactsScreen(
-                                            firebaseManager = firebaseManager,
-                                            onStartCall = { number, name, type ->
-                                                val myNum = currentUser?.phoneNumber ?: return@ContactsScreen
-                                                val myName = currentUser?.displayName ?: "Me"
-                                                webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                            },
-                                            onOpenChat = { number, name ->
-                                                chatPeerNumber = number
-                                                chatPeerName = name
-                                                navState = AppNavState.CHAT_CONVERSATION
-                                            }
-                                        )
-                                        MainTab.PROFILE -> ProfileScreen(
-                                            firebaseManager = firebaseManager
-                                        )
+                                AppNavState.CHAT_CONVERSATION -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.MAIN
+                                        selectedTab = MainTab.CHATS
                                     }
+                                    ChatConversationScreen(
+                                        peerPhoneNumber = chatPeerNumber,
+                                        peerDisplayName = chatPeerName,
+                                        peerInitialAvatar = chatPeerAvatar,
+                                        firebaseManager = firebaseManager,
+                                        onBackClick = {
+                                            navState = AppNavState.MAIN
+                                            selectedTab = MainTab.CHATS
+                                        },
+                                        onStartCall = { number, name, type ->
+                                            if (isCallActive) {
+                                                isCallMinimized = false
+                                            } else {
+                                                val myNum = currentUser?.phoneNumber ?: return@ChatConversationScreen
+                                                val myName = currentUser?.displayName ?: "Me"
+                                                webRtcEngine.initiateCall(number, name, myNum, myName, type)
+                                            }
+                                        }
+                                    )
                                 }
                             }
-                        }
-                        AppNavState.CHAT_CONVERSATION -> {
-                            androidx.activity.compose.BackHandler {
-                                navState = AppNavState.MAIN
-                                selectedTab = MainTab.CHATS
-                            }
-                            ChatConversationScreen(
-                                peerPhoneNumber = chatPeerNumber,
-                                peerDisplayName = chatPeerName,
-                                peerInitialAvatar = chatPeerAvatar,
-                                firebaseManager = firebaseManager,
-                                onBackClick = {
-                                    navState = AppNavState.MAIN
-                                    selectedTab = MainTab.CHATS
-                                },
-                                onStartCall = { number, name, type ->
-                                    val myNum = currentUser?.phoneNumber ?: return@ChatConversationScreen
-                                    val myName = currentUser?.displayName ?: "Me"
-                                    webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                }
-                            )
                         }
                     }
 
-                    // Full Screen Calling Overlays
-                    if (activeCall != null && rtcState.callStatus != CallStatus.IDLE) {
+                    // Full Screen Calling Overlays (shown when not minimized)
+                    if (activeCall != null && rtcState.callStatus != CallStatus.IDLE && (!isCallMinimized || isCallRinging)) {
                         androidx.activity.compose.BackHandler {
-                            (context as? android.app.Activity)?.moveTaskToBack(true)
+                            if (rtcState.callStatus == CallStatus.ANSWERED || rtcState.callStatus == CallStatus.CALLING) {
+                                isCallMinimized = true
+                            } else {
+                                (context as? android.app.Activity)?.moveTaskToBack(true)
+                            }
                         }
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .pointerInput(Unit) { detectTapGestures { } }
                         ) {
-                        val isIncoming = (activeCall.callerNumber != currentUser?.phoneNumber) ||
-                                (currentUser?.phoneNumber != null && com.example.util.ContactsHelper.numbersMatch(activeCall.calleeNumber, currentUser?.phoneNumber ?: ""))
-                        val otherPartyNumber = if (isIncoming) activeCall.callerNumber else activeCall.calleeNumber
-                        val otherPartyUser = firebaseManager.lookupUserByNumber(otherPartyNumber)
-                        val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
-                        
-                        when (rtcState.callStatus) {
-                            CallStatus.CALLING -> {
-                                OutgoingCallScreen(
-                                    calleeName = activeCall.calleeName,
-                                    calleeNumber = activeCall.calleeNumber,
-                                    profilePicUrl = otherPartyProfilePic,
-                                    callType = activeCall.callType,
-                                    statusText = rtcState.connectionStatusText,
-                                    webRtcEngine = webRtcEngine,
-                                    onEndCall = {
-                                        firebaseManager.logCall(
-                                            direction = CallDirection.OUTGOING,
-                                            otherPartyNumber = activeCall.calleeNumber,
-                                            otherPartyName = activeCall.calleeName,
-                                            callType = activeCall.callType,
-                                            status = CallStatus.ENDED,
-                                            durationSeconds = rtcState.callDurationSeconds,
-                                            callId = activeCall.callId
-                                        )
-                                        webRtcEngine.endCall()
-                                    }
-                                )
-                            }
-                            CallStatus.RINGING -> {
-                                if (isIncoming) {
-                                    IncomingCallOverlay(
-                                        callerName = activeCall.callerName,
-                                        callerNumber = activeCall.callerNumber,
-                                        profilePicUrl = otherPartyProfilePic,
-                                        callType = activeCall.callType,
-                                        onAnswer = { webRtcEngine.answerCall() },
-                                        onDecline = {
-                                            firebaseManager.logCall(
-                                                direction = CallDirection.INCOMING,
-                                                otherPartyNumber = activeCall.callerNumber,
-                                                otherPartyName = activeCall.callerName,
-                                                callType = activeCall.callType,
-                                                status = CallStatus.DECLINED,
-                                                durationSeconds = rtcState.callDurationSeconds,
-                                                callId = activeCall.callId
-                                            )
-                                            webRtcEngine.declineCall()
-                                        }
-                                    )
-                                } else {
+                            when (rtcState.callStatus) {
+                                CallStatus.CALLING -> {
                                     OutgoingCallScreen(
-                                        calleeName = activeCall.calleeName,
+                                        calleeName = otherPartyDisplayName,
                                         calleeNumber = activeCall.calleeNumber,
                                         profilePicUrl = otherPartyProfilePic,
                                         callType = activeCall.callType,
                                         statusText = rtcState.connectionStatusText,
                                         webRtcEngine = webRtcEngine,
+                                        onMinimize = { isCallMinimized = true },
                                         onEndCall = {
                                             firebaseManager.logCall(
                                                 direction = CallDirection.OUTGOING,
                                                 otherPartyNumber = activeCall.calleeNumber,
-                                                otherPartyName = activeCall.calleeName,
+                                                otherPartyName = otherPartyDisplayName,
                                                 callType = activeCall.callType,
                                                 status = CallStatus.ENDED,
                                                 durationSeconds = rtcState.callDurationSeconds,
@@ -899,60 +924,99 @@ class MainActivity : ComponentActivity() {
                                         }
                                     )
                                 }
-                            }
-                            CallStatus.ANSWERED -> {
-                                val direction = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
-                                val otherNumber = if (isIncoming) activeCall.callerNumber else activeCall.calleeNumber
-                                val otherName = if (isIncoming) activeCall.callerName else activeCall.calleeName
-                                
-                                if (rtcState.callType == CallType.VIDEO || activeCall.callType == CallType.VIDEO) {
-                                    ActiveVideoCallScreen(
-                                        state = rtcState,
-                                        profilePicUrl = otherPartyProfilePic,
-                                        // BUG-26 FIX: Show the OTHER party's name, not own name
-                                        displayName = otherName,
-                                        displayNumber = otherNumber,
-                                        webRtcEngine = webRtcEngine,
-                                        onEndCall = {
-                                            firebaseManager.logCall(
-                                                direction = direction,
-                                                otherPartyNumber = otherNumber,
-                                                otherPartyName = otherName,
-                                                callType = activeCall.callType,
-                                                // BUG-21 FIX: Log as ENDED not ANSWERED
-                                                status = CallStatus.ENDED,
-                                                durationSeconds = rtcState.callDurationSeconds,
-                                                callId = activeCall.callId
-                                            )
-                                            webRtcEngine.endCall()
-                                        }
-                                    )
-                                } else {
-                                    ActiveAudioCallScreen(
-                                        state = rtcState,
-                                        profilePicUrl = otherPartyProfilePic,
-                                        // BUG-26 FIX: Show the OTHER party's name, not own name
-                                        displayName = otherName,
-                                        displayNumber = otherNumber,
-                                        webRtcEngine = webRtcEngine,
-                                        onEndCall = {
-                                            firebaseManager.logCall(
-                                                direction = direction,
-                                                otherPartyNumber = otherNumber,
-                                                otherPartyName = otherName,
-                                                callType = activeCall.callType,
-                                                // BUG-21 FIX: Log as ENDED not ANSWERED
-                                                status = CallStatus.ENDED,
-                                                durationSeconds = rtcState.callDurationSeconds,
-                                                callId = activeCall.callId
-                                            )
-                                            webRtcEngine.endCall()
-                                        }
-                                    )
+                                CallStatus.RINGING -> {
+                                    if (isIncoming) {
+                                        IncomingCallOverlay(
+                                            callerName = activeCall.callerName,
+                                            callerNumber = activeCall.callerNumber,
+                                            profilePicUrl = otherPartyProfilePic,
+                                            callType = activeCall.callType,
+                                            onAnswer = { webRtcEngine.answerCall() },
+                                            onDecline = {
+                                                firebaseManager.logCall(
+                                                    direction = CallDirection.INCOMING,
+                                                    otherPartyNumber = activeCall.callerNumber,
+                                                    otherPartyName = activeCall.callerName,
+                                                    callType = activeCall.callType,
+                                                    status = CallStatus.DECLINED,
+                                                    durationSeconds = rtcState.callDurationSeconds,
+                                                    callId = activeCall.callId
+                                                )
+                                                webRtcEngine.declineCall()
+                                            }
+                                        )
+                                    } else {
+                                        OutgoingCallScreen(
+                                            calleeName = otherPartyDisplayName,
+                                            calleeNumber = activeCall.calleeNumber,
+                                            profilePicUrl = otherPartyProfilePic,
+                                            callType = activeCall.callType,
+                                            statusText = rtcState.connectionStatusText,
+                                            webRtcEngine = webRtcEngine,
+                                            onMinimize = { isCallMinimized = true },
+                                            onEndCall = {
+                                                firebaseManager.logCall(
+                                                    direction = CallDirection.OUTGOING,
+                                                    otherPartyNumber = activeCall.calleeNumber,
+                                                    otherPartyName = otherPartyDisplayName,
+                                                    callType = activeCall.callType,
+                                                    status = CallStatus.ENDED,
+                                                    durationSeconds = rtcState.callDurationSeconds,
+                                                    callId = activeCall.callId
+                                                )
+                                                webRtcEngine.endCall()
+                                            }
+                                        )
+                                    }
                                 }
-                            }
+                                CallStatus.ANSWERED -> {
+                                    if (rtcState.callType == CallType.VIDEO || activeCall.callType == CallType.VIDEO) {
+                                        ActiveVideoCallScreen(
+                                            state = rtcState,
+                                            profilePicUrl = otherPartyProfilePic,
+                                            displayName = otherPartyDisplayName,
+                                            displayNumber = otherPartyNumber,
+                                            webRtcEngine = webRtcEngine,
+                                            onMinimize = { isCallMinimized = true },
+                                            onEndCall = {
+                                                firebaseManager.logCall(
+                                                    direction = direction,
+                                                    otherPartyNumber = otherPartyNumber,
+                                                    otherPartyName = otherPartyDisplayName,
+                                                    callType = activeCall.callType,
+                                                    status = CallStatus.ENDED,
+                                                    durationSeconds = rtcState.callDurationSeconds,
+                                                    callId = activeCall.callId
+                                                )
+                                                webRtcEngine.endCall()
+                                            }
+                                        )
+                                    } else {
+                                        ActiveAudioCallScreen(
+                                            state = rtcState,
+                                            profilePicUrl = otherPartyProfilePic,
+                                            displayName = otherPartyDisplayName,
+                                            displayNumber = otherPartyNumber,
+                                            webRtcEngine = webRtcEngine,
+                                            onMinimize = { isCallMinimized = true },
+                                            onEndCall = {
+                                                firebaseManager.logCall(
+                                                    direction = direction,
+                                                    otherPartyNumber = otherPartyNumber,
+                                                    otherPartyName = otherPartyDisplayName,
+                                                    callType = activeCall.callType,
+                                                    status = CallStatus.ENDED,
+                                                    durationSeconds = rtcState.callDurationSeconds,
+                                                    callId = activeCall.callId
+                                                )
+                                                webRtcEngine.endCall()
+                                            }
+                                        )
+                                    }
+                                }
 
-                            else -> {}
+                                else -> {}
+                            }
                         }
                     }
                 }
@@ -969,7 +1033,6 @@ class MainActivity : ComponentActivity() {
                                 updateInfo = null
                             }
                         )
-                    }
                 }
             }
         }

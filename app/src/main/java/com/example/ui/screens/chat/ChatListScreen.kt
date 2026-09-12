@@ -25,6 +25,7 @@ import coil.compose.AsyncImage
 import com.example.data.local.ChatMediaType
 import com.example.data.local.ConversationEntity
 import com.example.data.local.MessageStatus
+import com.example.data.model.CallType
 import com.example.data.model.ContactDto
 import com.example.data.model.UserDto
 import com.example.data.repository.ChatRepository
@@ -38,6 +39,8 @@ import java.util.*
 @Composable
 fun ChatListScreen(
     firebaseManager: FirebaseManager,
+    activeCallNumber: String? = null,
+    activeCallType: CallType? = null,
     onOpenConversation: (phoneNumber: String, contactName: String, avatarUrl: String) -> Unit
 ) {
     val context = LocalContext.current
@@ -199,10 +202,15 @@ fun ChatListScreen(
                                 else -> conv.profilePicUrl
                             }
                         }
+                        val isInActiveCall = remember(activeCallNumber, conv.phoneNumber) {
+                            activeCallNumber != null && com.example.util.ContactsHelper.numbersMatch(conv.phoneNumber, activeCallNumber)
+                        }
                         ConversationItem(
                             conversation = conv,
                             avatarPic = resolvedAvatar,
                             isOnline = isPeerOnline,
+                            isInActiveCall = isInActiveCall,
+                            activeCallType = activeCallType,
                             onClick = { onOpenConversation(conv.phoneNumber, conv.contactName, resolvedAvatar) }
                         )
                         HorizontalDivider(
@@ -234,6 +242,8 @@ private fun ConversationItem(
     conversation: ConversationEntity,
     avatarPic: String,
     isOnline: Boolean,
+    isInActiveCall: Boolean = false,
+    activeCallType: CallType? = null,
     onClick: () -> Unit
 ) {
     Row(
@@ -286,16 +296,18 @@ private fun ConversationItem(
                 Text(
                     text = conversation.contactName,
                     style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = if (conversation.unreadCount > 0) FontWeight.Bold else FontWeight.SemiBold
+                        fontWeight = if (conversation.unreadCount > 0 || isInActiveCall) FontWeight.Bold else FontWeight.SemiBold
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = formatChatTimestamp(conversation.lastMessageTimestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (conversation.unreadCount > 0) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
+                    text = if (isInActiveCall) "In call" else formatChatTimestamp(conversation.lastMessageTimestamp),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = if (isInActiveCall) FontWeight.SemiBold else FontWeight.Normal
+                    ),
+                    color = if (isInActiveCall || conversation.unreadCount > 0) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -310,18 +322,35 @@ private fun ConversationItem(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (conversation.lastMessageIsOutgoing) {
-                        StatusTickIcon(status = conversation.lastMessageStatus)
-                        Spacer(modifier = Modifier.width(4.dp))
+                    if (isInActiveCall) {
+                        Icon(
+                            imageVector = if (activeCallType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                            contentDescription = null,
+                            tint = GreenCall,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (activeCallType == CallType.VIDEO) "Video call • In call" else "Voice call • In call",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = GreenCall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else {
+                        if (conversation.lastMessageIsOutgoing) {
+                            StatusTickIcon(status = conversation.lastMessageStatus)
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = conversation.lastMessageText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (conversation.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (conversation.unreadCount > 0) FontWeight.Medium else FontWeight.Normal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Text(
-                        text = conversation.lastMessageText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (conversation.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = if (conversation.unreadCount > 0) FontWeight.Medium else FontWeight.Normal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
 
                 if (conversation.unreadCount > 0) {
