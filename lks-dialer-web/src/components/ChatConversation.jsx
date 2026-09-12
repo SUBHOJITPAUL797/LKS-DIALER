@@ -166,8 +166,14 @@ export default function ChatConversation({
 
     const distinct = Array.from(new Set(variations)).slice(0, 10);
 
+    let currentListeningDocId = null;
     const attachDocListener = (docId) => {
-      if (!docId || unsubDoc) return;
+      if (!docId || currentListeningDocId === docId) return;
+      if (unsubDoc) {
+        unsubDoc();
+        unsubDoc = null;
+      }
+      currentListeningDocId = docId;
       try {
         unsubDoc = onSnapshot(doc(db, 'users', docId), (docSnap) => {
           if (docSnap.exists() && isMounted) {

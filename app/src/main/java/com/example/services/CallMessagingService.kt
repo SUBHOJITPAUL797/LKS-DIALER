@@ -254,11 +254,13 @@ class CallMessagingService : FirebaseMessagingService() {
                         readTimeout = 3000
                         doInput = true
                     }
-                    val stream = conn.inputStream
-                    val bmp = android.graphics.BitmapFactory.decodeStream(stream)
-                    stream.close()
-                    conn.disconnect()
-                    bmp
+                    try {
+                        conn.inputStream.use { stream ->
+                            android.graphics.BitmapFactory.decodeStream(stream)
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
                 } else {
                     val clean = if (callerProfilePic.contains(",")) callerProfilePic.substringAfter(",") else callerProfilePic
                     val decodedBytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)

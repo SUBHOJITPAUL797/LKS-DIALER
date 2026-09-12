@@ -1423,7 +1423,7 @@ private fun MessageBubble(
                             .uppercase(Locale.getDefault()).take(5)
                     }
                     val fileSizeFormatted = remember(docFile, hasFile) {
-                        if (hasFile && docFile != null) {
+                        if (docFile != null && hasFile) {
                             val bytes = docFile.length()
                             if (bytes < 1024) "$bytes B"
                             else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
@@ -1442,7 +1442,7 @@ private fun MessageBubble(
                                 if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                     onMarkMessageRead(message.id)
                                 }
-                                if (hasFile && docFile != null) {
+                                if (docFile != null && hasFile) {
                                     try {
                                         val fileUri = FileProvider.getUriForFile(
                                             context,

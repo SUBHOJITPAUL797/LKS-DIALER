@@ -1390,10 +1390,13 @@ class ChatRepository private constructor(private val context: Context) {
                         readTimeout = 3000
                         doInput = true
                     }
-                    val stream = conn.inputStream
-                    val bmp = BitmapFactory.decodeStream(stream)
-                    stream.close()
-                    conn.disconnect()
+                    val bmp = try {
+                        conn.inputStream.use { stream ->
+                            BitmapFactory.decodeStream(stream)
+                        }
+                    } finally {
+                        conn.disconnect()
+                    }
                     if (bmp != null) getCircularBitmap(bmp) else null
                 } else {
                     val clean = if (rawAvatar.contains(",")) rawAvatar.substringAfter(",") else rawAvatar
