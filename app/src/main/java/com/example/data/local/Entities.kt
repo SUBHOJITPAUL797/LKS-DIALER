@@ -17,7 +17,9 @@ enum class ChatMediaType {
     IMAGE,
     AUDIO,
     DOCUMENT,
-    EDIT
+    EDIT,
+    DELETE,
+    CHUNK
 }
 
 @Entity(

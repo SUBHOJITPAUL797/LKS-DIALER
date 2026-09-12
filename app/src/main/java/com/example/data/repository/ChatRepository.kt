@@ -27,7 +27,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Shader
+import androidx.core.graphics.drawable.IconCompat
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.UUID
 
@@ -58,6 +66,29 @@ class ChatRepository private constructor(private val context: Context) {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: ChatRepository(context.applicationContext).also { INSTANCE = it }
             }
+        }
+
+        fun extractCleanText(rawText: String): String {
+            if (rawText.isBlank()) return ""
+            return try {
+                val obj = JSONObject(rawText)
+                obj.optString("text", rawText)
+            } catch (_: Exception) {
+                rawText
+            }
+        }
+
+        fun getCircularBitmap(bitmap: Bitmap): Bitmap {
+            val size = Math.min(bitmap.width, bitmap.height)
+            val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+            val paint = Paint().apply {
+                isAntiAlias = true
+                shader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            }
+            val radius = size / 2f
+            canvas.drawCircle(radius, radius, radius, paint)
+            return output
         }
     }
 
@@ -279,6 +310,132 @@ class ChatRepository private constructor(private val context: Context) {
                     Log.w(TAG, "Failed to parse message edit packet: ${e.message}")
                 }
                 // Zero retention: delete ephemeral edit doc immediately
+                try { docRef.delete().await() } catch (_: Exception) {}
+                return
+            }
+
+            // Handle incoming Message Delete packets
+            if (dto.mediaType == ChatMediaType.DELETE.name) {
+                try {
+                    val json = JSONObject(decryptedRaw)
+                    val targetMessageId = json.optString("targetMessageId", "")
+                    if (targetMessageId.isNotBlank()) {
+                        val existing = messageDao.getMessageById(targetMessageId)
+                        if (existing != null) {
+                            existing.mediaPath?.let { p -> try { File(p).delete() } catch (_: Exception) {} }
+                            val tombstone = "🚫 This message was deleted"
+                            messageDao.markMessageDeletedForEveryone(targetMessageId, tombstone)
+                            val lastMsg = messageDao.getLastMessageForConversation(senderNorm)
+                            if (lastMsg != null && lastMsg.id == targetMessageId) {
+                                conversationDao.updateLastMessageText(senderNorm, tombstone)
+                            }
+                            Log.d(TAG, "Message $targetMessageId marked deleted for everyone from $senderNorm")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to parse message delete packet: ${e.message}")
+                }
+                try { docRef.delete().await() } catch (_: Exception) {}
+                return
+            }
+
+            // Handle incoming File Chunks (Large documents / files)
+            if (dto.mediaType == ChatMediaType.CHUNK.name) {
+                try {
+                    val json = JSONObject(decryptedRaw)
+                    val parentId = json.getString("parentMessageId")
+                    val fileName = json.getString("fileName")
+                    val chunkIndex = json.getInt("chunkIndex")
+                    val totalChunks = json.getInt("totalChunks")
+                    val base64Chunk = json.getString("bytes")
+
+                    val chunksDir = File(context.cacheDir, "chunks_$parentId")
+                    if (!chunksDir.exists()) chunksDir.mkdirs()
+                    val partFile = File(chunksDir, "part_$chunkIndex")
+                    val bytes = Base64.decode(base64Chunk, Base64.NO_WRAP)
+                    partFile.writeBytes(bytes)
+
+                    // Check if all chunks have arrived
+                    var allPresent = true
+                    for (i in 0 until totalChunks) {
+                        if (!File(chunksDir, "part_$i").exists()) {
+                            allPresent = false
+                            break
+                        }
+                    }
+
+                    if (allPresent) {
+                        val ext = fileName.substringAfterLast('.', "bin")
+                        val finalFile = File(ensureMediaDirectory(), "doc_${parentId}.$ext")
+                        FileOutputStream(finalFile).use { fos ->
+                            for (i in 0 until totalChunks) {
+                                val part = File(chunksDir, "part_$i")
+                                if (part.exists()) {
+                                    fos.write(part.readBytes())
+                                    part.delete()
+                                }
+                            }
+                        }
+                        try { chunksDir.delete() } catch (_: Exception) {}
+
+                        // Insert reassembled message into Room DB
+                        val messageEntity = MessageEntity(
+                            id = parentId,
+                            conversationId = senderNorm,
+                            senderNumber = dto.senderNumber,
+                            recipientNumber = dto.recipientNumber,
+                            text = fileName,
+                            mediaType = ChatMediaType.DOCUMENT.name,
+                            mediaPath = finalFile.absolutePath,
+                            mediaDurationMs = 0L,
+                            timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                            status = MessageStatus.DELIVERED.name,
+                            isOutgoing = false
+                        )
+                        messageDao.insertMessage(messageEntity)
+
+                        // Update conversation summary
+                        val firebaseManager = FirebaseManager.getInstance(context)
+                        val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
+                        val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
+                        val resolvedName = registeredUser?.displayName?.ifBlank { null }
+                            ?: contactInfo?.name?.ifBlank { null }
+                            ?: senderNorm
+                        val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
+
+                        val existingConv = conversationDao.getConversation(senderNorm)
+                        val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
+                        val convEntity = ConversationEntity(
+                            phoneNumber = senderNorm,
+                            contactName = resolvedName,
+                            profilePicUrl = profilePic,
+                            lastMessageText = "📄 $fileName",
+                            lastMessageType = ChatMediaType.DOCUMENT.name,
+                            lastMessageTimestamp = messageEntity.timestamp,
+                            lastMessageStatus = messageEntity.status,
+                            lastMessageIsOutgoing = false,
+                            unreadCount = unreadCount,
+                            isPinned = existingConv?.isPinned ?: false
+                        )
+                        conversationDao.upsertConversation(convEntity)
+
+                        // Send DELIVERED receipt for the parent message
+                        sendReceipt(dto.senderNumber, parentId, MessageStatus.DELIVERED.name)
+
+                        // Show notification if in background
+                        if (!isCurrentPeer) {
+                            showIncomingMessageNotification(
+                                senderNumber = senderNorm,
+                                senderName = resolvedName,
+                                messageText = "📄 $fileName",
+                                messageType = ChatMediaType.DOCUMENT.name
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to process file chunk: ${e.message}")
+                }
+                // Zero retention: delete chunk doc from Firestore immediately
                 try { docRef.delete().await() } catch (_: Exception) {}
                 return
             }
@@ -578,6 +735,98 @@ class ChatRepository private constructor(private val context: Context) {
             mediaFile.copyTo(savedFile, overwrite = true)
             localSavedPath = savedFile.absolutePath
 
+            // If document is large (> 500 KB, e.g. 3.8MB MP3), chunk it into 384KB parts to stay within Firestore 1MB limit
+            if (mediaFile.length() > 500 * 1024L) {
+                val messageEntity = MessageEntity(
+                    id = messageId,
+                    conversationId = normRecipient,
+                    senderNumber = myPhone,
+                    recipientNumber = normRecipient,
+                    text = text.ifBlank { mediaFile.name },
+                    mediaType = ChatMediaType.DOCUMENT.name,
+                    mediaPath = localSavedPath,
+                    mediaDurationMs = mediaDurationMs,
+                    timestamp = now,
+                    status = MessageStatus.SENT.name,
+                    isOutgoing = true
+                )
+                messageDao.insertMessage(messageEntity)
+
+                val existingConv = conversationDao.getConversation(normRecipient)
+                val convEntity = ConversationEntity(
+                    phoneNumber = normRecipient,
+                    contactName = recipientName.ifBlank { existingConv?.contactName ?: normRecipient },
+                    profilePicUrl = existingConv?.profilePicUrl ?: "",
+                    lastMessageText = "📄 ${text.ifBlank { mediaFile.name }}",
+                    lastMessageType = ChatMediaType.DOCUMENT.name,
+                    lastMessageTimestamp = now,
+                    lastMessageStatus = MessageStatus.SENT.name,
+                    lastMessageIsOutgoing = true,
+                    unreadCount = existingConv?.unreadCount ?: 0,
+                    isPinned = existingConv?.isPinned ?: false
+                )
+                conversationDao.upsertConversation(convEntity)
+
+                val chunkSize = 384 * 1024
+                val fileBytes = mediaFile.readBytes()
+                val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
+                val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+
+                try {
+                    for (i in 0 until totalChunks) {
+                        val start = i * chunkSize
+                        val end = minOf(start + chunkSize, fileBytes.size)
+                        val slice = fileBytes.copyOfRange(start, end)
+                        val base64Chunk = Base64.encodeToString(slice, Base64.NO_WRAP)
+
+                        val chunkPayload = JSONObject().apply {
+                            put("type", "FILE_CHUNK")
+                            put("parentMessageId", messageId)
+                            put("fileName", text.ifBlank { mediaFile.name })
+                            put("fileSize", mediaFile.length())
+                            put("chunkIndex", i)
+                            put("totalChunks", totalChunks)
+                            put("bytes", base64Chunk)
+                        }.toString()
+
+                        val (chunkCiphertext, chunkIv) = cryptoManager.encrypt(chunkPayload, recipientPublicKey)
+                        val chunkDocId = "${messageId}_chunk_$i"
+                        val chunkDto = ChatMessageDto(
+                            messageId = chunkDocId,
+                            senderNumber = myPhone,
+                            recipientNumber = normRecipient,
+                            senderPublicKey = myPublicKey,
+                            ciphertext = chunkCiphertext,
+                            iv = chunkIv,
+                            mediaType = ChatMediaType.CHUNK.name,
+                            timestamp = now + i
+                        )
+
+                        firestore.collection("inboxes")
+                            .document(normRecipient)
+                            .collection("messages")
+                            .document(chunkDocId)
+                            .set(chunkDto)
+                            .await()
+                    }
+                    Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $normRecipient")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to upload file chunks: ${e.message}", e)
+                    messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                    return@withContext Result.failure(e)
+                }
+
+                sendFcmWakeup(
+                    recipientPhone = normRecipient,
+                    senderPhone = myPhone,
+                    previewText = "📄 ${text.ifBlank { mediaFile.name }}",
+                    mediaType = ChatMediaType.DOCUMENT.name,
+                    messageId = messageId
+                )
+
+                return@withContext Result.success(messageEntity)
+            }
+
             val fileBytes = savedFile.readBytes()
             val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
             val json = JSONObject().apply {
@@ -775,6 +1024,94 @@ class ChatRepository private constructor(private val context: Context) {
         Result.success(Unit)
     }
 
+    /**
+     * Public API: Deletes an outgoing message for everyone (WhatsApp style).
+     * Replaces local message text with tombstone, clears mediaPath and deletes local media file,
+     * updates conversation summary, and sends an encrypted ephemeral DELETE packet to the peer.
+     */
+    suspend fun deleteMessageForEveryone(
+        messageId: String,
+        recipientNumber: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val originalMsg = messageDao.getMessageById(messageId)
+            ?: return@withContext Result.failure(IllegalArgumentException("Message not found"))
+
+        if (!originalMsg.isOutgoing) {
+            return@withContext Result.failure(IllegalStateException("Cannot delete incoming messages for everyone"))
+        }
+
+        // 1. Delete local media file if present
+        originalMsg.mediaPath?.let { path ->
+            try { File(path).delete() } catch (_: Exception) {}
+        }
+
+        // 2. Mark local message with tombstone text and clear mediaPath in Room
+        val tombstone = "🚫 You deleted this message"
+        messageDao.markMessageDeletedForEveryone(messageId, tombstone)
+
+        val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+
+        // 3. Update conversation summary if this was the last message
+        val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
+        if (lastMsg != null && lastMsg.id == messageId) {
+            conversationDao.updateLastMessageText(normRecipient, tombstone)
+        }
+
+        // 4. Send ephemeral DELETE packet to peer
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+
+        if (myPhone != null) {
+            val recipientPublicKey = resolvePeerPublicKey(normRecipient)
+            if (recipientPublicKey != null) {
+                val payload = JSONObject().apply {
+                    put("type", "MESSAGE_DELETE")
+                    put("targetMessageId", messageId)
+                    put("deletedAt", System.currentTimeMillis())
+                }.toString()
+
+                val (ciphertext, iv) = cryptoManager.encrypt(payload, recipientPublicKey)
+                val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+                val deletePacketId = UUID.randomUUID().toString()
+
+                val chatDto = ChatMessageDto(
+                    messageId = deletePacketId,
+                    senderNumber = myPhone,
+                    recipientNumber = normRecipient,
+                    senderPublicKey = myPublicKey,
+                    ciphertext = ciphertext,
+                    iv = iv,
+                    mediaType = ChatMediaType.DELETE.name,
+                    timestamp = System.currentTimeMillis()
+                )
+
+                try {
+                    firestore.collection("inboxes")
+                        .document(normRecipient)
+                        .collection("messages")
+                        .document(deletePacketId)
+                        .set(chatDto)
+                        .await()
+                    Log.d(TAG, "Delete packet $deletePacketId sent to $normRecipient")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to upload delete packet: ${e.message}")
+                }
+
+                sendFcmWakeup(
+                    recipientPhone = normRecipient,
+                    senderPhone = myPhone,
+                    previewText = "",
+                    mediaType = ChatMediaType.DELETE.name,
+                    messageId = deletePacketId
+                )
+            }
+        }
+
+        Result.success(Unit)
+    }
+
     private suspend fun resolvePeerPublicKey(phoneNumber: String): String? {
         val firebaseManager = FirebaseManager.getInstance(context)
         val cached = firebaseManager.lookupUserByNumber(phoneNumber)
@@ -827,7 +1164,7 @@ class ChatRepository private constructor(private val context: Context) {
                         put("callerName", myName)
                         put("callerNumber", senderPhone)
                         put("type", "chat_message")
-                        put("messageText", previewText)
+                        put("messageText", extractCleanText(previewText))
                         put("mediaType", mediaType)
                         put("messageId", messageId)
                     }.toString()
@@ -894,7 +1231,7 @@ class ChatRepository private constructor(private val context: Context) {
     /**
      * Displays a rich Android MessagingStyle notification with direct reply.
      */
-    private fun showIncomingMessageNotification(
+    private suspend fun showIncomingMessageNotification(
         senderNumber: String,
         senderName: String,
         messageText: String,
@@ -944,18 +1281,56 @@ class ChatRepository private constructor(private val context: Context) {
             .addRemoteInput(remoteInput)
             .build()
 
+        val firebaseManager = FirebaseManager.getInstance(context)
+        val registeredUser = firebaseManager.lookupUserByNumber(senderNumber)
+        val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNumber) }
+        var rawAvatar = registeredUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
+            ?: contactInfo?.profilePictureUrl?.takeIf { it.isNotBlank() }
+            ?: ""
+
+        if (rawAvatar.isBlank()) {
+            val conv = conversationDao.getConversation(senderNumber)
+            rawAvatar = conv?.profilePicUrl?.takeIf { it.isNotBlank() } ?: ""
+        }
+
+        if (rawAvatar.isBlank()) {
+            try {
+                val doc = firestore.collection("users").document(senderNumber).get().await()
+                rawAvatar = doc.getString("profilePictureUrl") ?: ""
+            } catch (_: Exception) {}
+        }
+
+        var avatarBitmap: Bitmap? = null
+        if (rawAvatar.isNotBlank()) {
+            avatarBitmap = try {
+                val clean = if (rawAvatar.contains(",")) rawAvatar.substringAfter(",") else rawAvatar
+                val bytes = Base64.decode(clean, Base64.DEFAULT)
+                val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (decoded != null) getCircularBitmap(decoded) else null
+            } catch (_: Exception) {
+                try {
+                    val decoded = BitmapFactory.decodeFile(rawAvatar)
+                    if (decoded != null) getCircularBitmap(decoded) else null
+                } catch (_: Exception) { null }
+            }
+        }
+
         val myUser = Person.Builder()
             .setName("You")
             .setKey("me")
             .build()
 
-        val senderPerson = Person.Builder()
+        val senderPersonBuilder = Person.Builder()
             .setName(senderName)
             .setKey(senderNumber)
-            .build()
+        if (avatarBitmap != null) {
+            senderPersonBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(avatarBitmap))
+        }
+        val senderPerson = senderPersonBuilder.build()
 
+        val cleanContent = extractCleanText(messageText)
         val displayContent = when {
-            messageText.isNotBlank() -> messageText
+            cleanContent.isNotBlank() -> cleanContent
             messageType == ChatMediaType.IMAGE.name -> "📷 Photo"
             messageType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
             messageType == ChatMediaType.DOCUMENT.name -> "📄 Document"
@@ -969,6 +1344,11 @@ class ChatRepository private constructor(private val context: Context) {
 
         val builder = NotificationCompat.Builder(context, CHAT_NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_chat)
+            .apply {
+                if (avatarBitmap != null) {
+                    setLargeIcon(avatarBitmap)
+                }
+            }
             .setContentTitle(senderName)
             .setContentText(displayContent)
             .setTicker("$senderName: $displayContent")
@@ -1044,15 +1424,19 @@ class ChatRepository private constructor(private val context: Context) {
 
         val senderNumber = data["callerNumber"] ?: ""
         val senderName = data["callerName"] ?: senderNumber
-        val messageText = data["messageText"] ?: ""
+        val rawMessageText = data["messageText"] ?: ""
+        val messageText = extractCleanText(rawMessageText)
         val mediaType = data["mediaType"] ?: "TEXT"
         val senderNorm = ContactsHelper.normalizePhoneNumber(senderNumber)
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 
-        // Step 1: Immediately show notification if user is not in this conversation right now (skip for silent edits)
+        // Step 1: Immediately show notification if user is not in this conversation right now (skip for silent edits, deletes, chunks)
         val isWatchingConversation = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
-        if (!isWatchingConversation && senderNorm.isNotBlank() && mediaType != ChatMediaType.EDIT.name) {
+        if (!isWatchingConversation && senderNorm.isNotBlank() &&
+            mediaType != ChatMediaType.EDIT.name &&
+            mediaType != ChatMediaType.DELETE.name &&
+            mediaType != ChatMediaType.CHUNK.name) {
             val firebaseManager = FirebaseManager.getInstance(context)
             val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
             val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }

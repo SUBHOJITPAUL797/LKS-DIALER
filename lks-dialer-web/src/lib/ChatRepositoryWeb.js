@@ -289,6 +289,125 @@ class ChatRepositoryWeb {
         return;
       }
 
+      // Handle DELETE message packet
+      if (dto.mediaType === 'DELETE') {
+        try {
+          const parsed = JSON.parse(decryptedRaw);
+          const targetMessageId = parsed.targetMessageId;
+          if (targetMessageId) {
+            const messages = this.getMessages(senderNorm);
+            const targetMsg = messages.find(m => m.id === targetMessageId);
+            if (targetMsg) {
+              const tombstone = '🚫 This message was deleted';
+              targetMsg.text = tombstone;
+              targetMsg.mediaData = null;
+              targetMsg.mediaPath = null;
+              targetMsg.isEdited = false;
+              this.saveMessages(senderNorm, messages);
+
+              const conversations = this.getConversations();
+              const conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+              if (conv && conv.lastMessageTimestamp <= (targetMsg.timestamp || 0)) {
+                conv.lastMessageText = tombstone;
+                this.saveConversations(conversations);
+              }
+            }
+          }
+        } catch (delErr) {
+          console.warn('[ChatRepositoryWeb] Failed to parse DELETE payload:', delErr);
+        }
+        try { await deleteDoc(docRef); } catch {}
+        this.notifySubscribers();
+        return;
+      }
+
+      // Handle CHUNK packet (large file transfer from Android / Web)
+      if (dto.mediaType === 'CHUNK') {
+        try {
+          const parsed = JSON.parse(decryptedRaw);
+          const { parentMessageId, fileName, chunkIndex, totalChunks, bytes } = parsed;
+          const chunkKey = `lks_chunk_${parentMessageId}`;
+          let chunksMap = {};
+          try {
+            const rawMap = sessionStorage.getItem(chunkKey);
+            if (rawMap) chunksMap = JSON.parse(rawMap);
+          } catch {}
+          chunksMap[chunkIndex] = bytes;
+          sessionStorage.setItem(chunkKey, JSON.stringify(chunksMap));
+
+          // Check if all chunks have arrived
+          let allPresent = true;
+          for (let i = 0; i < totalChunks; i++) {
+            if (!chunksMap[i]) {
+              allPresent = false;
+              break;
+            }
+          }
+
+          if (allPresent) {
+            let fullBase64 = '';
+            for (let i = 0; i < totalChunks; i++) {
+              fullBase64 += chunksMap[i];
+            }
+            try { sessionStorage.removeItem(chunkKey); } catch {}
+
+            const messageEntity = {
+              id: parentMessageId,
+              conversationId: senderNorm,
+              senderNumber: dto.senderNumber,
+              recipientNumber: dto.recipientNumber,
+              text: fileName,
+              mediaType: 'DOCUMENT',
+              mediaData: fullBase64,
+              mediaDurationMs: 0,
+              timestamp: dto.timestamp || Date.now(),
+              status: 'DELIVERED',
+              isOutgoing: false
+            };
+
+            const messages = this.getMessages(senderNorm);
+            if (!messages.some(m => m.id === parentMessageId)) {
+              messages.push(messageEntity);
+              this.saveMessages(senderNorm, messages);
+            }
+
+            const conversations = this.getConversations();
+            let conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+            const unreadCount = isCurrentPeer ? 0 : ((conv ? conv.unreadCount : 0) + 1);
+            if (!conv) {
+              conv = {
+                phoneNumber: senderNorm,
+                contactName: senderNorm,
+                profilePicUrl: '',
+                lastMessageText: `📄 ${fileName}`,
+                lastMessageType: 'DOCUMENT',
+                lastMessageTimestamp: messageEntity.timestamp,
+                lastMessageStatus: 'DELIVERED',
+                lastMessageIsOutgoing: false,
+                unreadCount: unreadCount,
+                isPinned: false
+              };
+              conversations.unshift(conv);
+            } else {
+              conv.lastMessageText = `📄 ${fileName}`;
+              conv.lastMessageType = 'DOCUMENT';
+              conv.lastMessageTimestamp = messageEntity.timestamp;
+              conv.lastMessageStatus = 'DELIVERED';
+              conv.lastMessageIsOutgoing = false;
+              conv.unreadCount = unreadCount;
+            }
+            this.saveConversations(conversations);
+
+            this.sendReceipt(dto.senderNumber, parentMessageId, 'DELIVERED');
+          }
+        } catch (chunkErr) {
+          console.warn('[ChatRepositoryWeb] Failed to parse CHUNK payload:', chunkErr);
+        }
+        try { await deleteDoc(docRef); } catch {}
+        this.notifySubscribers();
+        return;
+      }
+
       let displayText = decryptedRaw;
       let mediaData = null;
       let durationMs = Number(dto.mediaDurationMs) || 0;
@@ -775,6 +894,72 @@ class ChatRepositoryWeb {
 
     // 3. Send FCM wakeup push
     this.sendFcmWakeup(normRecipient, myPhone, newText);
+  }
+
+  // --- PUBLIC API: DELETE MESSAGE FOR EVERYONE ---
+  async deleteMessageForEveryone(originalMessageId, recipientNumber) {
+    const normRecipient = normalizePhoneNumber(recipientNumber);
+    const messages = this.getMessages(normRecipient);
+    const targetMsg = messages.find(m => m.id === originalMessageId);
+    if (!targetMsg) {
+      throw new Error('Message not found');
+    }
+    if (!targetMsg.isOutgoing) {
+      throw new Error('Cannot delete incoming messages for everyone');
+    }
+
+    const tombstone = '🚫 You deleted this message';
+    targetMsg.text = tombstone;
+    targetMsg.mediaData = null;
+    targetMsg.mediaPath = null;
+    targetMsg.isEdited = false;
+    this.saveMessages(normRecipient, messages);
+
+    // Update conversation if needed
+    const conversations = this.getConversations();
+    const conv = conversations.find(c => numbersMatch(c.phoneNumber, normRecipient));
+    if (conv && (conv.lastMessageTimestamp <= (targetMsg.timestamp || 0) || conv.lastMessageId === originalMessageId)) {
+      conv.lastMessageText = tombstone;
+      this.saveConversations(conversations);
+    }
+    this.notifySubscribers();
+
+    const myPhone = this.currentListeningPhone;
+    if (!myPhone) return;
+
+    try {
+      const recipientPublicKey = await this.resolvePeerPublicKey(normRecipient);
+      if (!recipientPublicKey) return;
+
+      const deletePayload = JSON.stringify({
+        type: 'MESSAGE_DELETE',
+        targetMessageId: originalMessageId,
+        deletedAt: Date.now()
+      });
+
+      const { ciphertext, iv } = await chatCryptoWeb.encrypt(deletePayload, recipientPublicKey);
+      const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+      const deletePacketId = generateUuid();
+
+      const deleteDto = {
+        messageId: deletePacketId,
+        senderNumber: myPhone,
+        recipientNumber: normRecipient,
+        senderPublicKey: myPublicKey,
+        ciphertext,
+        iv,
+        mediaType: 'DELETE',
+        timestamp: Date.now(),
+        isEncrypted: true
+      };
+
+      await setDoc(doc(db, 'inboxes', normRecipient, 'messages', deletePacketId), deleteDto);
+      console.log(`[ChatRepositoryWeb] Delete packet ${deletePacketId} uploaded for ${normRecipient}`);
+
+      this.sendFcmWakeup(normRecipient, myPhone, '');
+    } catch (e) {
+      console.warn('Failed to upload delete packet:', e);
+    }
   }
 
   // --- RESOLVE PEER PUBLIC KEY ---

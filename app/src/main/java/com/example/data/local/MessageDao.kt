@@ -21,6 +21,9 @@ interface MessageDao {
     @Query("UPDATE messages SET text = :newText, isEdited = 1 WHERE id = :messageId")
     suspend fun updateMessageText(messageId: String, newText: String)
 
+    @Query("UPDATE messages SET text = :tombstoneText, mediaPath = NULL, isEdited = 0 WHERE id = :messageId")
+    suspend fun markMessageDeletedForEveryone(messageId: String, tombstoneText: String)
+
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, newStatus: String)
 

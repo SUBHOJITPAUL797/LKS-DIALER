@@ -934,7 +934,9 @@ fun ChatConversationScreen(
     // ── Message Options Bottom Sheet (Reply, Copy, Edit, Delete) ──
     if (selectedMessageForOptions != null) {
         val targetMsg = selectedMessageForOptions!!
+        val isDeleted = targetMsg.text.startsWith("🚫 ")
         val isEligibleForEdit = targetMsg.isOutgoing &&
+                !isDeleted &&
                 targetMsg.mediaType == ChatMediaType.TEXT.name &&
                 (System.currentTimeMillis() - targetMsg.timestamp <= 10 * 60 * 1000L)
 
@@ -946,62 +948,79 @@ fun ChatConversationScreen(
                     .fillMaxWidth()
                     .padding(vertical = 12.dp)
             ) {
-                // Reply
-                ListItem(
-                    headlineContent = { Text("Reply") },
-                    leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
-                    modifier = Modifier.clickable {
-                        val previewText = try {
+                if (!isDeleted) {
+                    // Reply
+                    ListItem(
+                        headlineContent = { Text("Reply") },
+                        leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
+                        modifier = Modifier.clickable {
+                            val previewText = try {
+                                val obj = org.json.JSONObject(targetMsg.text)
+                                obj.optString("text", targetMsg.text)
+                            } catch (_: Exception) { targetMsg.text }
+                            replyingTo = ReplyContext(
+                                messageId = targetMsg.id,
+                                text = previewText,
+                                senderLabel = if (targetMsg.isOutgoing) (firebaseManager.currentUser.value?.displayName ?: "You") else peerDisplayName,
+                                isOutgoing = targetMsg.isOutgoing
+                            )
+                            selectedMessageForOptions = null
+                        }
+                    )
+
+                    // Copy (if text)
+                    if (targetMsg.mediaType == ChatMediaType.TEXT.name) {
+                        val rawText = try {
                             val obj = org.json.JSONObject(targetMsg.text)
                             obj.optString("text", targetMsg.text)
                         } catch (_: Exception) { targetMsg.text }
-                        replyingTo = ReplyContext(
-                            messageId = targetMsg.id,
-                            text = previewText,
-                            senderLabel = if (targetMsg.isOutgoing) (firebaseManager.currentUser.value?.displayName ?: "You") else peerDisplayName,
-                            isOutgoing = targetMsg.isOutgoing
+                        ListItem(
+                            headlineContent = { Text("Copy") },
+                            leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                            modifier = Modifier.clickable {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("Copied message", rawText)
+                                clipboard?.setPrimaryClip(clip)
+                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                selectedMessageForOptions = null
+                            }
                         )
-                        selectedMessageForOptions = null
                     }
-                )
 
-                // Copy (if text)
-                if (targetMsg.mediaType == ChatMediaType.TEXT.name) {
-                    val rawText = try {
-                        val obj = org.json.JSONObject(targetMsg.text)
-                        obj.optString("text", targetMsg.text)
-                    } catch (_: Exception) { targetMsg.text }
-                    ListItem(
-                        headlineContent = { Text("Copy") },
-                        leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
-                        modifier = Modifier.clickable {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                            val clip = android.content.ClipData.newPlainText("Copied message", rawText)
-                            clipboard?.setPrimaryClip(clip)
-                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                            selectedMessageForOptions = null
-                        }
-                    )
+                    // Edit (if outgoing, text, and within 10 min)
+                    if (isEligibleForEdit) {
+                        val rawText = try {
+                            val obj = org.json.JSONObject(targetMsg.text)
+                            obj.optString("text", targetMsg.text)
+                        } catch (_: Exception) { targetMsg.text }
+                        ListItem(
+                            headlineContent = { Text("Edit (10 min window)") },
+                            leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = GreenCall) },
+                            modifier = Modifier.clickable {
+                                editingMessage = targetMsg
+                                inputText = rawText
+                                selectedMessageForOptions = null
+                            }
+                        )
+                    }
+
+                    // Delete for everyone (WhatsApp style: outgoing only, not already deleted)
+                    if (targetMsg.isOutgoing) {
+                        ListItem(
+                            headlineContent = { Text("Delete for everyone", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) },
+                            leadingContent = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                            modifier = Modifier.clickable {
+                                val idToDelete = targetMsg.id
+                                selectedMessageForOptions = null
+                                coroutineScope.launch {
+                                    chatRepository.deleteMessageForEveryone(idToDelete, normPeer)
+                                }
+                            }
+                        )
+                    }
                 }
 
-                // Edit (if outgoing, text, and within 10 min)
-                if (isEligibleForEdit) {
-                    val rawText = try {
-                        val obj = org.json.JSONObject(targetMsg.text)
-                        obj.optString("text", targetMsg.text)
-                    } catch (_: Exception) { targetMsg.text }
-                    ListItem(
-                        headlineContent = { Text("Edit (10 min window)") },
-                        leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = GreenCall) },
-                        modifier = Modifier.clickable {
-                            editingMessage = targetMsg
-                            inputText = rawText
-                            selectedMessageForOptions = null
-                        }
-                    )
-                }
-
-                // Delete message
+                // Delete for me
                 ListItem(
                     headlineContent = { Text("Delete for me", color = MaterialTheme.colorScheme.error) },
                     leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
@@ -1215,7 +1234,8 @@ private fun MessageBubble(
         } else message.text
     }
 
-    val isImageOnly = message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
+    val isDeleted = message.text.startsWith("🚫 ")
+    val isImageOnly = !isDeleted && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
     val bubblePadding = if (isImageOnly) PaddingValues(4.dp) else PaddingValues(horizontal = 8.dp, vertical = 6.dp)
 
     Box(
@@ -1229,7 +1249,7 @@ private fun MessageBubble(
             shape = bubbleShape,
             shadowElevation = 1.dp,
             modifier = Modifier
-                .widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name) 200.dp else 0.dp)
+                .widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name && !isDeleted) 200.dp else 0.dp)
                 .combinedClickable(
                     onClick = {
                         if (message.mediaType == ChatMediaType.TEXT.name) {
@@ -1240,6 +1260,27 @@ private fun MessageBubble(
                 )
         ) {
             Column(modifier = Modifier.padding(bubblePadding)) {
+                if (isDeleted) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Block,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = message.text,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                } else {
 
                 // ── Reply Quote ──────────────────────────────────────────────
                 if (parsedReply != null) {
@@ -1463,6 +1504,7 @@ private fun MessageBubble(
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                     )
                 }
+                }
 
                 Spacer(modifier = Modifier.height(2.dp))
 
@@ -1473,7 +1515,7 @@ private fun MessageBubble(
                         .padding(end = 4.dp, bottom = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (message.isEdited) {
+                    if (message.isEdited && !isDeleted) {
                         Text(
                             text = "Edited",
                             style = MaterialTheme.typography.labelSmall.copy(

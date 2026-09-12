@@ -574,6 +574,7 @@ export default function ChatConversation({
               ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               : '';
             const { text, replyTo } = parseMessage(msg);
+            const isDeleted = Boolean(msg.text && msg.text.startsWith('🚫 '));
 
             return (
               <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
@@ -584,108 +585,117 @@ export default function ChatConversation({
                     display: 'flex', flexDirection: 'column', gap: 4,
                     maxWidth: '100%'
                   }}>
-                    {/* Reply Context Quote */}
-                    {replyTo && (
-                      <div style={{
-                        backgroundColor: isOut ? 'rgba(0,0,0,0.07)' : 'rgba(0,180,216,0.1)',
-                        borderLeft: `3px solid ${isOut ? '#00838f' : '#FF3366'}`,
-                        padding: '4px 8px', borderRadius: 6, marginBottom: 4
-                      }}>
-                        <div style={{ fontSize: 11, fontWeight: 900, color: isOut ? '#00838f' : '#FF3366', marginBottom: 2 }}>
-                          {replyTo.senderLabel}
-                        </div>
-                        <div style={{
-                          fontSize: 12, fontWeight: 600, color: '#444',
-                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                          maxWidth: 220
-                        }}>
-                          {replyTo.text}
-                        </div>
+                    {isDeleted ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontStyle: 'italic', color: '#777', fontSize: 13, padding: '2px 4px' }}>
+                        <Ban size={14} color="#888" />
+                        <span>{msg.text}</span>
                       </div>
-                    )}
-
-                    {/* Image */}
-                    {msg.mediaType === 'IMAGE' && msg.mediaData && (
-                      <img
-                        src={msg.mediaData.startsWith('data:') ? msg.mediaData : `data:image/jpeg;base64,${msg.mediaData}`}
-                        alt="Photo"
-                        onClick={() => setSelectedImageModal(msg.mediaData)}
-                        style={{ width: '100%', maxHeight: 240, objectFit: 'cover', borderRadius: 8, border: '2px solid #000', cursor: 'pointer', marginBottom: 4 }}
-                      />
-                    )}
-
-                    {/* Audio */}
-                    {msg.mediaType === 'AUDIO' && msg.mediaData && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 180 }}>
-                        <button onClick={() => togglePlayAudio(msg.id, msg.mediaData)} className="neo-box"
-                          style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : 'var(--accent)', cursor: 'pointer', borderRadius: '50%' }}>
-                          {playingAudioId === msg.id ? <Pause size={18} /> : <Play size={18} style={{ marginLeft: 2 }} />}
-                        </button>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ height: 6, backgroundColor: '#ddd', borderRadius: 3, border: '1px solid #000', overflow: 'hidden' }}>
+                    ) : (
+                      <>
+                        {/* Reply Context Quote */}
+                        {replyTo && (
+                          <div style={{
+                            backgroundColor: isOut ? 'rgba(0,0,0,0.07)' : 'rgba(0,180,216,0.1)',
+                            borderLeft: `3px solid ${isOut ? '#00838f' : '#FF3366'}`,
+                            padding: '4px 8px', borderRadius: 6, marginBottom: 4
+                          }}>
+                            <div style={{ fontSize: 11, fontWeight: 900, color: isOut ? '#00838f' : '#FF3366', marginBottom: 2 }}>
+                              {replyTo.senderLabel}
+                            </div>
                             <div style={{
-                              height: '100%',
-                              backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : '#00E5FF',
-                              width: playingAudioId === msg.id ? '100%' : '0%',
-                              transition: playingAudioId === msg.id ? 'width 10s linear' : 'none'
-                            }} />
+                              fontSize: 12, fontWeight: 600, color: '#444',
+                              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                              maxWidth: 220
+                            }}>
+                              {replyTo.text}
+                            </div>
                           </div>
-                          <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, color: '#555' }}>
-                            🎤 {formatDur(msg.mediaDurationMs)}
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                        )}
 
-                    {/* Document */}
-                    {msg.mediaType === 'DOCUMENT' && (
-                      <a
-                        href={msg.mediaData ? (msg.mediaData.startsWith('data:') ? msg.mediaData : `data:application/octet-stream;base64,${msg.mediaData}`) : '#'}
-                        download={msg.text || 'document'}
-                        className="neo-box"
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '8px 12px',
-                          backgroundColor: '#fff',
-                          textDecoration: 'none',
-                          color: '#000',
-                          borderRadius: 8,
-                          marginBottom: 4,
-                          border: '2px solid #000'
-                        }}
-                      >
-                        <div style={{ width: 36, height: 36, borderRadius: 6, backgroundColor: '#5E35B1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>
-                          {(msg.text || 'DOC').split('.').pop().toUpperCase().slice(0, 4)}
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 800, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {msg.text || 'Document'}
-                          </div>
-                          <div style={{ fontSize: 10, fontWeight: 700, color: '#666' }}>Tap to download</div>
-                        </div>
-                      </a>
-                    )}
+                        {/* Image */}
+                        {msg.mediaType === 'IMAGE' && msg.mediaData && (
+                          <img
+                            src={msg.mediaData.startsWith('data:') ? msg.mediaData : `data:image/jpeg;base64,${msg.mediaData}`}
+                            alt="Photo"
+                            onClick={() => setSelectedImageModal(msg.mediaData)}
+                            style={{ width: '100%', maxHeight: 240, objectFit: 'cover', borderRadius: 8, border: '2px solid #000', cursor: 'pointer', marginBottom: 4 }}
+                          />
+                        )}
 
-                    {/* Text */}
-                    {text && msg.mediaType !== 'DOCUMENT' ? (
-                      <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                        {text}
-                      </div>
-                    ) : null}
+                        {/* Audio */}
+                        {msg.mediaType === 'AUDIO' && msg.mediaData && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 180 }}>
+                            <button onClick={() => togglePlayAudio(msg.id, msg.mediaData)} className="neo-box"
+                              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : 'var(--accent)', cursor: 'pointer', borderRadius: '50%' }}>
+                              {playingAudioId === msg.id ? <Pause size={18} /> : <Play size={18} style={{ marginLeft: 2 }} />}
+                            </button>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ height: 6, backgroundColor: '#ddd', borderRadius: 3, border: '1px solid #000', overflow: 'hidden' }}>
+                                <div style={{
+                                  height: '100%',
+                                  backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : '#00E5FF',
+                                  width: playingAudioId === msg.id ? '100%' : '0%',
+                                  transition: playingAudioId === msg.id ? 'width 10s linear' : 'none'
+                                }} />
+                              </div>
+                              <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, color: '#555' }}>
+                                🎤 {formatDur(msg.mediaDurationMs)}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Document */}
+                        {msg.mediaType === 'DOCUMENT' && (
+                          <a
+                            href={msg.mediaData ? (msg.mediaData.startsWith('data:') ? msg.mediaData : `data:application/octet-stream;base64,${msg.mediaData}`) : '#'}
+                            download={msg.text || 'document'}
+                            className="neo-box"
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              padding: '8px 12px',
+                              backgroundColor: '#fff',
+                              textDecoration: 'none',
+                              color: '#000',
+                              borderRadius: 8,
+                              marginBottom: 4,
+                              border: '2px solid #000'
+                            }}
+                          >
+                            <div style={{ width: 36, height: 36, borderRadius: 6, backgroundColor: '#5E35B1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>
+                              {(msg.text || 'DOC').split('.').pop().toUpperCase().slice(0, 4)}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 800, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {msg.text || 'Document'}
+                              </div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#666' }}>Tap to download</div>
+                            </div>
+                          </a>
+                        )}
+
+                        {/* Text */}
+                        {text && msg.mediaType !== 'DOCUMENT' ? (
+                          <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                            {text}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
 
                     {/* Timestamp + ticks */}
                     <div style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 700, color: '#555', marginTop: 2 }}>
-                      {Boolean(msg.isEdited) && (
+                      {Boolean(msg.isEdited) && !isDeleted && (
                         <span style={{ fontStyle: 'italic', opacity: 0.75, marginRight: 4, fontSize: 10, color: '#2e7d32' }}>
                           Edited •
                         </span>
                       )}
                       {timeStr}
                       {isOut && renderTicks(msg.status)}
-                      {isOut && msg.mediaType === 'TEXT' && (Date.now() - (msg.timestamp || 0) <= 10 * 60 * 1000) && (
+                      {isOut && !isDeleted && msg.mediaType === 'TEXT' && (Date.now() - (msg.timestamp || 0) <= 10 * 60 * 1000) && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -706,6 +716,33 @@ export default function ChatConversation({
                           title="Edit message (10 min window)"
                         >
                           <Edit2 size={12} color="#00838f" />
+                        </button>
+                      )}
+                      {isOut && !isDeleted && (
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (window.confirm('Delete this message for everyone?')) {
+                              try {
+                                await chatRepositoryWeb.deleteMessageForEveryone(msg.id, normPeer);
+                              } catch (err) {
+                                alert(err.message || 'Failed to delete message');
+                              }
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            padding: '0 0 0 5px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            opacity: 0.6
+                          }}
+                          title="Delete for everyone"
+                        >
+                          <Trash2 size={12} color="#d32f2f" />
                         </button>
                       )}
                     </div>

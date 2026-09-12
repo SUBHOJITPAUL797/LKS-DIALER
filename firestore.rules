@@ -35,7 +35,7 @@ service cloud.firestore {
         && data.ciphertext.size() > 0
         && data.iv is string
         && data.iv.size() > 0
-        && data.mediaType in ['TEXT', 'IMAGE', 'AUDIO', 'DOCUMENT', 'EDIT'];
+        && data.mediaType in ['TEXT', 'IMAGE', 'AUDIO', 'DOCUMENT', 'EDIT', 'DELETE', 'CHUNK'];
     }
 
     function isValidReceipt(data) {
