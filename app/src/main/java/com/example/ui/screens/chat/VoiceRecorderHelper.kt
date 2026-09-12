@@ -40,6 +40,12 @@ class VoiceRecorderHelper(private val context: Context) {
     private val _playbackProgress = MutableStateFlow(0f)
     val playbackProgress: StateFlow<Float> = _playbackProgress.asStateFlow()
 
+    private val _playbackSpeed = MutableStateFlow(1.0f)
+    val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
+
+    private val _playbackDurationMs = MutableStateFlow(0L)
+    val playbackDurationMs: StateFlow<Long> = _playbackDurationMs.asStateFlow()
+
     // Real-time waveform: list of normalized amplitudes 0f..1f, last 40 bars
     private val _amplitudeSamples = MutableStateFlow<List<Float>>(emptyList())
     val amplitudeSamples: StateFlow<List<Float>> = _amplitudeSamples.asStateFlow()
@@ -184,9 +190,15 @@ class VoiceRecorderHelper(private val context: Context) {
             val player = MediaPlayer().apply {
                 setDataSource(path)
                 prepare()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && _playbackSpeed.value != 1.0f) {
+                    try {
+                        playbackParams = playbackParams.setSpeed(_playbackSpeed.value)
+                    } catch (_: Exception) {}
+                }
                 setOnCompletionListener {
                     _isPlaying.value = false
                     _playbackProgress.value = 0f
+                    _playbackDurationMs.value = 0L
                     _currentPlayingPath.value = null
                     handler.removeCallbacks(playbackTimerRunnable)
                 }
@@ -194,11 +206,41 @@ class VoiceRecorderHelper(private val context: Context) {
             }
             mediaPlayer = player
             _currentPlayingPath.value = path
+            _playbackDurationMs.value = player.duration.toLong().coerceAtLeast(0L)
             _isPlaying.value = true
             handler.post(playbackTimerRunnable)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to play audio: ${e.message}", e)
             stopPlaying()
+        }
+    }
+
+    fun cyclePlaybackSpeed() {
+        val speeds = floatArrayOf(1.0f, 1.5f, 2.0f)
+        val currentIndex = speeds.indexOfFirst { it == _playbackSpeed.value }.takeIf { it >= 0 } ?: 0
+        val nextSpeed = speeds[(currentIndex + 1) % speeds.size]
+        _playbackSpeed.value = nextSpeed
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && mediaPlayer != null) {
+                val params = mediaPlayer!!.playbackParams
+                mediaPlayer!!.playbackParams = params.setSpeed(nextSpeed)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update playback speed: ${e.message}")
+        }
+    }
+
+    fun seekTo(ratio: Float) {
+        val player = mediaPlayer ?: return
+        try {
+            val dur = player.duration
+            if (dur > 0) {
+                val targetMs = (ratio.coerceIn(0f, 1f) * dur).toInt()
+                player.seekTo(targetMs)
+                _playbackProgress.value = ratio.coerceIn(0f, 1f)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to seek audio: ${e.message}")
         }
     }
 
@@ -213,6 +255,7 @@ class VoiceRecorderHelper(private val context: Context) {
         mediaPlayer = null
         _isPlaying.value = false
         _playbackProgress.value = 0f
+        _playbackDurationMs.value = 0L
         _currentPlayingPath.value = null
     }
 

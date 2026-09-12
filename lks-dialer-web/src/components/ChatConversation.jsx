@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download
@@ -115,6 +115,411 @@ function SwipeableMessage({ msg, onSwipeReply, children }) {
       }}>
         {children}
       </div>
+    </div>
+  );
+}
+
+// ─── Audio Waveform & Scrubber Helpers ─────────────────────────────────────────
+function getWaveformData(seedStr, count = 28) {
+  let hash = 0;
+  const str = String(seedStr || 'lks-audio');
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  const bars = [];
+  for (let i = 0; i < count; i++) {
+    const pseudo = Math.abs(Math.sin((hash + (i + 1) * 37) * 0.23));
+    const harmonic = Math.sin((i / (count - 1)) * Math.PI) * 0.45 + 0.55;
+    const pct = Math.max(18, Math.min(100, Math.round((pseudo * 0.6 + harmonic * 0.4) * 100)));
+    bars.push(pct);
+  }
+  return bars;
+}
+
+function formatAudioTime(seconds) {
+  if (!seconds || isNaN(seconds) || !isFinite(seconds) || seconds < 0) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+// ─── Interactive Waveform & Scrubber Component ────────────────────────────────
+function AudioWaveformScrubber({
+  msgId,
+  isCurrent,
+  isPlaying,
+  currentTime,
+  duration,
+  waveformBars,
+  isOut,
+  onSeek
+}) {
+  const progressRatio = duration > 0 ? Math.min(1, Math.max(0, currentTime / duration)) : 0;
+  const trackRef = useRef(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [hoverRatio, setHoverRatio] = useState(null);
+
+  const calculateRatio = (e) => {
+    if (!trackRef.current) return 0;
+    const rect = trackRef.current.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
+
+  const handlePointerDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+    const ratio = calculateRatio(e);
+    onSeek(ratio);
+
+    const onMove = (evt) => {
+      evt.preventDefault();
+      const moveRatio = calculateRatio(evt);
+      onSeek(moveRatio);
+    };
+
+    const onUp = () => {
+      setIsDragging(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+  };
+
+  const activeColor = isOut ? '#00E5FF' : '#00E676';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', userSelect: 'none' }}>
+      {/* Waveform Bars Container */}
+      <div
+        ref={trackRef}
+        onMouseDown={handlePointerDown}
+        onTouchStart={handlePointerDown}
+        onMouseMove={(e) => setHoverRatio(calculateRatio(e))}
+        onMouseLeave={() => setHoverRatio(null)}
+        style={{
+          display: 'flex',
+          alignItems: 'flex-end',
+          gap: 2.5,
+          height: 32,
+          padding: '4px 2px 2px 2px',
+          cursor: 'pointer',
+          position: 'relative',
+          userSelect: 'none'
+        }}
+        title="Click or drag to seek"
+      >
+        {waveformBars.map((heightPct, idx) => {
+          const barRatio = idx / (waveformBars.length - 1);
+          const isPassed = barRatio <= progressRatio;
+          const isPlayingBar = isPlaying && Math.abs(barRatio - progressRatio) < 0.12;
+
+          return (
+            <div
+              key={idx}
+              style={{
+                flex: 1,
+                minWidth: 2,
+                maxWidth: 4,
+                height: `${heightPct}%`,
+                backgroundColor: isPassed ? activeColor : '#CFD8DC',
+                borderRadius: 2,
+                border: isPassed ? '1px solid #000' : '1px solid #B0BEC5',
+                transformOrigin: 'bottom',
+                animation: isPlaying
+                  ? `waveBounce 0.75s ease-in-out ${(idx * 0.05) % 0.75}s infinite alternate`
+                  : 'none',
+                boxShadow: isPlayingBar ? `0 0 6px ${activeColor}` : 'none',
+                transition: isPlaying ? 'none' : 'background-color 0.15s ease, height 0.2s ease',
+                opacity: hoverRatio !== null && barRatio <= hoverRatio && !isPassed ? 0.7 : 1
+              }}
+            />
+          );
+        })}
+      </div>
+
+      {/* Scrubber Track with draggable thumb */}
+      <div
+        onMouseDown={handlePointerDown}
+        onTouchStart={handlePointerDown}
+        style={{
+          position: 'relative',
+          height: 14,
+          display: 'flex',
+          alignItems: 'center',
+          cursor: 'pointer',
+          userSelect: 'none',
+          padding: '0 2px'
+        }}
+      >
+        {/* Rail background */}
+        <div style={{
+          width: '100%',
+          height: 6,
+          backgroundColor: '#E0E0E0',
+          borderRadius: 4,
+          border: '1.5px solid #000',
+          overflow: 'hidden',
+          position: 'relative'
+        }}>
+          {/* Progress fill */}
+          <div style={{
+            height: '100%',
+            width: `${Math.min(100, Math.max(0, progressRatio * 100))}%`,
+            background: isOut
+              ? 'linear-gradient(90deg, #00C9FF, #92FE9D)'
+              : 'linear-gradient(90deg, #FF9100, #00E676)',
+            transition: isDragging ? 'none' : 'width 0.1s linear'
+          }} />
+        </div>
+
+        {/* Thumb */}
+        <div style={{
+          position: 'absolute',
+          left: `calc(${Math.min(100, Math.max(0, progressRatio * 100))}% - 7px)`,
+          width: 14,
+          height: 14,
+          borderRadius: '50%',
+          backgroundColor: '#FFE600',
+          border: '2px solid #000',
+          boxShadow: '1px 1px 0px #000',
+          transform: isDragging ? 'scale(1.25)' : 'scale(1)',
+          animation: isPlaying ? 'scrubberPulse 1.2s infinite ease-in-out' : 'none',
+          transition: isDragging ? 'none' : 'transform 0.12s ease',
+          pointerEvents: 'none'
+        }} />
+      </div>
+
+      {/* Timestamps Row */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        fontSize: 10,
+        fontWeight: 800,
+        fontFamily: 'monospace',
+        color: '#424242',
+        padding: '0 2px'
+      }}>
+        <span>{formatAudioTime(currentTime)}</span>
+        {isPlaying && (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 900,
+            color: '#00E676',
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3
+          }}>
+            <span style={{
+              display: 'inline-block',
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              backgroundColor: '#00E676',
+              border: '1px solid #000'
+            }} />
+            Playing
+          </span>
+        )}
+        <span>{duration > 0 ? formatAudioTime(duration) : '--:--'}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Rich Audio Document Message Card ─────────────────────────────────────────
+function AudioDocumentCard({
+  msg,
+  isOut,
+  audioPlaybackState,
+  onTogglePlay,
+  onSeek,
+  onCycleSpeed,
+  onDownload,
+  formatFileSize
+}) {
+  const isCurrent = audioPlaybackState.msgId === msg.id;
+  const isPlaying = isCurrent && audioPlaybackState.isPlaying;
+  const currentTime = isCurrent ? audioPlaybackState.currentTime : 0;
+  const duration = isCurrent && audioPlaybackState.duration > 0
+    ? audioPlaybackState.duration
+    : (msg.mediaDurationMs ? msg.mediaDurationMs / 1000 : 0);
+  const playbackRate = isCurrent ? audioPlaybackState.playbackRate : 1.0;
+
+  const fileName = msg.fileName || msg.text || 'Audio file';
+  const ext = ((fileName.split('.').pop() || 'MP3')).toUpperCase().slice(0, 4);
+
+  const waveformBars = useMemo(() => getWaveformData(msg.id || fileName, 30), [msg.id, fileName]);
+
+  const handleSeek = (ratio) => {
+    onSeek(msg.id, ratio, msg.mediaUrl || msg.mediaData);
+  };
+
+  return (
+    <div
+      className="neo-box"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        padding: '12px 14px',
+        backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
+        borderRadius: 12,
+        marginBottom: 4,
+        border: '2.5px solid #000',
+        boxShadow: '3px 3px 0px #000',
+        minWidth: 260,
+        maxWidth: 340
+      }}
+    >
+      {/* Top Header: Badge + Title + Action Controls */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{
+          width: 42,
+          height: 42,
+          borderRadius: 10,
+          backgroundColor: '#E91E63',
+          color: '#fff',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          border: '2px solid #000',
+          boxShadow: '1.5px 1.5px 0px #000',
+          flexShrink: 0
+        }}>
+          <span style={{ fontSize: 13, lineHeight: 1 }}>🎵</span>
+          <span style={{ fontWeight: 900, fontSize: 9, marginTop: 1, letterSpacing: 0.5 }}>
+            {ext}
+          </span>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontWeight: 800,
+              fontSize: 13,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              color: '#000'
+            }}
+            title={fileName}
+          >
+            {fileName}
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
+            {formatFileSize(msg.fileSize)}
+            {msg.fileSize ? ' • ' : ''}
+            Audio
+          </div>
+        </div>
+
+        {/* Speed button + Play/Pause button + Download button */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onCycleSpeed(msg.id);
+            }}
+            className="neo-box"
+            style={{
+              padding: '3px 7px',
+              fontSize: 11,
+              fontWeight: 900,
+              borderRadius: 6,
+              border: '2px solid #000',
+              boxShadow: '1.5px 1.5px 0px #000',
+              backgroundColor: playbackRate === 1.5 ? '#FFE600' : playbackRate === 2.0 ? '#FF3366' : '#FFFFFF',
+              color: playbackRate === 2.0 ? '#FFFFFF' : '#000000',
+              cursor: 'pointer',
+              lineHeight: '16px',
+              transition: 'all 0.15s ease'
+            }}
+            title={`Playback Speed: ${playbackRate}x (Click to change)`}
+          >
+            {playbackRate}x
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onTogglePlay(msg.id, msg.mediaUrl || msg.mediaData);
+            }}
+            className="neo-box"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              backgroundColor: isPlaying ? '#FF5252' : '#00E676',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '2px solid #000',
+              boxShadow: '1.5px 1.5px 0px #000',
+              cursor: 'pointer',
+              padding: 0,
+              transition: 'transform 0.1s ease'
+            }}
+            title={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? <Pause size={17} color="#000" /> : <Play size={17} color="#000" style={{ marginLeft: 2 }} />}
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onDownload(e, msg);
+            }}
+            className="neo-box"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              backgroundColor: '#FFE600',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '2px solid #000',
+              boxShadow: '1.5px 1.5px 0px #000',
+              cursor: 'pointer',
+              padding: 0
+            }}
+            title="Download Audio"
+          >
+            <Download size={16} color="#000" />
+          </button>
+        </div>
+      </div>
+
+      {/* Waveform Visualizer and Scrubber */}
+      <AudioWaveformScrubber
+        msgId={msg.id}
+        isCurrent={isCurrent}
+        isPlaying={isPlaying}
+        currentTime={currentTime}
+        duration={duration}
+        waveformBars={waveformBars}
+        isOut={isOut}
+        onSeek={handleSeek}
+      />
     </div>
   );
 }
@@ -245,8 +650,15 @@ export default function ChatConversation({
   const audioChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
 
-  // Audio playback
-  const [playingAudioId, setPlayingAudioId] = useState(null);
+  // Audio playback state
+  const [audioPlaybackState, setAudioPlaybackState] = useState({
+    msgId: null,
+    isPlaying: false,
+    currentTime: 0,
+    duration: 0,
+    playbackRate: 1.0,
+  });
+  const playingAudioId = audioPlaybackState.isPlaying ? audioPlaybackState.msgId : null;
   const audioElementRef = useRef(null);
 
   const messagesEndRef = useRef(null);
@@ -313,7 +725,10 @@ export default function ChatConversation({
       chatRepositoryWeb.setActiveChatPeer(null);
       chatRepositoryWeb.setTyping(normPeer, false);
       unsubscribe();
-      if (audioElementRef.current) audioElementRef.current.pause();
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current = null;
+      }
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       if (mediaRecorderRef.current?.state === 'recording') {
         try { mediaRecorderRef.current.stop(); } catch {}
@@ -490,15 +905,31 @@ export default function ChatConversation({
 
   // ── Audio playback ──────────────────────────────────────────────────────────
   const togglePlayAudio = async (msgId, rawAudio) => {
-    if (playingAudioId === msgId) {
-      audioElementRef.current?.pause();
-      setPlayingAudioId(null);
+    // 1. If this message is already the active audio
+    if (audioPlaybackState.msgId === msgId && audioElementRef.current) {
+      if (audioPlaybackState.isPlaying) {
+        audioElementRef.current.pause();
+        setAudioPlaybackState(prev => ({ ...prev, isPlaying: false }));
+      } else {
+        try {
+          await audioElementRef.current.play();
+          setAudioPlaybackState(prev => ({ ...prev, isPlaying: true }));
+        } catch (e) {
+          console.warn('Resume play error:', e);
+        }
+      }
       return;
     }
+
+    // 2. Otherwise stop and clean up previous audio
     if (audioElementRef.current) {
       audioElementRef.current.pause();
+      audioElementRef.current.removeAttribute('src');
+      audioElementRef.current.load();
+      audioElementRef.current = null;
     }
 
+    // 3. Resolve source
     let src = rawAudio;
     if (typeof src === 'string' && src.startsWith('idb:')) {
       src = await mediaStorageWeb.getMediaUrl(msgId);
@@ -511,26 +942,117 @@ export default function ChatConversation({
       return;
     }
 
-    const tryPlay = (fallbackSrc) => {
-      const audio = new Audio(fallbackSrc);
+    const currentRate = audioPlaybackState.playbackRate || 1.0;
+
+    const setupAndPlay = (audioSrc) => {
+      const audio = new Audio(audioSrc);
+      audio.preload = 'metadata';
+      audio.playbackRate = currentRate;
+      if ('preservesPitch' in audio) {
+        audio.preservesPitch = true;
+      }
+
+      audio.onloadedmetadata = () => {
+        if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
+          setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, duration: audio.duration } : prev);
+        }
+      };
+
+      audio.ondurationchange = () => {
+        if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
+          setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, duration: audio.duration } : prev);
+        }
+      };
+
+      audio.ontimeupdate = () => {
+        setAudioPlaybackState(prev => {
+          if (prev.msgId !== msgId) return prev;
+          const dur = (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration))
+            ? audio.duration
+            : prev.duration;
+          return {
+            ...prev,
+            currentTime: audio.currentTime || 0,
+            duration: dur
+          };
+        });
+      };
+
+      audio.onplay = () => {
+        setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, isPlaying: true } : prev);
+      };
+
+      audio.onpause = () => {
+        setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, isPlaying: false } : prev);
+      };
+
+      audio.onended = () => {
+        setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, isPlaying: false, currentTime: 0 } : prev);
+      };
+
+      audio.onerror = (e) => {
+        console.warn('Audio play error on source:', audioSrc, e);
+        if (typeof src === 'string' && !src.startsWith('blob:') && !src.startsWith('http')) {
+          if (!audioSrc.includes('audio/webm')) {
+            setupAndPlay(`data:audio/webm;base64,${src}`);
+            return;
+          }
+        }
+        setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, isPlaying: false } : prev);
+      };
+
       audioElementRef.current = audio;
-      audio.onended = () => setPlayingAudioId(null);
-      audio.play().then(() => setPlayingAudioId(msgId)).catch(() => setPlayingAudioId(null));
+      setAudioPlaybackState({
+        msgId,
+        isPlaying: true,
+        currentTime: 0,
+        duration: (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) ? audio.duration : 0,
+        playbackRate: currentRate
+      });
+
+      audio.play().catch(err => {
+        console.warn('Initial play error:', err);
+        if (typeof src === 'string' && !src.startsWith('blob:') && !src.startsWith('http') && !audioSrc.includes('audio/webm')) {
+          setupAndPlay(`data:audio/webm;base64,${src}`);
+        } else {
+          setAudioPlaybackState(prev => prev.msgId === msgId ? { ...prev, isPlaying: false } : prev);
+        }
+      });
     };
 
     if (src.startsWith('blob:') || src.startsWith('http')) {
-      const a = new Audio(src);
-      audioElementRef.current = a;
-      a.onended = () => setPlayingAudioId(null);
-      a.play().then(() => setPlayingAudioId(msgId)).catch(e => console.warn('Play error:', e));
+      setupAndPlay(src);
     } else {
       const fullSrc = src.startsWith('data:') ? src : `data:audio/mp4;base64,${src}`;
-      const a = new Audio(fullSrc);
-      audioElementRef.current = a;
-      a.onended = () => setPlayingAudioId(null);
-      a.onerror = () => tryPlay(`data:audio/webm;base64,${src}`);
-      a.play().then(() => setPlayingAudioId(msgId)).catch(() => tryPlay(`data:audio/webm;base64,${src}`));
+      setupAndPlay(fullSrc);
     }
+  };
+
+  const seekAudio = async (msgId, targetRatio, rawAudio) => {
+    if (audioPlaybackState.msgId !== msgId || !audioElementRef.current) {
+      await togglePlayAudio(msgId, rawAudio);
+    }
+
+    if (audioElementRef.current) {
+      const dur = audioElementRef.current.duration || audioPlaybackState.duration || 0;
+      if (dur > 0 && isFinite(dur)) {
+        const targetTime = Math.max(0, Math.min(dur, targetRatio * dur));
+        audioElementRef.current.currentTime = targetTime;
+        setAudioPlaybackState(prev => ({ ...prev, currentTime: targetTime }));
+      }
+    }
+  };
+
+  const cyclePlaybackRate = (msgId) => {
+    const speeds = [1.0, 1.5, 2.0];
+    const currentRate = audioPlaybackState.playbackRate || 1.0;
+    const nextIdx = (speeds.indexOf(currentRate) + 1) % speeds.length;
+    const nextRate = speeds[nextIdx];
+
+    if (audioElementRef.current && audioPlaybackState.msgId === msgId) {
+      audioElementRef.current.playbackRate = nextRate;
+    }
+    setAudioPlaybackState(prev => ({ ...prev, playbackRate: nextRate }));
   };
 
   const formatFileSize = (bytes) => {
@@ -835,101 +1357,188 @@ export default function ChatConversation({
                           />
                         )}
 
-                        {/* Audio */}
+                        {/* Audio / Voice Note */}
                         {msg.mediaType === 'AUDIO' && msg.mediaData && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 180 }}>
-                            <button onClick={() => togglePlayAudio(msg.id, msg.mediaData)} className="neo-box"
-                              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : 'var(--accent)', cursor: 'pointer', borderRadius: '50%' }}>
-                              {playingAudioId === msg.id ? <Pause size={18} /> : <Play size={18} style={{ marginLeft: 2 }} />}
-                            </button>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ height: 6, backgroundColor: '#ddd', borderRadius: 3, border: '1px solid #000', overflow: 'hidden' }}>
-                                <div style={{
-                                  height: '100%',
-                                  backgroundColor: playingAudioId === msg.id ? 'var(--primary)' : '#00E5FF',
-                                  width: playingAudioId === msg.id ? '100%' : '0%',
-                                  transition: playingAudioId === msg.id ? 'width 10s linear' : 'none'
-                                }} />
+                          <div
+                            className="neo-box"
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 6,
+                              padding: '10px 12px',
+                              backgroundColor: isOut ? '#E0F7FA' : '#FFFFFF',
+                              borderRadius: 12,
+                              border: '2px solid #000',
+                              boxShadow: '2px 2px 0px #000',
+                              minWidth: 230,
+                              maxWidth: 310,
+                              marginBottom: 4
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  togglePlayAudio(msg.id, msg.mediaData);
+                                }}
+                                className="neo-box"
+                                style={{
+                                  width: 36,
+                                  height: 36,
+                                  borderRadius: '50%',
+                                  padding: 0,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  backgroundColor: (audioPlaybackState.msgId === msg.id && audioPlaybackState.isPlaying) ? '#FF5252' : '#00E676',
+                                  border: '2px solid #000',
+                                  boxShadow: '1.5px 1.5px 0px #000',
+                                  cursor: 'pointer',
+                                  flexShrink: 0,
+                                  transition: 'transform 0.1s ease'
+                                }}
+                                title={(audioPlaybackState.msgId === msg.id && audioPlaybackState.isPlaying) ? "Pause" : "Play"}
+                              >
+                                {(audioPlaybackState.msgId === msg.id && audioPlaybackState.isPlaying) ? (
+                                  <Pause size={17} color="#000" />
+                                ) : (
+                                  <Play size={17} color="#000" style={{ marginLeft: 2 }} />
+                                )}
+                              </button>
+
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12, fontWeight: 900, color: '#000', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <span>🎤</span>
+                                  <span>Voice message</span>
+                                </div>
                               </div>
-                              <div style={{ fontSize: 11, fontWeight: 800, marginTop: 2, color: '#555' }}>
-                                🎤 {formatDur(msg.mediaDurationMs)}
-                              </div>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  cyclePlaybackRate(msg.id);
+                                }}
+                                className="neo-box"
+                                style={{
+                                  padding: '2px 7px',
+                                  fontSize: 11,
+                                  fontWeight: 900,
+                                  borderRadius: 6,
+                                  border: '2px solid #000',
+                                  boxShadow: '1.5px 1.5px 0px #000',
+                                  backgroundColor: (audioPlaybackState.msgId === msg.id && audioPlaybackState.playbackRate === 1.5)
+                                    ? '#FFE600'
+                                    : (audioPlaybackState.msgId === msg.id && audioPlaybackState.playbackRate === 2.0)
+                                    ? '#FF3366'
+                                    : '#FFFFFF',
+                                  color: (audioPlaybackState.msgId === msg.id && audioPlaybackState.playbackRate === 2.0) ? '#FFFFFF' : '#000000',
+                                  cursor: 'pointer',
+                                  lineHeight: '16px',
+                                  transition: 'all 0.15s ease'
+                                }}
+                                title="Toggle Speed"
+                              >
+                                {(audioPlaybackState.msgId === msg.id ? audioPlaybackState.playbackRate : 1.0)}x
+                              </button>
                             </div>
+
+                            <AudioWaveformScrubber
+                              msgId={msg.id}
+                              isCurrent={audioPlaybackState.msgId === msg.id}
+                              isPlaying={audioPlaybackState.msgId === msg.id && audioPlaybackState.isPlaying}
+                              currentTime={audioPlaybackState.msgId === msg.id ? audioPlaybackState.currentTime : 0}
+                              duration={audioPlaybackState.msgId === msg.id && audioPlaybackState.duration > 0
+                                ? audioPlaybackState.duration
+                                : (msg.mediaDurationMs ? msg.mediaDurationMs / 1000 : 0)}
+                              waveformBars={getWaveformData(msg.id, 26)}
+                              isOut={isOut}
+                              onSeek={(ratio) => seekAudio(msg.id, ratio, msg.mediaData)}
+                            />
                           </div>
                         )}
 
                         {/* Document */}
                         {msg.mediaType === 'DOCUMENT' && (
-                          <div
-                            onClick={(e) => handleDownloadDocument(e, msg)}
-                            className="neo-box"
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 12,
-                              padding: '10px 14px',
-                              backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
-                              borderRadius: 10,
-                              marginBottom: 4,
-                              border: '2px solid #000',
-                              minWidth: 220,
-                              maxWidth: 320,
-                              cursor: 'pointer'
-                            }}
-                          >
-                            <div style={{
-                              width: 42,
-                              height: 42,
-                              borderRadius: 8,
-                              backgroundColor: isAudioDoc(msg.fileName || msg.text) ? '#E91E63' : '#5E35B1',
-                              color: '#fff',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              fontWeight: 900,
-                              fontSize: 11,
-                              flexShrink: 0
-                            }}>
-                              {((msg.fileName || msg.text || 'DOC').split('.').pop() || 'DOC').toUpperCase().slice(0, 4)}
-                            </div>
-
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div
-                                style={{
-                                  fontWeight: 800,
-                                  fontSize: 13,
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                  color: '#000'
-                                }}
-                                title={msg.fileName || msg.text || 'Document'}
-                              >
-                                {msg.fileName || msg.text || 'Document'}
+                          isAudioDoc(msg.fileName || msg.text) ? (
+                            <AudioDocumentCard
+                              msg={msg}
+                              isOut={isOut}
+                              audioPlaybackState={audioPlaybackState}
+                              onTogglePlay={togglePlayAudio}
+                              onSeek={seekAudio}
+                              onCycleSpeed={cyclePlaybackRate}
+                              onDownload={handleDownloadDocument}
+                              formatFileSize={formatFileSize}
+                            />
+                          ) : (
+                            <div
+                              onClick={(e) => handleDownloadDocument(e, msg)}
+                              className="neo-box"
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 12,
+                                padding: '10px 14px',
+                                backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
+                                borderRadius: 10,
+                                marginBottom: 4,
+                                border: '2px solid #000',
+                                minWidth: 220,
+                                maxWidth: 320,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              <div style={{
+                                width: 42,
+                                height: 42,
+                                borderRadius: 8,
+                                backgroundColor: '#5E35B1',
+                                color: '#fff',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontWeight: 900,
+                                fontSize: 11,
+                                flexShrink: 0
+                              }}>
+                                {((msg.fileName || msg.text || 'DOC').split('.').pop() || 'DOC').toUpperCase().slice(0, 4)}
                               </div>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
-                                {formatFileSize(msg.fileSize)}
-                                {msg.fileSize ? ' • ' : ''}
-                                {isAudioDoc(msg.fileName || msg.text) ? 'Audio' : 'Document'}
-                              </div>
-                            </div>
 
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                              {isAudioDoc(msg.fileName || msg.text) && (
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    fontWeight: 800,
+                                    fontSize: 13,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    color: '#000'
+                                  }}
+                                  title={msg.fileName || msg.text || 'Document'}
+                                >
+                                  {msg.fileName || msg.text || 'Document'}
+                                </div>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
+                                  {formatFileSize(msg.fileSize)}
+                                  {msg.fileSize ? ' • ' : ''}
+                                  Document
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                                 <button
                                   type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    togglePlayAudio(msg.id, msg.mediaUrl || msg.mediaData);
-                                  }}
+                                  onClick={(e) => handleDownloadDocument(e, msg)}
                                   className="neo-box"
                                   style={{
                                     width: 34,
                                     height: 34,
                                     borderRadius: '50%',
-                                    backgroundColor: playingAudioId === msg.id ? '#FF5252' : '#00E676',
+                                    backgroundColor: '#FFE600',
                                     display: 'flex',
                                     alignItems: 'center',
                                     justifyContent: 'center',
@@ -937,34 +1546,13 @@ export default function ChatConversation({
                                     cursor: 'pointer',
                                     padding: 0
                                   }}
-                                  title={playingAudioId === msg.id ? "Pause Audio" : "Play Audio"}
+                                  title="Download"
                                 >
-                                  {playingAudioId === msg.id ? <Pause size={16} color="#000" /> : <Play size={16} color="#000" style={{ marginLeft: 2 }} />}
+                                  <Download size={16} color="#000" />
                                 </button>
-                              )}
-
-                              <button
-                                type="button"
-                                onClick={(e) => handleDownloadDocument(e, msg)}
-                                className="neo-box"
-                                style={{
-                                  width: 34,
-                                  height: 34,
-                                  borderRadius: '50%',
-                                  backgroundColor: '#FFE600',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  border: '2px solid #000',
-                                  cursor: 'pointer',
-                                  padding: 0
-                                }}
-                                title="Download"
-                              >
-                                <Download size={16} color="#000" />
-                              </button>
+                              </div>
                             </div>
-                          </div>
+                          )
                         )}
 
                         {/* Text */}

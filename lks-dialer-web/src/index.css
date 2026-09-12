@@ -262,3 +262,34 @@ body {
   border-radius: 50%;
   animation: neo-pulse 1.5s infinite ease-in-out;
 }
+
+/* 🎵 Audio Waveform & Equalizer Animations */
+@keyframes waveBounce {
+  0% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1.18);
+  }
+  100% {
+    transform: scaleY(0.45);
+  }
+}
+
+@keyframes waveGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 1px rgba(0, 230, 118, 0.4));
+  }
+  50% {
+    filter: drop-shadow(0 0 6px rgba(0, 230, 118, 0.9));
+  }
+}
+
+@keyframes scrubberPulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.22);
+  }
+}

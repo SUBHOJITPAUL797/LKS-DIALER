@@ -37,6 +37,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -148,6 +151,8 @@ fun ChatConversationScreen(
     val isPlaying by voiceHelper.isPlaying.collectAsState()
     val currentPlayingPath by voiceHelper.currentPlayingPath.collectAsState()
     val playbackProgress by voiceHelper.playbackProgress.collectAsState()
+    val playbackSpeed by voiceHelper.playbackSpeed.collectAsState()
+    val playbackDurationMs by voiceHelper.playbackDurationMs.collectAsState()
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
@@ -416,10 +421,18 @@ fun ChatConversationScreen(
                             myDisplayName = myDisplayName,
                             onReply = { replyCtx -> replyingTo = replyCtx }
                         ) {
+                            val isMsgPlaying = isPlaying && currentPlayingPath != null &&
+                                    (currentPlayingPath == msg.mediaPath || (msg.mediaPath?.let { File(it).absolutePath } == currentPlayingPath))
+                            val msgProgress = if (isMsgPlaying) playbackProgress else 0f
+                            val activeDurationMs = if (isMsgPlaying && playbackDurationMs > 0L) playbackDurationMs else msg.mediaDurationMs
                             MessageBubble(
                                 message = msg,
-                                isPlaying = (isPlaying && currentPlayingPath == msg.mediaPath),
-                                playbackProgress = if (currentPlayingPath == msg.mediaPath) playbackProgress else 0f,
+                                isPlaying = isMsgPlaying,
+                                playbackProgress = msgProgress,
+                                playbackDurationMs = activeDurationMs,
+                                playbackSpeed = playbackSpeed,
+                                onCycleSpeed = { voiceHelper.cyclePlaybackSpeed() },
+                                onSeekAudio = { ratio -> voiceHelper.seekTo(ratio) },
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
                                 onImageClick = { path -> selectedImagePreviewPath = path },
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
@@ -1303,6 +1316,154 @@ private fun E2eeInfoBanner() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Animated Audio Waveform Player with Scrubber & Speed Controls
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun AudioWaveformPlayer(
+    isPlaying: Boolean,
+    progress: Float,
+    durationMs: Long,
+    playbackSpeed: Float,
+    isOutgoing: Boolean,
+    onTogglePlay: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onCycleSpeed: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val activeColor = if (isOutgoing) TealPrimary else GreenCall
+    val inactiveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+
+    val infiniteTransition = rememberInfiniteTransition(label = "waveAnim")
+    val wavePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6.2831855f, // 2 * PI
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wavePhase"
+    )
+
+    Column(modifier = modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onTogglePlay,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(activeColor)
+            ) {
+                Icon(
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = "Play/Pause",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Waveform Canvas with interactive drag/seek
+            Canvas(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(30.dp)
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onHorizontalDrag = { change, _ ->
+                                val ratio = (change.position.x / size.width).coerceIn(0f, 1f)
+                                onSeek(ratio)
+                            },
+                            onDragStart = { offset ->
+                                val ratio = (offset.x / size.width).coerceIn(0f, 1f)
+                                onSeek(ratio)
+                            }
+                        )
+                    }
+            ) {
+                val barCount = 28
+                val barWidth = 3.dp.toPx()
+                val totalWidth = size.width
+                val spacing = (totalWidth - (barCount * barWidth)) / (barCount - 1).coerceAtLeast(1)
+
+                for (i in 0 until barCount) {
+                    val barRatio = i.toFloat() / (barCount - 1).toFloat()
+                    val isPassed = barRatio <= progress
+
+                    val harmonic = (kotlin.math.sin(i * 0.45) * 0.35 + 0.65).toFloat()
+                    val bounce = if (isPlaying) {
+                        (kotlin.math.sin(wavePhase + i * 0.4) * 0.3f + 1f).toFloat()
+                    } else 1f
+
+                    val barHeight = (size.height * 0.88f * harmonic * bounce).coerceIn(5.dp.toPx(), size.height)
+                    val x = i * (barWidth + spacing)
+                    val y = size.height - barHeight
+
+                    drawRoundRect(
+                        color = if (isPassed) activeColor else inactiveColor,
+                        topLeft = Offset(x, y),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Speed Toggle Button
+            Surface(
+                onClick = onCycleSpeed,
+                shape = RoundedCornerShape(8.dp),
+                color = if (playbackSpeed > 1.0f) activeColor.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.padding(start = 2.dp)
+            ) {
+                Text(
+                    text = "${if (playbackSpeed == 1.5f) "1.5" else playbackSpeed.toInt().toString()}x",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                    color = if (playbackSpeed > 1.0f) activeColor else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
+                )
+            }
+        }
+
+        // Timestamps & Playing Indicator
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 2.dp, start = 46.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            val currentSec = if (durationMs > 0) ((progress * durationMs) / 1000).toLong() else 0L
+            val totalSec = (durationMs / 1000)
+
+            Text(
+                text = String.format(Locale.getDefault(), "%02d:%02d", currentSec / 60, currentSec % 60),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (isPlaying) {
+                Text(
+                    text = "● Playing",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                    color = activeColor
+                )
+            }
+
+            Text(
+                text = if (totalSec > 0) String.format(Locale.getDefault(), "%02d:%02d", totalSec / 60, totalSec % 60) else "--:--",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Message Bubble
 // ──────────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalFoundationApi::class)
@@ -1311,6 +1472,10 @@ private fun MessageBubble(
     message: MessageEntity,
     isPlaying: Boolean,
     playbackProgress: Float,
+    playbackDurationMs: Long = 0L,
+    playbackSpeed: Float = 1.0f,
+    onCycleSpeed: () -> Unit = {},
+    onSeekAudio: (Float) -> Unit = {},
     onPlayAudio: (path: String) -> Unit,
     onImageClick: (path: String) -> Unit,
     onMarkMessageRead: (messageId: String) -> Unit,
@@ -1478,48 +1643,22 @@ private fun MessageBubble(
 
                 // ── Audio Note ────────────────────────────────────────────────
                 if (message.mediaType == ChatMediaType.AUDIO.name && !message.mediaPath.isNullOrBlank()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = {
-                                onPlayAudio(message.mediaPath)
-                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                    onMarkMessageRead(message.id)
-                                }
-                            },
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(if (isOutgoing) TealPrimary else GreenCall)
-                        ) {
-                            Icon(
-                                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            LinearProgressIndicator(
-                                progress = { playbackProgress },
-                                modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-                                color = if (isOutgoing) TealPrimary else GreenCall,
-                                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            val totalSeconds = (message.mediaDurationMs / 1000)
-                            Text(
-                                text = String.format(Locale.getDefault(), "%02d:%02d", totalSeconds / 60, totalSeconds % 60),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    val finalDuration = if (playbackDurationMs > 0L) playbackDurationMs else message.mediaDurationMs
+                    AudioWaveformPlayer(
+                        isPlaying = isPlaying,
+                        progress = playbackProgress,
+                        durationMs = finalDuration,
+                        playbackSpeed = playbackSpeed,
+                        isOutgoing = isOutgoing,
+                        onTogglePlay = {
+                            onPlayAudio(message.mediaPath)
+                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                onMarkMessageRead(message.id)
+                            }
+                        },
+                        onSeek = onSeekAudio,
+                        onCycleSpeed = onCycleSpeed
+                    )
                 }
 
                 // ── Document Card ─────────────────────────────────────────────
@@ -1535,6 +1674,21 @@ private fun MessageBubble(
                             ?: fileName.substringAfterLast('.', "DOC"))
                             .uppercase(Locale.getDefault()).take(5)
                     }
+                    val isAudio = ext in listOf("MP3", "M4A", "WAV", "AAC", "OGG", "FLAC", "OPUS")
+                    val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
+                        if (message.mediaDurationMs > 0L) message.mediaDurationMs
+                        else if (isAudio && hasFile) {
+                            try {
+                                val retriever = android.media.MediaMetadataRetriever()
+                                retriever.setDataSource(docFile!!.absolutePath)
+                                val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                                retriever.release()
+                                dur
+                            } catch (_: Exception) { 0L }
+                        } else 0L
+                    }
+                    val finalAudioDuration = if (isPlaying && playbackDurationMs > 0L) playbackDurationMs else audioDurationMs
+
                     val fileSizeFormatted = remember(docFile, hasFile) {
                         if (docFile != null && hasFile) {
                             val bytes = docFile.length()
@@ -1578,52 +1732,73 @@ private fun MessageBubble(
                                 }
                             }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Surface(
-                                color = when (ext) {
-                                    "PDF" -> Color(0xFFE53935)
-                                    "DOC", "DOCX" -> Color(0xFF1E88E5)
-                                    "XLS", "XLSX" -> Color(0xFF43A047)
-                                    else -> TealPrimary
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.size(40.dp)
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Text(
-                                        text = ext.take(4),
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
+                                Surface(
+                                    color = when {
+                                        isAudio -> Color(0xFFE91E63)
+                                        ext == "PDF" -> Color(0xFFE53935)
+                                        ext in listOf("DOC", "DOCX") -> Color(0xFF1E88E5)
+                                        ext in listOf("XLS", "XLSX") -> Color(0xFF43A047)
+                                        else -> TealPrimary
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = if (isAudio) "🎵" else ext.take(4),
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = if (isAudio) 16.sp else 11.sp
+                                        )
+                                    }
                                 }
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = fileName,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = fileName,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (fileSizeFormatted.isNotBlank()) {
+                                        Text(
+                                            text = fileSizeFormatted,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    if (hasFile) Icons.Default.FileDownload else Icons.Default.AttachFile,
+                                    contentDescription = if (hasFile) "Open Document" else "Document",
+                                    tint = if (isOutgoing) TealPrimary else GreenCall,
+                                    modifier = Modifier.size(22.dp)
                                 )
-                                if (fileSizeFormatted.isNotBlank()) {
-                                    Text(
-                                        text = fileSizeFormatted,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
                             }
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                if (hasFile) Icons.Default.FileDownload else Icons.Default.AttachFile,
-                                contentDescription = if (hasFile) "Open Document" else "Document",
-                                tint = if (isOutgoing) TealPrimary else GreenCall,
-                                modifier = Modifier.size(22.dp)
-                            )
+
+                            if (isAudio && hasFile) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                AudioWaveformPlayer(
+                                    isPlaying = isPlaying,
+                                    progress = playbackProgress,
+                                    durationMs = finalAudioDuration,
+                                    playbackSpeed = playbackSpeed,
+                                    isOutgoing = isOutgoing,
+                                    onTogglePlay = {
+                                        onPlayAudio(docFile!!.absolutePath)
+                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                            onMarkMessageRead(message.id)
+                                        }
+                                    },
+                                    onSeek = onSeekAudio,
+                                    onCycleSpeed = onCycleSpeed
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(4.dp))
