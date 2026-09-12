@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
-  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip
+  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
 import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
+import { mediaStorageWeb } from '../lib/MediaStorageWeb';
 
 // ─── Swipeable Message Bubble ─────────────────────────────────────────────────
 function SwipeableMessage({ msg, onSwipeReply, children }) {
@@ -328,6 +329,7 @@ export default function ChatConversation({
   const handleSwipeReply = useCallback((msg) => {
     const preview = msg.mediaType === 'IMAGE' ? '📷 Photo'
                   : msg.mediaType === 'AUDIO' ? '🎤 Voice message'
+                  : msg.mediaType === 'DOCUMENT' ? `📄 ${msg.fileName || msg.text || 'Document'}`
                   : msg.text || '(message)';
     setReplyingTo({
       id: msg.id,
@@ -419,8 +421,8 @@ export default function ChatConversation({
   const handleDocSelected = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      alert('File size exceeds 5MB limit.');
+    if (file.size > 50 * 1024 * 1024) {
+      alert('File size exceeds 50MB limit.');
       return;
     }
     const reader = new FileReader();
@@ -487,25 +489,94 @@ export default function ChatConversation({
   };
 
   // ── Audio playback ──────────────────────────────────────────────────────────
-  const togglePlayAudio = (msgId, base64Audio) => {
+  const togglePlayAudio = async (msgId, rawAudio) => {
     if (playingAudioId === msgId) {
       audioElementRef.current?.pause();
       setPlayingAudioId(null);
       return;
     }
-    if (audioElementRef.current) audioElementRef.current.pause();
-    const tryPlay = (src) => {
-      const audio = new Audio(src);
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+    }
+
+    let src = rawAudio;
+    if (typeof src === 'string' && src.startsWith('idb:')) {
+      src = await mediaStorageWeb.getMediaUrl(msgId);
+    } else if (!src) {
+      src = await mediaStorageWeb.getMediaUrl(msgId);
+    }
+
+    if (!src) {
+      alert('Audio not ready yet');
+      return;
+    }
+
+    const tryPlay = (fallbackSrc) => {
+      const audio = new Audio(fallbackSrc);
       audioElementRef.current = audio;
       audio.onended = () => setPlayingAudioId(null);
       audio.play().then(() => setPlayingAudioId(msgId)).catch(() => setPlayingAudioId(null));
     };
-    const src = base64Audio.startsWith('data:') ? base64Audio : `data:audio/mp4;base64,${base64Audio}`;
-    const a = new Audio(src);
-    audioElementRef.current = a;
-    a.onended = () => setPlayingAudioId(null);
-    a.onerror = () => tryPlay(`data:audio/webm;base64,${base64Audio}`);
-    a.play().then(() => setPlayingAudioId(msgId)).catch(() => tryPlay(`data:audio/webm;base64,${base64Audio}`));
+
+    if (src.startsWith('blob:') || src.startsWith('http')) {
+      const a = new Audio(src);
+      audioElementRef.current = a;
+      a.onended = () => setPlayingAudioId(null);
+      a.play().then(() => setPlayingAudioId(msgId)).catch(e => console.warn('Play error:', e));
+    } else {
+      const fullSrc = src.startsWith('data:') ? src : `data:audio/mp4;base64,${src}`;
+      const a = new Audio(fullSrc);
+      audioElementRef.current = a;
+      a.onended = () => setPlayingAudioId(null);
+      a.onerror = () => tryPlay(`data:audio/webm;base64,${src}`);
+      a.play().then(() => setPlayingAudioId(msgId)).catch(() => tryPlay(`data:audio/webm;base64,${src}`));
+    }
+  };
+
+  const formatFileSize = (bytes) => {
+    if (!bytes || bytes <= 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const isAudioDoc = (fileName = '') => {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    return ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'opus'].includes(ext);
+  };
+
+  const handleDownloadDocument = async (e, msg) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    try {
+      let url = msg.mediaUrl;
+      if (!url && msg.mediaData) {
+        if (msg.mediaData.startsWith('idb:')) {
+          url = await mediaStorageWeb.getMediaUrl(msg.id);
+        } else if (msg.mediaData.startsWith('blob:') || msg.mediaData.startsWith('data:')) {
+          url = msg.mediaData;
+        } else {
+          url = `data:application/octet-stream;base64,${msg.mediaData}`;
+        }
+      } else if (!url && !msg.mediaData) {
+        url = await mediaStorageWeb.getMediaUrl(msg.id);
+      }
+
+      if (!url) {
+        alert('Document data is not available yet.');
+        return;
+      }
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = msg.fileName || msg.text || 'document';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error('Download error:', err);
+      alert('Failed to download document: ' + (err.message || err));
+    }
   };
 
   const formatDur = (ms) => {
@@ -790,33 +861,110 @@ export default function ChatConversation({
 
                         {/* Document */}
                         {msg.mediaType === 'DOCUMENT' && (
-                          <a
-                            href={msg.mediaData ? (msg.mediaData.startsWith('data:') ? msg.mediaData : `data:application/octet-stream;base64,${msg.mediaData}`) : '#'}
-                            download={msg.text || 'document'}
+                          <div
+                            onClick={(e) => handleDownloadDocument(e, msg)}
                             className="neo-box"
                             style={{
                               display: 'flex',
                               alignItems: 'center',
-                              gap: 10,
-                              padding: '8px 12px',
-                              backgroundColor: '#fff',
-                              textDecoration: 'none',
-                              color: '#000',
-                              borderRadius: 8,
+                              gap: 12,
+                              padding: '10px 14px',
+                              backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
+                              borderRadius: 10,
                               marginBottom: 4,
-                              border: '2px solid #000'
+                              border: '2px solid #000',
+                              minWidth: 220,
+                              maxWidth: 320,
+                              cursor: 'pointer'
                             }}
                           >
-                            <div style={{ width: 36, height: 36, borderRadius: 6, backgroundColor: '#5E35B1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 11 }}>
-                              {(msg.text || 'DOC').split('.').pop().toUpperCase().slice(0, 4)}
+                            <div style={{
+                              width: 42,
+                              height: 42,
+                              borderRadius: 8,
+                              backgroundColor: isAudioDoc(msg.fileName || msg.text) ? '#E91E63' : '#5E35B1',
+                              color: '#fff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontWeight: 900,
+                              fontSize: 11,
+                              flexShrink: 0
+                            }}>
+                              {((msg.fileName || msg.text || 'DOC').split('.').pop() || 'DOC').toUpperCase().slice(0, 4)}
                             </div>
+
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontWeight: 800, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {msg.text || 'Document'}
+                              <div
+                                style={{
+                                  fontWeight: 800,
+                                  fontSize: 13,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  color: '#000'
+                                }}
+                                title={msg.fileName || msg.text || 'Document'}
+                              >
+                                {msg.fileName || msg.text || 'Document'}
                               </div>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: '#666' }}>Tap to download</div>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
+                                {formatFileSize(msg.fileSize)}
+                                {msg.fileSize ? ' • ' : ''}
+                                {isAudioDoc(msg.fileName || msg.text) ? 'Audio' : 'Document'}
+                              </div>
                             </div>
-                          </a>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                              {isAudioDoc(msg.fileName || msg.text) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    togglePlayAudio(msg.id, msg.mediaUrl || msg.mediaData);
+                                  }}
+                                  className="neo-box"
+                                  style={{
+                                    width: 34,
+                                    height: 34,
+                                    borderRadius: '50%',
+                                    backgroundColor: playingAudioId === msg.id ? '#FF5252' : '#00E676',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    border: '2px solid #000',
+                                    cursor: 'pointer',
+                                    padding: 0
+                                  }}
+                                  title={playingAudioId === msg.id ? "Pause Audio" : "Play Audio"}
+                                >
+                                  {playingAudioId === msg.id ? <Pause size={16} color="#000" /> : <Play size={16} color="#000" style={{ marginLeft: 2 }} />}
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => handleDownloadDocument(e, msg)}
+                                className="neo-box"
+                                style={{
+                                  width: 34,
+                                  height: 34,
+                                  borderRadius: '50%',
+                                  backgroundColor: '#FFE600',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  border: '2px solid #000',
+                                  cursor: 'pointer',
+                                  padding: 0
+                                }}
+                                title="Download"
+                              >
+                                <Download size={16} color="#000" />
+                              </button>
+                            </div>
+                          </div>
                         )}
 
                         {/* Text */}

@@ -86,7 +86,12 @@ export default {
               messageId: body.messageId || "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
-            webpush: { headers: { TTL: webTtl, Urgency: "high" } },
+            webpush: { 
+              headers: { TTL: webTtl, Urgency: "high" },
+              fcm_options: {
+                link: "https://lksdialerweb.pages.dev/"
+              }
+            },
           },
         };
 

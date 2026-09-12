@@ -18,3 +18,4 @@ local.properties
 debug.keystore
 lks-dialer-firebase-adminsdk-*.json
 .wrangler
+*.apk

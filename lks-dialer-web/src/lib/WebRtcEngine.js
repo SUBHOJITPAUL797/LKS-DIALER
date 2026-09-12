@@ -433,16 +433,20 @@ class WebRtcEngine {
   async registerUser(phoneNumber, displayName) {
     let webToken = null;
     try {
-      if (messaging) {
+      if (typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator && messaging) {
         const permission = await Notification.requestPermission();
         if (permission === 'granted') {
+          const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+          await navigator.serviceWorker.ready;
           webToken = await getToken(messaging, { 
-            vapidKey: 'BItSp6sbgw96jK3fsvISihhymmDj-XTx9uAHvNaiPwgqCdxtTPH96umi2khxaPmNBfHh2c_KwkeTbW5sbNoty8k' 
+            vapidKey: 'BItSp6sbgw96jK3fsvISihhymmDj-XTx9uAHvNaiPwgqCdxtTPH96umi2khxaPmNBfHh2c_KwkeTbW5sbNoty8k',
+            serviceWorkerRegistration: registration
           });
+          console.log('✅ FCM WebPush token obtained on registration:', webToken?.substring(0, 15) + '...');
         }
       }
     } catch (e) {
-      console.error('Failed to get FCM web token', e);
+      console.error('Failed to get FCM web token on registration:', e);
     }
 
     let publicKey = '';
@@ -452,6 +456,7 @@ class WebRtcEngine {
       console.warn('Failed to get E2EE public key during registration:', e);
     }
 
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
     const userRef = doc(db, 'users', phoneNumber);
     const userSnap = await getDoc(userRef);
     const now = Date.now();
@@ -487,6 +492,13 @@ class WebRtcEngine {
       await setDoc(userRef, userData);
       this.setCurrentUser(userData);
     }
+
+    // Also persist webToken on clean phone variation so lookup from Android or Web never misses
+    if (webToken && cleanPhone && cleanPhone !== phoneNumber) {
+      try {
+        await setDoc(doc(db, 'users', cleanPhone), { webToken }, { merge: true });
+      } catch {}
+    }
     
     this.listenForIncomingCalls();
     return this.currentUser;
@@ -495,22 +507,33 @@ class WebRtcEngine {
   async initWebPush() {
     if (!this.currentUser) return;
     try {
-      if (messaging) {
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-          const webToken = await getToken(messaging, { 
-            vapidKey: 'BItSp6sbgw96jK3fsvISihhymmDj-XTx9uAHvNaiPwgqCdxtTPH96umi2khxaPmNBfHh2c_KwkeTbW5sbNoty8k' 
-          });
-          if (webToken) {
-            const userRef = doc(db, 'users', this.currentUser.phoneNumber);
-            await updateDoc(userRef, { webToken });
-            this.currentUser.webToken = webToken;
-            localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
+      if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator) || !messaging) {
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+        await navigator.serviceWorker.ready;
+        const webToken = await getToken(messaging, { 
+          vapidKey: 'BItSp6sbgw96jK3fsvISihhymmDj-XTx9uAHvNaiPwgqCdxtTPH96umi2khxaPmNBfHh2c_KwkeTbW5sbNoty8k',
+          serviceWorkerRegistration: registration
+        });
+        if (webToken) {
+          const phone = this.currentUser.phoneNumber;
+          const cleanPhone = phone.replace(/[^0-9]/g, '');
+
+          await setDoc(doc(db, 'users', phone), { webToken }, { merge: true });
+          if (cleanPhone && cleanPhone !== phone) {
+            await setDoc(doc(db, 'users', cleanPhone), { webToken }, { merge: true });
           }
+
+          this.currentUser.webToken = webToken;
+          localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
+          console.log('✅ Web push token registered & synced to Firestore:', webToken.substring(0, 15) + '...');
         }
       }
     } catch (e) {
-      console.error('Failed to init web push', e);
+      console.error('Failed to init web push:', e);
     }
   }
 
@@ -631,12 +654,13 @@ class WebRtcEngine {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Worker-Secret": "LKS_DIALER_EsA2u7uNJMiE0ZhbtRUnzs7tkZPe4WvJ" },
         body: JSON.stringify({ 
-          token: callee.fcmToken, // Android FCM Token
+          token: callee.fcmToken || null, // Android FCM Token
           webToken: callee.webToken || null, // Web FCM Token
           callType, 
           callId, 
-          callerName: this.currentUser.displayName,
-          callerNumber: this.currentUser.phoneNumber,
+          callerName: this.currentUser?.displayName || "Unknown",
+          callerNumber: this.currentUser?.phoneNumber || "",
+          callerProfilePic: this.currentUser?.profilePictureUrl || "",
           type: notificationType
         })
       });
@@ -758,14 +782,29 @@ class WebRtcEngine {
 
       await updateDoc(callDocRef, { status: endStatus, endedAt: Date.now() });
 
-      // If we hung up before it was answered, send a push to silence the ringing on the other end
-      if (isUnanswered) {
-        // Query the callee's fcm token
-        const userQ = query(collection(db, 'users'), where('phoneNumber', '==', callData.calleeNumber));
-        const userSnap = await getDocs(userQ);
-        if (!userSnap.empty) {
-          const calleeData = userSnap.docs[0].data();
-          this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'missed_call');
+      // If we hung up before it was answered, send push to silence ringing and show missed call
+      if (isUnanswered && callData?.calleeNumber) {
+        try {
+          const calleeNum = callData.calleeNumber;
+          const variations = [calleeNum];
+          const clean = calleeNum.replace(/[^0-9]/g, '');
+          if (clean) {
+            variations.push(clean);
+            if (clean.length > 10) variations.push(clean.slice(-10));
+            if (!calleeNum.startsWith('+')) variations.push('+' + calleeNum);
+          }
+          const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
+          const userQ = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
+          const userSnap = await getDocs(userQ);
+          if (!userSnap.empty) {
+            const calleeData = userSnap.docs[0].data();
+            // First cancel ringing notification
+            this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'cancel_call');
+            // Then record missed call
+            this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'missed_call');
+          }
+        } catch (e) {
+          console.warn('Failed to send cancel/missed push:', e);
         }
       }
     }

@@ -16,34 +16,134 @@ firebase.initializeApp(firebaseConfig);
 
 const messaging = firebase.messaging();
 
+// Instantly activate new service worker versions
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(clients.claim());
+});
+
 messaging.onBackgroundMessage((payload) => {
-  console.log('[firebase-messaging-sw.js] Received background message ', payload);
+  console.log('[firebase-messaging-sw.js] Received background push message:', payload);
 
-  const notificationTitle = `Incoming ${payload.data?.callType === 'VIDEO' ? 'Video' : 'Audio'} Call`;
-  const notificationOptions = {
-    body: `Call from ${payload.data?.callerName || 'Unknown'}`,
-    icon: '/icon-192.png',
-    data: {
-      url: '/', // When clicked, focus or open the main app
+  const data = payload.data || {};
+  const type = data.type;
+
+  // 1. INCOMING CALL NOTIFICATION (Persistent, requireInteraction, vibration, Answer/Decline buttons)
+  if (type === "incoming_call") {
+    const callTypeStr = data.callType === 'VIDEO' ? 'Video' : 'Audio';
+    const callerName = data.callerName || 'Unknown Caller';
+    const title = `Incoming ${callTypeStr} Call`;
+    
+    let iconUrl = '/icon-192.png';
+    if (data.callerProfilePic && (data.callerProfilePic.startsWith('http') || data.callerProfilePic.startsWith('data:image'))) {
+      iconUrl = data.callerProfilePic;
     }
-  };
 
-  // Only show notification if it's an incoming_call or missed_call
-  if (payload.data?.type === "incoming_call") {
-    return self.registration.showNotification(notificationTitle, notificationOptions);
-  } else if (payload.data?.type === "missed_call") {
-    const missedTitle = `Missed ${payload.data?.callType === 'VIDEO' ? 'Video' : 'Audio'} Call`;
-    const missedOptions = {
-      body: `You missed a call from ${payload.data?.callerName || 'Unknown'}`,
-      icon: '/icon-192.png',
-      data: { url: '/' }
+    const options = {
+      body: `📞 ${callerName} is calling you...`,
+      icon: iconUrl,
+      badge: '/icon-192.png',
+      tag: `call_${data.callId || 'active'}`,
+      requireInteraction: true,
+      renotify: true,
+      vibrate: [500, 250, 500, 250, 500, 250, 500],
+      actions: [
+        { action: 'answer', title: '📞 Answer' },
+        { action: 'decline', title: '❌ Decline' }
+      ],
+      data: {
+        url: `/?callId=${encodeURIComponent(data.callId || '')}&callerName=${encodeURIComponent(callerName)}&callType=${data.callType || 'AUDIO'}`,
+        callId: data.callId || '',
+        callerName: callerName,
+        callType: data.callType || 'AUDIO',
+        callerNumber: data.callerNumber || '',
+        type: 'incoming_call'
+      }
     };
-    return self.registration.showNotification(missedTitle, missedOptions);
-  } else if (payload.data?.type === "cancel_call") {
-    // Attempt to close existing incoming call notifications
+
+    return self.registration.showNotification(title, options);
+  }
+
+  // 2. CHAT MESSAGE NOTIFICATION (Sender name, text preview, Open Chat action)
+  if (type === "chat_message") {
+    const senderName = data.callerName || data.callerNumber || 'New Message';
+    let previewText = data.messageText || data.messagePreview || '';
+
+    if (!previewText) {
+      if (data.mediaType === 'IMAGE') previewText = '📷 Photo';
+      else if (data.mediaType === 'AUDIO') previewText = '🎤 Voice message';
+      else if (data.mediaType === 'DOCUMENT') previewText = '📄 Document';
+      else previewText = 'New message';
+    }
+
+    let iconUrl = '/icon-192.png';
+    if (data.callerProfilePic && (data.callerProfilePic.startsWith('http') || data.callerProfilePic.startsWith('data:image'))) {
+      iconUrl = data.callerProfilePic;
+    }
+
+    const options = {
+      body: previewText,
+      icon: iconUrl,
+      badge: '/icon-192.png',
+      tag: `chat_${data.callerNumber || 'peer'}`,
+      renotify: true,
+      vibrate: [200, 100, 200],
+      actions: [
+        { action: 'open_chat', title: '💬 Open Chat' }
+      ],
+      data: {
+        url: `/?tab=chats&peer=${encodeURIComponent(data.callerNumber || '')}`,
+        peerNumber: data.callerNumber || '',
+        callerName: senderName,
+        callerProfilePic: data.callerProfilePic || '',
+        type: 'chat_message'
+      }
+    };
+
+    return self.registration.showNotification(senderName, options);
+  }
+
+  // 3. MISSED CALL NOTIFICATION
+  if (type === "missed_call") {
+    // First dismiss ringing notification
     self.registration.getNotifications().then(notifications => {
       notifications.forEach(notification => {
-        if (notification.title.includes("Incoming")) {
+        const nData = notification.data || {};
+        if (nData.callId === data.callId || notification.tag === `call_${data.callId}` || notification.title.includes("Incoming")) {
+          notification.close();
+        }
+      });
+    });
+
+    const callTypeStr = data.callType === 'VIDEO' ? 'Video' : 'Audio';
+    const missedTitle = `Missed ${callTypeStr} Call`;
+    let iconUrl = '/icon-192.png';
+    if (data.callerProfilePic && (data.callerProfilePic.startsWith('http') || data.callerProfilePic.startsWith('data:image'))) {
+      iconUrl = data.callerProfilePic;
+    }
+
+    const missedOptions = {
+      body: `You missed a call from ${data.callerName || 'Unknown'}`,
+      icon: iconUrl,
+      badge: '/icon-192.png',
+      tag: `missed_${data.callId || Date.now()}`,
+      data: {
+        url: `/?callerNumber=${encodeURIComponent(data.callerNumber || '')}`,
+        type: 'missed_call'
+      }
+    };
+    return self.registration.showNotification(missedTitle, missedOptions);
+  }
+
+  // 4. CANCEL CALL NOTIFICATION (Dismiss ringing notification)
+  if (type === "cancel_call") {
+    return self.registration.getNotifications().then(notifications => {
+      notifications.forEach(notification => {
+        const nData = notification.data || {};
+        if (nData.callId === data.callId || notification.tag === `call_${data.callId}` || notification.title.includes("Incoming")) {
           notification.close();
         }
       });
@@ -52,22 +152,38 @@ messaging.onBackgroundMessage((payload) => {
 });
 
 self.addEventListener('notificationclick', function(event) {
-  console.log('[firebase-messaging-sw.js] Notification click received.');
+  console.log('[firebase-messaging-sw.js] Notification click received. Action:', event.action);
   
   event.notification.close();
-  
-  // This looks to see if the current window is already open and focuses if it is
+  const data = event.notification.data || {};
+  const action = event.action;
+
+  let targetUrl = data.url || '/';
+  if (action === 'answer') {
+    targetUrl += (targetUrl.includes('?') ? '&' : '?') + 'autoAnswer=true';
+  } else if (action === 'decline') {
+    targetUrl += (targetUrl.includes('?') ? '&' : '?') + 'autoDecline=true';
+  }
+
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // Check if there is already a window/tab open with the target URL
-      for (var i = 0; i < windowClients.length; i++) {
-        var client = windowClients[i];
-        if (client.url === event.notification.data.url || client.url.includes('localhost:5173')) {
-          return client.focus();
+      // Look for an existing open window/tab belonging to our app
+      for (let i = 0; i < windowClients.length; i++) {
+        const client = windowClients[i];
+        if (client.url.includes(self.location.origin) || client.url.includes('lksdialerweb') || client.url.includes('localhost')) {
+          client.focus();
+          client.postMessage({
+            type: 'NOTIFICATION_ACTION',
+            action: action,
+            data: data
+          });
+          return;
         }
       }
-      // If not, open a new window
-      return clients.openWindow(event.notification.data.url);
+      // If no window is currently open, open a new one
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
     })
   );
 });

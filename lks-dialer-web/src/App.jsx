@@ -75,6 +75,15 @@ function App() {
 
       // If the incoming call was canceled by the caller, it will send status: 'REMOVED'
       if (callData.status === 'REMOVED') {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then(reg => {
+            reg.getNotifications().then(notifs => {
+              notifs.forEach(n => {
+                if (n.tag && n.tag.startsWith('call_')) n.close();
+              });
+            });
+          }).catch(() => {});
+        }
         setIncomingCall(prev => (prev && prev.id === callData.id) ? null : prev);
         return;
       }
@@ -83,36 +92,129 @@ function App() {
       
       if (!isMeCaller && (callData.status === 'CALLING' || callData.status === 'RINGING')) {
         setIncomingCall(callData);
+
+        // Check for pending auto-answer from notification action
+        if (window.__autoAnswerCallId === callData.id) {
+          delete window.__autoAnswerCallId;
+          setTimeout(() => {
+            handleAcceptCall();
+          }, 400);
+        }
+
         // Show browser notification if tab is in background
         if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
           const avatarUrl = formatAvatarUrl(callData.callerProfilePic);
-          const iconUrl = (avatarUrl && avatarUrl.startsWith('http')) ? avatarUrl : '/logo192.png';
-          const notif = new Notification("Incoming Call", {
-            body: `${callData.callerName} is calling you.`,
+          const iconUrl = (avatarUrl && (avatarUrl.startsWith('http') || avatarUrl.startsWith('data:image'))) 
+            ? avatarUrl 
+            : '/icon-192.png';
+          const title = `Incoming ${callData.callType === 'VIDEO' ? 'Video' : 'Audio'} Call`;
+          const options = {
+            body: `${callData.callerName || 'Someone'} is calling you.`,
             icon: iconUrl,
-            requireInteraction: true
-          });
-          notif.onclick = () => {
-            window.focus();
-            notif.close();
+            badge: '/icon-192.png',
+            tag: `call_${callData.id}`,
+            requireInteraction: true,
+            renotify: true,
+            vibrate: [500, 250, 500, 250, 500, 250, 500],
+            data: {
+              url: `/?callId=${encodeURIComponent(callData.id)}`,
+              callId: callData.id
+            }
           };
+
+          if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then(reg => {
+              reg.showNotification(title, options);
+            }).catch(() => {
+              try {
+                const notif = new Notification(title, options);
+                notif.onclick = () => { window.focus(); notif.close(); };
+              } catch {}
+            });
+          } else {
+            try {
+              const notif = new Notification(title, options);
+              notif.onclick = () => { window.focus(); notif.close(); };
+            } catch {}
+          }
         }
       } else {
+        // Dismiss ringing notification when call is answered, ended, or declined
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.ready.then(reg => {
+            reg.getNotifications().then(notifs => {
+              notifs.forEach(n => {
+                if (n.tag && n.tag.startsWith('call_')) n.close();
+              });
+            });
+          }).catch(() => {});
+        }
         setIncomingCall(null);
         setActiveCall(callData);
       }
     };
 
+    // Listen for Service Worker notification actions (Answer/Decline/Open Chat)
+    let swMsgHandler = null;
+    if ('serviceWorker' in navigator) {
+      swMsgHandler = (event) => {
+        const { type, action, data } = event.data || {};
+        if (type === 'NOTIFICATION_ACTION') {
+          console.log('[App] Received NOTIFICATION_ACTION from SW:', action, data);
+          if (data?.type === 'incoming_call') {
+            if (action === 'decline') {
+              webRtcEngine.declineCall(data.callId);
+              setIncomingCall(null);
+            } else if (action === 'answer') {
+              if (incomingCall && incomingCall.id === data.callId) {
+                handleAcceptCall();
+              } else {
+                window.__autoAnswerCallId = data.callId;
+              }
+            }
+          } else if (data?.type === 'chat_message' && data?.peerNumber) {
+            handleOpenChat(data.peerNumber, data.callerName, data.callerProfilePic);
+          }
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', swMsgHandler);
+    }
+
+    // Process initial URL parameters (e.g. from notification clicks)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const targetTab = urlParams.get('tab');
+      const peer = urlParams.get('peer');
+      const callId = urlParams.get('callId');
+      const autoAnswer = urlParams.get('autoAnswer');
+
+      if (targetTab === 'chats' && peer) {
+        handleOpenChat(peer, urlParams.get('callerName') || peer, urlParams.get('callerProfilePic') || '');
+      }
+      if (callId && autoAnswer === 'true') {
+        window.__autoAnswerCallId = callId;
+      }
+      if (window.location.search) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch (e) {
+      console.warn('Failed to parse URL query params:', e);
+    }
+
     return () => {
       unsubChat();
       chatRepositoryWeb.detachChatListeners();
       webRtcEngine.stopPresenceHeartbeat(true);
+      if (swMsgHandler && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', swMsgHandler);
+      }
     };
-  }, []);
+  }, [incomingCall]);
 
   const handleRegister = async (phone, name) => {
     const user = await webRtcEngine.registerUser(phone, name);
     localStorage.setItem('lksDialerUser', JSON.stringify(user));
+    webRtcEngine.initWebPush();
     chatRepositoryWeb.attachChatListeners(user.phoneNumber);
     setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
     setCurrentUser(user);

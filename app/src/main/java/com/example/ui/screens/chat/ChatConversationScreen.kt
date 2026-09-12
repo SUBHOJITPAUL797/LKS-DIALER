@@ -40,6 +40,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,7 +96,11 @@ fun ChatConversationScreen(
     val voiceHelper = remember { VoiceRecorderHelper(context) }
 
     val normPeer = remember(peerPhoneNumber) { ContactsHelper.normalizePhoneNumber(peerPhoneNumber) }
-    val messages by chatRepository.getMessagesFlow(normPeer).collectAsState(initial = emptyList())
+    var pageSize by remember { mutableIntStateOf(50) }
+    val totalMessageCount by chatRepository.getMessageCountFlow(normPeer).collectAsState(initial = 0)
+    val messages by remember(normPeer, pageSize) {
+        chatRepository.getMessagesPagedFlow(normPeer, pageSize)
+    }.collectAsState(initial = emptyList())
     val typingMap by chatRepository.typingStatus.collectAsState()
     val isPeerTyping = typingMap[normPeer] ?: false
 
@@ -161,10 +167,35 @@ fun ChatConversationScreen(
         }
     }
 
-    // Scroll to bottom when new messages arrive
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    // Auto-scroll to bottom (index 0 in reverseLayout) ONLY when a new message arrives and user is already near bottom
+    var previousLatestMessageId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(messages.firstOrNull()?.id) {
+        val currentLatestId = messages.firstOrNull()?.id
+        if (previousLatestMessageId != null && currentLatestId != null && currentLatestId != previousLatestMessageId) {
+            if (listState.firstVisibleItemIndex <= 2) {
+                listState.animateScrollToItem(0)
+            }
+        }
+        previousLatestMessageId = currentLatestId
+    }
+
+    // Lazy loading pagination trigger: when user scrolls up near the top of loaded messages
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val totalLoaded = messages.size
+            if (totalLoaded >= totalMessageCount || totalLoaded == 0) {
+                false
+            } else {
+                val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                // When within 8 items of the end of current page
+                lastVisibleIndex >= totalLoaded - 8
+            }
+        }
+    }
+
+    LaunchedEffect(shouldLoadMore) {
+        if (shouldLoadMore && messages.size < totalMessageCount) {
+            pageSize = (pageSize + 50).coerceAtMost(totalMessageCount + 10)
         }
     }
 
@@ -251,6 +282,7 @@ fun ChatConversationScreen(
                             mediaType = ChatMediaType.DOCUMENT,
                             mediaFile = tempFile
                         )
+                        listState.animateScrollToItem(0)
                     }
                 } catch (e: Exception) {
                     Toast.makeText(context, "Failed to send document: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -369,46 +401,13 @@ fun ChatConversationScreen(
             Box(modifier = Modifier.weight(1f)) {
                 LazyColumn(
                     state = listState,
+                    reverseLayout = true,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    item {
-                        // E2EE Info banner
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Surface(
-                                color = if (isSystemInDarkTheme()) Color(0xFF182229) else Color(0xFFFFF3C4),
-                                shape = RoundedCornerShape(12.dp),
-                                shadowElevation = 1.dp
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Lock,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(13.dp),
-                                        tint = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = "Messages are End-to-End Encrypted and deleted from server once delivered.",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-                    }
-
+                    // Message items: index 0 is newest, rendered at the bottom!
                     items(messages, key = { it.id }) { msg ->
                         val myDisplayName = firebaseManager.currentUser.collectAsState().value?.displayName ?: "Me"
                         SwipeableMessageWrapper(
@@ -426,6 +425,32 @@ fun ChatConversationScreen(
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
                                 onMessageLongClick = { selectedMessageForOptions = it }
                             )
+                        }
+                    }
+
+                    // Top of conversation history (oldest items in reverseLayout)
+                    if (messages.isEmpty()) {
+                        item(key = "empty_e2ee_banner") {
+                            E2eeInfoBanner()
+                        }
+                    } else if (messages.size < totalMessageCount) {
+                        item(key = "pagination_loader") {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.dp,
+                                    color = TealPrimary
+                                )
+                            }
+                        }
+                    } else {
+                        item(key = "e2ee_banner") {
+                            E2eeInfoBanner()
                         }
                     }
                 }
@@ -678,6 +703,7 @@ fun ChatConversationScreen(
                                             mediaFile = audioFile,
                                             mediaDurationMs = duration
                                         )
+                                        listState.animateScrollToItem(0)
                                     }
                                 }
                             },
@@ -755,7 +781,7 @@ fun ChatConversationScreen(
                                         coroutineScope.launch {
                                             // Embed reply metadata in message text as JSON if replying
                                             val payload = if (currentReply != null) {
-                                                """{"text":${escapeJson(textToSend)},"replyTo":{"id":${currentReply.messageId},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                                                """{"text":${escapeJson(textToSend)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
                                             } else {
                                                 textToSend
                                             }
@@ -766,6 +792,7 @@ fun ChatConversationScreen(
                                                 text = payload,
                                                 mediaType = ChatMediaType.TEXT
                                             )
+                                            listState.animateScrollToItem(0)
                                         }
                                     }
                                 },
@@ -932,6 +959,7 @@ fun ChatConversationScreen(
                             mediaFile = file
                         )
                     }
+                    listState.animateScrollToItem(0)
                 }
             },
             onClose = { photosToPreview = null }
@@ -1081,15 +1109,16 @@ private fun SwipeableMessageWrapper(
     content: @Composable () -> Unit
 ) {
     val density = LocalDensity.current
-    // THRESHOLD in dp -> px
-    val thresholdPx = with(density) { 64.dp.toPx() }
-    val maxDragPx   = with(density) { 84.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
 
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    var triggered by remember { mutableStateOf(false) }
+    val thresholdPx = with(density) { 56.dp.toPx() }
+    val maxDragPx   = with(density) { 76.dp.toPx() }
 
-    // Icon opacity / scale based on progress
-    val progress = (offsetX.absoluteValue / thresholdPx).coerceIn(0f, 1f)
+    val offsetX = remember { Animatable(0f) }
+    var isTriggered by remember { mutableStateOf(false) }
+
+    val progress = (offsetX.value.absoluteValue / thresholdPx).coerceIn(0f, 1f)
 
     Box(
         modifier = Modifier
@@ -1097,22 +1126,21 @@ private fun SwipeableMessageWrapper(
             .pointerInput(message.id) {
                 detectHorizontalDragGestures(
                     onDragStart = {
-                        triggered = false
+                        isTriggered = false
                     },
                     onDragEnd = {
-                        if (triggered) {
+                        if (isTriggered) {
                             val previewText = when {
                                 message.mediaType == ChatMediaType.IMAGE.name -> "📷 Photo"
                                 message.mediaType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                                message.mediaType == ChatMediaType.DOCUMENT.name -> "📄 ${message.text}"
                                 else -> run {
-                                    // Strip JSON reply wrapper if present
                                     try {
-                                        val obj = org.json.JSONObject(message.text)
+                                        val obj = JSONObject(message.text)
                                         obj.optString("text", message.text)
                                     } catch (_: Exception) { message.text }
                                 }
                             }
-                            // Use absolute names so both sender and receiver see the correct name
                             val senderLabel = if (message.isOutgoing) myDisplayName else peerDisplayName
                             onReply(
                                 ReplyContext(
@@ -1123,68 +1151,153 @@ private fun SwipeableMessageWrapper(
                                 )
                             )
                         }
-                        offsetX = 0f
-                        triggered = false
+                        isTriggered = false
+                        coroutineScope.launch {
+                            offsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessLow
+                                )
+                            )
+                        }
                     },
                     onDragCancel = {
-                        offsetX = 0f
-                        triggered = false
+                        isTriggered = false
+                        coroutineScope.launch {
+                            offsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessLow
+                                )
+                            )
+                        }
                     },
                     onHorizontalDrag = { _, dragAmount ->
-                        // Incoming (isOutgoing=false) → right swipe → positive drag
-                        // Outgoing (isOutgoing=true)  → left swipe  → negative drag
-                        val correctDirection = if (message.isOutgoing) dragAmount < 0 else dragAmount > 0
-                        if (!correctDirection) return@detectHorizontalDragGestures
+                        val currentVal = offsetX.value
+                        val newOffset = if (!message.isOutgoing) {
+                            // Incoming: swipe right (positive), push back left towards 0 to cancel
+                            (currentVal + dragAmount).coerceIn(0f, maxDragPx)
+                        } else {
+                            // Outgoing: swipe left (negative), push back right towards 0 to cancel
+                            (currentVal + dragAmount).coerceIn(-maxDragPx, 0f)
+                        }
 
-                        val newOffset = offsetX + dragAmount
-                        offsetX = newOffset.coerceIn(-maxDragPx, maxDragPx)
+                        val shouldTrigger = newOffset.absoluteValue >= thresholdPx
+                        if (shouldTrigger && !isTriggered) {
+                            isTriggered = true
+                            try {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            } catch (_: Exception) {}
+                        } else if (!shouldTrigger && isTriggered) {
+                            // User pushed back! Cancel trigger!
+                            isTriggered = false
+                        }
 
-                        if (offsetX.absoluteValue >= thresholdPx && !triggered) {
-                            triggered = true
+                        coroutineScope.launch {
+                            offsetX.snapTo(newOffset)
                         }
                     }
                 )
             }
     ) {
-        // Reply icon — shows on the appropriate side
+        // Reply icon on the appropriate side
         if (!message.isOutgoing) {
-            // Incoming: icon appears on the left as user swipes right
+            // Incoming: icon on the left
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .padding(start = 4.dp)
+                    .padding(start = 6.dp)
                     .size(36.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Reply,
-                    contentDescription = "Reply",
-                    tint = TealPrimary.copy(alpha = progress),
-                    modifier = Modifier.size((16 + 8 * progress).dp)
-                )
+                Surface(
+                    shape = CircleShape,
+                    color = if (isTriggered) TealPrimary.copy(alpha = 0.2f) else Color.Transparent,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Reply,
+                            contentDescription = "Reply",
+                            tint = if (isTriggered) TealPrimary else TealPrimary.copy(alpha = progress * 0.7f),
+                            modifier = Modifier.size((16 + 6 * progress).dp)
+                        )
+                    }
+                }
             }
         } else {
-            // Outgoing: icon appears on the right as user swipes left
+            // Outgoing: icon on the right
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
-                    .padding(end = 4.dp)
+                    .padding(end = 6.dp)
                     .size(36.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Reply,
-                    contentDescription = "Reply",
-                    tint = GreenCall.copy(alpha = progress),
-                    modifier = Modifier
-                        .size((16 + 8 * progress).dp)
-                )
+                Surface(
+                    shape = CircleShape,
+                    color = if (isTriggered) GreenCall.copy(alpha = 0.2f) else Color.Transparent,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Reply,
+                            contentDescription = "Reply",
+                            tint = if (isTriggered) GreenCall else GreenCall.copy(alpha = progress * 0.7f),
+                            modifier = Modifier.size((16 + 6 * progress).dp)
+                        )
+                    }
+                }
             }
         }
 
-        // Message bubble, translated by drag
-        Box(modifier = Modifier.offset(x = with(density) { offsetX.toDp() })) {
+        // Message bubble, translated smoothly by drag
+        Box(
+            modifier = Modifier.offset {
+                androidx.compose.ui.unit.IntOffset(
+                    x = offsetX.value.toInt(),
+                    y = 0
+                )
+            }
+        ) {
             content()
+        }
+    }
+}
+
+@Composable
+private fun E2eeInfoBanner() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            color = if (isSystemInDarkTheme()) Color(0xFF182229) else Color(0xFFFFF3C4),
+            shape = RoundedCornerShape(12.dp),
+            shadowElevation = 1.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Messages are End-to-End Encrypted and deleted from server once delivered.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404),
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }

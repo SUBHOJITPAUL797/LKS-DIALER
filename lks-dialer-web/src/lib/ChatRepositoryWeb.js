@@ -4,6 +4,7 @@ import {
 } from 'firebase/firestore';
 import { chatCryptoWeb } from './ChatCryptoWeb';
 import { formatAvatarUrl } from './ImageUtils';
+import { mediaStorageWeb } from './MediaStorageWeb';
 
 /**
  * Normalizes a phone number (digits and plus only).
@@ -325,32 +326,38 @@ class ChatRepositoryWeb {
       if (dto.mediaType === 'CHUNK') {
         try {
           const parsed = JSON.parse(decryptedRaw);
-          const { parentMessageId, fileName, chunkIndex, totalChunks, bytes } = parsed;
-          const chunkKey = `lks_chunk_${parentMessageId}`;
-          let chunksMap = {};
-          try {
-            const rawMap = sessionStorage.getItem(chunkKey);
-            if (rawMap) chunksMap = JSON.parse(rawMap);
-          } catch {}
-          chunksMap[chunkIndex] = bytes;
-          sessionStorage.setItem(chunkKey, JSON.stringify(chunksMap));
+          const { parentMessageId, fileName, chunkIndex, totalChunks, bytes, fileSize } = parsed;
 
-          // Check if all chunks have arrived
-          let allPresent = true;
-          for (let i = 0; i < totalChunks; i++) {
-            if (!chunksMap[i]) {
-              allPresent = false;
-              break;
-            }
-          }
+          // 1. Save chunk into high-capacity IndexedDB + RAM buffer
+          await mediaStorageWeb.saveChunk(parentMessageId, chunkIndex, totalChunks, bytes);
 
-          if (allPresent) {
-            let fullBase64 = '';
-            for (let i = 0; i < totalChunks; i++) {
-              fullBase64 += chunksMap[i];
-            }
-            try { sessionStorage.removeItem(chunkKey); } catch {}
+          // 2. Check if all chunks have arrived
+          const assembledBytes = await mediaStorageWeb.checkAndAssembleChunks(parentMessageId, totalChunks);
 
+          if (assembledBytes) {
+            // Determine MIME type from file extension
+            const ext = (fileName.split('.').pop() || '').toLowerCase();
+            const mimeMap = {
+              mp3: 'audio/mpeg',
+              m4a: 'audio/mp4',
+              wav: 'audio/wav',
+              ogg: 'audio/ogg',
+              pdf: 'application/pdf',
+              doc: 'application/msword',
+              docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              zip: 'application/zip',
+              apk: 'application/vnd.android.package-archive',
+              jpg: 'image/jpeg',
+              jpeg: 'image/jpeg',
+              png: 'image/png'
+            };
+            const mimeType = mimeMap[ext] || 'application/octet-stream';
+            const blob = new Blob([assembledBytes], { type: mimeType });
+            await mediaStorageWeb.saveMedia(parentMessageId, blob, fileName, mimeType);
+            await mediaStorageWeb.clearChunks(parentMessageId);
+            const blobUrl = URL.createObjectURL(blob);
+
+            const finalStatus = isCurrentPeer ? 'READ' : 'DELIVERED';
             const messageEntity = {
               id: parentMessageId,
               conversationId: senderNorm,
@@ -358,10 +365,13 @@ class ChatRepositoryWeb {
               recipientNumber: dto.recipientNumber,
               text: fileName,
               mediaType: 'DOCUMENT',
-              mediaData: fullBase64,
+              mediaData: `idb:${parentMessageId}`,
+              mediaUrl: blobUrl,
+              fileSize: fileSize || blob.size,
+              fileName: fileName,
               mediaDurationMs: 0,
               timestamp: dto.timestamp || Date.now(),
-              status: 'DELIVERED',
+              status: finalStatus,
               isOutgoing: false
             };
 
@@ -382,7 +392,7 @@ class ChatRepositoryWeb {
                 lastMessageText: `📄 ${fileName}`,
                 lastMessageType: 'DOCUMENT',
                 lastMessageTimestamp: messageEntity.timestamp,
-                lastMessageStatus: 'DELIVERED',
+                lastMessageStatus: finalStatus,
                 lastMessageIsOutgoing: false,
                 unreadCount: unreadCount,
                 isPinned: false
@@ -392,13 +402,22 @@ class ChatRepositoryWeb {
               conv.lastMessageText = `📄 ${fileName}`;
               conv.lastMessageType = 'DOCUMENT';
               conv.lastMessageTimestamp = messageEntity.timestamp;
-              conv.lastMessageStatus = 'DELIVERED';
+              conv.lastMessageStatus = finalStatus;
               conv.lastMessageIsOutgoing = false;
               conv.unreadCount = unreadCount;
             }
             this.saveConversations(conversations);
 
-            this.sendReceipt(dto.senderNumber, parentMessageId, 'DELIVERED');
+            // Send ACK receipt back to sender (DELIVERED or READ)
+            this.sendReceipt(dto.senderNumber, parentMessageId, finalStatus);
+
+            // Browser Notification if not looking at this chat
+            const isWindowHidden = typeof document !== 'undefined' && document.hidden;
+            if (!isCurrentPeer || isWindowHidden) {
+              this.showBrowserNotification(senderNorm, `📄 ${fileName}`, '', senderNorm);
+            }
+
+            console.log(`[ChatRepositoryWeb] Reassembled and saved large document ${parentMessageId} (${fileName})`);
           }
         } catch (chunkErr) {
           console.warn('[ChatRepositoryWeb] Failed to parse CHUNK payload:', chunkErr);
@@ -411,6 +430,7 @@ class ChatRepositoryWeb {
       let displayText = decryptedRaw;
       let mediaData = null;
       let durationMs = Number(dto.mediaDurationMs) || 0;
+      let mediaUrl = null;
 
       if (dto.mediaType === 'IMAGE') {
         try {
@@ -433,7 +453,15 @@ class ChatRepositoryWeb {
         try {
           const parsed = JSON.parse(decryptedRaw);
           displayText = parsed.fileName || 'Document';
-          mediaData = parsed.bytes || '';
+          if (parsed.bytes) {
+            const ext = (displayText.split('.').pop() || '').toLowerCase();
+            const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
+            const blob = await mediaStorageWeb.saveMedia(dto.messageId, parsed.bytes, displayText, mimeType);
+            mediaData = `idb:${dto.messageId}`;
+            mediaUrl = URL.createObjectURL(blob);
+          } else {
+            mediaData = parsed.bytes || '';
+          }
         } catch {
           displayText = 'Document';
         }
@@ -463,6 +491,7 @@ class ChatRepositoryWeb {
           text: displayText,
           mediaType: dto.mediaType || 'TEXT',
           mediaData,
+          mediaUrl,
           mediaDurationMs: durationMs,
           timestamp: dto.timestamp || Date.now(),
           status: finalStatus,
@@ -525,9 +554,10 @@ class ChatRepositoryWeb {
       // 5. Send ACK receipt back to sender
       this.sendReceipt(dto.senderNumber, dto.messageId, finalStatus);
 
-      // 6. Browser Notification if not in foreground on this chat
-      if (!isCurrentPeer) {
-        this.showBrowserNotification(resolvedName, displayText, profilePic);
+      // 6. Browser Notification if not looking at this chat (or tab is in background)
+      const isWindowHidden = typeof document !== 'undefined' && document.hidden;
+      if (!isCurrentPeer || isWindowHidden) {
+        this.showBrowserNotification(resolvedName, displayText, profilePic, senderNorm);
       }
 
       this.notifySubscribers();
@@ -741,8 +771,124 @@ class ChatRepositoryWeb {
       await this.markConversationAsRead(canonicalRecipient);
     } catch {}
 
-    // 2. Prepare Payload
+    // 2. Large Document Chunking (> 400 KB)
+    if (mediaType === 'DOCUMENT' && mediaData && mediaData.length > 400 * 1024) {
+      const ext = (text.split('.').pop() || '').toLowerCase();
+      const mimeMap = {
+        mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', ogg: 'audio/ogg',
+        pdf: 'application/pdf', doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        zip: 'application/zip', apk: 'application/vnd.android.package-archive'
+      };
+      const mimeType = mimeMap[ext] || 'application/octet-stream';
+      const blob = await mediaStorageWeb.saveMedia(messageId, mediaData, text, mimeType);
+      const blobUrl = URL.createObjectURL(blob);
+
+      // Save local message as SENT
+      const localMsg = {
+        id: messageId,
+        conversationId: normRecipient,
+        senderNumber: this.currentListeningPhone,
+        recipientNumber: canonicalRecipient,
+        text: text || 'Document',
+        mediaType: 'DOCUMENT',
+        mediaData: `idb:${messageId}`,
+        mediaUrl: blobUrl,
+        fileSize: blob.size,
+        fileName: text,
+        mediaDurationMs: 0,
+        timestamp: now,
+        status: 'SENT',
+        isOutgoing: true
+      };
+
+      const messages = this.getMessages(normRecipient);
+      messages.push(localMsg);
+      this.saveMessages(normRecipient, messages);
+
+      // Upsert conversation summary
+      const conversations = this.getConversations();
+      const existingConv = conversations.find(c => numbersMatch(c.phoneNumber, normRecipient));
+      const updatedConv = {
+        phoneNumber: normRecipient,
+        contactName: recipientName || peerUser?.displayName || existingConv?.contactName || normRecipient,
+        profilePicUrl: peerUser?.profilePictureUrl || existingConv?.profilePicUrl || '',
+        lastMessageText: `📄 ${text || 'Document'}`,
+        lastMessageType: 'DOCUMENT',
+        lastMessageTimestamp: now,
+        lastMessageStatus: 'SENT',
+        lastMessageIsOutgoing: true,
+        unreadCount: existingConv?.unreadCount || 0,
+        isPinned: existingConv?.isPinned || false
+      };
+      const remainingConvs = conversations.filter(c => !numbersMatch(c.phoneNumber, normRecipient));
+      this.saveConversations([updatedConv, ...remainingConvs]);
+      this.notifySubscribers();
+
+      // Chunk binary into 384 KB parts (matching Android's CHUNK protocol)
+      const chunkSize = 384 * 1024;
+      const cleanBase64 = mediaData.replace(/^data:.*?;base64,/, '').replace(/\s/g, '');
+      const binary = atob(cleanBase64);
+      const totalBytes = binary.length;
+      const totalChunks = Math.ceil(totalBytes / chunkSize);
+      const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+
+      try {
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, totalBytes);
+          const sliceStr = binary.substring(start, end);
+          const chunkBase64 = btoa(sliceStr);
+
+          const chunkPayload = JSON.stringify({
+            type: "FILE_CHUNK",
+            parentMessageId: messageId,
+            fileName: text || 'document',
+            fileSize: totalBytes,
+            chunkIndex: i,
+            totalChunks: totalChunks,
+            bytes: chunkBase64
+          });
+
+          const { ciphertext: chunkCiphertext, iv: chunkIv } = await chatCryptoWeb.encrypt(chunkPayload, recipientPublicKey);
+          const chunkDocId = `${messageId}_chunk_${i}`;
+
+          await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', chunkDocId), {
+            messageId: chunkDocId,
+            senderNumber: this.currentListeningPhone,
+            recipientNumber: canonicalRecipient,
+            senderPublicKey: myPublicKey,
+            ciphertext: chunkCiphertext,
+            iv: chunkIv,
+            mediaType: 'CHUNK',
+            timestamp: now + i
+          });
+        }
+        console.log(`[ChatRepositoryWeb] Uploaded ${totalChunks} chunks for document ${messageId} to ${canonicalRecipient}`);
+      } catch (uploadErr) {
+        console.error('Failed to upload document chunks:', uploadErr);
+        localMsg.status = 'FAILED';
+        this.saveMessages(normRecipient, messages);
+        this.notifySubscribers();
+        throw uploadErr;
+      }
+
+      this.sendFcmWakeup(
+        canonicalRecipient,
+        this.currentListeningPhone,
+        `📄 ${text || 'Document'}`,
+        'DOCUMENT',
+        messageId
+      );
+
+      return localMsg;
+    }
+
+    // 2. Prepare Payload (standard messages / media <= 400 KB)
     let payloadToEncrypt = text || '';
+    let savedMediaData = mediaData;
+    let localMediaUrl = null;
+
     if (mediaType === 'IMAGE') {
       payloadToEncrypt = JSON.stringify({
         caption: text || '',
@@ -758,6 +904,13 @@ class ChatRepositoryWeb {
         fileName: text || 'document',
         bytes: mediaData || ''
       });
+      if (mediaData) {
+        const ext = (text.split('.').pop() || '').toLowerCase();
+        const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
+        const blob = await mediaStorageWeb.saveMedia(messageId, mediaData, text, mimeType);
+        savedMediaData = `idb:${messageId}`;
+        localMediaUrl = URL.createObjectURL(blob);
+      }
     }
 
     // 3. Encrypt via ChatCryptoWeb
@@ -772,7 +925,8 @@ class ChatRepositoryWeb {
       recipientNumber: canonicalRecipient,
       text: text || '',
       mediaType,
-      mediaData,
+      mediaData: savedMediaData,
+      mediaUrl: localMediaUrl,
       mediaDurationMs,
       timestamp: now,
       status: 'SENT',
@@ -1267,6 +1421,73 @@ class ChatRepositoryWeb {
       this.saveConversations(convs);
     }
     this.notifySubscribers();
+  }
+
+  // --- BROWSER NOTIFICATIONS ---
+  showBrowserNotification(senderName, messageText, profilePic, peerNumber = '') {
+    try {
+      if (typeof window === 'undefined' || !("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+
+      const title = senderName || peerNumber || "New Message";
+      const iconUrl = (profilePic && (profilePic.startsWith('http') || profilePic.startsWith('data:image'))) 
+        ? profilePic 
+        : '/icon-192.png';
+
+      let cleanBody = 'New message';
+      if (typeof messageText === 'string') {
+        try {
+          const parsed = JSON.parse(messageText);
+          cleanBody = parsed.text || parsed.caption || parsed.fileName || messageText;
+        } catch {
+          cleanBody = messageText;
+        }
+      }
+      if (cleanBody.length > 80) {
+        cleanBody = cleanBody.substring(0, 77) + '...';
+      }
+
+      const targetPeer = peerNumber || senderName || '';
+      const options = {
+        body: cleanBody,
+        icon: iconUrl,
+        badge: '/icon-192.png',
+        tag: `chat_${targetPeer}`,
+        renotify: true,
+        vibrate: [200, 100, 200],
+        data: {
+          url: `/?tab=chats&peer=${encodeURIComponent(targetPeer)}`,
+          peerNumber: targetPeer,
+          callerName: senderName,
+          type: 'chat_message'
+        }
+      };
+
+      // 1. Try ServiceWorker Registration (works on mobile PWA & desktop)
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.showNotification(title, options);
+        }).catch(() => {
+          this._fallbackWindowNotification(title, options);
+        });
+      } else {
+        this._fallbackWindowNotification(title, options);
+      }
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] showBrowserNotification error:', e);
+    }
+  }
+
+  _fallbackWindowNotification(title, options) {
+    try {
+      const notif = new Notification(title, options);
+      notif.onclick = () => {
+        window.focus();
+        notif.close();
+      };
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] Fallback window notification failed:', e);
+    }
   }
 }
 

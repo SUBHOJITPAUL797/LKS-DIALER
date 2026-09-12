@@ -1492,6 +1492,10 @@ class ChatRepository private constructor(private val context: Context) {
     }
     fun getMessagesFlow(phoneNumber: String): Flow<List<MessageEntity>> =
         messageDao.getMessagesFlow(ContactsHelper.normalizePhoneNumber(phoneNumber))
+    fun getMessagesPagedFlow(phoneNumber: String, limit: Int): Flow<List<MessageEntity>> =
+        messageDao.getMessagesPagedFlow(ContactsHelper.normalizePhoneNumber(phoneNumber), limit)
+    fun getMessageCountFlow(phoneNumber: String): Flow<Int> =
+        messageDao.getMessageCountFlow(ContactsHelper.normalizePhoneNumber(phoneNumber))
     fun getTotalUnreadCountFlow(): Flow<Int> = conversationDao.getTotalUnreadCountFlow()
 
     suspend fun clearChat(phoneNumber: String) {
