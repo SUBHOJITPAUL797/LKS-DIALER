@@ -34,29 +34,34 @@ export const PRESENCE_TIMEOUT_MS = 40000; // 40s timeout for presence staleness 
  * Checks if a user is truly online:
  * Must have isOnline == true AND lastSeen within the last 40 seconds.
  */
-export function isUserOnline(user) {
+export function isUserOnline(user, currentMs = Date.now()) {
   if (!user) return false;
   const isOnline = user.isOnline === true || user.online === true;
   if (!isOnline) return false;
-  const lastSeen = Number(user.lastSeen);
+  const lastSeen = user.lastSeen?.toMillis 
+    ? user.lastSeen.toMillis() 
+    : (user.lastSeen?.seconds ? user.lastSeen.seconds * 1000 : Number(user.lastSeen));
   if (!lastSeen || isNaN(lastSeen) || lastSeen <= 0) return false;
-  return (Date.now() - lastSeen) < PRESENCE_TIMEOUT_MS;
+  return (currentMs - lastSeen) < PRESENCE_TIMEOUT_MS;
 }
 
 /**
  * Formats lastSeen timestamp into human-readable WhatsApp-style label:
  * e.g. "last seen just now", "last seen 1m ago", "last seen today at 11:42 AM", "last seen yesterday at 3:15 PM"
  */
-export function formatLastSeen(lastSeenMs) {
-  if (!lastSeenMs || isNaN(lastSeenMs) || Number(lastSeenMs) <= 0) return '';
-  const ms = Number(lastSeenMs);
-  const diff = Date.now() - ms;
+export function formatLastSeen(lastSeenMs, currentMs = Date.now()) {
+  if (!lastSeenMs) return '';
+  const ms = lastSeenMs?.toMillis 
+    ? lastSeenMs.toMillis() 
+    : (lastSeenMs?.seconds ? lastSeenMs.seconds * 1000 : Number(lastSeenMs));
+  if (isNaN(ms) || ms <= 0) return '';
+  const diff = currentMs - ms;
   if (diff < 0 || diff < 60000) return 'last seen just now';
   if (diff < 120000) return 'last seen 1m ago';
   if (diff < 3600000) return `last seen ${Math.floor(diff / 60000)}m ago`;
 
   const seenDate = new Date(ms);
-  const nowDate = new Date();
+  const nowDate = new Date(currentMs);
   
   const timeStr = seenDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
 

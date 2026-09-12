@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  MessageSquare, Plus, Search, Check, CheckCheck, X, UserPlus, Phone 
+  MessageSquare, Plus, Search, Check, CheckCheck, X 
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, query, onSnapshot } from 'firebase/firestore';
@@ -222,7 +222,7 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
         filteredConversations.map(conv => {
           const cleanPeer = String(conv.phoneNumber || '').replace(/[^0-9]/g, '');
           const peerUserData = usersMap[conv.phoneNumber] || usersMap[cleanPeer] || (cleanPeer.length >= 10 ? usersMap[cleanPeer.slice(-10)] : null);
-          const isOnline = isUserOnline(peerUserData);
+          const isOnline = isUserOnline(peerUserData, nowTick);
           const avatarUrl = formatAvatarUrl(peerUserData?.profilePictureUrl) || formatAvatarUrl(conv.profilePicUrl);
           const contactDisplayName = conv.contactName || peerUserData?.displayName || conv.phoneNumber;
           const initial = (contactDisplayName || '?')[0]?.toUpperCase() || '?';

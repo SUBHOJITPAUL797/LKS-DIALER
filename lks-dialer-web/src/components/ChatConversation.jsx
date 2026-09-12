@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
-import { chatRepositoryWeb, normalizePhoneNumber, numbersMatch } from '../lib/ChatRepositoryWeb';
+import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 
@@ -164,13 +164,19 @@ export default function ChatConversation({
           const d = snapshot.docs[0].data() || {};
           setPeerUser({ ...d, id: snapshot.docs[0].id });
         } else {
-          getDoc(doc(db, 'users', normPeer)).then(snap => {
-            if (snap.exists()) {
-              setPeerUser({ ...snap.data(), id: snap.id });
-            } else {
-              setPeerUser(null);
+          // Multi-variation direct doc fallback
+          (async () => {
+            for (const v of distinct) {
+              try {
+                const snap = await getDoc(doc(db, 'users', v));
+                if (snap.exists()) {
+                  setPeerUser({ ...snap.data(), id: snap.id });
+                  return;
+                }
+              } catch {}
             }
-          }).catch(() => {});
+            setPeerUser(null);
+          })();
         }
       }, (err) => {
         console.warn("Peer presence listener error:", err);
@@ -476,8 +482,8 @@ export default function ChatConversation({
   const peerDisplayName = peerName || peerUser?.displayName || normPeer;
   const initial = (peerDisplayName || '?')[0]?.toUpperCase() || '?';
   const isBlocked = webRtcEngine.isNumberBlocked ? webRtcEngine.isNumberBlocked(normPeer) : false;
-  const isPeerOnlineStatus = isUserOnline(peerUser);
-  const lastSeenText = peerUser?.lastSeen ? formatLastSeen(peerUser.lastSeen) : '';
+  const isPeerOnlineStatus = isUserOnline(peerUser, nowTick);
+  const lastSeenText = peerUser?.lastSeen ? formatLastSeen(peerUser.lastSeen, nowTick) : '';
 
   // ── Key press: Enter to send ────────────────────────────────────────────────
   const handleKeyDown = (e) => {
