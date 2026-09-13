@@ -663,6 +663,7 @@ export default function ChatConversation({
 
   // Active file transfer progress: Map<messageId, progress>
   const [activeTransfers, setActiveTransfers] = useState(new Map());
+  const [selectedVideoUrl, setSelectedVideoUrl] = useState(null);
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -1074,6 +1075,39 @@ export default function ChatConversation({
     return ['mp3', 'm4a', 'wav', 'ogg', 'aac', 'flac', 'opus'].includes(ext);
   };
 
+  const isVideoDoc = (fileName = '') => {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    return ['mp4', 'mkv', 'webm', 'mov', '3gp', 'avi', 'm4v'].includes(ext);
+  };
+
+  const handleOpenVideo = async (e, msg) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    try {
+      let url = msg.mediaUrl;
+      if (!url && msg.mediaData) {
+        if (msg.mediaData.startsWith('idb:')) {
+          url = await mediaStorageWeb.getMediaUrl(msg.id);
+        } else if (msg.mediaData.startsWith('blob:') || msg.mediaData.startsWith('data:')) {
+          url = msg.mediaData;
+        } else {
+          url = `data:video/mp4;base64,${msg.mediaData}`;
+        }
+      } else if (!url && !msg.mediaData) {
+        url = await mediaStorageWeb.getMediaUrl(msg.id);
+      }
+
+      if (!url) {
+        alert('Video data is still downloading or not available yet.');
+        return;
+      }
+      setSelectedVideoUrl(url);
+    } catch (err) {
+      console.error('Video open error:', err);
+      handleDownloadDocument(e, msg);
+    }
+  };
+
   const handleDownloadDocument = async (e, msg) => {
     e?.preventDefault?.();
     e?.stopPropagation?.();
@@ -1481,85 +1515,94 @@ export default function ChatConversation({
                               onDownload={handleDownloadDocument}
                               formatFileSize={formatFileSize}
                             />
-                          ) : (
-                            <div
-                              onClick={(e) => handleDownloadDocument(e, msg)}
-                              className="neo-box"
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 12,
-                                padding: '10px 14px',
-                                backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
-                                borderRadius: 10,
-                                marginBottom: 4,
-                                border: '2px solid #000',
-                                minWidth: 220,
-                                maxWidth: 320,
-                                cursor: 'pointer'
-                              }}
-                            >
-                              <div style={{
-                                width: 42,
-                                height: 42,
-                                borderRadius: 8,
-                                backgroundColor: '#5E35B1',
-                                color: '#fff',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontWeight: 900,
-                                fontSize: 11,
-                                flexShrink: 0
-                              }}>
-                                {((msg.fileName || msg.text || 'DOC').split('.').pop() || 'DOC').toUpperCase().slice(0, 4)}
-                              </div>
+                          ) : (() => {
+                            const isVid = isVideoDoc(msg.fileName || msg.text);
+                            const tp = activeTransfers.get(msg.id);
+                            const isTransferring = tp && tp.percent < 100;
+                            const blurAmount = isTransferring ? `${((1 - tp.percent / 100) * 14).toFixed(1)}px` : '0px';
 
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div
-                                  style={{
-                                    fontWeight: 800,
-                                    fontSize: 13,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                    color: '#000'
-                                  }}
-                                  title={msg.fileName || msg.text || 'Document'}
-                                >
-                                  {msg.fileName || msg.text || 'Document'}
+                            return (
+                              <div
+                                onClick={(e) => isVid ? handleOpenVideo(e, msg) : handleDownloadDocument(e, msg)}
+                                className="neo-box"
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 12,
+                                  padding: '10px 14px',
+                                  backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
+                                  borderRadius: 10,
+                                  marginBottom: 4,
+                                  border: '2px solid #000',
+                                  minWidth: 220,
+                                  maxWidth: 320,
+                                  cursor: 'pointer',
+                                  filter: blurAmount !== '0px' ? `blur(${blurAmount})` : 'none',
+                                  transition: 'filter 0.3s ease'
+                                }}
+                              >
+                                <div style={{
+                                  width: 42,
+                                  height: 42,
+                                  borderRadius: 8,
+                                  backgroundColor: isVid ? '#8E24AA' : '#5E35B1',
+                                  color: '#fff',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontWeight: 900,
+                                  fontSize: isVid ? 16 : 11,
+                                  flexShrink: 0
+                                }}>
+                                  {isVid ? '🎬' : ((msg.fileName || msg.text || 'DOC').split('.').pop() || 'DOC').toUpperCase().slice(0, 4)}
                                 </div>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
-                                  {formatFileSize(msg.fileSize)}
-                                  {msg.fileSize ? ' • ' : ''}
-                                  Document
-                                </div>
-                              </div>
 
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                                <button
-                                  type="button"
-                                  onClick={(e) => handleDownloadDocument(e, msg)}
-                                  className="neo-box"
-                                  style={{
-                                    width: 34,
-                                    height: 34,
-                                    borderRadius: '50%',
-                                    backgroundColor: '#FFE600',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    border: '2px solid #000',
-                                    cursor: 'pointer',
-                                    padding: 0
-                                  }}
-                                  title="Download"
-                                >
-                                  <Download size={16} color="#000" />
-                                </button>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontWeight: 800,
+                                      fontSize: 13,
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                      whiteSpace: 'nowrap',
+                                      color: '#000'
+                                    }}
+                                    title={msg.fileName || msg.text || 'Document'}
+                                  >
+                                    {msg.fileName || msg.text || 'Document'}
+                                  </div>
+                                  <div style={{ fontSize: 11, fontWeight: 700, color: '#666', marginTop: 2 }}>
+                                    {formatFileSize(msg.fileSize)}
+                                    {msg.fileSize ? ' • ' : ''}
+                                    {isVid ? 'Video' : 'Document'}
+                                  </div>
+                                </div>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleDownloadDocument(e, msg)}
+                                    className="neo-box"
+                                    style={{
+                                      width: 34,
+                                      height: 34,
+                                      borderRadius: '50%',
+                                      backgroundColor: '#FFE600',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      border: '2px solid #000',
+                                      cursor: 'pointer',
+                                      padding: 0
+                                    }}
+                                    title="Download"
+                                  >
+                                    <Download size={16} color="#000" />
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          )
+                            );
+                          })()
                         )}
 
                         {/* P2P / Relay Transfer Progress Card */}
@@ -1940,6 +1983,72 @@ export default function ChatConversation({
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* In-app Video Player Modal */}
+      {selectedVideoUrl && (
+        <div 
+          onClick={() => setSelectedVideoUrl(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            backgroundColor: 'rgba(0, 0, 0, 0.92)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: 720,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+              position: 'relative'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setSelectedVideoUrl(null)}
+              className="neo-box"
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: '50%',
+                backgroundColor: '#FF4757',
+                color: '#fff',
+                border: '2px solid #000',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                marginBottom: 8
+              }}
+              title="Close video"
+            >
+              <X size={20} color="#fff" />
+            </button>
+            <video
+              src={selectedVideoUrl}
+              controls
+              autoPlay
+              playsInline
+              style={{
+                width: '100%',
+                maxHeight: '75vh',
+                borderRadius: 12,
+                border: '3px solid #FFE600',
+                backgroundColor: '#000',
+                boxShadow: '0 8px 32px rgba(0,0,0,0.8)'
+              }}
+            />
           </div>
         </div>
       )}

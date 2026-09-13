@@ -44,8 +44,21 @@ class GitHubUpdater(context: Context) {
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
     
-    suspend fun checkForUpdates(currentVersion: String = "v${com.example.BuildConfig.VERSION_NAME}"): UpdateInfo? = withContext(Dispatchers.IO) {
+    fun dismissUpdate(version: String) {
+        val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("dismissed_version", version)
+            .putLong("dismissed_time", System.currentTimeMillis())
+            .apply()
+    }
+
+    suspend fun checkForUpdates(currentVersion: String? = null): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
+            val pInfo = try {
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            } catch (_: Exception) { null }
+            val resolvedLocalVersion = currentVersion ?: "v${pInfo?.versionName ?: BuildConfig.VERSION_NAME}"
+
             val urlString = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest"
             val url = URL(urlString)
             val connection = url.openConnection() as HttpURLConnection
@@ -60,6 +73,15 @@ class GitHubUpdater(context: Context) {
                     
                     val tagName = json.getString("tag_name")
                     val releaseNotes = json.optString("body", "")
+
+                    // Check if user previously dismissed this release
+                    val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
+                    val dismissedVersion = prefs.getString("dismissed_version", "") ?: ""
+                    val dismissedTime = prefs.getLong("dismissed_time", 0L)
+                    if (dismissedVersion == tagName && (System.currentTimeMillis() - dismissedTime) < 24 * 60 * 60 * 1000L) {
+                        Log.d(TAG, "Update $tagName was dismissed by user within 24 hours — suppressing dialog")
+                        return@withContext null
+                    }
                     
                     // Parse assets to find the APK
                     val assets = json.getJSONArray("assets")
@@ -73,7 +95,7 @@ class GitHubUpdater(context: Context) {
                         }
                     }
                     
-                    if (downloadUrl != null && isVersionGreater(tagName, currentVersion)) {
+                    if (downloadUrl != null && isVersionGreater(tagName, resolvedLocalVersion)) {
                         return@withContext UpdateInfo(
                             isUpdateAvailable = true,
                             latestVersion = tagName,
@@ -176,6 +198,17 @@ class GitHubUpdater(context: Context) {
     
     private fun installApk(uri: Uri) {
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    context.startActivity(settingsIntent)
+                    return
+                }
+            }
+
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION

@@ -137,6 +137,7 @@ class ChatRepository private constructor(private val context: Context) {
     // Tracks in-flight P2pFileTransfer instances so they can be cancelled
     private val activeP2pTransfers = java.util.concurrent.ConcurrentHashMap<String, P2pFileTransfer>()
     private val cancelledTransfers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val activeTransferJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
     private var inboxListener: ListenerRegistration? = null
     private var receiptsListener: ListenerRegistration? = null
@@ -161,13 +162,15 @@ class ChatRepository private constructor(private val context: Context) {
         }
     }
 
-    /** Cancel an active P2P or relay file transfer. */
+    /** Cancel an active P2P or relay file transfer immediately. */
     fun cancelTransfer(messageId: String) {
         Log.d(TAG, "Transfer cancellation requested for messageId=$messageId")
         cancelledTransfers.add(messageId)
         activeP2pTransfers[messageId]?.cancel(messageId)
         activeP2pTransfers.remove(messageId)
         _activeTransfers.value = _activeTransfers.value - messageId
+        activeTransferJobs[messageId]?.cancel()
+        activeTransferJobs.remove(messageId)
         repositoryScope.launch {
             messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
         }
@@ -398,6 +401,26 @@ class ChatRepository private constructor(private val context: Context) {
                     val chunkIndex = json.getInt("chunkIndex")
                     val totalChunks = json.getInt("totalChunks")
                     val base64Chunk = json.getString("bytes")
+                    val fileSize = json.optLong("fileSize", 0L)
+
+                    // 1. Insert a placeholder message in Room DB if first chunk arrives so recipient sees card immediately
+                    val existingMsg = messageDao.getMessageById(parentId)
+                    if (existingMsg == null) {
+                        val placeholder = MessageEntity(
+                            id = parentId,
+                            conversationId = senderNorm,
+                            senderNumber = dto.senderNumber,
+                            recipientNumber = dto.recipientNumber,
+                            text = fileName,
+                            mediaType = ChatMediaType.DOCUMENT.name,
+                            mediaPath = null,
+                            mediaDurationMs = 0L,
+                            timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                            status = MessageStatus.DELIVERED.name,
+                            isOutgoing = false
+                        )
+                        messageDao.insertMessage(placeholder)
+                    }
 
                     val chunksDir = File(context.cacheDir, "chunks_$parentId")
                     if (!chunksDir.exists()) chunksDir.mkdirs()
@@ -405,14 +428,28 @@ class ChatRepository private constructor(private val context: Context) {
                     val bytes = Base64.decode(base64Chunk, Base64.NO_WRAP)
                     partFile.writeBytes(bytes)
 
-                    // Check if all chunks have arrived
-                    var allPresent = true
+                    // 2. Count received chunks and emit incoming progress for progressive unblur
+                    var receivedCount = 0
                     for (i in 0 until totalChunks) {
-                        if (!File(chunksDir, "part_$i").exists()) {
-                            allPresent = false
-                            break
-                        }
+                        if (File(chunksDir, "part_$i").exists()) receivedCount++
                     }
+
+                    val calcTotalBytes = if (fileSize > 0L) fileSize else (totalChunks * 512L * 1024L)
+                    val calcTransferredBytes = (receivedCount.toFloat() / totalChunks.coerceAtLeast(1) * calcTotalBytes).toLong()
+                    val calcPercent = (receivedCount * 100 / totalChunks.coerceAtLeast(1)).coerceIn(0, 100)
+
+                    _activeTransfers.value = _activeTransfers.value + (parentId to FileTransferProgress(
+                        messageId = parentId,
+                        fileName = fileName,
+                        totalBytes = calcTotalBytes,
+                        transferredBytes = calcTransferredBytes,
+                        status = if (receivedCount == totalChunks) TransferStatus.DONE else TransferStatus.TRANSFERRING,
+                        mode = TransferMode.RELAY,
+                        isIncoming = true
+                    ))
+
+                    // Check if all chunks have arrived
+                    var allPresent = (receivedCount == totalChunks)
 
                     if (allPresent) {
                         val ext = fileName.substringAfterLast('.', "bin")
@@ -428,8 +465,9 @@ class ChatRepository private constructor(private val context: Context) {
                         }
                         try { chunksDir.delete() } catch (_: Exception) {}
 
-                        // Insert reassembled message into Room DB
-                        val messageEntity = MessageEntity(
+                        // Update placeholder with assembled file path
+                        messageDao.updateMessageMedia(parentId, finalFile.absolutePath)
+                        val messageEntity = messageDao.getMessageById(parentId) ?: MessageEntity(
                             id = parentId,
                             conversationId = senderNorm,
                             senderNumber = dto.senderNumber,
@@ -442,7 +480,10 @@ class ChatRepository private constructor(private val context: Context) {
                             status = MessageStatus.DELIVERED.name,
                             isOutgoing = false
                         )
-                        messageDao.insertMessage(messageEntity)
+                        repositoryScope.launch {
+                            delay(3000)
+                            _activeTransfers.value = _activeTransfers.value - parentId
+                        }
 
                         // Update conversation summary
                         val firebaseManager = FirebaseManager.getInstance(context)
@@ -946,6 +987,9 @@ class ChatRepository private constructor(private val context: Context) {
                 )
                 conversationDao.upsertConversation(convEntity)
 
+                // Register current coroutine Job for instant cancellation
+                coroutineContext[kotlinx.coroutines.Job]?.let { activeTransferJobs[messageId] = it }
+
                 // ── ATTEMPT P2P (WebRTC DataChannel) ────────────────────────────────────────
                 val isRecipientOnline = run {
                     val userFromMemory = firebaseManager.lookupUserByNumber(canonicalRecipient)
@@ -1015,14 +1059,27 @@ class ChatRepository private constructor(private val context: Context) {
                             }
                         },
                         onProgress = { progress ->
-                            _activeTransfers.value = _activeTransfers.value + (messageId to progress)
+                            if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                                _activeTransfers.value = _activeTransfers.value + (messageId to progress)
+                            }
                         }
                     )
                     activeP2pTransfers.remove(messageId)
 
+                    // CRITICAL: Check if transfer was cancelled by user during P2P — DO NOT fall through to relay!
+                    if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                        Log.d(TAG, "Transfer $messageId was cancelled by user during P2P — aborting without fallback to relay")
+                        cancelledTransfers.remove(messageId)
+                        _activeTransfers.value = _activeTransfers.value - messageId
+                        activeTransferJobs.remove(messageId)
+                        messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                        return@withContext Result.failure(CancellationException("Cancelled by user"))
+                    }
+
                     if (p2pSuccess) {
                         Log.d(TAG, "P2P transfer SUCCEEDED for $messageId ⚡")
                         messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
+                        activeTransferJobs.remove(messageId)
                         delay(3000)
                         _activeTransfers.value = _activeTransfers.value - messageId
                         return@withContext Result.success(messageEntity)
@@ -1041,8 +1098,8 @@ class ChatRepository private constructor(private val context: Context) {
                     ))
                 }
 
-                // ── FALLBACK: Firestore 384KB Chunk Relay ────────────────────────────────────
-                val chunkSize = 384 * 1024
+                // ── FALLBACK: Firestore 512KB Chunk Relay with Auto-Switch to P2P ───────────────
+                val chunkSize = 512 * 1024
                 val fileBytes = mediaFile.readBytes()
                 val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
                 val myPublicKey = cryptoManager.getMyPublicKeyBase64()
@@ -1050,13 +1107,13 @@ class ChatRepository private constructor(private val context: Context) {
                 try {
                     var relayUploadedBytes = 0L
                     for (i in 0 until totalChunks) {
-                        // Check if transfer was cancelled by user
+                        // 1. Cancellation check BEFORE chunk upload
                         if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
-                            Log.d(TAG, "Relay transfer cancelled by user for $messageId at chunk $i/$totalChunks")
+                            Log.d(TAG, "Relay transfer cancelled by user for $messageId before chunk $i/$totalChunks")
                             cancelledTransfers.remove(messageId)
                             _activeTransfers.value = _activeTransfers.value - messageId
+                            activeTransferJobs.remove(messageId)
                             messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
-                            // Clean up already uploaded chunks from recipient inbox
                             repositoryScope.launch {
                                 for (c in 0 until i) {
                                     try {
@@ -1069,6 +1126,106 @@ class ChatRepository private constructor(private val context: Context) {
                                 }
                             }
                             return@withContext Result.failure(CancellationException("Cancelled by user"))
+                        }
+
+                        // 2. AUTO-SWITCH: Check if peer came online during relay transmission
+                        val peerUserOnline = run {
+                            val memUser = firebaseManager.lookupUserByNumber(canonicalRecipient)
+                                ?: firebaseManager.lookupUserByNumber(normRecipient)
+                            if (memUser != null) {
+                                memUser.isOnline || (System.currentTimeMillis() - memUser.lastSeen) < 60_000L
+                            } else false
+                        }
+
+                        if (peerUserOnline && i < totalChunks - 1) {
+                            Log.i(TAG, "⚡ AUTO-SWITCH: Peer $canonicalRecipient came online at chunk $i/$totalChunks! Switching to P2P Direct!")
+                            // Clean up partial chunks from Firestore inbox so recipient receives clean P2P stream
+                            repositoryScope.launch {
+                                for (c in 0 until i) {
+                                    try {
+                                        firestore.collection("inboxes")
+                                            .document(canonicalRecipient)
+                                            .collection("messages")
+                                            .document("${messageId}_chunk_$c")
+                                            .delete()
+                                    } catch (_: Exception) {}
+                                }
+                            }
+
+                            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                                messageId = messageId, fileName = mediaFile.name,
+                                totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
+                            ))
+
+                            val switchedP2p = P2pFileTransfer(context)
+                            activeP2pTransfers[messageId] = switchedP2p
+                            val switchedSuccess = switchedP2p.sendFile(
+                                sessionId = messageId,
+                                myPhone = myPhone,
+                                recipientPhone = canonicalRecipient,
+                                file = savedFile,
+                                onOfferReady = { offerSdp ->
+                                    val offerPayload = JSONObject().apply {
+                                        put("sessionId", messageId)
+                                        put("messageId", messageId)
+                                        put("fileName", text.ifBlank { mediaFile.name })
+                                        put("fileSize", mediaFile.length())
+                                        put("offerSdp", offerSdp)
+                                    }.toString()
+                                    try {
+                                        val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
+                                        val offerDto = ChatMessageDto(
+                                            messageId = "${messageId}_p2p_offer",
+                                            senderNumber = myPhone,
+                                            recipientNumber = canonicalRecipient,
+                                            senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                                            ciphertext = offerCiphertext,
+                                            iv = offerIv,
+                                            mediaType = ChatMediaType.P2P_OFFER.name,
+                                            timestamp = now
+                                        )
+                                        firestore.collection("inboxes")
+                                            .document(canonicalRecipient)
+                                            .collection("messages")
+                                            .document("${messageId}_p2p_offer")
+                                            .set(offerDto)
+                                            .await()
+                                        Log.d(TAG, "P2P_OFFER (auto-switched) sent to $canonicalRecipient for sessionId=$messageId")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Failed to send auto-switched P2P_OFFER: ${e.message}")
+                                    }
+                                },
+                                onProgress = { progress ->
+                                    if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                                        _activeTransfers.value = _activeTransfers.value + (messageId to progress)
+                                    }
+                                }
+                            )
+                            activeP2pTransfers.remove(messageId)
+
+                            if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                                Log.d(TAG, "Transfer $messageId was cancelled during auto-switched P2P")
+                                cancelledTransfers.remove(messageId)
+                                _activeTransfers.value = _activeTransfers.value - messageId
+                                activeTransferJobs.remove(messageId)
+                                messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                                return@withContext Result.failure(CancellationException("Cancelled by user"))
+                            }
+
+                            if (switchedSuccess) {
+                                Log.d(TAG, "⚡ AUTO-SWITCH SUCCEEDED: P2P transfer completed for $messageId")
+                                messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
+                                activeTransferJobs.remove(messageId)
+                                delay(3000)
+                                _activeTransfers.value = _activeTransfers.value - messageId
+                                return@withContext Result.success(messageEntity)
+                            } else {
+                                Log.w(TAG, "⚡ AUTO-SWITCH P2P failed — resuming Relay mode ☁")
+                                _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                                    messageId = messageId, fileName = mediaFile.name,
+                                    totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                                ))
+                            }
                         }
 
                         val start = i * chunkSize
@@ -1106,20 +1263,52 @@ class ChatRepository private constructor(private val context: Context) {
                             .set(chunkDto)
                             .await()
 
+                        // 3. Cancellation check IMMEDIATELY AFTER chunk upload await()
+                        if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                            Log.d(TAG, "Relay transfer cancelled by user for $messageId after chunk $i await")
+                            cancelledTransfers.remove(messageId)
+                            _activeTransfers.value = _activeTransfers.value - messageId
+                            activeTransferJobs.remove(messageId)
+                            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                            repositoryScope.launch {
+                                for (c in 0..i) {
+                                    try {
+                                        firestore.collection("inboxes")
+                                            .document(canonicalRecipient)
+                                            .collection("messages")
+                                            .document("${messageId}_chunk_$c")
+                                            .delete()
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                            return@withContext Result.failure(CancellationException("Cancelled by user"))
+                        }
+
                         relayUploadedBytes += slice.size
-                        _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                            messageId = messageId, fileName = mediaFile.name,
-                            totalBytes = mediaFile.length(), transferredBytes = relayUploadedBytes,
-                            mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
-                        ))
+                        if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                                messageId = messageId, fileName = mediaFile.name,
+                                totalBytes = mediaFile.length(), transferredBytes = relayUploadedBytes,
+                                mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
+                            ))
+                        }
                     }
                     Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $canonicalRecipient")
                 } catch (e: Exception) {
+                    if (cancelledTransfers.contains(messageId)) {
+                        cancelledTransfers.remove(messageId)
+                        _activeTransfers.value = _activeTransfers.value - messageId
+                        activeTransferJobs.remove(messageId)
+                        return@withContext Result.failure(CancellationException("Cancelled by user"))
+                    }
                     Log.e(TAG, "Failed to upload file chunks: ${e.message}", e)
                     messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
                     _activeTransfers.value = _activeTransfers.value - messageId
+                    activeTransferJobs.remove(messageId)
                     return@withContext Result.failure(e)
                 }
+
+                activeTransferJobs.remove(messageId)
 
                 // Relay complete — clean up progress after short delay
                 repositoryScope.launch {

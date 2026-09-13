@@ -362,6 +362,22 @@ class ChatRepositoryWeb {
           // 1. Save chunk into high-capacity IndexedDB + RAM buffer
           await mediaStorageWeb.saveChunk(parentMessageId, chunkIndex, totalChunks, bytes);
 
+          // Emit incoming transfer progress for progressive unblur
+          const currentCount = chunkIndex + 1;
+          const progressPercent = Math.min(100, Math.round((currentCount / totalChunks) * 100));
+          this.activeTransfers.set(parentMessageId, {
+            percent: progressPercent,
+            mbTransferred: ((currentCount * 512) / 1024).toFixed(1),
+            totalMb: fileSize ? (fileSize / 1048576).toFixed(1) : ((totalChunks * 512) / 1024).toFixed(1),
+            speedMbps: '1.5',
+            status: 'TRANSFERRING',
+            mode: 'RELAY',
+            isIncoming: true,
+            messageId: parentMessageId,
+            fileName: fileName || 'Document'
+          });
+          this.notifySubscribers();
+
           // 2. Check if all chunks have arrived
           const assembledBytes = await mediaStorageWeb.checkAndAssembleChunks(parentMessageId, totalChunks);
 
@@ -1017,6 +1033,16 @@ class ChatRepositoryWeb {
         );
         this._activeP2pInstances.delete(messageId);
 
+        if (this.cancelledTransfers.has(messageId)) {
+          console.log(`[ChatRepositoryWeb] P2P cancelled by user for ${messageId} — aborting without relay`);
+          this.cancelledTransfers.delete(messageId);
+          this.activeTransfers.delete(messageId);
+          localMsg.status = 'FAILED';
+          this.saveMessages(normRecipient, messages);
+          this.notifySubscribers();
+          return localMsg;
+        }
+
         if (p2pSuccess) {
           console.log(`[ChatRepositoryWeb] P2P transfer SUCCEEDED ⚡ ${messageId}`);
           setTimeout(() => { this.activeTransfers.delete(messageId); this.notifySubscribers(); }, 3000);
@@ -1040,8 +1066,8 @@ class ChatRepositoryWeb {
         this.notifySubscribers();
       }
 
-      // ── FALLBACK: Firestore 384 KB Chunk Relay ────────────────────────────────
-      const chunkSize = 384 * 1024;
+      // ── FALLBACK: Firestore 512 KB Chunk Relay with Auto-Switch to P2P ────────
+      const chunkSize = 512 * 1024;
       const cleanBase64 = mediaData.replace(/^data:.*?;base64,/, '').replace(/\s/g, '');
       const binary = atob(cleanBase64);
       const totalBytes = binary.length;
@@ -1050,6 +1076,7 @@ class ChatRepositoryWeb {
 
       try {
         for (let i = 0; i < totalChunks; i++) {
+          // 1. Check cancellation before chunk upload
           if (this.cancelledTransfers.has(messageId)) {
             console.log(`[ChatRepositoryWeb] Relay transfer cancelled by user for ${messageId} at chunk ${i}/${totalChunks}`);
             this.cancelledTransfers.delete(messageId);
@@ -1064,6 +1091,84 @@ class ChatRepositoryWeb {
               } catch {}
             }
             return localMsg;
+          }
+
+          // 2. AUTO-SWITCH: If peer came online during relay, switch to P2P Direct
+          if (i < totalChunks - 1) {
+            const peerOnline = await this.checkPeerOnline(canonicalRecipient);
+            if (peerOnline) {
+              console.log(`[ChatRepositoryWeb] ⚡ AUTO-SWITCH: Peer came online during relay! Switching to P2P Direct!`);
+              for (let c = 0; c < i; c++) {
+                try {
+                  await deleteDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_chunk_${c}`));
+                } catch {}
+              }
+
+              this.activeTransfers.set(messageId, {
+                percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
+                speedMbps: '0', status: 'CONNECTING', mode: 'P2P', isIncoming: false,
+                messageId, fileName: text || 'Document'
+              });
+              this.notifySubscribers();
+
+              const switchedP2p = new P2pFileTransferWeb();
+              this._activeP2pInstances.set(messageId, switchedP2p);
+              const switchedSuccess = await switchedP2p.sendFile(
+                messageId,
+                this.currentListeningPhone,
+                canonicalRecipient,
+                fileForP2p,
+                (progress) => {
+                  if (!this.cancelledTransfers.has(messageId)) {
+                    this.activeTransfers.set(messageId, { ...progress, messageId });
+                    this.notifySubscribers();
+                  }
+                },
+                async (offerSdp) => {
+                  try {
+                    const offerPayload = JSON.stringify({
+                      sessionId: messageId,
+                      messageId,
+                      fileName: text || 'document',
+                      fileSize: blob.size,
+                      offerSdp
+                    });
+                    const { ciphertext: offerCt, iv: offerIv } = await chatCryptoWeb.encrypt(offerPayload, recipientPublicKey);
+                    const myPub = await chatCryptoWeb.getMyPublicKeyBase64();
+                    await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_p2p_offer`), {
+                      messageId: `${messageId}_p2p_offer`,
+                      senderNumber: this.currentListeningPhone,
+                      recipientNumber: canonicalRecipient,
+                      senderPublicKey: myPub,
+                      ciphertext: offerCt, iv: offerIv,
+                      mediaType: 'P2P_OFFER',
+                      timestamp: now
+                    });
+                  } catch (e) {
+                    console.warn('[ChatRepositoryWeb] Failed to send auto-switch P2P_OFFER:', e);
+                  }
+                }
+              );
+              this._activeP2pInstances.delete(messageId);
+
+              if (this.cancelledTransfers.has(messageId)) {
+                this.cancelledTransfers.delete(messageId);
+                this.activeTransfers.delete(messageId);
+                localMsg.status = 'FAILED';
+                this.saveMessages(normRecipient, messages);
+                this.notifySubscribers();
+                return localMsg;
+              }
+
+              if (switchedSuccess) {
+                console.log(`[ChatRepositoryWeb] ⚡ AUTO-SWITCH SUCCEEDED: P2P transfer finished for ${messageId}`);
+                setTimeout(() => { this.activeTransfers.delete(messageId); this.notifySubscribers(); }, 3000);
+                this.sendFcmWakeup(canonicalRecipient, this.currentListeningPhone, `📄 ${text || 'Document'}`, 'DOCUMENT', messageId);
+                return localMsg;
+              } else {
+                console.warn('[ChatRepositoryWeb] ⚡ Auto-switch P2P failed — resuming relay');
+              }
+            }
           }
 
           const start = i * chunkSize;
@@ -1095,22 +1200,45 @@ class ChatRepositoryWeb {
             timestamp: now + i
           });
 
-          this.activeTransfers.set(messageId, {
-            percent: Math.round(((i + 1) / totalChunks) * 100),
-            mbTransferred: (((i + 1) * chunkSize) / 1048576).toFixed(1),
-            totalMb: (totalBytes / 1048576).toFixed(1),
-            speedMbps: '0.5',
-            status: 'TRANSFERRING',
-            mode: 'RELAY',
-            isIncoming: false,
-            messageId,
-            fileName: text || 'Document'
-          });
-          this.notifySubscribers();
+          // 3. Check cancellation IMMEDIATELY AFTER chunk upload await
+          if (this.cancelledTransfers.has(messageId)) {
+            console.log(`[ChatRepositoryWeb] Relay transfer cancelled by user for ${messageId} after chunk ${i} await`);
+            this.cancelledTransfers.delete(messageId);
+            this.activeTransfers.delete(messageId);
+            localMsg.status = 'FAILED';
+            this.saveMessages(normRecipient, messages);
+            this.notifySubscribers();
+            for (let c = 0; c <= i; c++) {
+              try {
+                await deleteDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_chunk_${c}`));
+              } catch {}
+            }
+            return localMsg;
+          }
+
+          if (!this.cancelledTransfers.has(messageId)) {
+            this.activeTransfers.set(messageId, {
+              percent: Math.round(((i + 1) / totalChunks) * 100),
+              mbTransferred: (((i + 1) * chunkSize) / 1048576).toFixed(1),
+              totalMb: (totalBytes / 1048576).toFixed(1),
+              speedMbps: '1.2',
+              status: 'TRANSFERRING',
+              mode: 'RELAY',
+              isIncoming: false,
+              messageId,
+              fileName: text || 'Document'
+            });
+            this.notifySubscribers();
+          }
         }
         console.log(`[ChatRepositoryWeb] Uploaded ${totalChunks} chunks for document ${messageId} to ${canonicalRecipient}`);
         setTimeout(() => { this.activeTransfers.delete(messageId); this.notifySubscribers(); }, 3000);
       } catch (uploadErr) {
+        if (this.cancelledTransfers.has(messageId)) {
+          this.cancelledTransfers.delete(messageId);
+          this.activeTransfers.delete(messageId);
+          return localMsg;
+        }
         console.error('Failed to upload document chunks:', uploadErr);
         localMsg.status = 'FAILED';
         this.saveMessages(normRecipient, messages);

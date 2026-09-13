@@ -33,6 +33,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -136,6 +137,7 @@ fun ChatConversationScreen(
 
     var inputText by remember { mutableStateOf("") }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
+    var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
 
     // Swipe-to-reply state
@@ -438,6 +440,7 @@ fun ChatConversationScreen(
                                 onSeekAudio = { ratio -> voiceHelper.seekTo(ratio) },
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
                                 onImageClick = { path -> selectedImagePreviewPath = path },
+                                onVideoClick = { file -> selectedVideoPreviewFile = file },
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
                                 onMessageLongClick = { selectedMessageForOptions = it },
                                 transferProgress = activeTransfers[msg.id],
@@ -875,6 +878,14 @@ fun ChatConversationScreen(
                 }
             }
         }
+    }
+
+    // Fullscreen Video Player
+    if (selectedVideoPreviewFile != null) {
+        com.example.ui.components.VideoPlayerDialog(
+            videoFile = selectedVideoPreviewFile!!,
+            onDismissRequest = { selectedVideoPreviewFile = null }
+        )
     }
 
     // ── Attachment Picker Bottom Sheet ───────────────────────────
@@ -1483,6 +1494,7 @@ private fun MessageBubble(
     onSeekAudio: (Float) -> Unit = {},
     onPlayAudio: (path: String) -> Unit,
     onImageClick: (path: String) -> Unit,
+    onVideoClick: ((File) -> Unit)? = null,
     onMarkMessageRead: (messageId: String) -> Unit,
     onMessageLongClick: (message: MessageEntity) -> Unit = {},
     transferProgress: com.example.data.p2p.FileTransferProgress? = null,
@@ -1630,6 +1642,14 @@ private fun MessageBubble(
                         } catch (_: Exception) { null }
                     }
 
+                    val isTransferring = transferProgress != null && transferProgress.percent < 100
+                    val unblurPercent = transferProgress?.percent ?: 100
+                    val imgBlurRadius = remember(unblurPercent, isTransferring) {
+                        if (isTransferring) {
+                            ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
+                        } else 0.dp
+                    }
+
                     AsyncImage(
                         model = message.mediaPath,
                         contentDescription = "Photo",
@@ -1637,6 +1657,7 @@ private fun MessageBubble(
                             .fillMaxWidth()
                             .aspectRatio(imageRatio ?: 1f)
                             .clip(RoundedCornerShape(12.dp))
+                            .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier)
                             .clickable {
                                 if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                     onMarkMessageRead(message.id)
@@ -1682,6 +1703,15 @@ private fun MessageBubble(
                             .uppercase(Locale.getDefault()).take(5)
                     }
                     val isAudio = ext in listOf("MP3", "M4A", "WAV", "AAC", "OGG", "FLAC", "OPUS")
+                    val isVideo = ext in listOf("MP4", "MKV", "WEBM", "MOV", "3GP", "AVI", "M4V")
+                    val isTransferring = transferProgress != null && transferProgress.percent < 100
+                    val unblurPercent = transferProgress?.percent ?: 100
+                    val docBlurRadius = remember(unblurPercent, isTransferring) {
+                        if (isTransferring) {
+                            ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
+                        } else 0.dp
+                    }
+
                     val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
                         if (message.mediaDurationMs > 0L) message.mediaDurationMs
                         else if (isAudio && hasFile) {
@@ -1712,30 +1742,35 @@ private fun MessageBubble(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .then(if (docBlurRadius > 0.dp) Modifier.blur(docBlurRadius) else Modifier)
                             .clickable {
                                 if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                     onMarkMessageRead(message.id)
                                 }
                                 if (docFile != null && hasFile) {
-                                    try {
-                                        val fileUri = FileProvider.getUriForFile(
-                                            context,
-                                            "${context.packageName}.fileprovider",
-                                            docFile
-                                        )
-                                        val mime = android.webkit.MimeTypeMap.getSingleton()
-                                            .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
-                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                            setDataAndType(fileUri, mime)
-                                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    if (isVideo && onVideoClick != null) {
+                                        onVideoClick(docFile)
+                                    } else {
+                                        try {
+                                            val fileUri = FileProvider.getUriForFile(
+                                                context,
+                                                "${context.packageName}.fileprovider",
+                                                docFile
+                                            )
+                                            val mime = android.webkit.MimeTypeMap.getSingleton()
+                                                .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                setDataAndType(fileUri, mime)
+                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
                                         }
-                                        context.startActivity(intent)
-                                    } catch (e: Exception) {
-                                        Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
                                     }
                                 } else {
-                                    Toast.makeText(context, "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
                                 }
                             }
                     ) {
@@ -1746,6 +1781,7 @@ private fun MessageBubble(
                                 Surface(
                                     color = when {
                                         isAudio -> Color(0xFFE91E63)
+                                        isVideo -> Color(0xFF9C27B0)
                                         ext == "PDF" -> Color(0xFFE53935)
                                         ext in listOf("DOC", "DOCX") -> Color(0xFF1E88E5)
                                         ext in listOf("XLS", "XLSX") -> Color(0xFF43A047)
@@ -1756,10 +1792,14 @@ private fun MessageBubble(
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Text(
-                                            text = if (isAudio) "🎵" else ext.take(4),
+                                            text = when {
+                                                isAudio -> "🎵"
+                                                isVideo -> "🎬"
+                                                else -> ext.take(4)
+                                            },
                                             color = Color.White,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = if (isAudio) 16.sp else 11.sp
+                                            fontSize = if (isAudio || isVideo) 16.sp else 11.sp
                                         )
                                     }
                                 }
@@ -2006,13 +2046,13 @@ private fun FileTransferProgressCard(
                 progress.status == com.example.data.p2p.TransferStatus.TRANSFERRING) {
                 IconButton(
                     onClick = onCancel,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = "Cancel transfer",
                         tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }

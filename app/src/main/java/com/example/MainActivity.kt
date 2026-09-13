@@ -1030,6 +1030,7 @@ class MainActivity : ComponentActivity() {
                                 gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
                             },
                             onDismissRequest = {
+                                gitHubUpdater.dismissUpdate(info.latestVersion)
                                 updateInfo = null
                             }
                         )
