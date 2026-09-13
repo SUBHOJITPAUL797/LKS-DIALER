@@ -644,7 +644,18 @@ class WebRtcEngine private constructor(private val context: Context) {
                     .filter { it.callerNumber != myPhoneNumber && it.callerNumber.replace(Regex("[^0-9]"), "") != cleanDigits }
                     .maxByOrNull { it.createdAt }
 
-                if (incomingCall != null && _state.value.activeCall == null && incomingCall.callId !in seenCallIds) {
+                // CRITICAL FIX: Guard on callStatus being IDLE/ENDED/DECLINED/MISSED, NOT on activeCall == null.
+                // Previously: activeCall == null → was only true after 1500ms (when UI reset to IDLE)
+                // This meant any incoming call that arrived during the 1500ms "Call Ended" display window
+                // was silently dropped via Firestore snapshot (which never re-fires on same data).
+                // Fix: accept a new call whenever we are NOT in an active/ringing/calling state.
+                val isReadyForNewCall = _state.value.callStatus == CallStatus.IDLE ||
+                    _state.value.callStatus == CallStatus.ENDED ||
+                    _state.value.callStatus == CallStatus.DECLINED ||
+                    _state.value.callStatus == CallStatus.MISSED ||
+                    _state.value.activeCall == null
+
+                if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds) {
                     seenCallIds.add(incomingCall.callId)
 
                     val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
@@ -769,8 +780,15 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         fetchIceServersAsync {}
         
+        val isNotCurrentlyInCall = _state.value.activeCall == null || 
+            _state.value.callStatus == CallStatus.IDLE || 
+            _state.value.callStatus == CallStatus.ENDED || 
+            _state.value.callStatus == CallStatus.DECLINED || 
+            _state.value.callStatus == CallStatus.MISSED ||
+            _state.value.activeCall?.callId != callId
+
         // Optimistically show the call screen if we have the data
-        if (callerName != null && callerNumber != null && callTypeStr != null && _state.value.activeCall == null) {
+        if (callerName != null && callerNumber != null && callTypeStr != null && isNotCurrentlyInCall) {
             val type = try { CallType.valueOf(callTypeStr) } catch(e: Exception) { CallType.AUDIO }
             _state.value = WebRtcState(
                 activeCall = CallDto(
@@ -1517,14 +1535,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             )
         }
 
-        // CRITICAL FIX: Set activeCall = null IMMEDIATELY so the Firestore snapshot listener
-        // (listenForIncomingCalls line 647) can accept the very next incoming call without waiting.
-        // Previously, keeping activeCall = prevCall for 1500ms meant the Firestore snapshot for
-        // a second call fired & was ignored (activeCall != null guard), then NEVER re-fired again
-        // → second call was silently dropped on ALL Android devices.
+        // Keep prevCall for UI display (so "Call Ended" screen shows caller name/number for 1500ms).
+        // The Firestore listener guard has been fixed to check callStatus (not activeCall == null)
+        // so the next incoming call can arrive during this window without being blocked.
         _state.value = _state.value.copy(
             callStatus = status,
-            activeCall = null,   // ← null immediately, not after 1500ms
+            activeCall = prevCall,   // ← keep for UI display during the 1500ms end screen
             connectionStatusText = when (status) {
                 CallStatus.ENDED -> "Call Ended"
                 CallStatus.DECLINED -> "Call Declined"

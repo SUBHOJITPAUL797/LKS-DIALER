@@ -380,17 +380,12 @@ class CallMessagingService : FirebaseMessagingService() {
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
 
-        if (needsFullScreen || !canDrawOverlays) {
-            // Locked screen OR overlay not permitted: attach fullScreenIntent + MAX priority to wake/alert device
-            builder.setPriority(NotificationCompat.PRIORITY_MAX)
-            builder.setFullScreenIntent(fullScreenPendingIntent, true)
-        } else {
-            // Unlocked screen WITH overlay permission:
-            // The Floating Pill is the single, clean visual banner on screen!
-            // Post with LOW priority and WITHOUT fullScreenIntent so Android SystemUI
-            // does NOT pop up a competing heads-up notification card over the pill.
-            builder.setPriority(NotificationCompat.PRIORITY_LOW)
-        }
+        // WhatsApp / Telegram standard: ALWAYS set PRIORITY_MAX and fullScreenIntent!
+        // This guarantees that regardless of screen lock state or manufacturer restrictions (Xiaomi, Samsung, etc.),
+        // Android will ALWAYS display the incoming call either as a Full Screen activity (when locked)
+        // or as a high-priority Heads-Up Notification (HUN banner) with Answer/Decline buttons (when unlocked).
+        builder.setPriority(NotificationCompat.PRIORITY_MAX)
+        builder.setFullScreenIntent(fullScreenPendingIntent, true)
 
         try {
             val notification = builder.build()

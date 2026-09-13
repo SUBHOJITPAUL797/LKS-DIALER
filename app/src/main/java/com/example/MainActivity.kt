@@ -135,7 +135,14 @@ class MainActivity : ComponentActivity() {
         val bubbleCallId = com.example.services.FloatingCallBubbleService.currentCallId
         if (bubbleCallId.isNotBlank()) {
             val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() ?: com.example.webrtc.WebRtcEngine.getInstance(this)
-            if (engine.state.value.activeCall == null) {
+            val currCall = engine.state.value.activeCall
+            val isFinishedOrDifferent = currCall == null ||
+                currCall.callId != bubbleCallId ||
+                engine.state.value.callStatus == CallStatus.IDLE ||
+                engine.state.value.callStatus == CallStatus.ENDED ||
+                engine.state.value.callStatus == CallStatus.MISSED ||
+                engine.state.value.callStatus == CallStatus.DECLINED
+            if (isFinishedOrDifferent) {
                 val bCallerName = com.example.services.FloatingCallBubbleService.currentCallerName
                 val bCallerNumber = com.example.services.FloatingCallBubbleService.currentCallerNumber
                 val bCallType = com.example.services.FloatingCallBubbleService.currentCallType
