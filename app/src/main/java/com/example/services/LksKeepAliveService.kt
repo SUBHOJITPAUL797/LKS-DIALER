@@ -151,6 +151,11 @@ class LksKeepAliveService : Service() {
             ACTION_SILENCE_RINGTONE -> {
                 stopRingingInternal()
             }
+            ACTION_RESURRECT_KEEP_ALIVE -> {
+                Log.d(TAG, "Resurrection intent received — keep-alive service is active")
+                schedulePeriodicWatchdog()
+                com.example.data.repository.FirebaseManager.getInstance(this).fetchAndUpdateFcmToken()
+            }
             ACTION_WATCHDOG_HEARTBEAT -> {
                 Log.d(TAG, "Watchdog heartbeat received — refreshing token & scheduling next watchdog")
                 schedulePeriodicWatchdog()
@@ -267,7 +272,7 @@ class LksKeepAliveService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "LKS Dialer Background",
-                NotificationManager.IMPORTANCE_MIN
+                NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps LKS Dialer ready to receive calls"
                 setShowBadge(false)
@@ -288,10 +293,10 @@ class LksKeepAliveService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("LKS DIALER")
-            .setContentText("Checking for incoming calls")
+            .setContentText("Ready for incoming calls")
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentIntent(pendingIntent)
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .setSilent(true)
             .build()
@@ -361,17 +366,44 @@ class LksKeepAliveService : Service() {
 
     private fun scheduleServiceRestart(delayMillis: Long) {
         try {
-            val restartIntent = Intent(applicationContext, BootReceiver::class.java).apply {
+            val restartServiceIntent = Intent(applicationContext, LksKeepAliveService::class.java).apply {
                 action = ACTION_RESURRECT_KEEP_ALIVE
             }
-            val pendingIntent = PendingIntent.getBroadcast(
-                applicationContext,
-                101,
-                restartIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(
+                    applicationContext,
+                    101,
+                    restartServiceIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else {
+                PendingIntent.getService(
+                    applicationContext,
+                    101,
+                    restartServiceIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
+
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
             val triggerAt = System.currentTimeMillis() + delayMillis
+
+            // AlarmClockInfo is the gold standard: treated by Android OS / MIUI as a real alarm clock,
+            // immune to Doze, battery restrictions, and allowed to start foreground services from system.
+            try {
+                val showIntent = Intent(applicationContext, MainActivity::class.java)
+                val showPendingIntent = PendingIntent.getActivity(
+                    applicationContext, 0, showIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                val alarmClockInfo = AlarmManager.AlarmClockInfo(triggerAt, showPendingIntent)
+                alarmManager?.setAlarmClock(alarmClockInfo, pendingIntent)
+                Log.i(TAG, "Resurrection scheduled via AlarmClock in ${delayMillis}ms")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "AlarmClock schedule failed, falling back to exact alarm: ${e.message}")
+            }
+
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     if (alarmManager?.canScheduleExactAlarms() == true) {
@@ -401,21 +433,13 @@ class LksKeepAliveService : Service() {
                     )
                 }
             } catch (_: SecurityException) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    alarmManager?.setAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        triggerAt,
-                        pendingIntent
-                    )
-                } else {
-                    alarmManager?.set(
-                        AlarmManager.RTC_WAKEUP,
-                        triggerAt,
-                        pendingIntent
-                    )
-                }
+                alarmManager?.set(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAt,
+                    pendingIntent
+                )
             }
-            Log.d(TAG, "Watchdog restart broadcast scheduled in ${delayMillis}ms")
+            Log.d(TAG, "Resurrection alarm scheduled in ${delayMillis}ms")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to schedule restart alarm: ${e.message}")
         }
@@ -423,15 +447,24 @@ class LksKeepAliveService : Service() {
 
     private fun schedulePeriodicWatchdog() {
         try {
-            val heartbeatIntent = Intent(applicationContext, BootReceiver::class.java).apply {
+            val heartbeatIntent = Intent(applicationContext, LksKeepAliveService::class.java).apply {
                 action = ACTION_WATCHDOG_HEARTBEAT
             }
-            val pendingIntent = PendingIntent.getBroadcast(
-                applicationContext,
-                102,
-                heartbeatIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                PendingIntent.getForegroundService(
+                    applicationContext,
+                    102,
+                    heartbeatIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else {
+                PendingIntent.getService(
+                    applicationContext,
+                    102,
+                    heartbeatIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
             val triggerAt = System.currentTimeMillis() + WATCHDOG_INTERVAL
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
