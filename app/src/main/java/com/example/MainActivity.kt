@@ -535,6 +535,20 @@ class MainActivity : ComponentActivity() {
                 val chatRepo = remember { ChatRepository.getInstance(context) }
                 val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
 
+                // 1-Tap Universal OEM Autostart Dialog for Xiaomi, Samsung, OnePlus, Oppo, Vivo, etc.
+                var showOemAutostartDialog by remember {
+                    mutableStateOf(currentUser != null && com.example.util.UniversalOemAutostartHelper.isAggressiveOem() && com.example.util.UniversalOemAutostartHelper.isPromptNeeded(context))
+                }
+
+                if (showOemAutostartDialog) {
+                    com.example.ui.components.OemAutostartDialog(
+                        onDismiss = {
+                            showOemAutostartDialog = false
+                            com.example.util.UniversalOemAutostartHelper.markPromptDismissed(context)
+                        }
+                    )
+                }
+
                 LaunchedEffect(currentUser?.phoneNumber) {
                     currentUser?.phoneNumber?.let {
                         webRtcEngine.listenForIncomingCalls(it)
