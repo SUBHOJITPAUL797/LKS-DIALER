@@ -15,6 +15,9 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations ORDER BY isPinned DESC, lastMessageTimestamp DESC")
     fun getConversationsFlow(): Flow<List<ConversationEntity>>
 
+    @Query("SELECT * FROM conversations WHERE phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits) LIMIT 1")
+    suspend fun getConversation(phoneNumber: String, last10Digits: String): ConversationEntity?
+
     @Query("SELECT * FROM conversations WHERE phoneNumber = :phoneNumber LIMIT 1")
     suspend fun getConversation(phoneNumber: String): ConversationEntity?
 
@@ -29,6 +32,9 @@ interface ConversationDao {
 
     @Query("SELECT COALESCE(SUM(unreadCount), 0) FROM conversations")
     fun getTotalUnreadCountFlow(): Flow<Int>
+
+    @Query("DELETE FROM conversations WHERE phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits)")
+    suspend fun deleteConversation(phoneNumber: String, last10Digits: String)
 
     @Query("DELETE FROM conversations WHERE phoneNumber = :phoneNumber")
     suspend fun deleteConversation(phoneNumber: String)

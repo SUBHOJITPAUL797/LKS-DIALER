@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.*
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
@@ -50,7 +51,7 @@ class P2pFileTransfer(private val context: Context) {
         private const val TAG = "P2pFileTransfer"
         private const val CHUNK_SIZE = 16 * 1024            // 16 KB per DataChannel send
         private const val BUFFER_LOW_THRESHOLD = 65536L     // 64 KB backpressure
-        private const val ICE_TIMEOUT_MS = 8000L
+        private const val ICE_TIMEOUT_MS = 15000L           // 15 seconds for cellular networks
         private const val COLLECTION = "p2p_transfers"
 
         @Volatile private var sharedFactory: PeerConnectionFactory? = null
@@ -172,6 +173,7 @@ class P2pFileTransfer(private val context: Context) {
         myPhone: String,
         recipientPhone: String,
         file: File,
+        onOfferReady: (suspend (offerSdp: String) -> Unit)? = null,
         onProgress: (FileTransferProgress) -> Unit
     ): Boolean = withContext(Dispatchers.IO) {
         val deferred = CompletableDeferred<Boolean>()
@@ -278,6 +280,13 @@ class P2pFileTransfer(private val context: Context) {
                 "status" to "PENDING",
                 "timestamp" to System.currentTimeMillis()
             )).await()
+
+            // Invoke callback to dispatch P2P_OFFER containing offerSdp to recipient inbox
+            try {
+                onOfferReady?.invoke(offerSdp.description)
+            } catch (e: Exception) {
+                Log.w(TAG, "onOfferReady callback failed: ${e.message}")
+            }
 
             // Listen for answer SDP
             var answerApplied = false
@@ -426,18 +435,47 @@ class P2pFileTransfer(private val context: Context) {
      */
     fun receiveFile(
         sessionId: String,
+        initialOfferSdp: String? = null,
+        initialFileName: String? = null,
+        initialFileSize: Long = 0L,
         outputDir: File,
         onProgress: (FileTransferProgress) -> Unit,
         onComplete: (assembledFile: File?, messageId: String) -> Unit
     ) {
         scope.launch {
             try {
-                val sessionDoc = firestore.collection(COLLECTION).document(sessionId).get().await()
-                val offerSdpStr = sessionDoc.getString("offerSdp") ?: run {
-                    onComplete(null, sessionId); return@launch
+                var fileName = initialFileName?.takeIf { it.isNotBlank() } ?: "received_file"
+                var totalBytes = initialFileSize
+
+                val offerSdpStr: String = if (!initialOfferSdp.isNullOrBlank()) {
+                    initialOfferSdp
+                } else {
+                    // Fallback: wait up to 12 seconds for offerSdp to be written to Firestore
+                    withTimeoutOrNull(12000L) {
+                        suspendCancellableCoroutine<String?> { cont ->
+                            var listener: ListenerRegistration? = null
+                            listener = firestore.collection(COLLECTION).document(sessionId)
+                                .addSnapshotListener { snap, err ->
+                                    if (err != null || snap == null) return@addSnapshotListener
+                                    val sdp = snap.getString("offerSdp")
+                                    if (!sdp.isNullOrBlank() && cont.isActive) {
+                                        if (fileName == "received_file") {
+                                            fileName = snap.getString("fileName") ?: fileName
+                                        }
+                                        if (totalBytes <= 0L) {
+                                            totalBytes = snap.getLong("fileSize") ?: 0L
+                                        }
+                                        listener?.remove()
+                                        cont.resume(sdp) {}
+                                    }
+                                }
+                            cont.invokeOnCancellation { listener?.remove() }
+                        }
+                    } ?: run {
+                        Log.w(TAG, "Timed out waiting for offerSdp on sessionId=$sessionId")
+                        onComplete(null, sessionId); return@launch
+                    }
                 }
-                val fileName = sessionDoc.getString("fileName") ?: "received_file"
-                val totalBytes = sessionDoc.getLong("fileSize") ?: 0L
 
                 onProgress(FileTransferProgress(
                     messageId = sessionId, fileName = fileName, totalBytes = totalBytes,
@@ -595,7 +633,7 @@ class P2pFileTransfer(private val context: Context) {
 
                 // Write answer back to Firestore session
                 firestore.collection(COLLECTION).document(sessionId)
-                    .update(mapOf("answerSdp" to answerSdp.description, "status" to "ANSWERING"))
+                    .set(mapOf("answerSdp" to answerSdp.description, "status" to "ANSWERING"), SetOptions.merge())
                     .await()
 
                 // Listen for sender ICE candidates

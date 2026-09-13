@@ -8,7 +8,7 @@ import { mediaStorageWeb } from './MediaStorageWeb';
 const P2P_COLLECTION = 'p2p_transfers';
 const CHUNK_SIZE = 16 * 1024;          // 16 KB — safe WebRTC DataChannel chunk
 const BUFFER_LOW_THRESHOLD = 65536;   // 64 KB backpressure
-const ICE_TIMEOUT_MS = 8000;          // 8s to establish DataChannel before fallback
+const ICE_TIMEOUT_MS = 15000;         // 15s to establish DataChannel before fallback
 
 const ICE_SERVERS = {
   iceServers: [
@@ -64,7 +64,7 @@ export class P2pFileTransferWeb {
    * @param {File|Blob} file - File to send
    * @param {function} onProgress - Progress callback ({percent, mbTransferred, totalMb, speedMbps, status, mode, isIncoming})
    */
-  async sendFile(sessionId, myPhone, recipientPhone, file, onProgress) {
+  async sendFile(sessionId, myPhone, recipientPhone, file, onProgress, onOfferReady = null) {
     return new Promise(async (resolve) => {
       let resolved = false;
       const resolveOnce = (val) => { if (!resolved) { resolved = true; resolve(val); } };
@@ -133,6 +133,15 @@ export class P2pFileTransferWeb {
           status: 'PENDING',
           timestamp: Date.now()
         });
+
+        // Dispatch P2P_OFFER containing offerSdp directly to recipient inbox
+        if (onOfferReady) {
+          try {
+            await onOfferReady(offer.sdp);
+          } catch (e) {
+            console.warn('[P2pWeb] onOfferReady callback failed:', e);
+          }
+        }
 
         // Listen for answer SDP
         let answerApplied = false;
@@ -273,16 +282,51 @@ export class P2pFileTransferWeb {
    * @param {function} onProgress - Progress callback
    * @param {function} onComplete - Called with (messageId, fileName, blob|null) when done
    */
-  async receiveFile(sessionId, onProgress, onComplete) {
+  async receiveFile(sessionId, initialOfferSdp = null, initialFileName = null, initialFileSize = 0, onProgress, onComplete) {
     try {
-      // Fetch session from Firestore
-      const sessionSnap = await getDoc(doc(db, P2P_COLLECTION, sessionId));
-      if (!sessionSnap.exists()) { onComplete(sessionId, null, null); return; }
+      let fileName = initialFileName || 'received_file';
+      let totalBytes = initialFileSize || 0;
+      let offerSdp = initialOfferSdp;
 
-      const sessionData = sessionSnap.data();
-      const offerSdp = sessionData.offerSdp;
-      const fileName = sessionData.fileName || 'received_file';
-      const totalBytes = sessionData.fileSize || 0;
+      if (!offerSdp) {
+        // Wait up to 15s for offerSdp via Firestore snapshot listener
+        offerSdp = await new Promise((res) => {
+          let resolved = false;
+          const timer = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              try { unsub(); } catch {}
+              res(null);
+            }
+          }, 15000);
+
+          const unsub = onSnapshot(doc(db, P2P_COLLECTION, sessionId), (snap) => {
+            if (!snap.exists() || this._cancelled) return;
+            const d = snap.data();
+            if (d?.offerSdp && !resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              try { unsub(); } catch {}
+              if (d.fileName && fileName === 'received_file') fileName = d.fileName;
+              if (d.fileSize && totalBytes === 0) totalBytes = d.fileSize;
+              res(d.offerSdp);
+            }
+          }, () => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              res(null);
+            }
+          });
+          this.unsubscribers.push(unsub);
+        });
+
+        if (!offerSdp) {
+          console.warn('[P2pWeb] Timed out waiting for offerSdp for sessionId:', sessionId);
+          onComplete(sessionId, null, null);
+          return;
+        }
+      }
 
       onProgress && onProgress({ percent: 0, mbTransferred: 0, totalMb: (totalBytes / 1048576).toFixed(1), speedMbps: '0', status: 'CONNECTING', mode: 'P2P', isIncoming: true, messageId: sessionId, fileName });
 
@@ -402,10 +446,10 @@ export class P2pFileTransferWeb {
       await this.pc.setLocalDescription(answer);
 
       // Write answer back to Firestore
-      await updateDoc(doc(db, P2P_COLLECTION, sessionId), {
+      await setDoc(doc(db, P2P_COLLECTION, sessionId), {
         answerSdp: answer.sdp,
         status: 'ANSWERING'
-      });
+      }, { merge: true });
 
       // Listen for sender ICE candidates
       const unsub = onSnapshot(collection(db, P2P_COLLECTION, sessionId, 'sender_ice'), (snap) => {

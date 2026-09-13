@@ -34,17 +34,33 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, newStatus: String)
 
+    /** Only upgrades DELIVERED messages up to a specific timestamp to READ (prevents in-flight / SENT messages from turning blue) */
+    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status = 'DELIVERED' AND timestamp <= :upToTimestamp")
+    suspend fun markDeliveredMessagesAsReadUpTo(conversationId: String, last10Digits: String, upToTimestamp: Long, newStatus: String = "READ")
+
+    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status = 'DELIVERED' AND timestamp <= :upToTimestamp")
+    suspend fun markDeliveredMessagesAsReadUpTo(conversationId: String, upToTimestamp: Long, newStatus: String = "READ")
+
     @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 0 AND status != :newStatus")
     suspend fun updateIncomingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
 
     @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 0 AND status != :newStatus")
     suspend fun updateIncomingMessagesStatus(conversationId: String, newStatus: String)
 
+    @Query("SELECT * FROM messages WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) ORDER BY timestamp ASC")
+    fun getMessagesFlow(conversationId: String, last10Digits: String): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
     fun getMessagesFlow(conversationId: String): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) ORDER BY timestamp DESC LIMIT :limit")
+    fun getMessagesPagedFlow(conversationId: String, last10Digits: String, limit: Int): Flow<List<MessageEntity>>
+
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp DESC LIMIT :limit")
     fun getMessagesPagedFlow(conversationId: String, limit: Int): Flow<List<MessageEntity>>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits))")
+    fun getMessageCountFlow(conversationId: String, last10Digits: String): Flow<Int>
 
     @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId")
     fun getMessageCountFlow(conversationId: String): Flow<Int>
@@ -54,6 +70,9 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE id = :messageId")
     suspend fun deleteMessage(messageId: String)
+
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)")
+    suspend fun clearMessagesForConversation(conversationId: String, last10Digits: String)
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId")
     suspend fun clearMessagesForConversation(conversationId: String)

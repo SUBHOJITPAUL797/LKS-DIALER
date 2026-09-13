@@ -52,6 +52,8 @@ class ChatRepositoryWeb {
     this.activeTransfers = new Map();
     // Active P2pFileTransferWeb instances for cancel support
     this._activeP2pInstances = new Map();
+    // Cancelled transfer IDs (P2P + Relay)
+    this.cancelledTransfers = new Set();
 
     try {
       this.reconcileConversations();
@@ -101,10 +103,22 @@ class ChatRepositoryWeb {
   getMessages(peerPhoneNumber) {
     const norm = normalizePhoneNumber(peerPhoneNumber);
     try {
-      const raw = localStorage.getItem(`lks_web_chat_messages_${norm}`);
+      let raw = localStorage.getItem(`lks_web_chat_messages_${norm}`);
+      if (!raw) {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('lks_web_chat_messages_')) {
+            const num = k.replace('lks_web_chat_messages_', '');
+            if (numbersMatch(num, norm)) {
+              raw = localStorage.getItem(k);
+              break;
+            }
+          }
+        }
+      }
       const messages = raw ? JSON.parse(raw) : [];
 
-      // Retroactive Read Heal: If peer has replied at timestamp T, all earlier outgoing messages (<= T) were read
+      // Retroactive Read Heal: If peer has replied at timestamp T, all earlier DELIVERED outgoing messages (<= T) were read
       let lastIncomingTime = 0;
       for (let i = messages.length - 1; i >= 0; i--) {
         if (!messages[i].isOutgoing) {
@@ -116,13 +130,13 @@ class ChatRepositoryWeb {
       if (lastIncomingTime > 0) {
         let healed = false;
         messages.forEach(m => {
-          if (m.isOutgoing && m.status !== 'READ' && (m.timestamp <= lastIncomingTime)) {
+          if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp <= lastIncomingTime)) {
             m.status = 'READ';
             healed = true;
           }
         });
         if (healed) {
-          localStorage.setItem(`lks_web_chat_messages_${norm}`, JSON.stringify(messages));
+          this.saveMessages(norm, messages);
         }
       }
 
@@ -135,7 +149,18 @@ class ChatRepositoryWeb {
   saveMessages(peerPhoneNumber, messages) {
     const norm = normalizePhoneNumber(peerPhoneNumber);
     try {
-      localStorage.setItem(`lks_web_chat_messages_${norm}`, JSON.stringify(messages));
+      let targetKey = `lks_web_chat_messages_${norm}`;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('lks_web_chat_messages_')) {
+          const num = k.replace('lks_web_chat_messages_', '');
+          if (numbersMatch(num, norm)) {
+            targetKey = k;
+            break;
+          }
+        }
+      }
+      localStorage.setItem(targetKey, JSON.stringify(messages));
     } catch (e) {
       console.warn('Failed to save messages to localStorage:', e);
     }
@@ -437,9 +462,9 @@ class ChatRepositoryWeb {
       if (dto.mediaType === 'P2P_OFFER') {
         try {
           const parsed = JSON.parse(decryptedRaw);
-          const { sessionId, messageId: parentMessageId, fileName, fileSize } = parsed;
+          const { sessionId, messageId: parentMessageId, fileName, fileSize, offerSdp } = parsed;
 
-          console.log('[ChatRepositoryWeb] P2P_OFFER received, sessionId:', sessionId, 'file:', fileName);
+          console.log('[ChatRepositoryWeb] P2P_OFFER received, sessionId:', sessionId, 'file:', fileName, 'hasOfferSdp:', Boolean(offerSdp));
 
           // Insert a placeholder message immediately (shows "Receiving via P2P...")
           const now = dto.timestamp || Date.now();
@@ -480,6 +505,9 @@ class ChatRepositoryWeb {
 
           p2p.receiveFile(
             sessionId,
+            offerSdp || null,
+            fileName || 'file',
+            fileSize || 0,
             (progress) => {
               this.activeTransfers.set(placeholder.id, { ...progress, messageId: placeholder.id });
               this.notifySubscribers();
@@ -496,6 +524,11 @@ class ChatRepositoryWeb {
                     allMsgs[idx] = { ...allMsgs[idx], mediaData: `idb:${placeholder.id}`, mediaUrl: blobUrl, p2pReceiving: false };
                     this.saveMessages(senderNorm, allMsgs);
                   }
+                  // Send receipts to sender
+                  this.sendReceipt(dto.senderNumber, placeholder.id, 'DELIVERED');
+                  if (isCurrentPeer) {
+                    this.sendReceipt(dto.senderNumber, placeholder.id, 'READ');
+                  }
                   // Clear progress after short delay
                   setTimeout(() => {
                     this.activeTransfers.delete(placeholder.id);
@@ -506,6 +539,13 @@ class ChatRepositoryWeb {
                 });
               } else {
                 this.activeTransfers.delete(placeholder.id);
+                const allMsgs = this.getMessages(senderNorm);
+                const idx = allMsgs.findIndex(m => m.id === placeholder.id);
+                if (idx >= 0 && !allMsgs[idx].mediaData) {
+                  allMsgs[idx].status = 'FAILED';
+                  allMsgs[idx].p2pReceiving = false;
+                  this.saveMessages(senderNorm, allMsgs);
+                }
                 this.notifySubscribers();
                 console.warn('[ChatRepositoryWeb] P2P receive failed for', placeholder.id);
               }
@@ -564,10 +604,11 @@ class ChatRepositoryWeb {
       // 2. Persist locally to this peer's message store
       const messages = this.getMessages(senderNorm);
 
-      // Implicit Read Sync: If peer sent a message, all earlier outgoing messages to them were seen/read!
+      // Implicit Read Sync: If peer sent a message, all earlier DELIVERED outgoing messages to them were seen/read!
+      const msgTimestamp = Number(dto.timestamp) || Date.now();
       let msgsUpgraded = false;
       messages.forEach(m => {
-        if (m.isOutgoing && m.status !== 'READ') {
+        if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= msgTimestamp) {
           m.status = 'READ';
           msgsUpgraded = true;
         }
@@ -685,22 +726,26 @@ class ChatRepositoryWeb {
 
       let updated = false;
 
-      if (receipt.messageId === 'all' || receipt.status === 'READ') {
-        // Mark all outgoing messages with this peer as READ
+      if (receipt.messageId === 'all') {
+        const upToTs = Number(receipt.timestamp) || Date.now();
+        // Only mark DELIVERED outgoing messages sent up to receipt timestamp as READ (never in-flight/SENT)
         messages.forEach(m => {
-          if (m.isOutgoing && m.status !== 'READ') {
+          if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
             m.status = 'READ';
             updated = true;
           }
         });
-
-        // Also if receipt is for a specific messageId, ensure that one is explicitly READ
-        if (receipt.messageId !== 'all') {
-          const specific = messages.find(m => m.id === receipt.messageId);
-          if (specific && specific.status !== 'READ') {
-            specific.status = 'READ';
-            updated = true;
-          }
+      } else if (receipt.status === 'READ') {
+        const specific = messages.find(m => m.id === receipt.messageId);
+        if (specific) {
+          const upToTs = specific.timestamp || Date.now();
+          specific.status = 'READ';
+          messages.forEach(m => {
+            if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
+              m.status = 'READ';
+            }
+          });
+          updated = true;
         }
       } else {
         // DELIVERED receipt: update specific message if found and not already READ
@@ -738,8 +783,9 @@ class ChatRepositoryWeb {
           const found = otherMsgs.find(m => m.id === receipt.messageId);
           if (found) {
             if (receipt.status === 'READ') {
+              const upToTs = found.timestamp || Date.now();
               otherMsgs.forEach(m => {
-                if (m.isOutgoing && m.status !== 'READ') {
+                if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
                   m.status = 'READ';
                 }
               });
@@ -931,25 +977,6 @@ class ChatRepositoryWeb {
         // Create File object from Blob for P2pFileTransferWeb
         const fileForP2p = new File([blob], text || 'document', { type: mimeType });
 
-        // Send encrypted P2P_OFFER signal to recipient's inbox
-        try {
-          const offerPayload = JSON.stringify({ sessionId: messageId, messageId, fileName: text || 'document', fileSize: blob.size });
-          const { ciphertext: offerCt, iv: offerIv } = await chatCryptoWeb.encrypt(offerPayload, recipientPublicKey);
-          const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
-          await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_p2p_offer`), {
-            messageId: `${messageId}_p2p_offer`,
-            senderNumber: this.currentListeningPhone,
-            recipientNumber: canonicalRecipient,
-            senderPublicKey: myPublicKey,
-            ciphertext: offerCt, iv: offerIv,
-            mediaType: 'P2P_OFFER',
-            timestamp: now
-          });
-          console.log(`[ChatRepositoryWeb] P2P_OFFER sent for sessionId=${messageId}`);
-        } catch (e) {
-          console.warn('[ChatRepositoryWeb] Failed to send P2P_OFFER signal:', e);
-        }
-
         const p2p = new P2pFileTransferWeb();
         this._activeP2pInstances.set(messageId, p2p);
         const p2pSuccess = await p2p.sendFile(
@@ -960,6 +987,32 @@ class ChatRepositoryWeb {
           (progress) => {
             this.activeTransfers.set(messageId, { ...progress, messageId });
             this.notifySubscribers();
+          },
+          async (offerSdp) => {
+            // Send encrypted P2P_OFFER signal with offerSdp to recipient's inbox
+            try {
+              const offerPayload = JSON.stringify({
+                sessionId: messageId,
+                messageId,
+                fileName: text || 'document',
+                fileSize: blob.size,
+                offerSdp
+              });
+              const { ciphertext: offerCt, iv: offerIv } = await chatCryptoWeb.encrypt(offerPayload, recipientPublicKey);
+              const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+              await setDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_p2p_offer`), {
+                messageId: `${messageId}_p2p_offer`,
+                senderNumber: this.currentListeningPhone,
+                recipientNumber: canonicalRecipient,
+                senderPublicKey: myPublicKey,
+                ciphertext: offerCt, iv: offerIv,
+                mediaType: 'P2P_OFFER',
+                timestamp: now
+              });
+              console.log(`[ChatRepositoryWeb] P2P_OFFER (with offerSdp) sent for sessionId=${messageId}`);
+            } catch (e) {
+              console.warn('[ChatRepositoryWeb] Failed to send P2P_OFFER signal:', e);
+            }
           }
         );
         this._activeP2pInstances.delete(messageId);
@@ -997,6 +1050,22 @@ class ChatRepositoryWeb {
 
       try {
         for (let i = 0; i < totalChunks; i++) {
+          if (this.cancelledTransfers.has(messageId)) {
+            console.log(`[ChatRepositoryWeb] Relay transfer cancelled by user for ${messageId} at chunk ${i}/${totalChunks}`);
+            this.cancelledTransfers.delete(messageId);
+            this.activeTransfers.delete(messageId);
+            localMsg.status = 'FAILED';
+            this.saveMessages(normRecipient, messages);
+            this.notifySubscribers();
+            // Clean up uploaded chunks from recipient inbox
+            for (let c = 0; c < i; c++) {
+              try {
+                await deleteDoc(doc(db, 'inboxes', canonicalRecipient, 'messages', `${messageId}_chunk_${c}`));
+              } catch {}
+            }
+            return localMsg;
+          }
+
           const start = i * chunkSize;
           const end = Math.min(start + chunkSize, totalBytes);
           const sliceStr = binary.substring(start, end);
@@ -1025,8 +1094,22 @@ class ChatRepositoryWeb {
             mediaType: 'CHUNK',
             timestamp: now + i
           });
+
+          this.activeTransfers.set(messageId, {
+            percent: Math.round(((i + 1) / totalChunks) * 100),
+            mbTransferred: (((i + 1) * chunkSize) / 1048576).toFixed(1),
+            totalMb: (totalBytes / 1048576).toFixed(1),
+            speedMbps: '0.5',
+            status: 'TRANSFERRING',
+            mode: 'RELAY',
+            isIncoming: false,
+            messageId,
+            fileName: text || 'Document'
+          });
+          this.notifySubscribers();
         }
         console.log(`[ChatRepositoryWeb] Uploaded ${totalChunks} chunks for document ${messageId} to ${canonicalRecipient}`);
+        setTimeout(() => { this.activeTransfers.delete(messageId); this.notifySubscribers(); }, 3000);
       } catch (uploadErr) {
         console.error('Failed to upload document chunks:', uploadErr);
         localMsg.status = 'FAILED';
@@ -1669,12 +1752,26 @@ class ChatRepositoryWeb {
 
   /** Cancel an active P2P or relay file transfer. */
   cancelTransfer(messageId) {
+    this.cancelledTransfers.add(messageId);
     const p2p = this._activeP2pInstances.get(messageId);
     if (p2p) {
       p2p.cancel(messageId);
       this._activeP2pInstances.delete(messageId);
     }
     this.activeTransfers.delete(messageId);
+
+    // Update message status to FAILED in stored messages
+    const convs = this.getConversations();
+    for (const c of convs) {
+      const msgs = this.getMessages(c.phoneNumber);
+      const target = msgs.find(m => m.id === messageId);
+      if (target) {
+        target.status = 'FAILED';
+        this.saveMessages(c.phoneNumber, msgs);
+        break;
+      }
+    }
+
     this.notifySubscribers();
     console.log('[ChatRepositoryWeb] Transfer cancelled:', messageId);
   }

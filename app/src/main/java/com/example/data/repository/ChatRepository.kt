@@ -135,7 +135,8 @@ class ChatRepository private constructor(private val context: Context) {
     val activeTransfers: StateFlow<Map<String, FileTransferProgress>> = _activeTransfers.asStateFlow()
 
     // Tracks in-flight P2pFileTransfer instances so they can be cancelled
-    private val activeP2pTransfers = mutableMapOf<String, P2pFileTransfer>()
+    private val activeP2pTransfers = java.util.concurrent.ConcurrentHashMap<String, P2pFileTransfer>()
+    private val cancelledTransfers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private var inboxListener: ListenerRegistration? = null
     private var receiptsListener: ListenerRegistration? = null
@@ -162,9 +163,14 @@ class ChatRepository private constructor(private val context: Context) {
 
     /** Cancel an active P2P or relay file transfer. */
     fun cancelTransfer(messageId: String) {
+        Log.d(TAG, "Transfer cancellation requested for messageId=$messageId")
+        cancelledTransfers.add(messageId)
         activeP2pTransfers[messageId]?.cancel(messageId)
         activeP2pTransfers.remove(messageId)
         _activeTransfers.value = _activeTransfers.value - messageId
+        repositoryScope.launch {
+            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+        }
         Log.d(TAG, "Transfer cancelled: $messageId")
     }
 
@@ -217,6 +223,10 @@ class ChatRepository private constructor(private val context: Context) {
                     if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                         val doc = change.document
                         val messageDto = doc.toObject(ChatMessageDto::class.java)
+                        if (messageDto == null) {
+                            try { doc.reference.delete() } catch (_: Exception) {}
+                            continue
+                        }
                         repositoryScope.launch {
                             processIncomingMessage(messageDto, doc.reference)
                         }
@@ -235,6 +245,10 @@ class ChatRepository private constructor(private val context: Context) {
                     if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                         val doc = change.document
                         val receiptDto = doc.toObject(ChatReceiptDto::class.java)
+                        if (receiptDto == null) {
+                            try { doc.reference.delete() } catch (_: Exception) {}
+                            continue
+                        }
                         repositoryScope.launch {
                             processIncomingReceipt(receiptDto, doc.reference)
                         }
@@ -309,10 +323,11 @@ class ChatRepository private constructor(private val context: Context) {
                 ContactsHelper.numbersMatch(it, senderNorm)
             } == true
 
-            // When peer sends a message to us, all our prior outgoing messages to them MUST have been read by them!
-            messageDao.updateOutgoingMessagesStatus(senderNorm, senderLast10, MessageStatus.READ.name)
+            // When peer sends a message to us, all our prior DELIVERED outgoing messages sent up to this message are marked as READ
+            val msgTimestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+            messageDao.markDeliveredMessagesAsReadUpTo(senderNorm, senderLast10, msgTimestamp, MessageStatus.READ.name)
             val lastOutgoing = messageDao.getLastMessageForConversation(senderNorm, senderLast10)
-            if (lastOutgoing != null && lastOutgoing.isOutgoing) {
+            if (lastOutgoing != null && lastOutgoing.isOutgoing && lastOutgoing.status == MessageStatus.READ.name) {
                 conversationDao.updateLastMessageStatus(senderNorm, senderLast10, MessageStatus.READ.name)
             }
 
@@ -438,10 +453,10 @@ class ChatRepository private constructor(private val context: Context) {
                             ?: senderNorm
                         val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
 
-                        val existingConv = conversationDao.getConversation(senderNorm)
+                        val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
                         val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
                         val convEntity = ConversationEntity(
-                            phoneNumber = senderNorm,
+                            phoneNumber = existingConv?.phoneNumber ?: senderNorm,
                             contactName = resolvedName,
                             profilePicUrl = profilePic,
                             lastMessageText = "📄 $fileName",
@@ -483,8 +498,9 @@ class ChatRepository private constructor(private val context: Context) {
                     val fileName = json.optString("fileName", "file")
                     val fileSize = json.optLong("fileSize", 0L)
                     val parentMessageId = json.optString("messageId", sessionId)
+                    val offerSdp = json.optString("offerSdp", "").takeIf { it.isNotBlank() }
 
-                    Log.d(TAG, "P2P_OFFER received for sessionId=$sessionId fileName=$fileName")
+                    Log.d(TAG, "P2P_OFFER received for sessionId=$sessionId fileName=$fileName hasOfferSdp=${offerSdp != null}")
 
                     // Insert a placeholder DOCUMENT message into Room DB (shows "Receiving...")
                     val receivingPlaceholder = MessageEntity(
@@ -515,6 +531,9 @@ class ChatRepository private constructor(private val context: Context) {
                     activeP2pTransfers[parentMessageId] = p2p
                     p2p.receiveFile(
                         sessionId = sessionId,
+                        initialOfferSdp = offerSdp,
+                        initialFileName = fileName,
+                        initialFileSize = fileSize,
                         outputDir = ensureMediaDirectory(),
                         onProgress = { progress ->
                             repositoryScope.launch(Dispatchers.Main) {
@@ -527,6 +546,11 @@ class ChatRepository private constructor(private val context: Context) {
                                 if (assembledFile != null) {
                                     // Update Room DB with the real file path
                                     messageDao.updateMessageMedia(parentMessageId, assembledFile.absolutePath)
+                                    // Send DELIVERED receipt to sender so sender tick turns double
+                                    sendReceipt(dto.senderNumber, parentMessageId, MessageStatus.DELIVERED.name)
+                                    if (isCurrentPeer) {
+                                        sendReceipt(dto.senderNumber, parentMessageId, MessageStatus.READ.name)
+                                    }
                                     // Remove from active transfers after short delay (UI sees DONE state)
                                     delay(3000)
                                     _activeTransfers.value = _activeTransfers.value - parentMessageId
@@ -534,6 +558,10 @@ class ChatRepository private constructor(private val context: Context) {
                                 } else {
                                     Log.w(TAG, "P2P receive failed for $parentMessageId")
                                     _activeTransfers.value = _activeTransfers.value - parentMessageId
+                                    val currentMsg = messageDao.getMessageById(parentMessageId)
+                                    if (currentMsg != null && currentMsg.mediaPath.isNullOrBlank()) {
+                                        messageDao.updateMessageStatus(parentMessageId, MessageStatus.FAILED.name)
+                                    }
                                 }
                             }
                         }
@@ -603,10 +631,23 @@ class ChatRepository private constructor(private val context: Context) {
             // we upgrade TEXT messages to READ.
             val initialStatus = MessageStatus.DELIVERED.name
 
+            // Resolve contact info and existing conversation for consistent conversationId
+            val firebaseManager = FirebaseManager.getInstance(context)
+            val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
+            val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
+            val resolvedName = registeredUser?.displayName?.ifBlank { null }
+                ?: contactInfo?.name?.ifBlank { null }
+                ?: senderNorm
+            val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
+
+            val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
+            val targetConvPhone = existingConv?.phoneNumber ?: senderNorm
+            val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
+
             // STEP 2: Save to local Room DB
             val messageEntity = MessageEntity(
                 id = dto.messageId,
-                conversationId = senderNorm,
+                conversationId = targetConvPhone,
                 senderNumber = dto.senderNumber,
                 recipientNumber = dto.recipientNumber,
                 text = displayText,
@@ -619,18 +660,6 @@ class ChatRepository private constructor(private val context: Context) {
             )
             messageDao.insertMessage(messageEntity)
 
-            // Resolve contact info for conversation header
-            val firebaseManager = FirebaseManager.getInstance(context)
-            val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
-            val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
-            val resolvedName = registeredUser?.displayName?.ifBlank { null }
-                ?: contactInfo?.name?.ifBlank { null }
-                ?: senderNorm
-            val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
-
-            val existingConv = conversationDao.getConversation(senderNorm)
-            val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
-
             // For TEXT messages that contain reply metadata (JSON), extract just the visible text
             // so notifications and conversation previews show plain text, not raw JSON
             val notificationDisplayText = if (dto.mediaType == ChatMediaType.TEXT.name) {
@@ -641,7 +670,7 @@ class ChatRepository private constructor(private val context: Context) {
             } else displayText
 
             val convEntity = ConversationEntity(
-                phoneNumber = senderNorm,
+                phoneNumber = targetConvPhone,
                 contactName = resolvedName,
                 profilePicUrl = profilePic,
                 lastMessageText = when (dto.mediaType) {
@@ -736,14 +765,14 @@ class ChatRepository private constructor(private val context: Context) {
                 if (specificMsg != null && receipt.status == MessageStatus.READ.name) {
                     val cId = specificMsg.conversationId
                     val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
-                    messageDao.updateOutgoingMessagesStatus(cId, cLast10, MessageStatus.READ.name)
+                    // Only mark DELIVERED messages sent up to this message's timestamp as READ (never in-flight/SENT)
+                    messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, specificMsg.timestamp, MessageStatus.READ.name)
                     conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
                 }
-            }
-
-            // If READ receipt, also update all earlier outgoing messages with this peer to READ
-            if (receipt.status == MessageStatus.READ.name) {
-                messageDao.updateOutgoingMessagesStatus(peerNorm, last10, MessageStatus.READ.name)
+            } else if (receipt.status == MessageStatus.READ.name) {
+                // If "all" READ receipt, only mark DELIVERED messages sent up to the receipt timestamp as READ
+                val upToTs = receipt.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+                messageDao.markDeliveredMessagesAsReadUpTo(peerNorm, last10, upToTs, MessageStatus.READ.name)
                 conversationDao.updateLastMessageStatus(peerNorm, last10, MessageStatus.READ.name)
             }
 
@@ -822,6 +851,7 @@ class ChatRepository private constructor(private val context: Context) {
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
         val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val recipientLast10 = normRecipient.filter { it.isDigit() }.takeLast(10)
         val firebaseManager = FirebaseManager.getInstance(context)
         val targetUser = firebaseManager.lookupUserByNumber(recipientNumber)
         val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
@@ -883,12 +913,15 @@ class ChatRepository private constructor(private val context: Context) {
             // 1. If recipient is online → attempt WebRTC DataChannel P2P (unlimited size, fastest)
             // 2. If P2P fails / offline → fall back to Firestore 384KB chunked relay (up to 50MB)
             if (mediaFile.length() > 500 * 1024L) {
+                val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
+                val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+
                 // Save message entity for display immediately (Sending state)
                 val messageEntity = MessageEntity(
                     id = messageId,
-                    conversationId = normRecipient,
+                    conversationId = targetConvPhone,
                     senderNumber = myPhone,
-                    recipientNumber = normRecipient,
+                    recipientNumber = canonicalRecipient,
                     text = text.ifBlank { mediaFile.name },
                     mediaType = ChatMediaType.DOCUMENT.name,
                     mediaPath = localSavedPath,
@@ -899,11 +932,10 @@ class ChatRepository private constructor(private val context: Context) {
                 )
                 messageDao.insertMessage(messageEntity)
 
-                val existingConv = conversationDao.getConversation(normRecipient)
                 val convEntity = ConversationEntity(
-                    phoneNumber = normRecipient,
-                    contactName = recipientName.ifBlank { existingConv?.contactName ?: normRecipient },
-                    profilePicUrl = existingConv?.profilePicUrl ?: "",
+                    phoneNumber = targetConvPhone,
+                    contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
+                    profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
                     lastMessageText = "📄 ${text.ifBlank { mediaFile.name }}",
                     lastMessageType = ChatMediaType.DOCUMENT.name,
                     lastMessageTimestamp = now,
@@ -915,12 +947,24 @@ class ChatRepository private constructor(private val context: Context) {
                 conversationDao.upsertConversation(convEntity)
 
                 // ── ATTEMPT P2P (WebRTC DataChannel) ────────────────────────────────────────
-                val isRecipientOnline = try {
-                    val userSnap = firestore.collection("users").document(canonicalRecipient).get().await()
-                    val isOnline = userSnap.getBoolean("isOnline") ?: false
-                    val lastSeen = userSnap.getLong("lastSeen") ?: 0L
-                    isOnline || (System.currentTimeMillis() - lastSeen) < 60_000L
-                } catch (_: Exception) { false }
+                val isRecipientOnline = run {
+                    val userFromMemory = firebaseManager.lookupUserByNumber(canonicalRecipient)
+                        ?: firebaseManager.lookupUserByNumber(normRecipient)
+                    if (userFromMemory != null) {
+                        val isOnline = userFromMemory.isOnline
+                        val lastSeen = userFromMemory.lastSeen
+                        if (isOnline || (System.currentTimeMillis() - lastSeen) < 90_000L) {
+                            Log.d(TAG, "Peer $canonicalRecipient is ONLINE in memory (isOnline=$isOnline, lastSeen=$lastSeen)")
+                            return@run true
+                        }
+                    }
+                    try {
+                        val userSnap = firestore.collection("users").document(canonicalRecipient).get().await()
+                        val isOnline = userSnap.getBoolean("isOnline") ?: false
+                        val lastSeen = userSnap.getLong("lastSeen") ?: 0L
+                        isOnline || (System.currentTimeMillis() - lastSeen) < 90_000L
+                    } catch (_: Exception) { false }
+                }
 
                 if (isRecipientOnline) {
                     Log.d(TAG, "Peer $canonicalRecipient is ONLINE — attempting P2P DataChannel transfer")
@@ -933,42 +977,43 @@ class ChatRepository private constructor(private val context: Context) {
                         totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
                     ))
 
-                    // Send encrypted P2P_OFFER via existing inbox so the receiver knows to connect
-                    val offerPayload = JSONObject().apply {
-                        put("sessionId", messageId)
-                        put("messageId", messageId)
-                        put("fileName", text.ifBlank { mediaFile.name })
-                        put("fileSize", mediaFile.length())
-                    }.toString()
-                    try {
-                        val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
-                        val offerDto = ChatMessageDto(
-                            messageId = "${messageId}_p2p_offer",
-                            senderNumber = myPhone,
-                            recipientNumber = canonicalRecipient,
-                            senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
-                            ciphertext = offerCiphertext,
-                            iv = offerIv,
-                            mediaType = ChatMediaType.P2P_OFFER.name,
-                            timestamp = now
-                        )
-                        firestore.collection("inboxes")
-                            .document(canonicalRecipient)
-                            .collection("messages")
-                            .document("${messageId}_p2p_offer")
-                            .set(offerDto)
-                            .await()
-                        Log.d(TAG, "P2P_OFFER sent to $canonicalRecipient for sessionId=$messageId")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to send P2P_OFFER signal: ${e.message}")
-                    }
-
-                    // Start P2P DataChannel sender
+                    // Start P2P DataChannel sender; onOfferReady dispatches P2P_OFFER with offerSdp
                     val p2pSuccess = p2p.sendFile(
                         sessionId = messageId,
                         myPhone = myPhone,
                         recipientPhone = canonicalRecipient,
                         file = savedFile,
+                        onOfferReady = { offerSdp ->
+                            val offerPayload = JSONObject().apply {
+                                put("sessionId", messageId)
+                                put("messageId", messageId)
+                                put("fileName", text.ifBlank { mediaFile.name })
+                                put("fileSize", mediaFile.length())
+                                put("offerSdp", offerSdp)
+                            }.toString()
+                            try {
+                                val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
+                                val offerDto = ChatMessageDto(
+                                    messageId = "${messageId}_p2p_offer",
+                                    senderNumber = myPhone,
+                                    recipientNumber = canonicalRecipient,
+                                    senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                                    ciphertext = offerCiphertext,
+                                    iv = offerIv,
+                                    mediaType = ChatMediaType.P2P_OFFER.name,
+                                    timestamp = now
+                                )
+                                firestore.collection("inboxes")
+                                    .document(canonicalRecipient)
+                                    .collection("messages")
+                                    .document("${messageId}_p2p_offer")
+                                    .set(offerDto)
+                                    .await()
+                                Log.d(TAG, "P2P_OFFER (with offerSdp) sent to $canonicalRecipient for sessionId=$messageId")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to send P2P_OFFER signal: ${e.message}")
+                            }
+                        },
                         onProgress = { progress ->
                             _activeTransfers.value = _activeTransfers.value + (messageId to progress)
                         }
@@ -1005,6 +1050,27 @@ class ChatRepository private constructor(private val context: Context) {
                 try {
                     var relayUploadedBytes = 0L
                     for (i in 0 until totalChunks) {
+                        // Check if transfer was cancelled by user
+                        if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                            Log.d(TAG, "Relay transfer cancelled by user for $messageId at chunk $i/$totalChunks")
+                            cancelledTransfers.remove(messageId)
+                            _activeTransfers.value = _activeTransfers.value - messageId
+                            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                            // Clean up already uploaded chunks from recipient inbox
+                            repositoryScope.launch {
+                                for (c in 0 until i) {
+                                    try {
+                                        firestore.collection("inboxes")
+                                            .document(canonicalRecipient)
+                                            .collection("messages")
+                                            .document("${messageId}_chunk_$c")
+                                            .delete()
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                            return@withContext Result.failure(CancellationException("Cancelled by user"))
+                        }
+
                         val start = i * chunkSize
                         val end = minOf(start + chunkSize, fileBytes.size)
                         val slice = fileBytes.copyOfRange(start, end)
@@ -1086,10 +1152,13 @@ class ChatRepository private constructor(private val context: Context) {
         val (ciphertext, iv) = cryptoManager.encrypt(payloadToEncrypt, recipientPublicKey)
         val myPublicKey = cryptoManager.getMyPublicKeyBase64()
 
+        val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
+        val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+
         // 4. Save to local Room DB immediately as SENT
         val messageEntity = MessageEntity(
             id = messageId,
-            conversationId = normRecipient,
+            conversationId = targetConvPhone,
             senderNumber = myPhone,
             recipientNumber = canonicalRecipient,
             text = text,
@@ -1103,9 +1172,8 @@ class ChatRepository private constructor(private val context: Context) {
         messageDao.insertMessage(messageEntity)
 
         // Upsert Conversation summary
-        val existingConv = conversationDao.getConversation(normRecipient)
         val convEntity = ConversationEntity(
-            phoneNumber = normRecipient,
+            phoneNumber = targetConvPhone,
             contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
             profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
             lastMessageText = when (mediaType) {
@@ -1560,7 +1628,8 @@ class ChatRepository private constructor(private val context: Context) {
             ?: ""
 
         if (rawAvatar.isBlank()) {
-            val conv = conversationDao.getConversation(senderNumber)
+            val sLast10 = senderNumber.filter { it.isDigit() }.takeLast(10)
+            val conv = conversationDao.getConversation(senderNumber, sLast10)
             rawAvatar = conv?.profilePicUrl?.takeIf { it.isNotBlank() } ?: ""
         }
 
@@ -1663,9 +1732,10 @@ class ChatRepository private constructor(private val context: Context) {
             val convs = conversationDao.getConversationsList()
             for (conv in convs) {
                 if (conv.lastMessageIsOutgoing) {
-                    val lastMsg = messageDao.getLastMessageForConversation(conv.phoneNumber)
+                    val last10 = conv.phoneNumber.filter { it.isDigit() }.takeLast(10)
+                    val lastMsg = messageDao.getLastMessageForConversation(conv.phoneNumber, last10)
                     if (lastMsg != null && lastMsg.status != conv.lastMessageStatus) {
-                        conversationDao.updateLastMessageStatus(conv.phoneNumber, lastMsg.status)
+                        conversationDao.updateLastMessageStatus(conv.phoneNumber, last10, lastMsg.status)
                     }
                 }
             }
@@ -1681,18 +1751,28 @@ class ChatRepository private constructor(private val context: Context) {
         }
         return conversationDao.getConversationsFlow()
     }
-    fun getMessagesFlow(phoneNumber: String): Flow<List<MessageEntity>> =
-        messageDao.getMessagesFlow(ContactsHelper.normalizePhoneNumber(phoneNumber))
-    fun getMessagesPagedFlow(phoneNumber: String, limit: Int): Flow<List<MessageEntity>> =
-        messageDao.getMessagesPagedFlow(ContactsHelper.normalizePhoneNumber(phoneNumber), limit)
-    fun getMessageCountFlow(phoneNumber: String): Flow<Int> =
-        messageDao.getMessageCountFlow(ContactsHelper.normalizePhoneNumber(phoneNumber))
+    fun getMessagesFlow(phoneNumber: String): Flow<List<MessageEntity>> {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        return messageDao.getMessagesFlow(norm, last10)
+    }
+    fun getMessagesPagedFlow(phoneNumber: String, limit: Int): Flow<List<MessageEntity>> {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        return messageDao.getMessagesPagedFlow(norm, last10, limit)
+    }
+    fun getMessageCountFlow(phoneNumber: String): Flow<Int> {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        return messageDao.getMessageCountFlow(norm, last10)
+    }
     fun getTotalUnreadCountFlow(): Flow<Int> = conversationDao.getTotalUnreadCountFlow()
 
     suspend fun clearChat(phoneNumber: String) {
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
-        messageDao.clearMessagesForConversation(norm)
-        conversationDao.deleteConversation(norm)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        messageDao.clearMessagesForConversation(norm, last10)
+        conversationDao.deleteConversation(norm, last10)
     }
 
     suspend fun deleteMessage(messageId: String) {
