@@ -50,4 +50,7 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations")
     suspend fun getConversationsList(): List<ConversationEntity>
+
+    @Query("DELETE FROM conversations")
+    suspend fun deleteAllConversations()
 }

@@ -82,4 +82,25 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp DESC LIMIT 1")
     suspend fun getLastMessageForConversation(conversationId: String): MessageEntity?
+
+    @Query("SELECT * FROM messages")
+    suspend fun getAllMessages(): List<MessageEntity>
+
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)")
+    suspend fun getMessagesForConversationList(conversationId: String, last10Digits: String): List<MessageEntity>
+
+    @Query("UPDATE messages SET mediaPath = NULL WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND mediaPath IS NOT NULL")
+    suspend fun clearMediaForConversation(conversationId: String, last10Digits: String)
+
+    @Query("UPDATE messages SET mediaPath = NULL WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND mediaType IN (:types)")
+    suspend fun clearMediaByTypes(conversationId: String, last10Digits: String, types: List<String>)
+
+    @Query("DELETE FROM messages WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND (mediaPath IS NULL OR mediaPath = '')")
+    suspend fun clearTextOnlyForConversation(conversationId: String, last10Digits: String)
+
+    @Query("UPDATE messages SET mediaPath = NULL WHERE mediaPath IS NOT NULL")
+    suspend fun clearAllMedia()
+
+    @Query("DELETE FROM messages")
+    suspend fun deleteAllMessages()
 }

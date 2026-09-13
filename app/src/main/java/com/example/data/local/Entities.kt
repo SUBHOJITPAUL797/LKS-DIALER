@@ -62,3 +62,37 @@ data class ConversationEntity(
     val unreadCount: Int = 0,
     val isPinned: Boolean = false
 )
+
+enum class ClearChatMode {
+    TEXT_ONLY,
+    MEDIA_ONLY,
+    BOTH
+}
+
+data class StorageUsageSummary(
+    val totalDeviceBytes: Long = 0L,
+    val freeDeviceBytes: Long = 0L,
+    val usedDeviceBytes: Long = 0L,
+    val totalChatBytes: Long = 0L,
+    val totalChatVideoBytes: Long = 0L,
+    val totalChatPhotoBytes: Long = 0L,
+    val totalChatAudioBytes: Long = 0L,
+    val totalChatDocumentBytes: Long = 0L,
+    val totalChatTextBytes: Long = 0L
+)
+
+data class ConversationStorageItem(
+    val phoneNumber: String,
+    val displayName: String,
+    val profilePicUrl: String = "",
+    val totalBytes: Long = 0L,
+    val videoBytes: Long = 0L,
+    val videoCount: Int = 0,
+    val photoBytes: Long = 0L,
+    val photoCount: Int = 0,
+    val audioBytes: Long = 0L,
+    val audioCount: Int = 0,
+    val documentBytes: Long = 0L,
+    val documentCount: Int = 0,
+    val messageCount: Int = 0
+)

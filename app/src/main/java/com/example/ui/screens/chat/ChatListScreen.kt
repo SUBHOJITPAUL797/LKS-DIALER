@@ -32,6 +32,8 @@ import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
+import kotlinx.coroutines.launch
+import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -41,9 +43,12 @@ fun ChatListScreen(
     firebaseManager: FirebaseManager,
     activeCallNumber: String? = null,
     activeCallType: CallType? = null,
-    onOpenConversation: (phoneNumber: String, contactName: String, avatarUrl: String) -> Unit
+    onOpenConversation: (phoneNumber: String, contactName: String, avatarUrl: String) -> Unit,
+    onNavigateToStorage: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val chatRepository = remember { ChatRepository.getInstance(context) }
     val conversations by chatRepository.getConversationsFlow().collectAsState(initial = emptyList())
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
@@ -51,6 +56,8 @@ fun ChatListScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var showNewChatDialog by remember { mutableStateOf(false) }
+    var showOptionsMenu by remember { mutableStateOf(false) }
+    var showClearAllConfirm by remember { mutableStateOf(false) }
 
     val filteredConversations = remember(conversations, searchQuery) {
         if (searchQuery.isBlank()) conversations
@@ -82,6 +89,42 @@ fun ChatListScreen(
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = TealPrimary,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { showOptionsMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = TealPrimary)
+                        }
+                        DropdownMenu(
+                            expanded = showOptionsMenu,
+                            onDismissRequest = { showOptionsMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Manage Storage") },
+                                leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = TealPrimary) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    onNavigateToStorage()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Chat Wallpaper & Theme") },
+                                leadingIcon = { Icon(Icons.Default.Wallpaper, contentDescription = null, tint = TealPrimary) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    onNavigateToSettings()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Clear All Chats") },
+                                leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    showClearAllConfirm = true
+                                }
                             )
                         }
                     }
@@ -233,6 +276,34 @@ fun ChatListScreen(
                 onOpenConversation(phone, name, avatar)
             },
             onDismiss = { showNewChatDialog = false }
+        )
+    }
+
+    if (showClearAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearAllConfirm = false },
+            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Clear All Chats?") },
+            text = { Text("Are you sure you want to delete all messages and media files across all chats from this device?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearAllConfirm = false
+                        coroutineScope.launch {
+                            chatRepository.clearAllChats()
+                            Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Clear All", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearAllConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }

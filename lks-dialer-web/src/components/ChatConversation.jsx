@@ -542,6 +542,7 @@ export default function ChatConversation({
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedImageModal, setSelectedImageModal] = useState(null);
   const [sending, setSending] = useState(false);
+  const [showClearModal, setShowClearModal] = useState(false);
 
   // ── Dynamic tick to periodically re-evaluate online staleness and last seen ──
   useEffect(() => {
@@ -1281,7 +1282,7 @@ export default function ChatConversation({
                 backgroundColor: '#fff', padding: 6, zIndex: 50,
                 display: 'flex', flexDirection: 'column', gap: 4
               }}>
-                <button onClick={() => { setMenuOpen(false); if (confirm('Clear all messages?')) chatRepositoryWeb.clearChat(normPeer); }}
+                <button onClick={() => { setMenuOpen(false); setShowClearModal(true); }}
                   style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Trash2 size={16} /> Clear Chat
                 </button>
@@ -2049,6 +2050,68 @@ export default function ChatConversation({
                 boxShadow: '0 8px 32px rgba(0,0,0,0.8)'
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* ── GRANULAR CLEAR CHAT MODAL ── */}
+      {showClearModal && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20
+        }}>
+          <div className="neo-box" style={{
+            backgroundColor: '#fff', borderRadius: 16, maxWidth: 400, width: '100%', padding: 20,
+            display: 'flex', flexDirection: 'column', gap: 14
+          }}>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Clear Chat Storage</h3>
+            <p style={{ margin: 0, fontSize: 13, color: '#666' }}>
+              Select what you would like to clear for this conversation:
+            </p>
+
+            <button onClick={() => {
+              chatRepositoryWeb.clearChat(normPeer, 'MEDIA_ONLY');
+              setShowClearModal(false);
+              alert('Cleared media files to free browser storage!');
+            }} className="neo-box" style={{
+              padding: '12px 14px', backgroundColor: '#e8f5e9', border: '2px solid #2e7d32',
+              borderRadius: 10, textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4
+            }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: '#1b5e20' }}>🖼️ Clear Media & Files Only</span>
+              <span style={{ fontSize: 12, color: '#555' }}>Frees browser memory and storage. Keeps text messages.</span>
+            </button>
+
+            <button onClick={() => {
+              chatRepositoryWeb.clearChat(normPeer, 'TEXT_ONLY');
+              setShowClearModal(false);
+              alert('Cleared text messages!');
+            }} className="neo-box" style={{
+              padding: '12px 14px', backgroundColor: '#f5f5f5', border: '2px solid #ccc',
+              borderRadius: 10, textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4
+            }}>
+              <span style={{ fontWeight: 800, fontSize: 14 }}>📝 Clear Messages Only</span>
+              <span style={{ fontSize: 12, color: '#555' }}>Deletes message history while keeping photos & files.</span>
+            </button>
+
+            <button onClick={() => {
+              chatRepositoryWeb.clearChat(normPeer, 'ALL');
+              setShowClearModal(false);
+              alert('Conversation and media completely cleared!');
+            }} className="neo-box" style={{
+              padding: '12px 14px', backgroundColor: '#ffebee', border: '2px solid #c62828',
+              borderRadius: 10, textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 4
+            }}>
+              <span style={{ fontWeight: 800, fontSize: 14, color: '#b71c1c' }}>🗑️ Clear Everything (Full Reset)</span>
+              <span style={{ fontSize: 12, color: '#777' }}>Permanently deletes all messages and files from this chat.</span>
+            </button>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+              <button onClick={() => setShowClearModal(false)} style={{
+                padding: '8px 16px', background: 'none', border: 'none', fontWeight: 800, cursor: 'pointer'
+              }}>
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       )}

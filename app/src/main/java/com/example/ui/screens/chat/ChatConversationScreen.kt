@@ -53,15 +53,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import com.example.data.local.ChatMediaType
+import com.example.data.local.ClearChatMode
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageStatus
 import com.example.data.model.CallType
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
+import com.example.ui.components.ClearChatDialog
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
+import com.example.util.ChatWallpaperManager
 import com.example.util.ContactsHelper
+import com.example.util.WallpaperType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -139,6 +147,9 @@ fun ChatConversationScreen(
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    val wallpaperManager = remember { ChatWallpaperManager.getInstance(context) }
+    val wallpaperConfig by wallpaperManager.config.collectAsState()
 
     // Swipe-to-reply state
     var replyingTo by remember { mutableStateOf<ReplyContext?>(null) }
@@ -376,10 +387,7 @@ fun ChatConversationScreen(
                                 text = { Text("Clear chat") },
                                 onClick = {
                                     showOptionsMenu = false
-                                    coroutineScope.launch {
-                                        chatRepository.clearChat(normPeer)
-                                        Toast.makeText(context, "Chat cleared", Toast.LENGTH_SHORT).show()
-                                    }
+                                    showClearChatDialog = true
                                 }
                             )
                             DropdownMenuItem(
@@ -399,13 +407,65 @@ fun ChatConversationScreen(
             )
         }
     ) { innerPadding ->
+        val customWallpaperBitmap = remember(wallpaperConfig) {
+            if (wallpaperConfig.type == WallpaperType.CUSTOM) {
+                wallpaperManager.getCustomWallpaperBitmap()
+            } else null
+        }
+
+        val presetTheme = remember(wallpaperConfig) {
+            if (wallpaperConfig.type == WallpaperType.PRESET) {
+                ChatWallpaperManager.PRESETS.find { it.id == wallpaperConfig.presetId } ?: ChatWallpaperManager.PRESETS.first()
+            } else null
+        }
+
+        val isDark = isSystemInDarkTheme()
+
+        val wallpaperModifier = when (wallpaperConfig.type) {
+            WallpaperType.CUSTOM -> {
+                if (customWallpaperBitmap != null) {
+                    Modifier.drawBehind {
+                        val bmp = customWallpaperBitmap
+                        val canvasWidth = size.width
+                        val canvasHeight = size.height
+                        val bmpWidth = bmp.width.toFloat()
+                        val bmpHeight = bmp.height.toFloat()
+                        val scale = maxOf(canvasWidth / bmpWidth, canvasHeight / bmpHeight)
+                        val scaledW = bmpWidth * scale
+                        val scaledH = bmpHeight * scale
+                        val left = (canvasWidth - scaledW) / 2f
+                        val top = (canvasHeight - scaledH) / 2f
+
+                        drawImage(
+                            image = customWallpaperBitmap.asImageBitmap(),
+                            dstOffset = IntOffset(left.toInt(), top.toInt()),
+                            dstSize = IntSize(scaledW.toInt(), scaledH.toInt())
+                        )
+                        drawRect(color = Color.Black.copy(alpha = wallpaperConfig.dimAlpha))
+                    }
+                } else {
+                    Modifier.background(if (isDark) Color(0xFF0B141A) else Color(0xFFEFEAE2))
+                }
+            }
+            WallpaperType.PRESET -> {
+                if (presetTheme != null) {
+                    Modifier.background(Brush.verticalGradient(presetTheme.gradientColors))
+                } else {
+                    Modifier.background(if (isDark) Color(0xFF0B141A) else Color(0xFFEFEAE2))
+                }
+            }
+            WallpaperType.DEFAULT -> {
+                Modifier.background(if (isDark) Color(0xFF0B141A) else Color(0xFFEFEAE2))
+            }
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
                 // ── KEY FIX: push content up when the IME (soft keyboard) appears
                 .imePadding()
-                .background(if (isSystemInDarkTheme()) Color(0xFF0B141A) else Color(0xFFEFEAE2))
+                .then(wallpaperModifier)
         ) {
             // ── Messages List ────────────────────────────────────────────────
             Box(modifier = Modifier.weight(1f)) {
@@ -850,6 +910,37 @@ fun ChatConversationScreen(
                 }
             }
         }
+    }
+
+    // Clear Chat Granular Dialog
+    if (showClearChatDialog) {
+        var storageBytes by remember { mutableStateOf(0L) }
+        LaunchedEffect(Unit) {
+            try {
+                val ranked = chatRepository.getRankedChatStorageList()
+                val match = ranked.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
+                storageBytes = match?.totalBytes ?: 0L
+            } catch (_: Exception) {}
+        }
+        ClearChatDialog(
+            peerDisplayName = peerDisplayName,
+            currentStorageBytes = storageBytes,
+            onDismiss = { showClearChatDialog = false },
+            onConfirmClear = { mode ->
+                coroutineScope.launch {
+                    val freed = chatRepository.clearChat(normPeer, mode)
+                    val freedStr = if (freed > 0) {
+                        val mb = freed / (1024.0 * 1024.0)
+                        if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
+                    } else "0 KB"
+                    when (mode) {
+                        ClearChatMode.MEDIA_ONLY -> Toast.makeText(context, "Media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
+                        ClearChatMode.TEXT_ONLY -> Toast.makeText(context, "Text messages cleared", Toast.LENGTH_SHORT).show()
+                        ClearChatMode.BOTH -> Toast.makeText(context, "Chat and media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        )
     }
 
     // Fullscreen Image Preview

@@ -1957,11 +1957,289 @@ class ChatRepository private constructor(private val context: Context) {
     }
     fun getTotalUnreadCountFlow(): Flow<Int> = conversationDao.getTotalUnreadCountFlow()
 
-    suspend fun clearChat(phoneNumber: String) {
+    suspend fun clearChat(phoneNumber: String, mode: ClearChatMode = ClearChatMode.BOTH): Long = withContext(Dispatchers.IO) {
+        clearConversationStorage(phoneNumber, mode)
+    }
+
+    suspend fun getStorageUsageSummary(): StorageUsageSummary = withContext(Dispatchers.IO) {
+        val statFs = android.os.StatFs(android.os.Environment.getDataDirectory().path)
+        val blockSize = statFs.blockSizeLong
+        val totalBlocks = statFs.blockCountLong
+        val availableBlocks = statFs.availableBlocksLong
+        val totalDeviceBytes = totalBlocks * blockSize
+        val freeDeviceBytes = availableBlocks * blockSize
+        val usedDeviceBytes = (totalDeviceBytes - freeDeviceBytes).coerceAtLeast(0L)
+
+        val messages = messageDao.getAllMessages()
+        var videoBytes = 0L
+        var photoBytes = 0L
+        var audioBytes = 0L
+        var docBytes = 0L
+        var textBytes = 0L
+
+        val processedFiles = mutableSetOf<String>()
+
+        messages.forEach { msg ->
+            textBytes += (msg.text.length * 2L)
+            val path = msg.mediaPath
+            if (!path.isNullOrBlank() && !processedFiles.contains(path)) {
+                processedFiles.add(path)
+                try {
+                    val file = File(path)
+                    if (file.exists()) {
+                        val length = file.length()
+                        val lower = path.lowercase()
+                        when {
+                            (msg.mediaType == ChatMediaType.DOCUMENT.name && (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".3gp"))) || lower.endsWith(".mp4") || lower.endsWith(".mkv") -> videoBytes += length
+                            msg.mediaType == ChatMediaType.IMAGE.name || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") -> photoBytes += length
+                            msg.mediaType == ChatMediaType.AUDIO.name || lower.endsWith(".m4a") || lower.endsWith(".mp3") || lower.endsWith(".aac") || lower.endsWith(".wav") -> audioBytes += length
+                            else -> docBytes += length
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        val mediaDir = ensureMediaDirectory()
+        mediaDir.listFiles()?.forEach { file ->
+            val absPath = file.absolutePath
+            if (!processedFiles.contains(absPath)) {
+                val length = file.length()
+                val lower = absPath.lowercase()
+                when {
+                    lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".mov") -> videoBytes += length
+                    lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp") -> photoBytes += length
+                    lower.endsWith(".m4a") || lower.endsWith(".mp3") || lower.endsWith(".aac") || lower.endsWith(".wav") -> audioBytes += length
+                    else -> docBytes += length
+                }
+            }
+        }
+
+        val totalChat = videoBytes + photoBytes + audioBytes + docBytes + textBytes
+        StorageUsageSummary(
+            totalDeviceBytes = totalDeviceBytes,
+            freeDeviceBytes = freeDeviceBytes,
+            usedDeviceBytes = usedDeviceBytes,
+            totalChatBytes = totalChat,
+            totalChatVideoBytes = videoBytes,
+            totalChatPhotoBytes = photoBytes,
+            totalChatAudioBytes = audioBytes,
+            totalChatDocumentBytes = docBytes,
+            totalChatTextBytes = textBytes
+        )
+    }
+
+    suspend fun getRankedChatStorageList(): List<ConversationStorageItem> = withContext(Dispatchers.IO) {
+        val conversations = conversationDao.getConversationsList()
+        val allMessages = messageDao.getAllMessages()
+
+        val messagesByPeer = allMessages.groupBy { msg ->
+            ContactsHelper.normalizePhoneNumber(msg.conversationId)
+        }
+
+        val items = conversations.map { conv ->
+            val norm = ContactsHelper.normalizePhoneNumber(conv.phoneNumber)
+            val last10 = norm.filter { it.isDigit() }.takeLast(10)
+            val convMessages = messagesByPeer[norm] ?: allMessages.filter { msg ->
+                val msgNorm = ContactsHelper.normalizePhoneNumber(msg.conversationId)
+                msgNorm == norm || (last10.length >= 7 && msgNorm.endsWith(last10))
+            }
+
+            var videoBytes = 0L
+            var videoCount = 0
+            var photoBytes = 0L
+            var photoCount = 0
+            var audioBytes = 0L
+            var audioCount = 0
+            var docBytes = 0L
+            var docCount = 0
+            var textBytes = 0L
+
+            convMessages.forEach { msg ->
+                textBytes += (msg.text.length * 2L)
+                val path = msg.mediaPath
+                if (!path.isNullOrBlank()) {
+                    try {
+                        val file = File(path)
+                        if (file.exists()) {
+                            val length = file.length()
+                            val lower = path.lowercase()
+                            val isVideo = (msg.mediaType == ChatMediaType.DOCUMENT.name && (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".3gp"))) || lower.endsWith(".mp4") || lower.endsWith(".mkv")
+                            val isPhoto = msg.mediaType == ChatMediaType.IMAGE.name || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")
+                            val isAudio = msg.mediaType == ChatMediaType.AUDIO.name || lower.endsWith(".m4a") || lower.endsWith(".mp3") || lower.endsWith(".aac") || lower.endsWith(".wav")
+
+                            when {
+                                isVideo -> {
+                                    videoBytes += length
+                                    videoCount++
+                                }
+                                isPhoto -> {
+                                    photoBytes += length
+                                    photoCount++
+                                }
+                                isAudio -> {
+                                    audioBytes += length
+                                    audioCount++
+                                }
+                                else -> {
+                                    docBytes += length
+                                    docCount++
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            val totalBytes = videoBytes + photoBytes + audioBytes + docBytes + textBytes
+            ConversationStorageItem(
+                phoneNumber = conv.phoneNumber,
+                displayName = conv.contactName.ifBlank { conv.phoneNumber },
+                profilePicUrl = conv.profilePicUrl,
+                totalBytes = totalBytes,
+                videoBytes = videoBytes,
+                videoCount = videoCount,
+                photoBytes = photoBytes,
+                photoCount = photoCount,
+                audioBytes = audioBytes,
+                audioCount = audioCount,
+                documentBytes = docBytes,
+                documentCount = docCount,
+                messageCount = convMessages.size
+            )
+        }
+
+        items.sortedByDescending { it.totalBytes }
+    }
+
+    suspend fun clearConversationStorage(phoneNumber: String, mode: ClearChatMode): Long = withContext(Dispatchers.IO) {
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
-        messageDao.clearMessagesForConversation(norm, last10)
-        conversationDao.deleteConversation(norm, last10)
+        val messages = messageDao.getMessagesForConversationList(norm, last10)
+        var bytesFreed = 0L
+
+        when (mode) {
+            ClearChatMode.MEDIA_ONLY -> {
+                messages.forEach { msg ->
+                    val path = msg.mediaPath
+                    if (!path.isNullOrBlank()) {
+                        try {
+                            val f = File(path)
+                            if (f.exists()) {
+                                bytesFreed += f.length()
+                                f.delete()
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+                messageDao.clearMediaForConversation(norm, last10)
+            }
+            ClearChatMode.TEXT_ONLY -> {
+                messageDao.clearTextOnlyForConversation(norm, last10)
+            }
+            ClearChatMode.BOTH -> {
+                messages.forEach { msg ->
+                    val path = msg.mediaPath
+                    if (!path.isNullOrBlank()) {
+                        try {
+                            val f = File(path)
+                            if (f.exists()) {
+                                bytesFreed += f.length()
+                                f.delete()
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+                messageDao.clearMessagesForConversation(norm, last10)
+                conversationDao.deleteConversation(norm, last10)
+            }
+        }
+        bytesFreed
+    }
+
+    suspend fun clearConversationSpecificMedia(
+        phoneNumber: String,
+        deleteVideos: Boolean,
+        deletePhotos: Boolean,
+        deleteAudio: Boolean,
+        deleteDocs: Boolean,
+        deleteText: Boolean
+    ): Long = withContext(Dispatchers.IO) {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        val messages = messageDao.getMessagesForConversationList(norm, last10)
+        var bytesFreed = 0L
+
+        val msgIdsToClearMedia = mutableListOf<String>()
+        val msgIdsToDelete = mutableListOf<String>()
+
+        messages.forEach { msg ->
+            val path = msg.mediaPath
+            val isMedia = !path.isNullOrBlank()
+
+            if (isMedia) {
+                val lower = path!!.lowercase()
+                val isVideo = (msg.mediaType == ChatMediaType.DOCUMENT.name && (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".3gp"))) || lower.endsWith(".mp4") || lower.endsWith(".mkv")
+                val isPhoto = msg.mediaType == ChatMediaType.IMAGE.name || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")
+                val isAudio = msg.mediaType == ChatMediaType.AUDIO.name || lower.endsWith(".m4a") || lower.endsWith(".mp3") || lower.endsWith(".aac") || lower.endsWith(".wav")
+                val isDoc = !isVideo && !isPhoto && !isAudio
+
+                val shouldDelete = (isVideo && deleteVideos) || (isPhoto && deletePhotos) || (isAudio && deleteAudio) || (isDoc && deleteDocs)
+
+                if (shouldDelete) {
+                    try {
+                        val f = File(path)
+                        if (f.exists()) {
+                            bytesFreed += f.length()
+                            f.delete()
+                        }
+                    } catch (_: Exception) {}
+                    msgIdsToClearMedia.add(msg.id)
+                }
+            } else if (deleteText) {
+                msgIdsToDelete.add(msg.id)
+            }
+        }
+
+        msgIdsToClearMedia.forEach { id ->
+            messageDao.updateMessageMedia(id, "")
+        }
+        msgIdsToDelete.forEach { id ->
+            messageDao.deleteMessage(id)
+        }
+
+        bytesFreed
+    }
+
+    suspend fun clearAllChatMedia(): Long = withContext(Dispatchers.IO) {
+        var bytesFreed = 0L
+        val mediaDir = ensureMediaDirectory()
+        try {
+            mediaDir.listFiles()?.forEach { file ->
+                if (file.isFile) {
+                    bytesFreed += file.length()
+                    file.delete()
+                }
+            }
+        } catch (_: Exception) {}
+
+        try {
+            context.cacheDir.listFiles()?.forEach { file ->
+                if (file.name.startsWith("chunks_") || file.name.startsWith("gallery_")) {
+                    bytesFreed += file.length()
+                    file.delete()
+                }
+            }
+        } catch (_: Exception) {}
+
+        messageDao.clearAllMedia()
+        bytesFreed
+    }
+
+    suspend fun clearAllChats() = withContext(Dispatchers.IO) {
+        clearAllChatMedia()
+        messageDao.deleteAllMessages()
+        conversationDao.deleteAllConversations()
     }
 
     suspend fun deleteMessage(messageId: String) {

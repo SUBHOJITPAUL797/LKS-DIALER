@@ -51,6 +51,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import com.example.data.repository.ChatRepository
 import com.example.ui.screens.chat.ChatListScreen
 import com.example.ui.screens.chat.ChatConversationScreen
+import com.example.ui.screens.chat.ChatStorageManagementScreen
 
 enum class MainTab(val title: String, val icon: ImageVector) {
     DIALER("Dialer", Icons.Default.Dialpad),
@@ -66,7 +67,8 @@ enum class AppNavState {
     PROFILE_SETUP,
     MAIN,
     SETTINGS,
-    CHAT_CONVERSATION
+    CHAT_CONVERSATION,
+    STORAGE_MANAGEMENT
 }
 
 class MainActivity : ComponentActivity() {
@@ -727,7 +729,8 @@ class MainActivity : ComponentActivity() {
                                 AppNavState.SETTINGS -> {
                                     SettingsScreen(
                                         firebaseManager = firebaseManager,
-                                        onBackClick = { navState = AppNavState.MAIN }
+                                        onBackClick = { navState = AppNavState.MAIN },
+                                        onNavigateToStorage = { navState = AppNavState.STORAGE_MANAGEMENT }
                                     )
                                 }
                                 AppNavState.MAIN -> {
@@ -831,6 +834,12 @@ class MainActivity : ComponentActivity() {
                                                         chatPeerName = name
                                                         chatPeerAvatar = avatar
                                                         navState = AppNavState.CHAT_CONVERSATION
+                                                    },
+                                                    onNavigateToStorage = {
+                                                        navState = AppNavState.STORAGE_MANAGEMENT
+                                                    },
+                                                    onNavigateToSettings = {
+                                                        navState = AppNavState.SETTINGS
                                                     }
                                                 )
                                                 MainTab.CONTACTS -> ContactsScreen(
@@ -879,6 +888,26 @@ class MainActivity : ComponentActivity() {
                                                 val myName = currentUser?.displayName ?: "Me"
                                                 webRtcEngine.initiateCall(number, name, myNum, myName, type)
                                             }
+                                        }
+                                    )
+                                }
+                                AppNavState.STORAGE_MANAGEMENT -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.MAIN
+                                        selectedTab = MainTab.CHATS
+                                    }
+                                    ChatStorageManagementScreen(
+                                        chatRepository = ChatRepository.getInstance(context),
+                                        firebaseManager = firebaseManager,
+                                        onBackClick = {
+                                            navState = AppNavState.MAIN
+                                            selectedTab = MainTab.CHATS
+                                        },
+                                        onOpenChat = { phone, name ->
+                                            chatPeerNumber = phone
+                                            chatPeerName = name
+                                            chatPeerAvatar = ""
+                                            navState = AppNavState.CHAT_CONVERSATION
                                         }
                                     )
                                 }

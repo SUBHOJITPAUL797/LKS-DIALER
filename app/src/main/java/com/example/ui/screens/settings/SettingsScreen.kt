@@ -36,8 +36,10 @@ import com.example.R
 import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.AppThemeColor
 import com.example.ui.theme.GreenCall
+import com.example.ui.theme.TealPrimary
 import com.example.ui.theme.LocalThemeColor
 import com.example.ui.theme.ThemeManager
+import kotlinx.coroutines.launch
 
 import android.media.RingtoneManager
 import android.graphics.BitmapFactory
@@ -57,11 +59,39 @@ import com.example.util.LksRingtoneManager
 @Composable
 fun SettingsScreen(
     firebaseManager: FirebaseManager,
-    onBackClick: (() -> Unit)? = null
+    onBackClick: (() -> Unit)? = null,
+    onNavigateToStorage: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val themeManager = remember { ThemeManager.getInstance(context) }
     val currentThemeColor = LocalThemeColor.current
+
+    val wallpaperManager = remember { com.example.util.ChatWallpaperManager.getInstance(context) }
+    val wallpaperConfig by wallpaperManager.config.collectAsState()
+    val chatRepository = remember { com.example.data.repository.ChatRepository.getInstance(context) }
+    var storageSummary by remember { mutableStateOf<com.example.data.local.StorageUsageSummary?>(null) }
+    var showSettingsClearMediaConfirm by remember { mutableStateOf(false) }
+    var showSettingsClearAllConfirm by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        try {
+            storageSummary = chatRepository.getStorageUsageSummary()
+        } catch (_: Exception) {}
+    }
+
+    val wallpaperPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val success = wallpaperManager.setCustomPhoto(uri)
+            if (success) {
+                Toast.makeText(context, "Chat wallpaper updated!", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Failed to load photo", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     val isDndEnabled by firebaseManager.isDndEnabled.collectAsState()
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
@@ -259,6 +289,143 @@ fun SettingsScreen(
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                     ),
                                     color = if (isSelected) theme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ── Chat Wallpaper & Theme Section ──────────────────────────────────
+            SettingsSectionHeader("Chat Wallpaper & Theme")
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "Chat Wallpaper",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "Customize the backdrop behind chat bubbles",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Live Interactive Mini Preview
+                    ChatWallpaperMiniPreview(
+                        config = wallpaperConfig,
+                        wallpaperManager = wallpaperManager
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Actions Row: Choose from Photos & Reset to Default
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { wallpaperPickerLauncher.launch("image/*") },
+                            colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Choose Photo", fontWeight = FontWeight.Bold)
+                        }
+
+                        if (wallpaperConfig.type != com.example.util.WallpaperType.DEFAULT) {
+                            OutlinedButton(
+                                onClick = { wallpaperManager.resetToDefault() },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Reset")
+                            }
+                        }
+                    }
+
+                    if (wallpaperConfig.type == com.example.util.WallpaperType.CUSTOM) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Wallpaper Dimming: ${(wallpaperConfig.dimAlpha * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Slider(
+                            value = wallpaperConfig.dimAlpha,
+                            onValueChange = { wallpaperManager.setDimAlpha(it) },
+                            valueRange = 0f..0.7f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = currentThemeColor.primary,
+                                activeTrackColor = currentThemeColor.primary
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Built-in Theme Presets",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Horizontal scrolling list of preset themes
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        com.example.util.ChatWallpaperManager.PRESETS.forEach { preset ->
+                            val isSelected = wallpaperConfig.type == com.example.util.WallpaperType.PRESET && wallpaperConfig.presetId == preset.id
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { wallpaperManager.setPreset(preset.id) }
+                                    .padding(4.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = preset.previewColor,
+                                    modifier = Modifier
+                                        .size(width = 54.dp, height = 72.dp)
+                                        .border(
+                                            width = if (isSelected) 3.dp else 1.dp,
+                                            color = if (isSelected) currentThemeColor.primary else Color.Gray.copy(alpha = 0.3f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                ) {
+                                    if (isSelected) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = preset.name,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    ),
+                                    color = if (isSelected) currentThemeColor.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1
                                 )
                             }
                         }
@@ -877,6 +1044,94 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            // ── Storage and Data Section ────────────────────────────────────────
+            SettingsSectionHeader("Storage and Data")
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Chat Storage Usage",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Free space and manage ranked chat sizes",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = TealPrimary.copy(alpha = 0.15f)
+                        ) {
+                            val chatBytes = storageSummary?.totalChatBytes ?: 0L
+                            val kb = chatBytes / 1024.0
+                            val mb = kb / 1024.0
+                            val gb = mb / 1024.0
+                            val sizeText = when {
+                                gb >= 1.0 -> String.format("%.1f GB", gb)
+                                mb >= 1.0 -> String.format("%.1f MB", mb)
+                                kb >= 1.0 -> String.format("%.1f KB", kb)
+                                else -> "$chatBytes B"
+                            }
+                            Text(
+                                text = sizeText,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TealPrimary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Button(
+                        onClick = onNavigateToStorage,
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Storage, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Manage Storage & Ranked Chats", fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showSettingsClearMediaConfirm = true },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Clear All Media", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                        }
+                        OutlinedButton(
+                            onClick = { showSettingsClearAllConfirm = true },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Clear All Chats", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             // Security & Privacy
             SettingsSectionHeader("Security & Encryption")
             Surface(
@@ -905,6 +1160,66 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(40.dp))
         }
+    }
+
+    if (showSettingsClearMediaConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSettingsClearMediaConfirm = false },
+            icon = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = TealPrimary) },
+            title = { Text("Delete All Media Across All Chats?") },
+            text = { Text("This will permanently delete all downloaded videos, photos, and audio notes from your phone to free up space. Text chat messages will be kept.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSettingsClearMediaConfirm = false
+                        coroutineScope.launch {
+                            val freed = chatRepository.clearAllChatMedia()
+                            storageSummary = chatRepository.getStorageUsageSummary()
+                            val mb = freed / (1024.0 * 1024.0)
+                            val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
+                            Toast.makeText(context, "All media cleared! Freed $sizeStr", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                ) {
+                    Text("Delete Media")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSettingsClearMediaConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showSettingsClearAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSettingsClearAllConfirm = false },
+            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Clear All Chats?") },
+            text = { Text("This will permanently delete ALL messages, conversations, and media files from this device.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSettingsClearAllConfirm = false
+                        coroutineScope.launch {
+                            chatRepository.clearAllChats()
+                            storageSummary = chatRepository.getStorageUsageSummary()
+                            Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Clear Everything", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSettingsClearAllConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
@@ -1513,6 +1828,118 @@ private fun BlockNumberPickerModal(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatWallpaperMiniPreview(
+    config: com.example.util.WallpaperConfig,
+    wallpaperManager: com.example.util.ChatWallpaperManager
+) {
+    val customBitmap = remember(config) {
+        if (config.type == com.example.util.WallpaperType.CUSTOM) {
+            wallpaperManager.getCustomWallpaperBitmap()
+        } else null
+    }
+    val preset = remember(config) {
+        if (config.type == com.example.util.WallpaperType.PRESET) {
+            com.example.util.ChatWallpaperManager.PRESETS.find { it.id == config.presetId }
+        } else null
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(115.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (config.type) {
+                com.example.util.WallpaperType.CUSTOM -> {
+                    if (customBitmap != null) {
+                        Image(
+                            bitmap = customBitmap.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = config.dimAlpha))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF0B141A))
+                        )
+                    }
+                }
+                com.example.util.WallpaperType.PRESET -> {
+                    if (preset != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(androidx.compose.ui.graphics.Brush.verticalGradient(preset.gradientColors))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF0B141A))
+                        )
+                    }
+                }
+                com.example.util.WallpaperType.DEFAULT -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF0B141A))
+                    )
+                }
+            }
+
+            // Sample chat bubbles
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Incoming bubble
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF202C33),
+                    modifier = Modifier.wrapContentWidth()
+                ) {
+                    Text(
+                        text = "Hey! How does the new theme look? 👋",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+
+                // Outgoing bubble
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = GreenCall,
+                    modifier = Modifier
+                        .wrapContentWidth()
+                        .align(Alignment.End)
+                ) {
+                    Text(
+                        text = "Looks fantastic and clean! 🚀",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
                 }
             }
         }

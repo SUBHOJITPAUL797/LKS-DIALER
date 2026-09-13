@@ -1758,15 +1758,61 @@ class ChatRepositoryWeb {
   }
 
   // --- DELETE & CLEAR ---
-  clearChat(peerPhoneNumber) {
+  clearChat(peerPhoneNumber, mode = 'ALL') {
     const norm = normalizePhoneNumber(peerPhoneNumber);
     try {
-      localStorage.removeItem(`lks_web_chat_messages_${norm}`);
-      const convs = this.getConversations().filter(c => !numbersMatch(c.phoneNumber, norm));
-      this.saveConversations(convs);
+      if (mode === 'ALL') {
+        localStorage.removeItem(`lks_web_chat_messages_${norm}`);
+        const convs = this.getConversations().filter(c => !numbersMatch(c.phoneNumber, norm));
+        this.saveConversations(convs);
+      } else if (mode === 'MEDIA_ONLY') {
+        const messages = this.getMessages(norm).map(m => {
+          if (m.mediaPath || m.mediaType !== 'TEXT') {
+            return { ...m, mediaPath: null, text: m.text || '[Media cleared to free storage]' };
+          }
+          return m;
+        });
+        this.saveMessages(norm, messages);
+      } else if (mode === 'TEXT_ONLY') {
+        const messages = this.getMessages(norm).filter(m => m.mediaPath || m.mediaType !== 'TEXT');
+        this.saveMessages(norm, messages);
+      }
       this.notifySubscribers();
     } catch (e) {
       console.error('Failed to clear chat:', e);
+    }
+  }
+
+  clearAllChatMedia() {
+    try {
+      const convs = this.getConversations();
+      convs.forEach(conv => {
+        const norm = normalizePhoneNumber(conv.phoneNumber);
+        const messages = this.getMessages(norm).map(m => {
+          if (m.mediaPath || m.mediaType !== 'TEXT') {
+            return { ...m, mediaPath: null, text: m.text || '[Media cleared to free storage]' };
+          }
+          return m;
+        });
+        this.saveMessages(norm, messages);
+      });
+      this.notifySubscribers();
+    } catch (e) {
+      console.error('Failed to clear all chat media:', e);
+    }
+  }
+
+  clearAllChats() {
+    try {
+      const convs = this.getConversations();
+      convs.forEach(conv => {
+        const norm = normalizePhoneNumber(conv.phoneNumber);
+        localStorage.removeItem(`lks_web_chat_messages_${norm}`);
+      });
+      this.saveConversations([]);
+      this.notifySubscribers();
+    } catch (e) {
+      console.error('Failed to clear all chats:', e);
     }
   }
 
