@@ -5,6 +5,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.util.Base64
 import android.util.Log
@@ -139,14 +143,15 @@ class ChatRepository private constructor(private val context: Context) {
     private val cancelledTransfers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val activeTransferJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
-    private var inboxListener: ListenerRegistration? = null
-    private var receiptsListener: ListenerRegistration? = null
-    private var typingListener: ListenerRegistration? = null
+    private val activeInboxListeners = mutableListOf<ListenerRegistration>()
+    private val activeReceiptsListeners = mutableListOf<ListenerRegistration>()
+    private val activeTypingListeners = mutableListOf<ListenerRegistration>()
     private var currentListeningPhone: String? = null
 
     init {
         createNotificationChannel()
         ensureMediaDirectory()
+        registerNetworkCallback()
         repositoryScope.launch {
             syncOutdatedConversationStatuses()
         }
@@ -157,6 +162,31 @@ class ChatRepository private constructor(private val context: Context) {
                     com.example.services.FileTransferNotificationManager.updateProgress(context, progress)
                 }
             }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm?.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(TAG, "🌐 Network became available: refreshing chat listeners and pending messages")
+                    repositoryScope.launch {
+                        currentListeningPhone?.let { phone ->
+                            attachChatListeners(phone, force = true)
+                        }
+                        fetchPendingMessagesAndReceipts()
+                    }
+                    try {
+                        FirebaseManager.getInstance(context).updateUserPresence(true)
+                    } catch (_: Exception) {}
+                }
+            })
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback: ${e.message}")
         }
     }
 
@@ -220,82 +250,91 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     /**
-     * Connects real-time listeners for the logged-in user.
+     * Connects real-time listeners for the logged-in user across all number variations.
      */
     @Synchronized
-    fun attachChatListeners(myPhoneNumber: String) {
+    fun attachChatListeners(myPhoneNumber: String, force: Boolean = false) {
         val normalizedMyPhone = ContactsHelper.normalizePhoneNumber(myPhoneNumber)
-        if (currentListeningPhone == normalizedMyPhone && inboxListener != null) return
+        if (!force && currentListeningPhone == normalizedMyPhone && activeInboxListeners.isNotEmpty()) return
 
         currentListeningPhone = normalizedMyPhone
         detachChatListeners()
 
-        Log.d(TAG, "Attaching ephemeral chat listeners for: $normalizedMyPhone")
+        val variations = ContactsHelper.generateNumberVariations(normalizedMyPhone)
+        Log.d(TAG, "Attaching ephemeral chat listeners for: $normalizedMyPhone with variations: $variations")
 
-        // 1. Inbox Listener: listens for incoming encrypted messages
-        inboxListener = firestore.collection("inboxes")
-            .document(normalizedMyPhone)
-            .collection("messages")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
+        for (variant in variations) {
+            // 1. Inbox Listener: listens for incoming encrypted messages
+            val inboxL = firestore.collection("inboxes")
+                .document(variant)
+                .collection("messages")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
 
-                for (change in snapshot.documentChanges) {
-                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
-                        val doc = change.document
-                        val messageDto = doc.toObject(ChatMessageDto::class.java)
-                        if (messageDto == null) {
-                            try { doc.reference.delete() } catch (_: Exception) {}
-                            continue
-                        }
-                        repositoryScope.launch {
-                            processIncomingMessage(messageDto, doc.reference)
-                        }
-                    }
-                }
-            }
-
-        // 2. Receipts Listener: listens for DELIVERED and READ receipts
-        receiptsListener = firestore.collection("receipts")
-            .document(normalizedMyPhone)
-            .collection("acks")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
-
-                for (change in snapshot.documentChanges) {
-                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
-                        val doc = change.document
-                        val receiptDto = doc.toObject(ChatReceiptDto::class.java)
-                        if (receiptDto == null) {
-                            try { doc.reference.delete() } catch (_: Exception) {}
-                            continue
-                        }
-                        repositoryScope.launch {
-                            processIncomingReceipt(receiptDto, doc.reference)
+                    for (change in snapshot.documentChanges) {
+                        if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                            val doc = change.document
+                            val messageDto = doc.toObject(ChatMessageDto::class.java)
+                            if (messageDto == null) {
+                                try { doc.reference.delete() } catch (_: Exception) {}
+                                continue
+                            }
+                            repositoryScope.launch {
+                                processIncomingMessage(messageDto, doc.reference)
+                            }
                         }
                     }
                 }
-            }
+            activeInboxListeners.add(inboxL)
 
-        // 3. Typing Status Listener
-        typingListener = firestore.collection("typingStatus")
-            .document(normalizedMyPhone)
-            .collection("peers")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
-                val current = _typingStatus.value.toMutableMap()
-                val now = System.currentTimeMillis()
+            // 2. Receipts Listener: listens for DELIVERED and READ receipts
+            val recL = firestore.collection("receipts")
+                .document(variant)
+                .collection("acks")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
 
-                snapshot.documents.forEach { doc ->
-                    val peer = doc.id
-                    val isTyping = doc.getBoolean("isTyping") ?: false
-                    val timestamp = doc.getLong("timestamp") ?: 0L
-                    // If typing ping is older than 5 seconds, treat as false
-                    current[peer] = isTyping && (now - timestamp < 5000)
+                    for (change in snapshot.documentChanges) {
+                        if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
+                            val doc = change.document
+                            val receiptDto = doc.toObject(ChatReceiptDto::class.java)
+                            if (receiptDto == null) {
+                                try { doc.reference.delete() } catch (_: Exception) {}
+                                continue
+                            }
+                            repositoryScope.launch {
+                                processIncomingReceipt(receiptDto, doc.reference)
+                            }
+                        }
+                    }
                 }
-                _typingStatus.value = current
-            }
+            activeReceiptsListeners.add(recL)
 
-        // 4. Reconcile any existing conversation statuses
+            // 3. Typing Status Listener
+            val typL = firestore.collection("typingStatus")
+                .document(variant)
+                .collection("peers")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    val current = _typingStatus.value.toMutableMap()
+                    val now = System.currentTimeMillis()
+
+                    snapshot.documents.forEach { doc ->
+                        val peer = doc.id
+                        val isTyping = doc.getBoolean("isTyping") ?: false
+                        val timestamp = doc.getLong("timestamp") ?: 0L
+                        // If typing ping is older than 5 seconds, treat as false
+                        current[peer] = isTyping && (now - timestamp < 5000)
+                    }
+                    _typingStatus.value = current
+                }
+            activeTypingListeners.add(typL)
+        }
+
+        // 4. Proactively direct-fetch pending messages in case snapshot listener missed anything while backgrounded
+        fetchPendingMessagesAndReceipts()
+
+        // 5. Reconcile any existing conversation statuses
         repositoryScope.launch {
             syncOutdatedConversationStatuses()
         }
@@ -303,12 +342,69 @@ class ChatRepository private constructor(private val context: Context) {
 
     @Synchronized
     fun detachChatListeners() {
-        inboxListener?.remove()
-        inboxListener = null
-        receiptsListener?.remove()
-        receiptsListener = null
-        typingListener?.remove()
-        typingListener = null
+        activeInboxListeners.forEach { try { it.remove() } catch (_: Exception) {} }
+        activeInboxListeners.clear()
+        activeReceiptsListeners.forEach { try { it.remove() } catch (_: Exception) {} }
+        activeReceiptsListeners.clear()
+        activeTypingListeners.forEach { try { it.remove() } catch (_: Exception) {} }
+        activeTypingListeners.clear()
+    }
+
+    /**
+     * Proactively direct-fetches any pending ephemeral messages and receipts across all phone number variations.
+     * Guaranteed to process messages even if snapshot listener was sleeping or app just reconnected.
+     */
+    fun fetchPendingMessagesAndReceipts() {
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return
+
+        val variations = ContactsHelper.generateNumberVariations(myPhone)
+        repositoryScope.launch {
+            for (variant in variations) {
+                // Fetch inboxes
+                try {
+                    val msgSnapshot = firestore.collection("inboxes")
+                        .document(variant)
+                        .collection("messages")
+                        .get()
+                        .await()
+                    if (!msgSnapshot.isEmpty) {
+                        Log.d(TAG, "📥 Proactive fetch found ${msgSnapshot.size()} pending messages for $variant")
+                        for (doc in msgSnapshot.documents) {
+                            val dto = doc.toObject(ChatMessageDto::class.java)
+                            if (dto != null) {
+                                processIncomingMessage(dto, doc.reference)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Proactive message fetch error for $variant: ${e.message}")
+                }
+
+                // Fetch receipts
+                try {
+                    val recSnapshot = firestore.collection("receipts")
+                        .document(variant)
+                        .collection("acks")
+                        .get()
+                        .await()
+                    if (!recSnapshot.isEmpty) {
+                        Log.d(TAG, "📥 Proactive fetch found ${recSnapshot.size()} pending receipts for $variant")
+                        for (doc in recSnapshot.documents) {
+                            val rDto = doc.toObject(ChatReceiptDto::class.java)
+                            if (rDto != null) {
+                                processIncomingReceipt(rDto, doc.reference)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Proactive receipt fetch error for $variant: ${e.message}")
+                }
+            }
+        }
     }
 
     /**
@@ -343,8 +439,8 @@ class ChatRepository private constructor(private val context: Context) {
                 ContactsHelper.numbersMatch(it, senderNorm)
             } == true
 
-            // When peer sends a message to us, all our prior DELIVERED outgoing messages sent up to this message are marked as READ
-            val msgTimestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+            // When peer sends a message to us, all our prior outgoing messages sent up to this message are marked as READ
+            val msgTimestamp = maxOf(dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(), System.currentTimeMillis() + 60_000L)
             messageDao.markDeliveredMessagesAsReadUpTo(senderNorm, senderLast10, msgTimestamp, MessageStatus.READ.name)
             val lastOutgoing = messageDao.getLastMessageForConversation(senderNorm, senderLast10)
             if (lastOutgoing != null && lastOutgoing.isOutgoing && lastOutgoing.status == MessageStatus.READ.name) {
@@ -420,6 +516,11 @@ class ChatRepository private constructor(private val context: Context) {
                     val base64Chunk = json.getString("bytes")
                     val fileSize = json.optLong("fileSize", 0L)
 
+                    val ext = fileName.substringAfterLast('.', "").lowercase()
+                    val isAudio = ext == "m4a" || ext == "mp3" || ext == "aac" || ext == "wav" || ext == "ogg"
+                    val inferredType = if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.DOCUMENT.name
+                    val placeholderText = if (isAudio) "Voice message" else fileName
+
                     // 1. Insert a placeholder message in Room DB if first chunk arrives so recipient sees card immediately
                     val existingMsg = messageDao.getMessageById(parentId)
                     if (existingMsg == null) {
@@ -428,8 +529,8 @@ class ChatRepository private constructor(private val context: Context) {
                             conversationId = senderNorm,
                             senderNumber = dto.senderNumber,
                             recipientNumber = dto.recipientNumber,
-                            text = fileName,
-                            mediaType = ChatMediaType.DOCUMENT.name,
+                            text = placeholderText,
+                            mediaType = inferredType,
                             mediaPath = null,
                             mediaDurationMs = 0L,
                             timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
@@ -469,8 +570,8 @@ class ChatRepository private constructor(private val context: Context) {
                     var allPresent = (receivedCount == totalChunks)
 
                     if (allPresent) {
-                        val ext = fileName.substringAfterLast('.', "bin")
-                        val finalFile = File(ensureMediaDirectory(), "doc_${parentId}.$ext")
+                        val prefix = if (isAudio) "voice_" else "doc_"
+                        val finalFile = File(ensureMediaDirectory(), "${prefix}${parentId}.$ext")
                         FileOutputStream(finalFile).use { fos ->
                             for (i in 0 until totalChunks) {
                                 val part = File(chunksDir, "part_$i")
@@ -482,6 +583,10 @@ class ChatRepository private constructor(private val context: Context) {
                         }
                         try { chunksDir.delete() } catch (_: Exception) {}
 
+                        val resolvedType = if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.DOCUMENT.name
+                        val resolvedText = if (isAudio) "Voice message" else fileName
+                        val summaryText = if (isAudio) "🎤 Voice message" else "📄 $fileName"
+
                         // Update placeholder with assembled file path
                         messageDao.updateMessageMedia(parentId, finalFile.absolutePath)
                         val messageEntity = messageDao.getMessageById(parentId) ?: MessageEntity(
@@ -489,8 +594,8 @@ class ChatRepository private constructor(private val context: Context) {
                             conversationId = senderNorm,
                             senderNumber = dto.senderNumber,
                             recipientNumber = dto.recipientNumber,
-                            text = fileName,
-                            mediaType = ChatMediaType.DOCUMENT.name,
+                            text = resolvedText,
+                            mediaType = resolvedType,
                             mediaPath = finalFile.absolutePath,
                             mediaDurationMs = 0L,
                             timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
@@ -517,8 +622,8 @@ class ChatRepository private constructor(private val context: Context) {
                             phoneNumber = existingConv?.phoneNumber ?: senderNorm,
                             contactName = resolvedName,
                             profilePicUrl = profilePic,
-                            lastMessageText = "📄 $fileName",
-                            lastMessageType = ChatMediaType.DOCUMENT.name,
+                            lastMessageText = summaryText,
+                            lastMessageType = resolvedType,
                             lastMessageTimestamp = messageEntity.timestamp,
                             lastMessageStatus = messageEntity.status,
                             lastMessageIsOutgoing = false,
@@ -538,8 +643,8 @@ class ChatRepository private constructor(private val context: Context) {
                             showIncomingMessageNotification(
                                 senderNumber = senderNorm,
                                 senderName = resolvedName,
-                                messageText = "📄 $fileName",
-                                messageType = ChatMediaType.DOCUMENT.name
+                                messageText = summaryText,
+                                messageType = resolvedType
                             )
                         }
                     }
@@ -826,13 +931,14 @@ class ChatRepository private constructor(private val context: Context) {
                 if (specificMsg != null && receipt.status == MessageStatus.READ.name) {
                     val cId = specificMsg.conversationId
                     val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
-                    // Only mark DELIVERED messages sent up to this message's timestamp as READ (never in-flight/SENT)
-                    messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, specificMsg.timestamp, MessageStatus.READ.name)
+                    // Mark messages sent up to this message's timestamp as READ (with clock skew buffer)
+                    val upTo = maxOf(specificMsg.timestamp, receipt.timestamp, System.currentTimeMillis() + 60_000L)
+                    messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, upTo, MessageStatus.READ.name)
                     conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
                 }
             } else if (receipt.status == MessageStatus.READ.name) {
-                // If "all" READ receipt, only mark DELIVERED messages sent up to the receipt timestamp as READ
-                val upToTs = receipt.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+                // If "all" READ receipt, mark messages sent up to receipt timestamp with clock skew tolerance
+                val upToTs = maxOf(receipt.timestamp, System.currentTimeMillis() + 60_000L)
                 messageDao.markDeliveredMessagesAsReadUpTo(peerNorm, last10, upToTs, MessageStatus.READ.name)
                 conversationDao.updateLastMessageStatus(peerNorm, last10, MessageStatus.READ.name)
             }
@@ -952,7 +1058,7 @@ class ChatRepository private constructor(private val context: Context) {
                 put("bytes", base64Data)
             }
             payloadToEncrypt = json.toString()
-        } else if (mediaType == ChatMediaType.AUDIO && mediaFile != null && mediaFile.exists()) {
+        } else if (mediaType == ChatMediaType.AUDIO && mediaFile != null && mediaFile.exists() && mediaFile.length() <= 500 * 1024L) {
             val savedFile = File(ensureMediaDirectory(), "voice_$messageId.m4a")
             mediaFile.copyTo(savedFile, overwrite = true)
             localSavedPath = savedFile.absolutePath
@@ -964,18 +1070,23 @@ class ChatRepository private constructor(private val context: Context) {
                 put("bytes", base64Data)
             }
             payloadToEncrypt = json.toString()
-        } else if (mediaType == ChatMediaType.DOCUMENT && mediaFile != null && mediaFile.exists()) {
-            val ext = mediaFile.extension.ifBlank { "bin" }
-            val savedFile = File(ensureMediaDirectory(), "doc_${messageId}.$ext")
+        } else if ((mediaType == ChatMediaType.DOCUMENT || (mediaType == ChatMediaType.AUDIO && mediaFile?.let { it.length() > 500 * 1024L } == true)) && mediaFile != null && mediaFile.exists()) {
+            val isAudio = mediaType == ChatMediaType.AUDIO
+            val ext = if (isAudio) mediaFile.extension.ifBlank { "m4a" } else mediaFile.extension.ifBlank { "bin" }
+            val prefix = if (isAudio) "voice_" else "doc_"
+            val savedFile = File(ensureMediaDirectory(), "${prefix}${messageId}.$ext")
             mediaFile.copyTo(savedFile, overwrite = true)
             localSavedPath = savedFile.absolutePath
 
             // ── P2P-FIRST for ALL large files (> 500 KB) ─────────────────────────────────
             // 1. If recipient is online → attempt WebRTC DataChannel P2P (unlimited size, fastest)
-            // 2. If P2P fails / offline → fall back to Firestore 384KB chunked relay (up to 50MB)
+            // 2. If P2P fails / offline → fall back to Firestore 512KB chunked relay (up to 50MB)
             if (mediaFile.length() > 500 * 1024L) {
                 val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
                 val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+
+                val displayNameText = if (isAudio) "Voice message" else text.ifBlank { mediaFile.name }
+                val displaySummaryText = if (isAudio) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
 
                 // Save message entity for display immediately (Sending state)
                 val messageEntity = MessageEntity(
@@ -983,8 +1094,8 @@ class ChatRepository private constructor(private val context: Context) {
                     conversationId = targetConvPhone,
                     senderNumber = myPhone,
                     recipientNumber = canonicalRecipient,
-                    text = text.ifBlank { mediaFile.name },
-                    mediaType = ChatMediaType.DOCUMENT.name,
+                    text = displayNameText,
+                    mediaType = mediaType.name,
                     mediaPath = localSavedPath,
                     mediaDurationMs = mediaDurationMs,
                     timestamp = now,
@@ -997,8 +1108,8 @@ class ChatRepository private constructor(private val context: Context) {
                     phoneNumber = targetConvPhone,
                     contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
                     profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
-                    lastMessageText = "📄 ${text.ifBlank { mediaFile.name }}",
-                    lastMessageType = ChatMediaType.DOCUMENT.name,
+                    lastMessageText = displaySummaryText,
+                    lastMessageType = mediaType.name,
                     lastMessageTimestamp = now,
                     lastMessageStatus = MessageStatus.SENT.name,
                     lastMessageIsOutgoing = true,
@@ -1359,11 +1470,12 @@ class ChatRepository private constructor(private val context: Context) {
                     _activeTransfers.value = _activeTransfers.value - messageId
                 }
 
+                val relayPreview = if (mediaType == ChatMediaType.AUDIO) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
                 sendFcmWakeup(
                     recipientPhone = canonicalRecipient,
                     senderPhone = myPhone,
-                    previewText = "📄 ${text.ifBlank { mediaFile.name }}",
-                    mediaType = ChatMediaType.DOCUMENT.name,
+                    previewText = relayPreview,
+                    mediaType = mediaType.name,
                     messageId = messageId
                 )
 
@@ -2345,46 +2457,48 @@ class ChatRepository private constructor(private val context: Context) {
         // Also ensure snapshot listener is attached for continuous updates
         attachChatListeners(myPhone)
 
-        // Step 2: Direct-fetch ephemeral messages from Firestore while FCM holds the process alive
-        try {
-            val snapshot = firestore.collection("inboxes")
-                .document(myPhone)
-                .collection("messages")
-                .get()
-                .await()
+        // Step 2 & 3: Direct-fetch ephemeral messages and receipts across all variations while FCM holds the process alive
+        val variations = ContactsHelper.generateNumberVariations(myPhone)
+        for (variant in variations) {
+            try {
+                val snapshot = firestore.collection("inboxes")
+                    .document(variant)
+                    .collection("messages")
+                    .get()
+                    .await()
 
-            if (!snapshot.isEmpty) {
-                Log.d(TAG, "📥 Direct fetch found ${snapshot.size()} pending messages for $myPhone")
-                for (doc in snapshot.documents) {
-                    val dto = doc.toObject(ChatMessageDto::class.java)
-                    if (dto != null) {
-                        processIncomingMessage(dto, doc.reference)
+                if (!snapshot.isEmpty) {
+                    Log.d(TAG, "📥 Direct fetch found ${snapshot.size()} pending messages for $variant")
+                    for (doc in snapshot.documents) {
+                        val dto = doc.toObject(ChatMessageDto::class.java)
+                        if (dto != null) {
+                            processIncomingMessage(dto, doc.reference)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct fetch messages failed on push message for $variant: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Direct fetch messages failed on push message: ${e.message}")
-        }
 
-        // Step 3: Direct-fetch ephemeral receipts (DELIVERED / READ) while FCM holds the process alive
-        try {
-            val receiptsSnapshot = firestore.collection("receipts")
-                .document(myPhone)
-                .collection("acks")
-                .get()
-                .await()
+            try {
+                val receiptsSnapshot = firestore.collection("receipts")
+                    .document(variant)
+                    .collection("acks")
+                    .get()
+                    .await()
 
-            if (!receiptsSnapshot.isEmpty) {
-                Log.d(TAG, "📥 Direct fetch found ${receiptsSnapshot.size()} pending receipts for $myPhone")
-                for (doc in receiptsSnapshot.documents) {
-                    val rDto = doc.toObject(ChatReceiptDto::class.java)
-                    if (rDto != null) {
-                        processIncomingReceipt(rDto, doc.reference)
+                if (!receiptsSnapshot.isEmpty) {
+                    Log.d(TAG, "📥 Direct fetch found ${receiptsSnapshot.size()} pending receipts for $variant")
+                    for (doc in receiptsSnapshot.documents) {
+                        val rDto = doc.toObject(ChatReceiptDto::class.java)
+                        if (rDto != null) {
+                            processIncomingReceipt(rDto, doc.reference)
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct fetch receipts failed on push message for $variant: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Direct fetch receipts failed on push message: ${e.message}")
         }
     }
 }

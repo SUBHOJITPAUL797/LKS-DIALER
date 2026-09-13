@@ -39,10 +39,10 @@ interface ConversationDao {
     @Query("DELETE FROM conversations WHERE phoneNumber = :phoneNumber")
     suspend fun deleteConversation(phoneNumber: String)
 
-    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits)")
+    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE (phoneNumber = :phoneNumber OR (length(:last10Digits) >= 7 AND phoneNumber LIKE '%' || :last10Digits)) AND (lastMessageStatus != 'READ' OR :status = 'READ')")
     suspend fun updateLastMessageStatus(phoneNumber: String, last10Digits: String, status: String)
 
-    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber")
+    @Query("UPDATE conversations SET lastMessageStatus = :status WHERE phoneNumber = :phoneNumber AND (lastMessageStatus != 'READ' OR :status = 'READ')")
     suspend fun updateLastMessageStatus(phoneNumber: String, status: String)
 
     @Query("UPDATE conversations SET lastMessageText = :text WHERE phoneNumber = :phoneNumber")

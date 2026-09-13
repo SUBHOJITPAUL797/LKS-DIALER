@@ -306,6 +306,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         reconnectJob?.cancel()
                         reconnectJob = null
                         _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                        audioRouteManager.reassertCurrentRoute()
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")

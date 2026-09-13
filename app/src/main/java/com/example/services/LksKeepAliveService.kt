@@ -131,7 +131,9 @@ class LksKeepAliveService : Service() {
         try {
             val phone = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE).getString("user_phone", null)
             if (!phone.isNullOrBlank()) {
-                com.example.data.repository.ChatRepository.getInstance(applicationContext).attachChatListeners(phone)
+                val chatRepo = com.example.data.repository.ChatRepository.getInstance(applicationContext)
+                chatRepo.attachChatListeners(phone)
+                chatRepo.fetchPendingMessagesAndReceipts()
             }
         } catch (_: Exception) {}
         Log.d(TAG, "LKS Keep-Alive Service started")

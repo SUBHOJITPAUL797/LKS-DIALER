@@ -129,6 +129,7 @@ class MainActivity : ComponentActivity() {
         isForeground = true
         com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
         com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(true)
+        com.example.data.repository.ChatRepository.getInstance(this).fetchPendingMessagesAndReceipts()
 
         // Seamless handoff: If user opened the app from the launcher while a call was incoming/active in the floating pill, adopt it!
         val bubbleCallId = com.example.services.FloatingCallBubbleService.currentCallId
@@ -173,6 +174,7 @@ class MainActivity : ComponentActivity() {
         isForeground = true
         com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
         com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(true)
+        com.example.data.repository.ChatRepository.getInstance(this).fetchPendingMessagesAndReceipts()
     }
 
 
@@ -344,6 +346,11 @@ class MainActivity : ComponentActivity() {
         // Register self-managed phone account for Bluetooth HFP call controls
         try {
             com.example.services.LksTelecomManager.registerPhoneAccount(this)
+        } catch (_: Exception) {}
+
+        // Proactively fetch pending chat messages and receipts
+        try {
+            com.example.data.repository.ChatRepository.getInstance(this).fetchPendingMessagesAndReceipts()
         } catch (_: Exception) {}
 
         // Pass the launch intent in so the Compose side can read it

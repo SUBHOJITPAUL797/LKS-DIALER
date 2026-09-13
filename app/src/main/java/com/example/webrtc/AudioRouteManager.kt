@@ -277,12 +277,13 @@ class AudioRouteManager(
                     if (btOutput != null) {
                         val rawName = btOutput.productName?.toString()?.ifBlank { "Bluetooth" } ?: "Bluetooth"
                         val name = if (rawName.startsWith("Bluetooth", ignoreCase = true)) rawName else "Bluetooth ($rawName)"
+                        val isAllowedComm = audioManager.availableCommunicationDevices.any { it.id == btOutput.id }
                         deviceList.add(
                             AudioDeviceOption(
                                 id = "bt_${btOutput.id}",
                                 name = name,
                                 type = AudioDeviceType.BLUETOOTH,
-                                rawDevice = btOutput
+                                rawDevice = if (isAllowedComm) btOutput else null
                             )
                         )
                     }
@@ -567,20 +568,19 @@ class AudioRouteManager(
                     audioManager.isSpeakerphoneOn = false
 
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        audioManager.clearCommunicationDevice()
-                        val bt = if (device.rawDevice is AudioDeviceInfo) {
-                            device.rawDevice as AudioDeviceInfo
-                        } else {
-                            audioManager.availableCommunicationDevices.firstOrNull {
-                                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
-                                it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                            }
+                        val validCommBt = (device.rawDevice as? AudioDeviceInfo)?.takeIf { dev ->
+                            audioManager.availableCommunicationDevices.any { it.id == dev.id }
+                        } ?: audioManager.availableCommunicationDevices.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                            it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                        } ?: audioManager.availableCommunicationDevices.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
                         }
-                        if (bt != null) {
-                            val res = audioManager.setCommunicationDevice(bt)
-                            Log.d(TAG, "setCommunicationDevice(BLUETOOTH - ${bt.productName}): $res")
+
+                        if (validCommBt != null) {
+                            val res = audioManager.setCommunicationDevice(validCommBt)
+                            Log.d(TAG, "setCommunicationDevice(BLUETOOTH - ${validCommBt.productName}): $res")
                             if (!res) {
                                 @Suppress("DEPRECATION")
                                 try {
@@ -595,6 +595,50 @@ class AudioRouteManager(
                                 audioManager.isBluetoothScoOn = true
                             } catch (_: Exception) {}
                         }
+
+                        // Schedule automatic retries at 250ms, 600ms, and 1200ms
+                        // so as soon as Android's Bluetooth SCO handshake completes, it firmly latches onto headphones!
+                        mainHandler.postDelayed({
+                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                }
+                                if (retryBt != null) {
+                                    val r = audioManager.setCommunicationDevice(retryBt)
+                                    Log.d(TAG, "Delayed retry 250ms setCommunicationDevice: $r (${retryBt.productName})")
+                                }
+                            }
+                        }, 250L)
+
+                        mainHandler.postDelayed({
+                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                }
+                                if (retryBt != null) {
+                                    val r = audioManager.setCommunicationDevice(retryBt)
+                                    Log.d(TAG, "Delayed retry 600ms setCommunicationDevice: $r (${retryBt.productName})")
+                                }
+                            }
+                        }, 600L)
+
+                        mainHandler.postDelayed({
+                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                }
+                                if (retryBt != null) {
+                                    val r = audioManager.setCommunicationDevice(retryBt)
+                                    Log.d(TAG, "Delayed retry 1200ms setCommunicationDevice: $r (${retryBt.productName})")
+                                }
+                            }
+                        }, 1200L)
                     } else {
                         @Suppress("DEPRECATION")
                         try {
@@ -740,5 +784,22 @@ class AudioRouteManager(
         } catch (_: Exception) {}
 
         isCellularCallInterrupting = false
+    }
+
+    /**
+     * Re-applies the current audio route to ensure audio output is firmly bound to the selected
+     * device (e.g. when WebRTC finishes ICE negotiation and starts media tracks).
+     */
+    fun reassertCurrentRoute() {
+        mainHandler.post {
+            val selected = currentSelectedDevice
+            Log.d(TAG, "🔊 Re-asserting current audio route: $selected")
+            val target = currentAvailableDevices.firstOrNull { it.type == selected }
+            if (target != null) {
+                selectAudioDevice(target, updateDeviceList = false)
+            } else {
+                selectAudioDeviceType(selected)
+            }
+        }
     }
 }

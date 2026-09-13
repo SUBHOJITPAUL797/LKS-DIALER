@@ -15,7 +15,7 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessages(messages: List<MessageEntity>)
 
-    @Query("UPDATE messages SET status = :status WHERE id = :messageId")
+    @Query("UPDATE messages SET status = :status WHERE id = :messageId AND (status != 'READ' OR :status = 'READ')")
     suspend fun updateMessageStatus(messageId: String, status: String)
 
     @Query("UPDATE messages SET text = :newText, isEdited = 1 WHERE id = :messageId")
@@ -28,17 +28,17 @@ interface MessageDao {
     @Query("UPDATE messages SET mediaPath = :mediaPath WHERE id = :messageId")
     suspend fun updateMessageMedia(messageId: String, mediaPath: String)
 
-    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != :newStatus")
+    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != :newStatus AND (status != 'READ' OR :newStatus = 'READ')")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
 
-    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus")
+    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != :newStatus AND (status != 'READ' OR :newStatus = 'READ')")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, newStatus: String)
 
-    /** Only upgrades DELIVERED messages up to a specific timestamp to READ (prevents in-flight / SENT messages from turning blue) */
-    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status = 'DELIVERED' AND timestamp <= :upToTimestamp")
+    /** Upgrades outgoing messages up to a specific timestamp to READ (prevents in-flight / SENT messages from getting stuck on single tick) */
+    @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != 'READ' AND timestamp <= :upToTimestamp")
     suspend fun markDeliveredMessagesAsReadUpTo(conversationId: String, last10Digits: String, upToTimestamp: Long, newStatus: String = "READ")
 
-    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status = 'DELIVERED' AND timestamp <= :upToTimestamp")
+    @Query("UPDATE messages SET status = :newStatus WHERE conversationId = :conversationId AND isOutgoing = 1 AND status != 'READ' AND timestamp <= :upToTimestamp")
     suspend fun markDeliveredMessagesAsReadUpTo(conversationId: String, upToTimestamp: Long, newStatus: String = "READ")
 
     @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 0 AND status != :newStatus")

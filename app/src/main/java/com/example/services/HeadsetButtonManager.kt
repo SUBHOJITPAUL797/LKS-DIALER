@@ -151,26 +151,26 @@ class HeadsetButtonManager(context: Context) {
                 KeyEvent.KEYCODE_HEADSETHOOK,
                 KeyEvent.KEYCODE_CALL,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
-                KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                KeyEvent.KEYCODE_MEDIA_PLAY,
+                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_STOP -> {
                     if (callStatus == CallStatus.RINGING) {
-                        Log.i("HeadsetButtonManager", "Answering call via Bluetooth/Headset button!")
+                        Log.i("HeadsetButtonManager", "Answering call via Bluetooth/Headset button! (keyCode=$keyCode)")
                         rtcEngine.answerCall()
                         return true
                     } else if (callStatus == CallStatus.ANSWERED || callStatus == CallStatus.CALLING) {
-                        Log.i("HeadsetButtonManager", "Ending call via Bluetooth/Headset button!")
+                        Log.i("HeadsetButtonManager", "Ending call via Bluetooth/Headset button! (keyCode=$keyCode)")
                         rtcEngine.endCall()
                         return true
                     }
                 }
-                KeyEvent.KEYCODE_ENDCALL,
-                KeyEvent.KEYCODE_MEDIA_STOP,
-                KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                KeyEvent.KEYCODE_ENDCALL -> {
                     if (callStatus == CallStatus.RINGING) {
-                        Log.i("HeadsetButtonManager", "Declining call via Bluetooth/Headset button!")
+                        Log.i("HeadsetButtonManager", "Declining call via KEYCODE_ENDCALL!")
                         rtcEngine.declineCall()
                         return true
                     } else if (callStatus == CallStatus.ANSWERED || callStatus == CallStatus.CALLING) {
-                        Log.i("HeadsetButtonManager", "Ending call via Bluetooth/Headset button!")
+                        Log.i("HeadsetButtonManager", "Ending call via KEYCODE_ENDCALL!")
                         rtcEngine.endCall()
                         return true
                     }
