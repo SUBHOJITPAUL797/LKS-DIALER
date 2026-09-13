@@ -1805,7 +1805,7 @@ class ChatRepository private constructor(private val context: Context) {
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 
         // Step 1: Immediately show notification if user is not in this conversation right now (skip for silent edits, deletes, chunks)
-        val isWatchingConversation = isAppInForeground && (_activeChatPeerNumber.value == senderNorm)
+        val isWatchingConversation = isAppInForeground && _activeChatPeerNumber.value?.let { ContactsHelper.numbersMatch(it, senderNorm) } == true
         if (!isWatchingConversation && senderNorm.isNotBlank() &&
             mediaType != ChatMediaType.EDIT.name &&
             mediaType != ChatMediaType.DELETE.name &&
