@@ -180,6 +180,25 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         }
 
+        // ─── REGISTER WITH ANDROID TELECOM (same trick WhatsApp/Telegram use) ───
+        // This gives our app system-call priority on ALL Android flavors —
+        // Samsung sleeping apps, MIUI background kill, OxygenOS/ColorOS restrictions,
+        // Doze mode, battery saver — ALL bypassed because the OS treats this as a phone call.
+        val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                com.example.services.LksTelecomManager.reportIncomingCall(
+                    context = this,
+                    callId = callId,
+                    callerName = callerName,
+                    callerNumber = callerNumber,
+                    callType = callTypeEnum
+                )
+            } catch (e: Exception) {
+                Log.w("FCM", "Telecom registration failed (non-fatal): ${e.message}")
+            }
+        }
+
         if (com.example.MainActivity.isForeground) {
             Log.d("FCM", "MainActivity is already in foreground. Forwarding intent to show call screen.")
             try {
@@ -283,7 +302,8 @@ class CallMessagingService : FirebaseMessagingService() {
         val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         val isLocked = keyguardManager?.isKeyguardLocked == true
         val canDrawOverlays = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) android.provider.Settings.canDrawOverlays(this) else true
-        val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+        // callTypeEnum already declared above (used for Telecom registration)
+
 
         val needsFullScreen = !isInteractive || isLocked
 

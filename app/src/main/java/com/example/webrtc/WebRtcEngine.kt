@@ -656,7 +656,21 @@ class WebRtcEngine private constructor(private val context: Context) {
                     
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     headsetButtonManager.startListening()
-                    
+
+                    // Register with Android Telecom to get system-call priority on all OEMs
+                    // (same mechanism WhatsApp/Telegram use — bypasses battery saver, app kill, Doze)
+                    try {
+                        com.example.services.LksTelecomManager.reportIncomingCall(
+                            context = context,
+                            callId = incomingCall.callId,
+                            callerName = incomingCall.callerName,
+                            callerNumber = incomingCall.callerNumber,
+                            callType = incomingCall.callType
+                        )
+                    } catch (e: Exception) {
+                        Log.w("WebRtcEngine", "Telecom reportIncomingCall failed (non-fatal): ${e.message}")
+                    }
+
                     _state.value = WebRtcState(
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
                         callStatus = CallStatus.RINGING,
@@ -1502,9 +1516,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                 fallbackCallType = prevCall.callType
             )
         }
+
+        // CRITICAL FIX: Set activeCall = null IMMEDIATELY so the Firestore snapshot listener
+        // (listenForIncomingCalls line 647) can accept the very next incoming call without waiting.
+        // Previously, keeping activeCall = prevCall for 1500ms meant the Firestore snapshot for
+        // a second call fired & was ignored (activeCall != null guard), then NEVER re-fired again
+        // → second call was silently dropped on ALL Android devices.
         _state.value = _state.value.copy(
             callStatus = status,
-            activeCall = prevCall,
+            activeCall = null,   // ← null immediately, not after 1500ms
             connectionStatusText = when (status) {
                 CallStatus.ENDED -> "Call Ended"
                 CallStatus.DECLINED -> "Call Declined"

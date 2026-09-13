@@ -50,6 +50,19 @@ object LksTelecomManager {
 
     private val reportedIncomingCalls = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * Report incoming call to Android Telecom system.
+     *
+     * WHY: This is the same mechanism WhatsApp and Telegram use. When you call
+     * TelecomManager.addNewIncomingCall(), Android treats your app with the same priority
+     * as a real phone call — it bypasses Doze, battery saver, MIUI background restrictions,
+     * Samsung sleeping apps, OxygenOS/ColorOS app kill, and ALL manufacturer restrictions.
+     * The system then calls LksConnectionService.onCreateIncomingConnection(), which calls
+     * onShowIncomingCallUi() — guaranteed to show the call UI even on the most aggressive OEMs.
+     *
+     * We use SELF_MANAGED PhoneAccount so it does NOT show the system's native phone dialer UI
+     * (which would conflict with our custom UI). Instead it just gives our app system-call priority.
+     */
     fun reportIncomingCall(
         context: Context,
         callId: String,
@@ -57,11 +70,39 @@ object LksTelecomManager {
         callerNumber: String,
         callType: CallType
     ) {
-        // Disabled: Calling addNewIncomingCall causes the device's system dialer (Google Phone / Samsung InCallUI / MIUI)
-        // to show a duplicate "phone own" incoming call notification and play the system telephone ringtone.
-        // LKS Dialer handles its own incoming call UI (CallStyle notification + full-screen / floating pill)
-        // and its own audio ringtone via LksIncomingRingtonePlayer.
-        Log.d(TAG, "reportIncomingCall skipped to avoid duplicate system dialer notification and ringtone")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!reportedIncomingCalls.add(callId)) {
+            Log.d(TAG, "reportIncomingCall: $callId already reported, skipping duplicate")
+            return
+        }
+        // Limit set size to avoid memory leaks across many calls
+        if (reportedIncomingCalls.size > 50) reportedIncomingCalls.clear()
+
+        try {
+            registerPhoneAccount(context)
+            val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
+            val handle = getPhoneAccountHandle(context)
+
+            val extras = Bundle().apply {
+                putString("call_id", callId)
+                putString("caller_name", callerName)
+                putString("caller_number", callerNumber)
+                putString("call_type", callType.name)
+                putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
+                    Uri.fromParts(PhoneAccount.SCHEME_SIP, callerNumber.ifBlank { "LKS" }, null))
+                putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,
+                    if (callType == CallType.VIDEO) android.telecom.VideoProfile.STATE_BIDIRECTIONAL
+                    else android.telecom.VideoProfile.STATE_AUDIO_ONLY)
+                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle)
+            }
+
+            telecomManager.addNewIncomingCall(handle, extras)
+            Log.i(TAG, "✅ Reported incoming call to Android Telecom system: callId=$callId from $callerName ($callerNumber)")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "reportIncomingCall: SecurityException (MANAGE_OWN_CALLS permission issue?): ${e.message}")
+        } catch (e: Exception) {
+            Log.w(TAG, "reportIncomingCall: Failed to add call to Telecom: ${e.message}")
+        }
     }
 
     fun reportOutgoingCall(
