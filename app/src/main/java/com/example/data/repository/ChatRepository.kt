@@ -150,6 +150,22 @@ class ChatRepository private constructor(private val context: Context) {
         repositoryScope.launch {
             syncOutdatedConversationStatuses()
         }
+        // Wire activeTransfers to persistent system notification drawer progress bar
+        repositoryScope.launch {
+            _activeTransfers.collect { transfersMap ->
+                transfersMap.values.forEach { progress ->
+                    com.example.services.FileTransferNotificationManager.updateProgress(context, progress)
+                }
+            }
+        }
+    }
+
+    /** Returns true if there is any file transfer actively connecting or in progress */
+    fun hasActiveTransfers(): Boolean {
+        return _activeTransfers.value.values.any {
+            it.status == com.example.data.p2p.TransferStatus.CONNECTING ||
+            it.status == com.example.data.p2p.TransferStatus.TRANSFERRING
+        }
     }
 
     fun setActiveChatPeer(phoneNumber: String?) {
@@ -168,6 +184,7 @@ class ChatRepository private constructor(private val context: Context) {
         cancelledTransfers.add(messageId)
         activeP2pTransfers[messageId]?.cancel(messageId)
         activeP2pTransfers.remove(messageId)
+        com.example.services.FileTransferNotificationManager.dismiss(context, messageId)
         _activeTransfers.value = _activeTransfers.value - messageId
         activeTransferJobs[messageId]?.cancel()
         activeTransferJobs.remove(messageId)
@@ -512,6 +529,9 @@ class ChatRepository private constructor(private val context: Context) {
 
                         // Send DELIVERED receipt for the parent message
                         sendReceipt(dto.senderNumber, parentId, MessageStatus.DELIVERED.name)
+                        if (isCurrentPeer) {
+                            sendReceipt(dto.senderNumber, parentId, MessageStatus.READ.name)
+                        }
 
                         // Show notification if in background
                         if (!isCurrentPeer) {
@@ -1010,6 +1030,9 @@ class ChatRepository private constructor(private val context: Context) {
                     } catch (_: Exception) { false }
                 }
 
+                val wasInitiallyOnline = isRecipientOnline
+                var hasAttemptedP2p = isRecipientOnline
+
                 if (isRecipientOnline) {
                     Log.d(TAG, "Peer $canonicalRecipient is ONLINE — attempting P2P DataChannel transfer")
                     val p2p = P2pFileTransfer(context)
@@ -1054,6 +1077,15 @@ class ChatRepository private constructor(private val context: Context) {
                                     .set(offerDto)
                                     .await()
                                 Log.d(TAG, "P2P_OFFER (with offerSdp) sent to $canonicalRecipient for sessionId=$messageId")
+
+                                // Wake up peer's device via high-priority FCM so they accept P2P even if app is closed
+                                sendFcmWakeup(
+                                    recipientPhone = canonicalRecipient,
+                                    senderPhone = myPhone,
+                                    previewText = text.ifBlank { mediaFile.name },
+                                    mediaType = ChatMediaType.P2P_OFFER.name,
+                                    messageId = messageId
+                                )
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed to send P2P_OFFER signal: ${e.message}")
                             }
@@ -1085,6 +1117,7 @@ class ChatRepository private constructor(private val context: Context) {
                         return@withContext Result.success(messageEntity)
                     } else {
                         Log.w(TAG, "P2P transfer FAILED — falling back to Firestore relay ☁")
+                        hasAttemptedP2p = true
                         _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
                             messageId = messageId, fileName = mediaFile.name,
                             totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
@@ -1128,7 +1161,7 @@ class ChatRepository private constructor(private val context: Context) {
                             return@withContext Result.failure(CancellationException("Cancelled by user"))
                         }
 
-                        // 2. AUTO-SWITCH: Check if peer came online during relay transmission
+                        // 2. AUTO-SWITCH: Check if peer came online during relay transmission (only if not previously attempted!)
                         val peerUserOnline = run {
                             val memUser = firebaseManager.lookupUserByNumber(canonicalRecipient)
                                 ?: firebaseManager.lookupUserByNumber(normRecipient)
@@ -1137,7 +1170,8 @@ class ChatRepository private constructor(private val context: Context) {
                             } else false
                         }
 
-                        if (peerUserOnline && i < totalChunks - 1) {
+                        if (!hasAttemptedP2p && !wasInitiallyOnline && peerUserOnline && i < totalChunks - 1) {
+                            hasAttemptedP2p = true
                             Log.i(TAG, "⚡ AUTO-SWITCH: Peer $canonicalRecipient came online at chunk $i/$totalChunks! Switching to P2P Direct!")
                             // Clean up partial chunks from Firestore inbox so recipient receives clean P2P stream
                             repositoryScope.launch {
@@ -1191,6 +1225,15 @@ class ChatRepository private constructor(private val context: Context) {
                                             .set(offerDto)
                                             .await()
                                         Log.d(TAG, "P2P_OFFER (auto-switched) sent to $canonicalRecipient for sessionId=$messageId")
+
+                                        // Wake up peer's device via high-priority FCM
+                                        sendFcmWakeup(
+                                            recipientPhone = canonicalRecipient,
+                                            senderPhone = myPhone,
+                                            previewText = text.ifBlank { mediaFile.name },
+                                            mediaType = ChatMediaType.P2P_OFFER.name,
+                                            messageId = messageId
+                                        )
                                     } catch (e: Exception) {
                                         Log.w(TAG, "Failed to send auto-switched P2P_OFFER: ${e.message}")
                                     }

@@ -150,6 +150,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- File Transfer Cancel Receiver — handles cancel taps from notification drawer -->
+        <receiver
+            android:name=".services.FileTransferCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.example.action.CANCEL_TRANSFER" />
+            </intent-filter>
+        </receiver>
+
         <!-- Boot Receiver — wakes up the app after restart to ensure FCM works -->
         <receiver
             android:name=".services.BootReceiver"

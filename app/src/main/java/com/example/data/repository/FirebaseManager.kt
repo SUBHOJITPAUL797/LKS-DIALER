@@ -584,6 +584,13 @@ class FirebaseManager private constructor(private val context: Context) {
      * Called when app is paused, backgrounded, or quit.
      */
     fun stopPresenceHeartbeat() {
+        // If there is an active file transfer running in background, DO NOT mark user offline!
+        try {
+            if (com.example.data.repository.ChatRepository.getInstance(context).hasActiveTransfers()) {
+                Log.d(TAG, "Transfer active in background — preserving user online presence")
+                return
+            }
+        } catch (_: Exception) {}
         presenceHeartbeatJob?.cancel()
         presenceHeartbeatJob = null
         updateUserPresence(false)

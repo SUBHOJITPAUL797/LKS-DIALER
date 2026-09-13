@@ -56,7 +56,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.d("FCM", "Received chat_message push notification, handling via ChatRepository")
                 try {
                     kotlinx.coroutines.runBlocking {
-                        kotlinx.coroutines.withTimeoutOrNull(8000L) {
+                        kotlinx.coroutines.withTimeoutOrNull(15000L) {
                             com.example.data.repository.ChatRepository.getInstance(applicationContext)
                                 .handlePushMessageReceived(remoteMessage.data)
                         }

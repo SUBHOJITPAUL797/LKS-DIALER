@@ -1735,8 +1735,8 @@ private fun MessageBubble(
 
                     val isTransferring = transferProgress != null && transferProgress.percent < 100
                     val unblurPercent = transferProgress?.percent ?: 100
-                    val imgBlurRadius = remember(unblurPercent, isTransferring) {
-                        if (isTransferring) {
+                    val imgBlurRadius = remember(unblurPercent, isTransferring, isOutgoing) {
+                        if (!isOutgoing && isTransferring) {
                             ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
                         } else 0.dp
                     }
@@ -1795,13 +1795,6 @@ private fun MessageBubble(
                     }
                     val isAudio = ext in listOf("MP3", "M4A", "WAV", "AAC", "OGG", "FLAC", "OPUS")
                     val isVideo = ext in listOf("MP4", "MKV", "WEBM", "MOV", "3GP", "AVI", "M4V")
-                    val isTransferring = transferProgress != null && transferProgress.percent < 100
-                    val unblurPercent = transferProgress?.percent ?: 100
-                    val docBlurRadius = remember(unblurPercent, isTransferring) {
-                        if (isTransferring) {
-                            ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
-                        } else 0.dp
-                    }
 
                     val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
                         if (message.mediaDurationMs > 0L) message.mediaDurationMs
@@ -1833,7 +1826,6 @@ private fun MessageBubble(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .then(if (docBlurRadius > 0.dp) Modifier.blur(docBlurRadius) else Modifier)
                             .clickable {
                                 if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                     onMarkMessageRead(message.id)

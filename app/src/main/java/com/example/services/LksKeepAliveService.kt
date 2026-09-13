@@ -128,6 +128,12 @@ class LksKeepAliveService : Service() {
         startServiceForeground()
         scheduleTokenRefresh()
         schedulePeriodicWatchdog()
+        try {
+            val phone = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE).getString("user_phone", null)
+            if (!phone.isNullOrBlank()) {
+                com.example.data.repository.ChatRepository.getInstance(applicationContext).attachChatListeners(phone)
+            }
+        } catch (_: Exception) {}
         Log.d(TAG, "LKS Keep-Alive Service started")
     }
 
@@ -326,9 +332,14 @@ class LksKeepAliveService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.i(TAG, "Task removed (app swiped from recents) — marking offline and scheduling service resurrection")
+        Log.i(TAG, "Task removed (app swiped from recents) — scheduling service resurrection")
         try {
-            com.example.data.repository.FirebaseManager.getInstance(applicationContext).updateUserPresence(false)
+            val hasTransfers = com.example.data.repository.ChatRepository.getInstance(applicationContext).hasActiveTransfers()
+            if (!hasTransfers) {
+                com.example.data.repository.FirebaseManager.getInstance(applicationContext).updateUserPresence(false)
+            } else {
+                Log.i(TAG, "Transfer active in background — keeping presence active across onTaskRemoved")
+            }
             com.example.data.repository.ChatRepository.getInstance(applicationContext).setAppForeground(false)
             com.example.data.repository.ChatRepository.getInstance(applicationContext).setActiveChatPeer(null)
         } catch (_: Exception) {}

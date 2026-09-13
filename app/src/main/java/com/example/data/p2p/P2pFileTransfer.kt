@@ -51,7 +51,7 @@ class P2pFileTransfer(private val context: Context) {
         private const val TAG = "P2pFileTransfer"
         private const val CHUNK_SIZE = 16 * 1024            // 16 KB per DataChannel send
         private const val BUFFER_LOW_THRESHOLD = 65536L     // 64 KB backpressure
-        private const val ICE_TIMEOUT_MS = 15000L           // 15 seconds for cellular networks
+        private const val ICE_TIMEOUT_MS = 30000L           // 30 seconds for mobile cellular networks
         private const val COLLECTION = "p2p_transfers"
 
         @Volatile private var sharedFactory: PeerConnectionFactory? = null
@@ -288,8 +288,10 @@ class P2pFileTransfer(private val context: Context) {
                 Log.w(TAG, "onOfferReady callback failed: ${e.message}")
             }
 
-            // Listen for answer SDP
+            // Listen for answer SDP and queue early candidates to prevent race condition
             var answerApplied = false
+            val pendingCandidates = mutableListOf<IceCandidate>()
+
             val answerListener = firestore.collection(COLLECTION).document(sessionId)
                 .addSnapshotListener { snap, err ->
                     if (err != null || snap == null || isCancelled) return@addSnapshotListener
@@ -297,7 +299,15 @@ class P2pFileTransfer(private val context: Context) {
                     if (answerApplied || answerSdp.isBlank()) return@addSnapshotListener
                     answerApplied = true
                     pc.setRemoteDescription(object : SdpObserver {
-                        override fun onSetSuccess() { Log.d(TAG, "Sender: answer applied") }
+                        override fun onSetSuccess() {
+                            Log.d(TAG, "Sender: answer applied, draining ${pendingCandidates.size} queued ICE candidates")
+                            synchronized(pendingCandidates) {
+                                for (cand in pendingCandidates) {
+                                    try { pc.addIceCandidate(cand) } catch (_: Exception) {}
+                                }
+                                pendingCandidates.clear()
+                            }
+                        }
                         override fun onSetFailure(e: String?) { Log.w(TAG, "Sender set remote fail: $e") }
                         override fun onCreateSuccess(s: SessionDescription?) {}
                         override fun onCreateFailure(e: String?) {}
@@ -313,17 +323,24 @@ class P2pFileTransfer(private val context: Context) {
                     for (ch in snap.documentChanges) {
                         if (ch.type == com.google.firebase.firestore.DocumentChange.Type.ADDED) {
                             val d = ch.document
-                            pc.addIceCandidate(IceCandidate(
+                            val cand = IceCandidate(
                                 d.getString("sdpMid") ?: "",
                                 (d.getLong("sdpMLineIndex") ?: 0).toInt(),
                                 d.getString("candidate") ?: ""
-                            ))
+                            )
+                            synchronized(pendingCandidates) {
+                                if (answerApplied && pc.remoteDescription != null) {
+                                    try { pc.addIceCandidate(cand) } catch (_: Exception) {}
+                                } else {
+                                    pendingCandidates.add(cand)
+                                }
+                            }
                         }
                     }
                 }
             listeners.add(rxIceListener)
 
-            // ICE connection timeout
+            // ICE connection timeout (extended to 30s for cellular handshakes)
             scope.launch {
                 delay(ICE_TIMEOUT_MS)
                 if (!deferred.isCompleted && dc.state() != DataChannel.State.OPEN) {
@@ -485,9 +502,12 @@ class P2pFileTransfer(private val context: Context) {
                 val factory = getOrCreateFactory(context)
                 val rtcConfig = buildRtcConfig()
 
-                // Chunk tracking -- ordered DataChannel so implicit indexing is safe
-                val chunksDir = File(context.cacheDir, "p2p_chunks_$sessionId")
-                chunksDir.mkdirs()
+                // Direct stream tracking -- ordered DataChannel guarantees sequential bytes
+                if (!outputDir.exists()) outputDir.mkdirs()
+                val tempOutputFile = File(outputDir, "tmp_${sessionId}.bin")
+                if (tempOutputFile.exists()) tempOutputFile.delete()
+
+                val fileOutputStream = java.io.BufferedOutputStream(FileOutputStream(tempOutputFile, true))
                 var totalChunks = -1
                 var receivedChunkCount = 0
                 var receivedBytes = 0L
@@ -538,17 +558,23 @@ class P2pFileTransfer(private val context: Context) {
                                         val json = JSONObject(String(data, Charsets.UTF_8))
                                         if (json.optString("type") == "FILE_HEADER") {
                                             totalChunks = json.getInt("totalChunks")
-                                            Log.d(TAG, "Receiver: expecting $totalChunks chunks for '$fileName'")
+                                            val reportedBytes = json.optLong("totalBytes", 0L)
+                                            if (reportedBytes > 0L) totalBytes = reportedBytes
+                                            Log.d(TAG, "Receiver: expecting $totalChunks chunks ($totalBytes bytes) for '$fileName'")
                                         }
                                     } catch (e: Exception) {
                                         Log.w(TAG, "Header parse error: ${e.message}")
                                     }
                                 } else {
-                                    // Binary = file chunk -- write to temp file by sequential index
+                                    // Binary = file chunk -- write directly to buffered stream
                                     try {
-                                        File(chunksDir, "part_$receivedChunkCount").writeBytes(data)
+                                        fileOutputStream.write(data)
                                     } catch (e: Exception) {
-                                        Log.e(TAG, "Chunk write error: ${e.message}"); return
+                                        Log.e(TAG, "Chunk write error: ${e.message}")
+                                        try { fileOutputStream.close() } catch (_: Exception) {}
+                                        try { tempOutputFile.delete() } catch (_: Exception) {}
+                                        onComplete(null, sessionId)
+                                        return
                                     }
                                     receivedChunkCount++
                                     receivedBytes += data.size
@@ -568,32 +594,35 @@ class P2pFileTransfer(private val context: Context) {
                                         isIncoming = true
                                     ))
 
-                                    // Assemble when all chunks received
-                                    if (totalChunks > 0 && receivedChunkCount >= totalChunks) {
+                                    // Complete when all chunks or all bytes received
+                                    val isComplete = (totalChunks > 0 && receivedChunkCount >= totalChunks) ||
+                                            (totalBytes > 0 && receivedBytes >= totalBytes)
+
+                                    if (isComplete) {
                                         scope.launch {
                                             try {
-                                                if (!outputDir.exists()) outputDir.mkdirs()
+                                                fileOutputStream.flush()
+                                                fileOutputStream.close()
+
                                                 val ext = fileName.substringAfterLast('.', "bin")
-                                                val outFile = File(outputDir, "doc_${sessionId}.$ext")
-                                                FileOutputStream(outFile).use { fos ->
-                                                    for (i in 0 until totalChunks) {
-                                                        File(chunksDir, "part_$i").takeIf { it.exists() }?.let {
-                                                            fos.write(it.readBytes())
-                                                            it.delete()
-                                                        }
-                                                    }
-                                                }
-                                                try { chunksDir.delete() } catch (_: Exception) {}
+                                                val finalOutFile = File(outputDir, "doc_${sessionId}.$ext")
+                                                if (finalOutFile.exists()) finalOutFile.delete()
+                                                val renamed = tempOutputFile.renameTo(finalOutFile)
+                                                val resultFile = if (renamed) finalOutFile else tempOutputFile
+
+                                                Log.i(TAG, "✅ P2P Direct transfer complete: ${resultFile.absolutePath} (${resultFile.length()} bytes)")
 
                                                 onProgress(FileTransferProgress(
                                                     messageId = sessionId, fileName = fileName,
                                                     totalBytes = totalBytes, transferredBytes = totalBytes,
                                                     mode = TransferMode.P2P, status = TransferStatus.DONE, isIncoming = true
                                                 ))
-                                                onComplete(outFile, sessionId)
+                                                onComplete(resultFile, sessionId)
                                                 cleanup(sessionId)
                                             } catch (e: Exception) {
-                                                Log.e(TAG, "Assembly error: ${e.message}", e)
+                                                Log.e(TAG, "Final file completion error: ${e.message}", e)
+                                                try { fileOutputStream.close() } catch (_: Exception) {}
+                                                try { tempOutputFile.delete() } catch (_: Exception) {}
                                                 onComplete(null, sessionId)
                                             }
                                         }
@@ -614,6 +643,7 @@ class P2pFileTransfer(private val context: Context) {
                         Log.d(TAG, "Receiver PC: $s")
                         if (s == PeerConnection.PeerConnectionState.FAILED ||
                             s == PeerConnection.PeerConnectionState.CLOSED) {
+                            try { fileOutputStream.close() } catch (_: Exception) {}
                             scope.launch { onComplete(null, sessionId) }
                         }
                     }
