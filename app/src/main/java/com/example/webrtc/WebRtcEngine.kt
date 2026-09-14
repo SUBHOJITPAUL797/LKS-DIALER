@@ -1642,7 +1642,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                         put("callId", callId)
                         put("type", type)
                         val myPic = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.profilePictureUrl ?: ""
-                        if (myPic.isNotBlank()) put("callerProfilePic", myPic)
+                        // NEVER send Base64 image strings in FCM payload (hard 4096-byte limit will reject push).
+                        // Only send external HTTP/HTTPS image URLs.
+                        if (myPic.isNotBlank() && (myPic.startsWith("http://") || myPic.startsWith("https://")) && myPic.length < 500) {
+                            put("callerProfilePic", myPic)
+                        }
                     }
                     val json = jsonObj.toString()
                     

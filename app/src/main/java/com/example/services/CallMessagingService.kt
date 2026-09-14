@@ -120,9 +120,13 @@ class CallMessagingService : FirebaseMessagingService() {
             }
             
             if (type == "incoming_call") {
-                // Drop stale/delayed push notifications (>45 seconds old) from reconnecting devices
-                if (remoteMessage.sentTime > 0 && (System.currentTimeMillis() - remoteMessage.sentTime > 45_000L)) {
-                    Log.w("FCM", "Dropping stale incoming call push: $callId (sent ${System.currentTimeMillis() - remoteMessage.sentTime}ms ago)")
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                if (engine != null && engine.state.value.activeCall?.callId == callId &&
+                    (engine.state.value.callStatus == com.example.data.model.CallStatus.ENDED ||
+                     engine.state.value.callStatus == com.example.data.model.CallStatus.DECLINED ||
+                     engine.state.value.callStatus == com.example.data.model.CallStatus.MISSED)
+                ) {
+                    Log.d("FCM", "Call $callId already finished locally. Skipping duplicate incoming push.")
                     return
                 }
 
@@ -316,9 +320,8 @@ class CallMessagingService : FirebaseMessagingService() {
         val vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1000)
 
         // Fresh high-importance channel WITH real system ringtone & vibration
-        // Fresh high-importance silent channel: Audio is managed exclusively by LksIncomingRingtonePlayer
-        // Crucial: Must be IMPORTANCE_HIGH with vibration so Android displays native heads-up banner when unlocked!
-        val targetChannelId = "lks_incoming_call_v11"
+        // Crucial: Must have real ringtone sound and IMPORTANCE_HIGH so Android displays native heads-up banner & rings!
+        val targetChannelId = "lks_incoming_call_v12"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Delete all legacy channels so stale settings/importance don't interfere
@@ -334,11 +337,18 @@ class CallMessagingService : FirebaseMessagingService() {
                 "lks_incoming_call_v7",
                 "lks_incoming_call_v8",
                 "lks_incoming_call_v9",
-                "lks_incoming_call_v10"
+                "lks_incoming_call_v10",
+                "lks_incoming_call_v11"
             )
             for (oldChannel in oldChannels) {
                 try { notificationManager.deleteNotificationChannel(oldChannel) } catch (_: Exception) {}
             }
+
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setLegacyStreamType(AudioManager.STREAM_RING)
+                .build()
 
             val highChannel = NotificationChannel(
                 targetChannelId,
@@ -346,7 +356,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Incoming VoIP call alerts"
-                setSound(null, null) // Silent channel: audio is managed exclusively by LksIncomingRingtonePlayer
+                setSound(ringtoneUri, audioAttributes)
                 enableVibration(true)
                 this.vibrationPattern = vibrationPattern
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
@@ -378,6 +388,8 @@ class CallMessagingService : FirebaseMessagingService() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
+            .setSound(ringtoneUri, AudioManager.STREAM_RING)
+            .setVibrate(vibrationPattern)
             .setContentIntent(fullScreenPendingIntent)
 
         // WhatsApp / Telegram standard: ALWAYS set PRIORITY_MAX and fullScreenIntent!

@@ -89,9 +89,13 @@
         <!-- Floating Call Pill Overlay Service (Display Over Other Apps) -->
         <service
             android:name=".services.FloatingCallBubbleService"
-            android:foregroundServiceType="microphone"
+            android:foregroundServiceType="specialUse|microphone"
             android:exported="false"
-            android:stopWithTask="false" />
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Floating incoming call alert and active call controls overlay" />
+        </service>
 
         <!-- 24/7 Keep-Alive Service for instant FCM call delivery -->
         <service

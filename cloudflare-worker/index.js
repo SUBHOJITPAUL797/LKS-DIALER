@@ -71,6 +71,9 @@ export default {
 
       const sendPush = async (targetToken) => {
         if (!targetToken) return null;
+        const rawPic = body.callerProfilePic || "";
+        const safeProfilePic = (rawPic.startsWith("http://") || rawPic.startsWith("https://")) && rawPic.length < 500 ? rawPic : "";
+
         const fcmPayload = {
           message: {
             token: targetToken,
@@ -80,7 +83,7 @@ export default {
               callerName: callerName || "Unknown",
               callerNumber: callerNumber || "",
               callType: callType || "AUDIO",
-              callerProfilePic: body.callerProfilePic || "",
+              callerProfilePic: safeProfilePic,
               messageText: body.messageText || body.messagePreview || "",
               mediaType: body.mediaType || "TEXT",
               messageId: body.messageId || "",
@@ -101,10 +104,13 @@ export default {
           body: JSON.stringify(fcmPayload),
         });
         const result = await fcmResponse.json();
+        if (result.error) {
+          console.error("FCM API error response:", JSON.stringify(result.error));
+        }
 
         // Auto-cleanup stale FCM tokens
         const isUnregistered = result.error?.details?.some(
-          (d) => d.errorCode === "UNREGISTERED" || d.errorCode === "INVALID_ARGUMENT"
+          (d) => d.errorCode === "UNREGISTERED"
         );
         if (isUnregistered) {
           console.log(`Stale FCM token detected — consider clearing it from Firestore for calleeNumber`);
