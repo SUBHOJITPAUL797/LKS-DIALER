@@ -59,3 +59,18 @@ That's it! As soon as you click Publish:
 2. It will compare it against their current version (`v1.0.0`).
 3. The beautiful `UpdateDialog` will appear.
 4. When they click "Download & Install", the app will download your attached APK directly from GitHub and prompt them to install it!
+
+---
+
+## Step 5: Web App Deployment (Cloudflare Pages)
+The web version (`lks-dialer-web`) is hosted on Cloudflare Pages.
+
+**Important Note:** The CORRECT Cloudflare Pages project name is **`lksdialerweb`**. (Do NOT use `lks-dialer-web` as a project name, that is the old/unused one).
+
+If you need to manually deploy the web app via terminal, run these commands:
+```bash
+cd lks-dialer-web
+npm run build
+npx wrangler pages deploy dist --project-name lksdialerweb
+```
+Or simply push your changes to the `main` branch on GitHub, and Cloudflare will automatically build and deploy it to `lksdialerweb.pages.dev`!
