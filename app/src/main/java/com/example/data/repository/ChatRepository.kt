@@ -10,6 +10,8 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.PowerManager
+import android.app.KeyguardManager
 import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -119,15 +121,39 @@ class ChatRepository private constructor(private val context: Context) {
         isAppInForeground = foreground
         if (foreground) {
             _activeChatPeerNumber.value?.let { activePeer ->
-                repositoryScope.launch {
-                    markConversationAsRead(activePeer)
+                if (isUserActivelyViewingPeer(activePeer)) {
+                    repositoryScope.launch {
+                        markConversationAsRead(activePeer)
+                    }
                 }
             }
-        } else {
-            // When app leaves foreground, clear active chat peer so background incoming messages
-            // NEVER get auto-marked as READ or send fake blue ticks!
-            _activeChatPeerNumber.value = null
         }
+    }
+
+    /**
+     * Returns true ONLY if the app is in the foreground, the device screen is physically ON,
+     * the device is NOT keyguard locked, and the user is currently looking at this conversation.
+     */
+    fun isUserActivelyViewingPeer(peerNumber: String): Boolean {
+        if (!isAppInForeground) return false
+        val currentPeer = _activeChatPeerNumber.value ?: return false
+        if (!ContactsHelper.numbersMatch(currentPeer, peerNumber)) return false
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (pm?.isInteractive == false) return false
+        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (km?.isKeyguardLocked == true) return false
+        return true
+    }
+
+    /**
+     * Checks if the device screen is physically on and unlocked.
+     */
+    fun isScreenInteractiveAndUnlocked(): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        if (pm?.isInteractive == false) return false
+        val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        if (km?.isKeyguardLocked == true) return false
+        return true
     }
 
     // Real-time typing indicators: peerPhoneNumber -> isTyping
@@ -435,9 +461,7 @@ class ChatRepository private constructor(private val context: Context) {
             val decryptedRaw = cryptoManager.decrypt(dto.ciphertext, dto.iv, dto.senderPublicKey)
             val senderNorm = ContactsHelper.normalizePhoneNumber(dto.senderNumber)
             val senderLast10 = senderNorm.filter { it.isDigit() }.takeLast(10)
-            val isCurrentPeer = isAppInForeground && _activeChatPeerNumber.value?.let {
-                ContactsHelper.numbersMatch(it, senderNorm)
-            } == true
+            val isCurrentPeer = isUserActivelyViewingPeer(senderNorm)
 
             // When peer sends a message to us, all our prior outgoing messages sent up to this message are marked as READ
             val msgTimestamp = maxOf(dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(), System.currentTimeMillis() + 60_000L)
@@ -2426,8 +2450,7 @@ class ChatRepository private constructor(private val context: Context) {
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 
-        // Step 1: Immediately show notification if user is not in this conversation right now (skip for silent edits, deletes, chunks)
-        val isWatchingConversation = isAppInForeground && _activeChatPeerNumber.value?.let { ContactsHelper.numbersMatch(it, senderNorm) } == true
+        val isWatchingConversation = isUserActivelyViewingPeer(senderNorm)
         if (!isWatchingConversation && senderNorm.isNotBlank() &&
             mediaType != ChatMediaType.EDIT.name &&
             mediaType != ChatMediaType.DELETE.name &&

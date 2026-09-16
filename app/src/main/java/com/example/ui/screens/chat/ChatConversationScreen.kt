@@ -1,12 +1,18 @@
 package com.example.ui.screens.chat
 
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.util.LinkPreviewData
+import com.example.util.LinkPreviewHelper
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
@@ -49,6 +55,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -181,6 +188,11 @@ fun ChatConversationScreen(
     // Mark as active chat on open, clear on dispose
     DisposableEffect(normPeer) {
         chatRepository.setActiveChatPeer(normPeer)
+        // Dismiss any existing notification for this chat
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.cancel(normPeer.hashCode())
+        } catch (_: Exception) {}
         onDispose {
             chatRepository.setTyping(normPeer, false)   // always clear typing on screen exit
             chatRepository.setActiveChatPeer(null)
@@ -220,12 +232,19 @@ fun ChatConversationScreen(
         }
     }
 
-    // Auto-mark conversation as read on screen open and whenever incoming messages exist
-    LaunchedEffect(normPeer, messages) {
-        if (messages.isNotEmpty()) {
-            val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
-            if (hasUnread) {
-                chatRepository.markConversationAsRead(normPeer)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
+
+    // Auto-mark conversation as read on screen open and whenever incoming messages exist,
+    // BUT ONLY WHEN the activity is RESUMED and screen is physically ON and UNLOCKED!
+    LaunchedEffect(normPeer, messages, lifecycleState) {
+        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
+            val isActivelyWatching = chatRepository.isUserActivelyViewingPeer(normPeer)
+            if (isActivelyWatching && messages.isNotEmpty()) {
+                val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
+                if (hasUnread) {
+                    chatRepository.markConversationAsRead(normPeer)
+                }
             }
         }
     }
@@ -574,6 +593,81 @@ fun ChatConversationScreen(
                                         "Swipe left on your own messages to reply",
                                         color = Color.White.copy(alpha = 0.75f),
                                         fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Scroll to Bottom Floating Button with Unread Counter ──────
+                val isScrolledUp by remember {
+                    derivedStateOf { listState.firstVisibleItemIndex > 1 }
+                }
+                val unreadBelowCount by remember {
+                    derivedStateOf {
+                        if (listState.firstVisibleItemIndex <= 0) 0
+                        else {
+                            val belowItems = messages.take(listState.firstVisibleItemIndex)
+                            belowItems.count { !it.isOutgoing && it.status != MessageStatus.READ.name }
+                        }
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isScrolledUp,
+                    enter = fadeIn() + scaleIn(),
+                    exit = fadeOut() + scaleOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 12.dp)
+                ) {
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Surface(
+                            onClick = {
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(0)
+                                }
+                            },
+                            shape = CircleShape,
+                            color = if (isSystemInDarkTheme()) Color(0xFF232D36) else Color.White,
+                            shadowElevation = 6.dp,
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isSystemInDarkTheme()) Color(0xFF3B4A54) else Color(0xFFCBD5E1)
+                            ),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Filled.KeyboardDoubleArrowDown,
+                                    contentDescription = "Scroll to bottom",
+                                    tint = if (isSystemInDarkTheme()) Color(0xFF8696A0) else Color(0xFF54656F),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        // WhatsApp-style green unread count badge
+                        if (unreadBelowCount > 0) {
+                            Surface(
+                                color = Color(0xFF25D366),
+                                shape = CircleShape,
+                                shadowElevation = 3.dp,
+                                modifier = Modifier
+                                    .offset(x = 6.dp, y = (-6).dp)
+                                    .sizeIn(minWidth = 20.dp, minHeight = 20.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (unreadBelowCount > 99) "99+" else unreadBelowCount.toString(),
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        textAlign = TextAlign.Center
                                     )
                                 }
                             }
@@ -1591,8 +1685,28 @@ private fun MessageBubble(
     transferProgress: com.example.data.p2p.FileTransferProgress? = null,
     onCancelTransfer: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
+
+    val firstUrl = remember(message.text, message.mediaType) {
+        if (message.mediaType == ChatMediaType.TEXT.name) LinkPreviewHelper.extractFirstUrl(message.text) else null
+    }
+    val linkPreview by produceState<LinkPreviewData?>(
+        initialValue = firstUrl?.let { LinkPreviewHelper.getCachedPreview(it) },
+        key1 = firstUrl
+    ) {
+        if (firstUrl != null) {
+            val cached = LinkPreviewHelper.getCachedPreview(firstUrl)
+            if (cached != null) {
+                value = cached
+            } else {
+                value = LinkPreviewHelper.fetchPreview(firstUrl)
+            }
+        } else {
+            value = null
+        }
+    }
 
     val bubbleColor = when {
         isOutgoing && isDark  -> Color(0xFF005D4B)
@@ -1943,13 +2057,35 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Text / Caption ───────────────────────────────────────────
+                // ── Rich Link Preview Card (WhatsApp style) ───────────────────
+                if (linkPreview != null && !isDeleted) {
+                    LinkPreviewCard(
+                        preview = linkPreview!!,
+                        onOpenUrl = { url ->
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+
+                // ── Text / Caption with Clickable Links ───────────────────────
                 if (displayText.isNotBlank() && message.mediaType != ChatMediaType.DOCUMENT.name) {
-                    Text(
+                    ClickableMessageText(
                         text = displayText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        isOutgoing = isOutgoing,
+                        onUrlClick = { url ->
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
                     )
                 }
                 }
@@ -1989,6 +2125,174 @@ private fun MessageBubble(
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Clickable Message Text with Highlighted Green URLs
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun ClickableMessageText(
+    text: String,
+    isOutgoing: Boolean,
+    onUrlClick: (String) -> Unit
+) {
+    val urls = remember(text) { LinkPreviewHelper.URL_REGEX.findAll(text).toList() }
+
+    if (urls.isEmpty()) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+        )
+    } else {
+        val linkColor = if (isOutgoing) Color(0xFF86EFAC) else Color(0xFF25D366) // WhatsApp vibrant green
+        val annotatedString = remember(text, isOutgoing) {
+            androidx.compose.ui.text.buildAnnotatedString {
+                var lastIdx = 0
+                for (match in urls) {
+                    val start = match.range.first
+                    val end = match.range.last + 1
+                    if (start > lastIdx) {
+                        append(text.substring(lastIdx, start))
+                    }
+                    val url = match.value
+                    pushStringAnnotation(tag = "URL", annotation = url)
+                    withStyle(
+                        style = androidx.compose.ui.text.SpanStyle(
+                            color = linkColor,
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                            fontWeight = FontWeight.Medium
+                        )
+                    ) {
+                        append(url)
+                    }
+                    pop()
+                    lastIdx = end
+                }
+                if (lastIdx < text.length) {
+                    append(text.substring(lastIdx))
+                }
+            }
+        }
+
+        androidx.compose.foundation.text.ClickableText(
+            text = annotatedString,
+            style = MaterialTheme.typography.bodyMedium.copy(
+                color = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            onClick = { offset ->
+                annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                    .firstOrNull()?.let { annotation ->
+                        onUrlClick(annotation.item)
+                    }
+            }
+        )
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Rich Link Preview Card (WhatsApp style with image, title, description, domain)
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun LinkPreviewCard(
+    preview: LinkPreviewData,
+    onOpenUrl: (String) -> Unit
+) {
+    val isDark = isSystemInDarkTheme()
+    val cardBg = if (isDark) Color(0xFF2A3942) else Color(0xFFE2E8F0).copy(alpha = 0.7f)
+
+    Surface(
+        onClick = { onOpenUrl(preview.url) },
+        shape = RoundedCornerShape(10.dp),
+        color = cardBg,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 3.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Thumbnail Image on Left
+            if (!preview.imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = preview.imageUrl,
+                    contentDescription = preview.title ?: "Preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(width = 82.dp, height = 76.dp)
+                        .clip(RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp))
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(width = 44.dp, height = 64.dp)
+                        .background(if (isDark) Color(0xFF3B4A54) else Color(0xFFCBD5E1)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Link,
+                        contentDescription = null,
+                        tint = Color.Gray,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Text Info on Right
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = preview.title?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    ),
+                    color = if (isDark) Color.White else Color.Black,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                if (!preview.description.isNullOrBlank() && preview.description != preview.title) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = preview.description,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.65f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Link,
+                        contentDescription = null,
+                        tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = preview.domain.ifBlank { "link" },
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Avatar composable

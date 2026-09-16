@@ -184,7 +184,6 @@ class MainActivity : ComponentActivity() {
         com.example.data.repository.ChatRepository.getInstance(this).fetchPendingMessagesAndReceipts()
     }
 
-
     override fun onPause() {
         super.onPause()
         isForeground = false
@@ -269,6 +268,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        isForeground = false
+        com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(false)
         if (!isChangingConfigurations) {
             triggerFloatingCallBubbleIfActive()
             com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
