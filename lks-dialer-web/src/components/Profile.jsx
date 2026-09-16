@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Save, Ban } from 'lucide-react';
+import { Camera, Save, Ban, Smartphone, Download, ExternalLink } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
+import { DIRECT_APK_URL, LATEST_APP_VERSION } from './AppDownloadModal';
 
-export default function Profile() {
+export default function Profile({ onOpenDownloadModal }) {
   const [name, setName] = useState(webRtcEngine.currentUser?.displayName || "");
   const [avatar, setAvatar] = useState(webRtcEngine.currentUser?.profilePictureUrl || "");
   const [customRingtone, setCustomRingtone] = useState(localStorage.getItem('customRingtone') || "");
@@ -216,6 +217,62 @@ export default function Profile() {
               </div>
             ))
           )}
+        </div>
+      </div>
+
+      {/* 📱 Android App Download Section */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <label style={{ fontWeight: '800', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Smartphone size={16} color="#00E676" /> ANDROID APP ({LATEST_APP_VERSION})
+        </label>
+        <div className="neo-box" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', backgroundColor: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontWeight: '900', fontSize: '15px' }}>LKS DIALER FOR ANDROID</div>
+              <div style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>24/7 background call ringing, lock screen pickup & floating pill</div>
+            </div>
+            <span style={{ fontSize: '10px', fontWeight: '900', backgroundColor: '#00E676', border: '1.5px solid #000', padding: '2px 6px', borderRadius: '6px' }}>
+              LATEST
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <a
+              href={DIRECT_APK_URL}
+              download="LKS-DIALER-v2.7.6.apk"
+              className="neo-btn"
+              style={{
+                flex: 1,
+                minWidth: '160px',
+                backgroundColor: '#00E676',
+                color: '#000',
+                textDecoration: 'none',
+                padding: '10px 14px',
+                fontSize: '13px',
+                fontWeight: '900',
+                borderRadius: '8px'
+              }}
+            >
+              <Download size={16} /> DOWNLOAD APK
+            </a>
+            {onOpenDownloadModal && (
+              <button
+                type="button"
+                className="neo-btn"
+                onClick={onOpenDownloadModal}
+                style={{
+                  backgroundColor: 'var(--accent)',
+                  color: '#000',
+                  padding: '10px 14px',
+                  fontSize: '13px',
+                  fontWeight: '800',
+                  borderRadius: '8px'
+                }}
+              >
+                INSTALL GUIDE
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

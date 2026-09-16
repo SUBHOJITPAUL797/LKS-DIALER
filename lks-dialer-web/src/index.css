@@ -162,27 +162,34 @@ body {
 
 /* Bottom Navigation */
 .bottom-nav {
+  order: 10;
   display: flex;
   justify-content: space-around;
   align-items: center;
   background-color: var(--card-bg);
   border-top: var(--border-width) solid var(--border-color);
-  padding: 12px 0 24px 0;
+  padding: 8px 4px calc(12px + env(safe-area-inset-bottom, 0px)) 4px;
   z-index: 50;
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .nav-item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 3px;
   color: #666;
   cursor: pointer;
-  padding: 8px 16px;
+  padding: 6px 8px;
   border-radius: 12px;
   transition: all 0.2s ease;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 11px;
+  flex: 1;
+  max-width: 76px;
+  user-select: none;
 }
 
 .nav-item.active {
@@ -190,6 +197,16 @@ body {
   background-color: var(--accent);
   border: 2px solid var(--border-color);
   box-shadow: 2px 2px 0 var(--border-color);
+}
+
+.mobile-tab-viewport {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
 }
 
 .scrollable-content {

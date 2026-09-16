@@ -3,7 +3,7 @@ import { Phone, User, ChevronDown } from 'lucide-react';
 import { defaultCountry, formatPhoneNumber } from '../lib/CountryCodes';
 import CountryCodePickerModal from './CountryCodePickerModal';
 
-export default function Onboarding({ onRegister }) {
+export default function Onboarding({ onRegister, onOpenDownloadModal }) {
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
   const [selectedCountry, setSelectedCountry] = useState(defaultCountry);
@@ -101,6 +101,29 @@ export default function Onboarding({ onRegister }) {
             {loading ? "CONNECTING..." : "ENTER"}
           </button>
         </form>
+
+        <div style={{ marginTop: '24px', textAlign: 'center' }}>
+          <button
+            type="button"
+            onClick={onOpenDownloadModal}
+            className="neo-box"
+            style={{
+              width: '100%',
+              padding: '12px 16px',
+              backgroundColor: '#FFF9C4',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              fontSize: '13px',
+              fontWeight: '800'
+            }}
+          >
+            <span>📱 Using Android?</span>
+            <span style={{ color: 'var(--primary)', textDecoration: 'underline' }}>Download Latest APK (v2.7.6)</span>
+          </button>
+        </div>
       </div>
 
     </div>

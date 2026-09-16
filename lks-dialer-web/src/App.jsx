@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, Grid, User as UserIcon, MessageSquare } from 'lucide-react';
+import { Clock, Users, Grid, User as UserIcon, MessageSquare, Download, Smartphone, X } from 'lucide-react';
 import Onboarding from './components/Onboarding';
 import Dialer from './components/Dialer';
 import CallScreen from './components/CallScreen';
@@ -10,6 +10,7 @@ import Profile from './components/Profile';
 import ChatList from './components/ChatList';
 import ChatConversation from './components/ChatConversation';
 import DesktopChatPlaceholder from './components/DesktopChatPlaceholder';
+import AppDownloadModal, { DIRECT_APK_URL, GITHUB_RELEASES_URL, LATEST_APP_VERSION } from './components/AppDownloadModal';
 import { webRtcEngine } from './lib/WebRtcEngine';
 import { chatRepositoryWeb } from './lib/ChatRepositoryWeb';
 import { formatAvatarUrl } from './lib/ImageUtils';
@@ -23,6 +24,8 @@ function App() {
   const [activeConversation, setActiveConversation] = useState(null); // { phoneNumber, contactName, profilePicUrl }
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [showMobileBanner, setShowMobileBanner] = useState(true);
 
   // Responsive desktop detection
   const [isDesktop, setIsDesktop] = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 768 : false));
@@ -265,7 +268,14 @@ function App() {
   if (!currentUser) {
     return (
       <div className="app-container">
-        <Onboarding onRegister={handleRegister} />
+        <Onboarding 
+          onRegister={handleRegister} 
+          onOpenDownloadModal={() => setShowDownloadModal(true)} 
+        />
+        <AppDownloadModal 
+          isOpen={showDownloadModal} 
+          onClose={() => setShowDownloadModal(false)} 
+        />
       </div>
     );
   }
@@ -378,18 +388,153 @@ function App() {
         <UserIcon size={22} />
         <span>Profile</span>
       </div>
+
+      {isDesktop && (
+        <div 
+          className="neo-box" 
+          style={{
+            marginTop: 'auto',
+            padding: '12px',
+            backgroundColor: '#FFF9C4',
+            border: '2.5px solid #000',
+            borderRadius: '12px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '15px' }}>📱</span>
+              <span style={{ fontSize: '12px', fontWeight: '900' }}>Android App</span>
+            </div>
+            <span style={{ fontSize: '10px', fontWeight: '900', backgroundColor: '#00E676', border: '1px solid #000', padding: '1px 5px', borderRadius: '4px' }}>
+              {LATEST_APP_VERSION}
+            </span>
+          </div>
+          <div style={{ fontSize: '11px', fontWeight: '700', color: '#555', lineHeight: '1.3' }}>
+            24/7 background call ringing & lock screen answer.
+          </div>
+          <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
+            <a
+              href={DIRECT_APK_URL}
+              download="LKS-DIALER-v2.7.6.apk"
+              className="neo-btn"
+              style={{
+                flex: 1,
+                backgroundColor: '#00E676',
+                color: '#000',
+                textDecoration: 'none',
+                padding: '6px 8px',
+                fontSize: '11px',
+                fontWeight: '900',
+                borderRadius: '6px',
+                border: '2px solid #000',
+                boxShadow: '2px 2px 0 #000',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px'
+              }}
+            >
+              <Download size={12} strokeWidth={2.5} /> Download
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowDownloadModal(true)}
+              className="neo-btn"
+              style={{
+                backgroundColor: '#fff',
+                color: '#000',
+                padding: '6px 8px',
+                fontSize: '11px',
+                fontWeight: '800',
+                borderRadius: '6px',
+                border: '2px solid #000',
+                boxShadow: '2px 2px 0 #000',
+                cursor: 'pointer'
+              }}
+              title="Install Instructions & Details"
+            >
+              Info
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 
   return (
     <div className="app-container">
-      {/* Navigation: Sidebar on desktop, bottom bar on mobile */}
-      <div className="bottom-nav">
-        {renderNavItems()}
-      </div>
-
       {/* Main Content Workspace */}
       <div className="desktop-main-workspace" style={{ flex: 1, minWidth: 0, height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {/* Mobile Top Download Banner */}
+        {!isDesktop && showMobileBanner && (
+          <div 
+            style={{
+              backgroundColor: '#00E676',
+              borderBottom: '2.5px solid #000',
+              padding: '6px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '8px',
+              zIndex: 40,
+              flexShrink: 0
+            }}
+          >
+            <div 
+              onClick={() => setShowDownloadModal(true)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', flex: 1, minWidth: 0 }}
+            >
+              <span style={{ fontSize: '15px' }}>📱</span>
+              <div style={{ fontSize: '12px', fontWeight: '900', color: '#000', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                Get Android App <span style={{ backgroundColor: '#000', color: '#fff', fontSize: '9px', padding: '1px 5px', borderRadius: '4px', marginLeft: '2px' }}>{LATEST_APP_VERSION}</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <a
+                href={DIRECT_APK_URL}
+                download="LKS-DIALER-v2.7.6.apk"
+                className="neo-box"
+                style={{
+                  backgroundColor: '#fff',
+                  color: '#000',
+                  textDecoration: 'none',
+                  fontSize: '11px',
+                  fontWeight: '900',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  border: '1.5px solid #000',
+                  boxShadow: '1.5px 1.5px 0 #000',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                <Download size={12} strokeWidth={3} /> APK
+              </a>
+              <button
+                onClick={() => setShowMobileBanner(false)}
+                aria-label="Dismiss banner"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '2px 4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: '900'
+                }}
+              >
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'chats' ? (
           isDesktop ? (
             /* Desktop Split View: Left ChatList, Right ChatConversation or Placeholder */
@@ -422,8 +567,8 @@ function App() {
             <ChatList onOpenChat={handleOpenChat} />
           )
         ) : (
-          <div className={isDesktop ? "desktop-tab-content" : "scrollable-content"} style={{ width: '100%', height: '100%' }}>
-            <div className={isDesktop ? "desktop-card-container" : ""} style={{ width: '100%' }}>
+          <div className={isDesktop ? "desktop-tab-content" : "mobile-tab-viewport"} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minHeight: 0 }}>
+            <div className={isDesktop ? "desktop-card-container" : ""} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
               {activeTab === 'recents' && (
                 <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
               )}
@@ -434,17 +579,27 @@ function App() {
                 <Dialer onStartCall={handleStartCall} />
               )}
               {activeTab === 'profile' && (
-                <Profile />
+                <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} />
               )}
             </div>
           </div>
         )}
       </div>
 
+      {/* Navigation: Sidebar on desktop, bottom bar on mobile */}
+      <div className="bottom-nav">
+        {renderNavItems()}
+      </div>
+
       <IncomingCallModal 
         callData={incomingCall} 
         onAccept={handleAcceptCall} 
         onDecline={handleDeclineCall} 
+      />
+
+      <AppDownloadModal 
+        isOpen={showDownloadModal} 
+        onClose={() => setShowDownloadModal(false)} 
       />
     </div>
   );
