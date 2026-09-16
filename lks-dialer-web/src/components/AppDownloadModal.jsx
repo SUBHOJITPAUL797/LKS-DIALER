@@ -176,6 +176,8 @@ export default function AppDownloadModal({ isOpen, onClose }) {
           <a
             href={DIRECT_APK_URL}
             download="LKS-DIALER-v2.7.6.apk"
+            target="_blank"
+            rel="noopener noreferrer"
             className="neo-btn"
             style={{
               backgroundColor: '#00E676',

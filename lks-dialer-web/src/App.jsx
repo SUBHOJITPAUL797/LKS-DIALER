@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Users, Grid, User as UserIcon, MessageSquare, Download, Smartphone, X } from 'lucide-react';
+import { Clock, Users, Grid, User as UserIcon, MessageSquare, Download, X } from 'lucide-react';
 import Onboarding from './components/Onboarding';
 import Dialer from './components/Dialer';
 import CallScreen from './components/CallScreen';
@@ -10,7 +10,7 @@ import Profile from './components/Profile';
 import ChatList from './components/ChatList';
 import ChatConversation from './components/ChatConversation';
 import DesktopChatPlaceholder from './components/DesktopChatPlaceholder';
-import AppDownloadModal, { DIRECT_APK_URL, GITHUB_RELEASES_URL, LATEST_APP_VERSION } from './components/AppDownloadModal';
+import AppDownloadModal, { DIRECT_APK_URL, LATEST_APP_VERSION } from './components/AppDownloadModal';
 import { webRtcEngine } from './lib/WebRtcEngine';
 import { chatRepositoryWeb } from './lib/ChatRepositoryWeb';
 import { formatAvatarUrl } from './lib/ImageUtils';
@@ -300,6 +300,11 @@ function App() {
           onStartCall={handleStartCall}
           isDesktop={false}
         />
+        <IncomingCallModal 
+          callData={incomingCall} 
+          onAccept={handleAcceptCall} 
+          onDecline={handleDeclineCall} 
+        />
       </div>
     );
   }
@@ -419,6 +424,8 @@ function App() {
             <a
               href={DIRECT_APK_URL}
               download="LKS-DIALER-v2.7.6.apk"
+              target="_blank"
+              rel="noopener noreferrer"
               className="neo-btn"
               style={{
                 flex: 1,
@@ -497,6 +504,8 @@ function App() {
               <a
                 href={DIRECT_APK_URL}
                 download="LKS-DIALER-v2.7.6.apk"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="neo-box"
                 style={{
                   backgroundColor: '#fff',

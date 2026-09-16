@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Save, Ban, Smartphone, Download, ExternalLink } from 'lucide-react';
+import { Camera, Save, Ban, Smartphone, Download } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { DIRECT_APK_URL, LATEST_APP_VERSION } from './AppDownloadModal';
@@ -240,6 +240,8 @@ export default function Profile({ onOpenDownloadModal }) {
             <a
               href={DIRECT_APK_URL}
               download="LKS-DIALER-v2.7.6.apk"
+              target="_blank"
+              rel="noopener noreferrer"
               className="neo-btn"
               style={{
                 flex: 1,
