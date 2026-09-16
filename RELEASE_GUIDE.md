@@ -67,10 +67,10 @@ The web version (`lks-dialer-web`) is hosted on Cloudflare Pages.
 
 **Important Note:** The CORRECT Cloudflare Pages project name is **`lksdialerweb`**. (Do NOT use `lks-dialer-web` as a project name, that is the old/unused one).
 
-If you need to manually deploy the web app via terminal, run these commands:
+Deployment is done directly from the terminal (direct upload to Cloudflare Pages):
 ```bash
 cd lks-dialer-web
 npm run build
 npx wrangler pages deploy dist --project-name lksdialerweb
 ```
-Or simply push your changes to the `main` branch on GitHub, and Cloudflare will automatically build and deploy it to `lksdialerweb.pages.dev`!
+*(Or simply run `deploy_web.bat` inside the `lks-dialer-web` folder).*
