@@ -536,6 +536,20 @@ class MainActivity : ComponentActivity() {
                 val chatRepo = remember { ChatRepository.getInstance(context) }
                 val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
 
+                // Shared incoming content from external apps (Share Sheet)
+                var pendingSharedPayload by remember { mutableStateOf<com.example.util.SharedIncomingPayload?>(null) }
+                var pendingSharedPhotos by remember { mutableStateOf<List<java.io.File>?>(null) }
+                var pendingSharedText by remember { mutableStateOf<String?>(null) }
+                var pendingSharedDocuments by remember { mutableStateOf<List<Pair<java.io.File, String>>?>(null) }
+
+                // Synchronize Direct Share shortcuts for top recent conversations
+                val conversationsForShortcuts by chatRepo.getConversationsFlow().collectAsState(initial = emptyList())
+                LaunchedEffect(conversationsForShortcuts) {
+                    if (conversationsForShortcuts.isNotEmpty()) {
+                        com.example.util.ShareShortcutsManager.publishRecentChatShortcuts(context, conversationsForShortcuts)
+                    }
+                }
+
                 // 1-Tap Universal OEM Autostart Dialog for Xiaomi, Samsung, OnePlus, Oppo, Vivo, etc.
                 var showOemAutostartDialog by remember {
                     mutableStateOf(currentUser != null && com.example.util.UniversalOemAutostartHelper.isAggressiveOem() && com.example.util.UniversalOemAutostartHelper.isPromptNeeded(context))
@@ -674,6 +688,40 @@ class MainActivity : ComponentActivity() {
                                     navState = AppNavState.MAIN
                                     kotlinx.coroutines.delay(200)
                                     webRtcEngine.initiateCall(targetNumber, targetNumber, myNum, myName, CallType.AUDIO)
+                                }
+                            }
+                        }
+
+                        // Android System Share Sheet: ACTION_SEND & ACTION_SEND_MULTIPLE
+                        val action = incoming.action
+                        if (action == android.content.Intent.ACTION_SEND || action == android.content.Intent.ACTION_SEND_MULTIPLE) {
+                            val payload = com.example.util.SharePayloadHelper.extractSharedPayload(context, incoming)
+                            if (payload != null) {
+                                val directPeer = payload.directTargetPeerNumber
+                                if (!directPeer.isNullOrBlank()) {
+                                    val peerUser = firebaseManager.lookupUserByNumber(directPeer)
+                                    chatPeerNumber = directPeer
+                                    chatPeerName = peerUser?.displayName?.takeIf { it.isNotBlank() } ?: directPeer
+                                    chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
+
+                                    when (payload.type) {
+                                        com.example.util.SharedPayloadType.IMAGES -> {
+                                            pendingSharedPhotos = payload.files
+                                            pendingSharedText = payload.text
+                                        }
+                                        com.example.util.SharedPayloadType.TEXT -> {
+                                            pendingSharedText = payload.text
+                                        }
+                                        com.example.util.SharedPayloadType.DOCUMENTS -> {
+                                            pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
+                                                Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
+                                            }
+                                        }
+                                    }
+                                    navState = AppNavState.CHAT_CONVERSATION
+                                } else {
+                                    // Show WhatsApp-style "Send to..." contact picker modal
+                                    pendingSharedPayload = payload
                                 }
                             }
                         }
@@ -905,6 +953,14 @@ class MainActivity : ComponentActivity() {
                                         peerDisplayName = chatPeerName,
                                         peerInitialAvatar = chatPeerAvatar,
                                         firebaseManager = firebaseManager,
+                                        initialSharedPhotos = pendingSharedPhotos,
+                                        initialSharedText = pendingSharedText,
+                                        initialSharedDocuments = pendingSharedDocuments,
+                                        onSharedContentConsumed = {
+                                            pendingSharedPhotos = null
+                                            pendingSharedText = null
+                                            pendingSharedDocuments = null
+                                        },
                                         onBackClick = {
                                             navState = AppNavState.MAIN
                                             selectedTab = MainTab.CHATS
@@ -942,6 +998,43 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+                    }
+
+                    // WhatsApp-style "Send to..." Share Sheet contact picker
+                    if (pendingSharedPayload != null) {
+                        com.example.ui.screens.chat.ShareTargetPickerModal(
+                            payload = pendingSharedPayload!!,
+                            firebaseManager = firebaseManager,
+                            chatRepository = chatRepo,
+                            onSelectTarget = { phone, name, avatar ->
+                                val payload = pendingSharedPayload
+                                pendingSharedPayload = null
+                                chatPeerNumber = phone
+                                chatPeerName = name
+                                chatPeerAvatar = avatar
+
+                                if (payload != null) {
+                                    when (payload.type) {
+                                        com.example.util.SharedPayloadType.IMAGES -> {
+                                            pendingSharedPhotos = payload.files
+                                            pendingSharedText = payload.text
+                                        }
+                                        com.example.util.SharedPayloadType.TEXT -> {
+                                            pendingSharedText = payload.text
+                                        }
+                                        com.example.util.SharedPayloadType.DOCUMENTS -> {
+                                            pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
+                                                Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
+                                            }
+                                        }
+                                    }
+                                }
+                                navState = AppNavState.CHAT_CONVERSATION
+                            },
+                            onDismiss = {
+                                pendingSharedPayload = null
+                            }
+                        )
                     }
 
                     // Full Screen Calling Overlays (shown when not minimized)

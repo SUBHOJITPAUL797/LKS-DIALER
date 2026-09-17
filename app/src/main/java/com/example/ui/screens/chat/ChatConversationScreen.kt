@@ -106,6 +106,10 @@ fun ChatConversationScreen(
     peerDisplayName: String,
     peerInitialAvatar: String = "",   // pre-resolved avatar passed from ChatListScreen
     firebaseManager: FirebaseManager,
+    initialSharedPhotos: List<File>? = null,
+    initialSharedText: String? = null,
+    initialSharedDocuments: List<Pair<File, String>>? = null,
+    onSharedContentConsumed: () -> Unit = {},
     onBackClick: () -> Unit,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
 ) {
@@ -150,7 +154,7 @@ fun ChatConversationScreen(
         FirebaseManager.isUserOnline(peerUser)
     }
 
-    var inputText by remember { mutableStateOf("") }
+    var inputText by remember { mutableStateOf(initialSharedText ?: "") }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -179,11 +183,47 @@ fun ChatConversationScreen(
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
-    var photosToPreview by remember { mutableStateOf<List<File>?>(null) }
+    var photosToPreview by remember { mutableStateOf<List<File>?>(initialSharedPhotos) }
     var selectedMessageForOptions by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
 
     val listState = rememberLazyListState()
+
+    // Handle shared text/link consumption
+    LaunchedEffect(initialSharedText) {
+        if (!initialSharedText.isNullOrBlank()) {
+            inputText = initialSharedText
+            onSharedContentConsumed()
+        }
+    }
+
+    // Handle shared incoming photos
+    LaunchedEffect(initialSharedPhotos) {
+        if (!initialSharedPhotos.isNullOrEmpty()) {
+            photosToPreview = initialSharedPhotos
+        }
+    }
+
+    // Handle shared documents/videos/files: auto-send
+    LaunchedEffect(initialSharedDocuments) {
+        if (!initialSharedDocuments.isNullOrEmpty()) {
+            coroutineScope.launch {
+                initialSharedDocuments.forEach { (file, docName) ->
+                    try {
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = docName,
+                            mediaType = ChatMediaType.DOCUMENT,
+                            mediaFile = file
+                        )
+                    } catch (_: Exception) {}
+                }
+                onSharedContentConsumed()
+                listState.animateScrollToItem(0)
+            }
+        }
+    }
 
     // Mark as active chat on open, clear on dispose
     DisposableEffect(normPeer) {
@@ -1174,6 +1214,7 @@ fun ChatConversationScreen(
             initialPhotos = photosToPreview!!,
             onSendPhotos = { results ->
                 photosToPreview = null
+                onSharedContentConsumed()
                 coroutineScope.launch {
                     results.forEach { (file, caption) ->
                         chatRepository.sendMessage(
@@ -1187,7 +1228,10 @@ fun ChatConversationScreen(
                     listState.animateScrollToItem(0)
                 }
             },
-            onClose = { photosToPreview = null }
+            onClose = {
+                photosToPreview = null
+                onSharedContentConsumed()
+            }
         )
     }
 
