@@ -269,7 +269,11 @@ class ChatRepository private constructor(private val context: Context) {
     fun setActiveChatPeer(phoneNumber: String?) {
         val normalized = phoneNumber?.let { ContactsHelper.normalizePhoneNumber(it) }
         _activeChatPeerNumber.value = normalized
-        if (normalized != null) {
+        // Only mark as read (and send READ receipt) if the user is ACTIVELY viewing
+        // this conversation — app must be in foreground, screen on, device unlocked.
+        // This prevents false READ receipts when the composable is recreated in the background
+        // (e.g. notification tap reconstructs the screen before the user actually sees it).
+        if (normalized != null && isUserInConversation(normalized)) {
             repositoryScope.launch {
                 markConversationAsRead(normalized)
             }
