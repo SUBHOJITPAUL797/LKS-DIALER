@@ -121,7 +121,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
             }}
           >
             <span>📱 Using Android?</span>
-            <span style={{ color: 'var(--primary)', textDecoration: 'underline' }}>Download Latest APK (v2.7.6)</span>
+            <span style={{ color: 'var(--primary)', textDecoration: 'underline' }}>Download Latest APK (v2.7.7)</span>
           </button>
         </div>
       </div>
