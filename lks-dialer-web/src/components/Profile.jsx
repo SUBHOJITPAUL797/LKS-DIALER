@@ -239,7 +239,7 @@ export default function Profile({ onOpenDownloadModal }) {
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <a
               href={DIRECT_APK_URL}
-              download="LKS-DIALER-v2.7.7.apk"
+              download="LKS-DIALER-v2.7.8.apk"
               target="_blank"
               rel="noopener noreferrer"
               className="neo-btn"

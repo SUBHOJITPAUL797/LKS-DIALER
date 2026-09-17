@@ -5,8 +5,8 @@ import {
 } from 'lucide-react';
 import appLogo from '../assets/app_logo.png';
 
-export const LATEST_APP_VERSION = 'v2.7.7';
-export const DIRECT_APK_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/download/v2.7.7/app-release.apk';
+export const LATEST_APP_VERSION = 'v2.7.8';
+export const DIRECT_APK_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/download/v2.7.8/app-release.apk';
 export const GITHUB_RELEASES_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/latest';
 
 export default function AppDownloadModal({ isOpen, onClose }) {
@@ -175,7 +175,7 @@ export default function AppDownloadModal({ isOpen, onClose }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
           <a
             href={DIRECT_APK_URL}
-            download="LKS-DIALER-v2.7.7.apk"
+            download="LKS-DIALER-v2.7.8.apk"
             target="_blank"
             rel="noopener noreferrer"
             className="neo-btn"

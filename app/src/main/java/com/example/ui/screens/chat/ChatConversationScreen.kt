@@ -22,6 +22,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
@@ -56,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -1742,6 +1744,7 @@ private fun MessageBubble(
     onCancelTransfer: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
 
@@ -1821,7 +1824,10 @@ private fun MessageBubble(
                             // normal tap on text message does nothing
                         }
                     },
-                    onLongClick = { onMessageLongClick(message) }
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onMessageLongClick(message)
+                    }
                 )
         ) {
             Column(modifier = Modifier.padding(bubblePadding)) {
@@ -1919,12 +1925,18 @@ private fun MessageBubble(
                             .aspectRatio(imageRatio ?: 1f)
                             .clip(RoundedCornerShape(12.dp))
                             .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier)
-                            .clickable {
-                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                    onMarkMessageRead(message.id)
+                            .combinedClickable(
+                                onClick = {
+                                    if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                        onMarkMessageRead(message.id)
+                                    }
+                                    onImageClick(message.mediaPath)
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onMessageLongClick(message)
                                 }
-                                onImageClick(message.mediaPath)
-                            },
+                            ),
                         contentScale = ContentScale.Crop
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -1996,36 +2008,42 @@ private fun MessageBubble(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                    onMarkMessageRead(message.id)
-                                }
-                                if (docFile != null && hasFile) {
-                                    if (isVideo && onVideoClick != null) {
-                                        onVideoClick(docFile)
-                                    } else {
-                                        try {
-                                            val fileUri = FileProvider.getUriForFile(
-                                                context,
-                                                "${context.packageName}.fileprovider",
-                                                docFile
-                                            )
-                                            val mime = android.webkit.MimeTypeMap.getSingleton()
-                                                .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
-                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                                setDataAndType(fileUri, mime)
-                                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            }
-                                            context.startActivity(intent)
-                                        } catch (e: Exception) {
-                                            Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
-                                        }
+                            .combinedClickable(
+                                onClick = {
+                                    if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                        onMarkMessageRead(message.id)
                                     }
-                                } else {
-                                    Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                    if (docFile != null && hasFile) {
+                                        if (isVideo && onVideoClick != null) {
+                                            onVideoClick(docFile)
+                                        } else {
+                                            try {
+                                                val fileUri = FileProvider.getUriForFile(
+                                                    context,
+                                                    "${context.packageName}.fileprovider",
+                                                    docFile
+                                                )
+                                                val mime = android.webkit.MimeTypeMap.getSingleton()
+                                                    .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
+                                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                    setDataAndType(fileUri, mime)
+                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                context.startActivity(intent)
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onMessageLongClick(message)
                                 }
-                            }
+                            )
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(
@@ -2124,6 +2142,10 @@ private fun MessageBubble(
                                 }
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onMessageLongClick(message)
                         }
                     )
                     Spacer(modifier = Modifier.height(2.dp))
@@ -2141,6 +2163,10 @@ private fun MessageBubble(
                                 }
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
+                        },
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onMessageLongClick(message)
                         }
                     )
                 }
@@ -2189,7 +2215,8 @@ private fun MessageBubble(
 private fun ClickableMessageText(
     text: String,
     isOutgoing: Boolean,
-    onUrlClick: (String) -> Unit
+    onUrlClick: (String) -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     val urls = remember(text) { LinkPreviewHelper.URL_REGEX.findAll(text).toList() }
 
@@ -2231,18 +2258,31 @@ private fun ClickableMessageText(
             }
         }
 
-        androidx.compose.foundation.text.ClickableText(
+        var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+        Text(
             text = annotatedString,
             style = MaterialTheme.typography.bodyMedium.copy(
                 color = MaterialTheme.colorScheme.onSurface
             ),
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-            onClick = { offset ->
-                annotatedString.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                    .firstOrNull()?.let { annotation ->
-                        onUrlClick(annotation.item)
-                    }
-            }
+            modifier = Modifier
+                .padding(horizontal = 4.dp, vertical = 2.dp)
+                .pointerInput(annotatedString) {
+                    detectTapGestures(
+                        onTap = { offset ->
+                            layoutResult?.let { layout ->
+                                val position = layout.getOffsetForPosition(offset)
+                                annotatedString.getStringAnnotations(tag = "URL", start = position, end = position)
+                                    .firstOrNull()?.let { annotation ->
+                                        onUrlClick(annotation.item)
+                                    }
+                            }
+                        },
+                        onLongPress = {
+                            onLongClick?.invoke()
+                        }
+                    )
+                },
+            onTextLayout = { layoutResult = it }
         )
     }
 }
@@ -2250,21 +2290,26 @@ private fun ClickableMessageText(
 // ──────────────────────────────────────────────────────────────────────────────
 // Rich Link Preview Card (WhatsApp style with image, title, description, domain)
 // ──────────────────────────────────────────────────────────────────────────────
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LinkPreviewCard(
     preview: LinkPreviewData,
-    onOpenUrl: (String) -> Unit
+    onOpenUrl: (String) -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     val isDark = isSystemInDarkTheme()
     val cardBg = if (isDark) Color(0xFF2A3942) else Color(0xFFE2E8F0).copy(alpha = 0.7f)
 
     Surface(
-        onClick = { onOpenUrl(preview.url) },
         shape = RoundedCornerShape(10.dp),
         color = cardBg,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 2.dp, vertical = 3.dp)
+            .combinedClickable(
+                onClick = { onOpenUrl(preview.url) },
+                onLongClick = onLongClick
+            )
     ) {
         Row(
             modifier = Modifier
