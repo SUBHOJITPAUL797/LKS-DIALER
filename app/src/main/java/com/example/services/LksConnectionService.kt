@@ -184,7 +184,7 @@ class LksCallConnection(
         com.example.util.LksIncomingRingtonePlayer.stop()
         try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
         com.example.services.FloatingCallBubbleService.hide(context)
-        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).declineCall()
+        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).declineCall(callId, peerNumber)
     }
 
     override fun onDisconnect() {
@@ -216,7 +216,7 @@ class LksCallConnection(
         com.example.util.LksIncomingRingtonePlayer.stop()
         try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
         com.example.services.FloatingCallBubbleService.hide(context)
-        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).endCall()
+        (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)).endCall(callId)
     }
 
     override fun onHold() {

@@ -73,49 +73,53 @@ class CallMessagingService : FirebaseMessagingService() {
 
             val callId = remoteMessage.data["callId"] ?: return
             
-            if (type == "cancel_call" || type == "missed_call") {
-                Log.d("FCM", "Received $type for callId: $callId, dismissing incoming ringing notification")
+            if (type == "cancel_call" || type == "missed_call" || type == "call_declined" || type == "call_ended") {
+                val endStatus = if (type == "call_declined") com.example.data.model.CallStatus.DECLINED else com.example.data.model.CallStatus.ENDED
+                Log.d("FCM", "Received $type for callId: $callId, ending call immediately with status $endStatus")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
                 
-                // Force end the call in WebRtcEngine to drop the ringing UI if it's open
+                // Force end the call in WebRtcEngine to drop the ringing / calling UI immediately
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.forceEndCallFromPush(callId)
+                engine?.forceEndCallFromPush(callId, endStatus)
+                com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
                 FloatingCallBubbleService.silenceRingtone(this)
                 FloatingCallBubbleService.hide(this)
                 com.example.util.LksIncomingRingtonePlayer.stop()
+                com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 LksKeepAliveService.stopRingtone(this)
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }
                 
-                val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
-                val callerNumber = remoteMessage.data["callerNumber"] ?: ""
-                val callType = remoteMessage.data["callType"] ?: "AUDIO"
-                val callTypeLabel = if (callType.equals("VIDEO", ignoreCase = true)) "Video" else "Audio"
-                val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+                if (type == "cancel_call" || type == "missed_call") {
+                    val callerName = remoteMessage.data["callerName"] ?: "Unknown Caller"
+                    val callerNumber = remoteMessage.data["callerNumber"] ?: ""
+                    val callType = remoteMessage.data["callType"] ?: "AUDIO"
+                    val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
-                // Record the missed call in FirebaseManager immediately
-                try {
-                    com.example.data.repository.FirebaseManager.getInstance(this).logCall(
-                        direction = com.example.data.model.CallDirection.MISSED,
-                        otherPartyNumber = callerNumber,
-                        otherPartyName = callerName,
+                    // Record the missed call in FirebaseManager immediately
+                    try {
+                        com.example.data.repository.FirebaseManager.getInstance(this).logCall(
+                            direction = com.example.data.model.CallDirection.MISSED,
+                            otherPartyNumber = callerNumber,
+                            otherPartyName = callerName,
+                            callType = callTypeEnum,
+                            status = com.example.data.model.CallStatus.MISSED,
+                            durationSeconds = 0
+                        )
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to log missed call locally: ${e.message}")
+                    }
+
+                    // Show unified missed call notification with Call Back action
+                    com.example.data.repository.FirebaseManager.getInstance(this).showMissedCallNotification(
+                        callerNumber = callerNumber,
+                        callerName = callerName,
                         callType = callTypeEnum,
-                        status = com.example.data.model.CallStatus.MISSED,
-                        durationSeconds = 0
+                        callId = callId
                     )
-                } catch (e: Exception) {
-                    Log.w("FCM", "Failed to log missed call locally: ${e.message}")
                 }
-
-                // Show unified missed call notification with Call Back action
-                com.example.data.repository.FirebaseManager.getInstance(this).showMissedCallNotification(
-                    callerNumber = callerNumber,
-                    callerName = callerName,
-                    callType = callTypeEnum,
-                    callId = callId
-                )
                 return
             }
             
@@ -140,6 +144,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(callerNumber)) {
                     Log.i("FCM", "Incoming call auto-declined by DND or Blocklist: $callId from $callerNumber")
                     try {
+                        com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
                         val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         db.collection("calls").document(callId).update("status", com.example.data.model.CallStatus.DECLINED.name)
                     } catch (e: Exception) {
@@ -149,14 +154,18 @@ class CallMessagingService : FirebaseMessagingService() {
                 }
                 
                 // Immediately update Firestore status to RINGING so caller knows recipient device received it
-                try {
-                    val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val docRef = db.collection("calls").document(callId)
-                    docRef.update("status", "RINGING").addOnFailureListener {
-                        docRef.set(mapOf("status" to "RINGING"), com.google.firebase.firestore.SetOptions.merge())
+                if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+                    try {
+                        val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        val docRef = db.collection("calls").document(callId)
+                        docRef.update("status", "RINGING").addOnFailureListener {
+                            if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+                                docRef.set(mapOf("status" to "RINGING"), com.google.firebase.firestore.SetOptions.merge())
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
                 }
                 
                 showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
@@ -256,6 +265,8 @@ class CallMessagingService : FirebaseMessagingService() {
         val declineIntent = Intent(this, CallNotificationReceiver::class.java).apply {
             action = CallNotificationReceiver.ACTION_DECLINE
             putExtra("call_id", callId)
+            putExtra("caller_number", callerNumber)
+            putExtra("call_type", callType)
         }
         val declinePendingIntent = PendingIntent.getBroadcast(
             this, 2, declineIntent,
@@ -420,16 +431,18 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
         // ─── Update Firestore status to RINGING so the CALLER sees "Ringing..." instead of "Calling..." ───
-        try {
-            com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                .collection("calls")
-                .document(callId)
-                .update("status", com.example.data.model.CallStatus.RINGING.name)
-                .addOnSuccessListener {
-                    Log.i("FCM", "✅ Call status updated to RINGING in Firestore for callId=$callId")
-                }
-        } catch (e: Exception) {
-            Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
+        if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+            try {
+                com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                    .collection("calls")
+                    .document(callId)
+                    .update("status", com.example.data.model.CallStatus.RINGING.name)
+                    .addOnSuccessListener {
+                        Log.i("FCM", "✅ Call status updated to RINGING in Firestore for callId=$callId")
+                    }
+            } catch (e: Exception) {
+                Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
+            }
         }
 
         // Also trigger fallback in-app audio player in case system sound stream is ducked

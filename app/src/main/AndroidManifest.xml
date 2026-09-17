@@ -185,6 +185,8 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.example.ACTION_REPLY_CHAT" />
+                <action android:name="com.example.ACTION_MARK_AS_READ" />
+                <action android:name="com.example.ACTION_MUTE_CHAT" />
             </intent-filter>
         </receiver>
 

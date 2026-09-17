@@ -1097,7 +1097,7 @@ class MainActivity : ComponentActivity() {
                                                     durationSeconds = rtcState.callDurationSeconds,
                                                     callId = activeCall.callId
                                                 )
-                                                webRtcEngine.declineCall()
+                                                 webRtcEngine.declineCall(activeCall.callId, activeCall.callerNumber)
                                             }
                                         )
                                     } else {
@@ -1119,7 +1119,7 @@ class MainActivity : ComponentActivity() {
                                                     durationSeconds = rtcState.callDurationSeconds,
                                                     callId = activeCall.callId
                                                 )
-                                                webRtcEngine.endCall()
+                                                webRtcEngine.endCall(activeCall.callId)
                                             }
                                         )
                                     }
@@ -1143,7 +1143,7 @@ class MainActivity : ComponentActivity() {
                                                     durationSeconds = rtcState.callDurationSeconds,
                                                     callId = activeCall.callId
                                                 )
-                                                webRtcEngine.endCall()
+                                                webRtcEngine.endCall(activeCall.callId)
                                             }
                                         )
                                     } else {
@@ -1164,10 +1164,36 @@ class MainActivity : ComponentActivity() {
                                                     durationSeconds = rtcState.callDurationSeconds,
                                                     callId = activeCall.callId
                                                 )
-                                                webRtcEngine.endCall()
+                                                webRtcEngine.endCall(activeCall.callId)
                                             }
                                         )
                                     }
+                                }
+
+                                CallStatus.DECLINED -> {
+                                    OutgoingCallScreen(
+                                        calleeName = otherPartyDisplayName,
+                                        calleeNumber = otherPartyNumber,
+                                        profilePicUrl = otherPartyProfilePic,
+                                        callType = activeCall.callType,
+                                        statusText = "Call Declined",
+                                        webRtcEngine = webRtcEngine,
+                                        onMinimize = null,
+                                        onEndCall = {}
+                                    )
+                                }
+
+                                CallStatus.ENDED, CallStatus.MISSED -> {
+                                    OutgoingCallScreen(
+                                        calleeName = otherPartyDisplayName,
+                                        calleeNumber = otherPartyNumber,
+                                        profilePicUrl = otherPartyProfilePic,
+                                        callType = activeCall.callType,
+                                        statusText = if (rtcState.callStatus == CallStatus.MISSED) "Call Missed" else "Call Ended",
+                                        webRtcEngine = webRtcEngine,
+                                        onMinimize = null,
+                                        onEndCall = {}
+                                    )
                                 }
 
                                 else -> {}

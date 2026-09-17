@@ -568,29 +568,19 @@ class FloatingCallBubbleService : Service() {
                 marginEnd = dpToPx(8f)
             }
             setOnClickListener {
-                Log.i(TAG, "Decline pressed on incoming call pill")
+                Log.i(TAG, "Decline pressed on incoming call pill for callId=$callId")
                 stopRinging()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 nm?.cancel(1001)
 
-                if (callId.isNotBlank()) {
-                    try {
-                        FirebaseFirestore.getInstance()
-                            .collection("calls")
-                            .document(callId)
-                            .update(
-                                "status", CallStatus.DECLINED.name,
-                                "endedAt", System.currentTimeMillis()
-                            )
-                    } catch (_: Exception) {}
-                }
+                val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
+                engine.declineCall(callId, callerNumber)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }
 
-                (WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)).declineCall()
                 removeFloatingView()
                 stopSelf()
             }

@@ -655,17 +655,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                     _state.value.callStatus == CallStatus.MISSED ||
                     _state.value.activeCall == null
 
-                if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds) {
+                if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds && !isCallTerminated(incomingCall.callId)) {
                     seenCallIds.add(incomingCall.callId)
 
                     val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
                     if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(incomingCall.callerNumber)) {
                         Log.d("WebRtcEngine", "Incoming call auto-declined by DND or Blocklist: ${incomingCall.callId} from ${incomingCall.callerNumber}")
+                        markCallTerminated(incomingCall.callId)
                         firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.DECLINED.name)
                         return@addSnapshotListener
                     }
                     
-                    firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
+                    if (!isCallTerminated(incomingCall.callId)) {
+                        firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
+                    }
                     headsetButtonManager.startListening()
 
                     // Register with Android Telecom to get system-call priority on all OEMs
@@ -778,6 +781,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             return
         }
 
+        if (isCallTerminated(callId)) {
+            Log.d("WebRtcEngine", "attachToCall aborted: call $callId was already terminated locally")
+            return
+        }
+
         fetchIceServersAsync {}
         
         val isNotCurrentlyInCall = _state.value.activeCall == null || 
@@ -806,7 +814,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             headsetButtonManager.startListening()
         }
 
-        if (autoAnswer) {
+        if (autoAnswer && !isCallTerminated(callId)) {
             // Instantly mark status as ANSWERED in Firestore so caller screen switches immediately (<100ms)
             try {
                 firestore.collection("calls").document(callId).update(
@@ -821,21 +829,31 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
+            if (isCallTerminated(callId)) {
+                Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was terminated locally. Aborting.")
+                return@addOnSuccessListener
+            }
+            val curLocalStatus = _state.value.callStatus
+            if (curLocalStatus == CallStatus.ENDED || curLocalStatus == CallStatus.DECLINED || curLocalStatus == CallStatus.MISSED) {
+                Log.d("WebRtcEngine", "attachToCall doc callback: local status is $curLocalStatus. Aborting.")
+                return@addOnSuccessListener
+            }
             val call = doc.toObject(CallDto::class.java)
             if (call != null) {
                 if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
                     Log.d("WebRtcEngine", "attachToCall: call $callId already finished with status ${call.status}")
+                    markCallTerminated(callId)
                     endCallInternalLocal(call.status)
                     return@addOnSuccessListener
                 }
 
-                if (_state.value.callStatus != CallStatus.ANSWERED) {
+                if (_state.value.callStatus != CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
                     // AttachToCall is only used by the callee, so if the status is still CALLING, it should be RINGING
                     val resolvedStatus = if (autoAnswer) CallStatus.ANSWERED 
                                          else if (call.status == CallStatus.CALLING) CallStatus.RINGING
                                          else call.status
                                          
-                    if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING) {
+                    if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING && !isCallTerminated(callId)) {
                         firestore.collection("calls").document(callId).update("status", CallStatus.RINGING.name)
                     }
 
@@ -848,7 +866,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     headsetButtonManager.startListening()
                     listenToActiveCall(callId, isCaller = false)
                     if (autoAnswer) answerCall()
-                } else {
+                } else if (_state.value.callStatus == CallStatus.ANSWERED) {
                     _state.value = _state.value.copy(
                         activeCall = call.copy(status = CallStatus.ANSWERED)
                     )
@@ -960,11 +978,20 @@ class WebRtcEngine private constructor(private val context: Context) {
         activeCallListener?.remove()
         activeCallListener = firestore.collection("calls").document(callId)
             .addSnapshotListener { snapshot, e ->
-                if (e != null || snapshot == null) return@addSnapshotListener
+                if (e != null) {
+                    Log.w("WebRtcEngine", "listenToActiveCall error on $callId: ${e.message}")
+                    return@addSnapshotListener
+                }
+                if (snapshot == null || !snapshot.exists()) {
+                    Log.i("WebRtcEngine", "Call doc $callId no longer exists in Firestore -> terminating call immediately")
+                    markCallTerminated(callId)
+                    endCallInternalLocal(CallStatus.ENDED)
+                    return@addSnapshotListener
+                }
                 val call = snapshot.toObject(CallDto::class.java)
                 if (call != null) {
                     val currentCall = _state.value.activeCall
-                    if (currentCall?.callId == call.callId) {
+                    if (currentCall?.callId == call.callId || currentCall == null) {
                         val oldCall = currentCall
                         _state.value = _state.value.copy(activeCall = call)
                         
@@ -1125,6 +1152,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         
                         if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
+                            Log.i("WebRtcEngine", "listenToActiveCall: call $callId remote status is ${call.status} -> ending call immediately")
+                            markCallTerminated(call.callId)
                             if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
                                 endCallInternalLocal(call.status)
                             }
@@ -1377,22 +1406,33 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
-    fun endCall() {
+    fun endCall(targetCallId: String? = null) {
         val call = _state.value.activeCall
-        if (call != null) {
-            val endStatus = if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) CallStatus.MISSED else CallStatus.ENDED
-            firestore.collection("calls").document(call.callId).update(
-                "status", endStatus.name,
-                "endedAt", System.currentTimeMillis()
-            )
+        val callId = targetCallId?.takeIf { it.isNotBlank() } ?: call?.callId
+        if (!callId.isNullOrBlank()) {
+            markCallTerminated(callId)
+            val isRingingOrCalling = _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING
+            val endStatus = if (isRingingOrCalling) CallStatus.MISSED else CallStatus.ENDED
             
-            // If caller hangs up before it's answered, write a missed call log and send missed call push to callee
+            firestore.collection("calls").document(callId).set(
+                mapOf(
+                    "status" to endStatus.name,
+                    "endedAt" to System.currentTimeMillis()
+                ),
+                com.google.firebase.firestore.SetOptions.merge()
+            ).addOnFailureListener {
+                firestore.collection("calls").document(callId).update(
+                    "status", endStatus.name,
+                    "endedAt", System.currentTimeMillis()
+                )
+            }
+            
             val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
-            val isCaller = currentPhone.isNotBlank() && (
+            val isCaller = call != null && currentPhone.isNotBlank() && (
                 currentPhone == call.callerNumber ||
                 currentPhone.replace(Regex("[^0-9]"), "") == call.callerNumber.replace(Regex("[^0-9]"), "")
             )
-            if (isCaller && endStatus == CallStatus.MISSED) {
+            if (isCaller && endStatus == CallStatus.MISSED && call != null) {
                 FirebaseManager.getInstance(context).logMissedCallForOfflineUser(
                     calleeNumber = call.calleeNumber,
                     callerNumber = call.callerNumber,
@@ -1404,12 +1444,26 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callerName = call.callerName,
                     callerNumber = call.callerNumber,
                     callType = call.callType.name,
-                    callId = call.callId,
+                    callId = callId,
                     type = "missed_call"
                 )
+            } else if (call != null) {
+                // When ending an active/connected call, notify other party via push so they don't lag
+                val otherPartyNumber = if (isCaller) call.calleeNumber else call.callerNumber
+                val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: currentPhone
+                if (otherPartyNumber.isNotBlank()) {
+                    triggerPushNotification(
+                        calleeNumber = otherPartyNumber,
+                        callerName = currentName,
+                        callerNumber = currentPhone,
+                        callType = call.callType.name,
+                        callId = callId,
+                        type = "call_ended"
+                    )
+                }
             }
-            // Auto-cleanup call and candidate documents after 30 seconds to keep DB lean & fast
-            val callIdToDelete = call.callId
+
+            val callIdToDelete = callId
             scope.launch {
                 delay(30000)
                 deleteCallAndCandidates(callIdToDelete)
@@ -1418,14 +1472,44 @@ class WebRtcEngine private constructor(private val context: Context) {
         endCallInternalLocal(CallStatus.ENDED)
     }
 
-    fun declineCall() {
+    fun declineCall(targetCallId: String? = null, targetCallerNumber: String? = null) {
         val call = _state.value.activeCall
-        if (call != null) {
-            firestore.collection("calls").document(call.callId).update(
-                "status", CallStatus.DECLINED.name,
-                "endedAt", System.currentTimeMillis()
-            )
-            val callIdToDelete = call.callId
+        val callId = targetCallId?.takeIf { it.isNotBlank() } ?: call?.callId
+        val callerNumber = targetCallerNumber?.takeIf { it.isNotBlank() } ?: call?.callerNumber ?: ""
+        val callType = call?.callType ?: CallType.VIDEO
+
+        if (!callId.isNullOrBlank()) {
+            markCallTerminated(callId)
+            
+            // 1. Update Firestore immediately with merge so it never fails
+            firestore.collection("calls").document(callId).set(
+                mapOf(
+                    "status" to CallStatus.DECLINED.name,
+                    "endedAt" to System.currentTimeMillis()
+                ),
+                com.google.firebase.firestore.SetOptions.merge()
+            ).addOnFailureListener {
+                firestore.collection("calls").document(callId).update(
+                    "status", CallStatus.DECLINED.name,
+                    "endedAt", System.currentTimeMillis()
+                )
+            }
+
+            // 2. CRITICAL: Trigger instant push to caller so caller stops ringing in <200ms
+            if (callerNumber.isNotBlank()) {
+                val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+                val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: currentPhone
+                triggerPushNotification(
+                    calleeNumber = callerNumber,
+                    callerName = currentName,
+                    callerNumber = currentPhone,
+                    callType = callType.name,
+                    callId = callId,
+                    type = "call_declined"
+                )
+            }
+
+            val callIdToDelete = callId
             scope.launch {
                 delay(30000)
                 deleteCallAndCandidates(callIdToDelete)
@@ -1439,13 +1523,18 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Forces the engine to end the call immediately when a 'cancel_call' or 'missed_call' push notification
-     * is received, preventing the UI from lingering in a ringing state.
+     * Forces the engine to end the call immediately when a 'cancel_call', 'missed_call',
+     * 'call_declined', or 'call_ended' push notification is received.
      */
     fun forceEndCallFromPush(callId: String, status: CallStatus = CallStatus.MISSED) {
+        markCallTerminated(callId)
         scope.launch {
             val activeCallId = _state.value.activeCall?.callId
-            if (activeCallId == null || activeCallId == callId || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.CALLING) {
+            if (activeCallId == null || activeCallId == callId || 
+                _state.value.callStatus == CallStatus.RINGING || 
+                _state.value.callStatus == CallStatus.CALLING || 
+                _state.value.callStatus == CallStatus.ANSWERED
+            ) {
                 Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status")
                 endCallInternalLocal(status)
             }
@@ -1590,13 +1679,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
         }
 
-        // Phase 1 — Security: delete Firestore SDP/ICE data 5s after call ends.
-        // The call document contains offerSdp, answerSdp and ICE candidates with network topology.
-        // Leaving these forever is a privacy leak and adds unbounded Firestore storage cost.
+        // Auto-cleanup call and candidates after 30 seconds so peer has ample time to receive terminal state
         val endedCallId = prevCall?.callId
         if (!endedCallId.isNullOrBlank()) {
             scope.launch {
-                delay(5000)
+                delay(30000)
                 Log.d("WebRtcEngine", "Deleting Firestore call document + ICE candidates for $endedCallId")
                 deleteCallAndCandidates(endedCallId)
             }
@@ -1710,6 +1797,27 @@ class WebRtcEngine private constructor(private val context: Context) {
     companion object {
         @Volatile
         private var INSTANCE: WebRtcEngine? = null
+
+        private val terminatedCallIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        fun markCallTerminated(callId: String) {
+            if (callId.isNotBlank()) {
+                terminatedCallIds.add(callId)
+                if (terminatedCallIds.size > 200) {
+                    val iterator = terminatedCallIds.iterator()
+                    var count = 0
+                    while (iterator.hasNext() && count < 100) {
+                        iterator.next()
+                        iterator.remove()
+                        count++
+                    }
+                }
+            }
+        }
+
+        fun isCallTerminated(callId: String): Boolean {
+            return callId.isNotBlank() && terminatedCallIds.contains(callId)
+        }
 
         fun getInstance(context: Context): WebRtcEngine {
             return INSTANCE ?: synchronized(this) {

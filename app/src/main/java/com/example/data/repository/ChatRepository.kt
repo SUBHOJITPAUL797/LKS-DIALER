@@ -137,6 +137,33 @@ class ChatRepository private constructor(private val context: Context) {
         isUserNearBottom = atBottom
     }
 
+    fun muteChat(peerNumber: String, durationMillis: Long = 8 * 60 * 60 * 1000L) {
+        val norm = ContactsHelper.normalizePhoneNumber(peerNumber)
+        val prefs = context.getSharedPreferences("muted_chats_prefs", Context.MODE_PRIVATE)
+        val expiry = if (durationMillis <= 0L) Long.MAX_VALUE else System.currentTimeMillis() + durationMillis
+        prefs.edit().putLong("mute_$norm", expiry).apply()
+        Log.d(TAG, "Chat muted: $norm until $expiry")
+    }
+
+    fun unmuteChat(peerNumber: String) {
+        val norm = ContactsHelper.normalizePhoneNumber(peerNumber)
+        val prefs = context.getSharedPreferences("muted_chats_prefs", Context.MODE_PRIVATE)
+        prefs.edit().remove("mute_$norm").apply()
+        Log.d(TAG, "Chat unmuted: $norm")
+    }
+
+    fun isChatMuted(peerNumber: String): Boolean {
+        val norm = ContactsHelper.normalizePhoneNumber(peerNumber)
+        val prefs = context.getSharedPreferences("muted_chats_prefs", Context.MODE_PRIVATE)
+        val expiry = prefs.getLong("mute_$norm", 0L)
+        if (expiry == 0L) return false
+        if (expiry < System.currentTimeMillis()) {
+            prefs.edit().remove("mute_$norm").apply()
+            return false
+        }
+        return true
+    }
+
     /**
      * Returns true if the user is in this conversation screen, app is in foreground,
      * screen is on, and device is unlocked.
@@ -1563,7 +1590,7 @@ class ChatRepository private constructor(private val context: Context) {
                 ChatMediaType.IMAGE -> "📷 Photo"
                 ChatMediaType.AUDIO -> "🎤 Voice message"
                 ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
-                else -> text
+                else -> extractCleanText(text)
             },
             lastMessageType = mediaType.name,
             lastMessageTimestamp = now,
@@ -1958,6 +1985,11 @@ class ChatRepository private constructor(private val context: Context) {
         messageType: String,
         profilePicUrl: String? = null
     ) {
+        if (isChatMuted(senderNumber)) {
+            Log.d(TAG, "Chat with $senderNumber is muted. Suppressing notification.")
+            return
+        }
+
         val notifId = senderNumber.hashCode()
 
         // Tap opens MainActivity directly into this chat conversation
@@ -1976,7 +2008,7 @@ class ChatRepository private constructor(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Direct Reply RemoteInput
+        // 1. Direct Reply RemoteInput (WhatsApp style)
         val remoteInput = RemoteInput.Builder(KEY_TEXT_REPLY)
             .setLabel("Reply to $senderName...")
             .build()
@@ -2000,6 +2032,51 @@ class ChatRepository private constructor(private val context: Context) {
             replyPendingIntent
         )
             .addRemoteInput(remoteInput)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false)
+            .build()
+
+        // 2. Mark as read Action (WhatsApp style)
+        val markReadIntent = Intent(context, com.example.services.ChatReplyReceiver::class.java).apply {
+            action = "com.example.ACTION_MARK_AS_READ"
+            putExtra("chat_peer_number", senderNumber)
+            putExtra("notification_id", notifId)
+        }
+        val markReadPendingIntent = PendingIntent.getBroadcast(
+            context,
+            notifId + 2000,
+            markReadIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+        val markReadAction = NotificationCompat.Action.Builder(
+            android.R.drawable.checkbox_on_background,
+            "Mark as read",
+            markReadPendingIntent
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
+
+        // 3. Mute Chat Action (WhatsApp style)
+        val muteIntent = Intent(context, com.example.services.ChatReplyReceiver::class.java).apply {
+            action = "com.example.ACTION_MUTE_CHAT"
+            putExtra("chat_peer_number", senderNumber)
+            putExtra("chat_peer_name", senderName)
+            putExtra("notification_id", notifId)
+        }
+        val mutePendingIntent = PendingIntent.getBroadcast(
+            context,
+            notifId + 3000,
+            muteIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+        val muteAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_lock_silent_mode,
+            "Mute",
+            mutePendingIntent
+        )
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MUTE)
+            .setShowsUserInterface(false)
             .build()
 
         val firebaseManager = FirebaseManager.getInstance(context)
@@ -2095,6 +2172,8 @@ class ChatRepository private constructor(private val context: Context) {
             .setStyle(messagingStyle)
             .setContentIntent(tapPendingIntent)
             .addAction(replyAction)
+            .addAction(markReadAction)
+            .addAction(muteAction)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)

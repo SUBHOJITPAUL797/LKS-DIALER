@@ -253,7 +253,7 @@ private fun RecentChatRow(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(2.dp))
-            val snippet = conversation.lastMessageText.ifBlank { conversation.phoneNumber }
+            val snippet = ChatRepository.extractCleanText(conversation.lastMessageText).ifBlank { conversation.phoneNumber }
             Text(
                 text = snippet,
                 style = MaterialTheme.typography.bodySmall,

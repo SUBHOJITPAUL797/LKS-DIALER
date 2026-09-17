@@ -49,29 +49,18 @@ class CallNotificationReceiver : BroadcastReceiver() {
             ACTION_DECLINE -> {
                 // Dismiss any floating bubble notification
                 try { notificationManager.cancel(2002) } catch (_: Exception) {}
+                val callerNumber = intent.getStringExtra("caller_number") ?: ""
 
-                // Decline in Firestore immediately without opening the app
-                FirebaseFirestore.getInstance()
-                    .collection("calls")
-                    .document(callId)
-                    .update(
-                        "status", CallStatus.DECLINED.name,
-                        "endedAt", System.currentTimeMillis()
-                    )
-                    .addOnSuccessListener {
-                        Log.d("CallReceiver", "Call $callId declined via notification")
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("CallReceiver", "Failed to decline call $callId", e)
-                    }
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
+                    ?: com.example.webrtc.WebRtcEngine.getInstance(context)
+                engine.declineCall(callId, callerNumber)
 
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }
-                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.forceEndCallFromPush(callId, CallStatus.DECLINED)
                 FloatingCallBubbleService.hide(context)
                 com.example.util.LksIncomingRingtonePlayer.stop()
+                com.example.util.CallSoundEffectsManager.stopRingbackTone()
             }
         }
     }

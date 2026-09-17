@@ -414,7 +414,7 @@ private fun ConversationItem(
                             Spacer(modifier = Modifier.width(4.dp))
                         }
                         Text(
-                            text = conversation.lastMessageText,
+                            text = ChatRepository.extractCleanText(conversation.lastMessageText),
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (conversation.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = if (conversation.unreadCount > 0) FontWeight.Medium else FontWeight.Normal,

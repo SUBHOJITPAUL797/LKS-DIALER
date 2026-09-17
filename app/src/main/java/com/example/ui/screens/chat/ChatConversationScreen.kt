@@ -1917,28 +1917,35 @@ private fun MessageBubble(
                         } else 0.dp
                     }
 
-                    AsyncImage(
-                        model = message.mediaPath,
-                        contentDescription = "Photo",
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(imageRatio ?: 1f)
                             .clip(RoundedCornerShape(12.dp))
-                            .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier)
-                            .combinedClickable(
-                                onClick = {
-                                    if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                        onMarkMessageRead(message.id)
+                            .pointerInput(message.id, message.mediaPath) {
+                                detectTapGestures(
+                                    onTap = {
+                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                            onMarkMessageRead(message.id)
+                                        }
+                                        onImageClick(message.mediaPath)
+                                    },
+                                    onLongPress = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onMessageLongClick(message)
                                     }
-                                    onImageClick(message.mediaPath)
-                                },
-                                onLongClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onMessageLongClick(message)
-                                }
-                            ),
-                        contentScale = ContentScale.Crop
-                    )
+                                )
+                            }
+                    ) {
+                        AsyncImage(
+                            model = message.mediaPath,
+                            contentDescription = "Photo",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
@@ -2008,42 +2015,44 @@ private fun MessageBubble(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .combinedClickable(
-                                onClick = {
-                                    if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                        onMarkMessageRead(message.id)
-                                    }
-                                    if (docFile != null && hasFile) {
-                                        if (isVideo && onVideoClick != null) {
-                                            onVideoClick(docFile)
-                                        } else {
-                                            try {
-                                                val fileUri = FileProvider.getUriForFile(
-                                                    context,
-                                                    "${context.packageName}.fileprovider",
-                                                    docFile
-                                                )
-                                                val mime = android.webkit.MimeTypeMap.getSingleton()
-                                                    .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
-                                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                                                    setDataAndType(fileUri, mime)
-                                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                }
-                                                context.startActivity(intent)
-                                            } catch (e: Exception) {
-                                                Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
-                                            }
+                            .pointerInput(message.id) {
+                                detectTapGestures(
+                                    onTap = {
+                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                            onMarkMessageRead(message.id)
                                         }
-                                    } else {
-                                        Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                        if (docFile != null && hasFile) {
+                                            if (isVideo && onVideoClick != null) {
+                                                onVideoClick(docFile)
+                                            } else {
+                                                try {
+                                                    val fileUri = FileProvider.getUriForFile(
+                                                        context,
+                                                        "${context.packageName}.fileprovider",
+                                                        docFile
+                                                    )
+                                                    val mime = android.webkit.MimeTypeMap.getSingleton()
+                                                        .getMimeTypeFromExtension(docFile.extension.lowercase(Locale.getDefault())) ?: "*/*"
+                                                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                        setDataAndType(fileUri, mime)
+                                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        } else {
+                                            Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    onLongPress = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onMessageLongClick(message)
                                     }
-                                },
-                                onLongClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onMessageLongClick(message)
-                                }
-                            )
+                                )
+                            }
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(
