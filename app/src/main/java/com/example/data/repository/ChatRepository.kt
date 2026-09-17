@@ -130,11 +130,18 @@ class ChatRepository private constructor(private val context: Context) {
         }
     }
 
+    @Volatile
+    private var isUserNearBottom: Boolean = true
+
+    fun setIsAtBottom(atBottom: Boolean) {
+        isUserNearBottom = atBottom
+    }
+
     /**
-     * Returns true ONLY if the app is in the foreground, the device screen is physically ON,
-     * the device is NOT keyguard locked, and the user is currently looking at this conversation.
+     * Returns true if the user is in this conversation screen, app is in foreground,
+     * screen is on, and device is unlocked.
      */
-    fun isUserActivelyViewingPeer(peerNumber: String): Boolean {
+    fun isUserInConversation(peerNumber: String): Boolean {
         if (!isAppInForeground) return false
         val currentPeer = _activeChatPeerNumber.value ?: return false
         if (!ContactsHelper.numbersMatch(currentPeer, peerNumber)) return false
@@ -143,6 +150,14 @@ class ChatRepository private constructor(private val context: Context) {
         val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
         if (km?.isKeyguardLocked == true) return false
         return true
+    }
+
+    /**
+     * Returns true ONLY if the user is in this conversation AND scrolled to the bottom
+     * where new messages are directly visible on screen.
+     */
+    fun isUserActivelyViewingPeer(peerNumber: String): Boolean {
+        return isUserInConversation(peerNumber) && isUserNearBottom
     }
 
     /**
@@ -2450,7 +2465,7 @@ class ChatRepository private constructor(private val context: Context) {
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 
-        val isWatchingConversation = isUserActivelyViewingPeer(senderNorm)
+        val isWatchingConversation = isUserInConversation(senderNorm)
         if (!isWatchingConversation && senderNorm.isNotBlank() &&
             mediaType != ChatMediaType.EDIT.name &&
             mediaType != ChatMediaType.DELETE.name &&

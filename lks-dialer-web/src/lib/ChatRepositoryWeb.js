@@ -54,6 +54,18 @@ class ChatRepositoryWeb {
     this._activeP2pInstances = new Map();
     // Cancelled transfer IDs (P2P + Relay)
     this.cancelledTransfers = new Set();
+    this.isUserNearBottom = true;
+
+    // Window focus & visibility listeners for auto-read when returning to tab
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const handleActive = () => {
+        if (!document.hidden && document.hasFocus() && this.activeChatPeerNumber && this.isUserNearBottom) {
+          this.markConversationAsRead(this.activeChatPeerNumber);
+        }
+      };
+      document.addEventListener('visibilitychange', handleActive);
+      window.addEventListener('focus', handleActive);
+    }
 
     try {
       this.reconcileConversations();
@@ -73,10 +85,27 @@ class ChatRepositoryWeb {
   }
 
   // --- ACTIVE PEER MANAGEMENT ---
+  setIsAtBottom(atBottom) {
+    this.isUserNearBottom = Boolean(atBottom);
+  }
+
+  isUserInConversation(peerNumber) {
+    if (!this.activeChatPeerNumber || !peerNumber) return false;
+    if (!numbersMatch(this.activeChatPeerNumber, peerNumber)) return false;
+    if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
+      return false;
+    }
+    return true;
+  }
+
+  isUserActivelyViewingPeer(peerNumber) {
+    return this.isUserInConversation(peerNumber) && this.isUserNearBottom;
+  }
+
   setActiveChatPeer(phoneNumber) {
     const normalized = phoneNumber ? normalizePhoneNumber(phoneNumber) : null;
     this.activeChatPeerNumber = normalized;
-    if (normalized) {
+    if (normalized && this.isUserActivelyViewingPeer(normalized)) {
       this.markConversationAsRead(normalized);
     }
   }
@@ -278,7 +307,8 @@ class ChatRepositoryWeb {
       );
 
       const senderNorm = normalizePhoneNumber(dto.senderNumber);
-      const isCurrentPeer = (this.activeChatPeerNumber === senderNorm);
+      const isWatching = this.isUserInConversation(senderNorm);
+      const isCurrentPeer = this.isUserActivelyViewingPeer(senderNorm);
 
       // Handle EDIT message packet
       if (dto.mediaType === 'EDIT') {
@@ -458,9 +488,8 @@ class ChatRepositoryWeb {
             // Send ACK receipt back to sender (DELIVERED or READ)
             this.sendReceipt(dto.senderNumber, parentMessageId, finalStatus);
 
-            // Browser Notification if not looking at this chat
-            const isWindowHidden = typeof document !== 'undefined' && document.hidden;
-            if (!isCurrentPeer || isWindowHidden) {
+            // Browser Notification if not actively in this conversation
+            if (!isWatching) {
               this.showBrowserNotification(senderNorm, `📄 ${fileName}`, '', senderNorm);
             }
 
@@ -703,9 +732,8 @@ class ChatRepositoryWeb {
       // 5. Send ACK receipt back to sender
       this.sendReceipt(dto.senderNumber, dto.messageId, finalStatus);
 
-      // 6. Browser Notification if not looking at this chat (or tab is in background)
-      const isWindowHidden = typeof document !== 'undefined' && document.hidden;
-      if (!isCurrentPeer || isWindowHidden) {
+      // 6. Browser Notification if not actively in this conversation
+      if (!isWatching) {
         this.showBrowserNotification(resolvedName, displayText, profilePic, senderNorm);
       }
 
@@ -1739,23 +1767,6 @@ class ChatRepositoryWeb {
     }
   }
 
-  // --- BROWSER NOTIFICATIONS ---
-  showBrowserNotification(senderName, text, avatarUrl) {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    try {
-      const notif = new Notification(senderName || 'LKS Chat', {
-        body: text,
-        icon: (avatarUrl && avatarUrl.startsWith('http')) ? avatarUrl : '/logo192.png',
-        tag: `chat_${senderName}`
-      });
-      notif.onclick = () => {
-        window.focus();
-        notif.close();
-      };
-    } catch (e) {
-      console.warn('Failed to trigger browser notification:', e);
-    }
-  }
 
   // --- DELETE & CLEAR ---
   clearChat(peerPhoneNumber, mode = 'ALL') {

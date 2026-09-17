@@ -40,14 +40,16 @@ object LinkPreviewHelper {
             .build()
     }
 
+    private val TRAILING_PUNCTUATION = charArrayOf('.', ',', ')', ']', '"', '\'', ';', ':', '>', '}')
+
     fun extractUrls(text: String): List<String> {
         if (text.isBlank()) return emptyList()
-        return URL_REGEX.findAll(text).map { it.value.trim().trimEnd('.', ',', ')', ']') }.toList()
+        return URL_REGEX.findAll(text).map { it.value.trim().trimEnd(*TRAILING_PUNCTUATION) }.toList()
     }
 
     fun extractFirstUrl(text: String): String? {
         if (text.isBlank()) return null
-        return URL_REGEX.find(text)?.value?.trim()?.trimEnd('.', ',', ')', ']')
+        return URL_REGEX.find(text)?.value?.trim()?.trimEnd(*TRAILING_PUNCTUATION)
     }
 
     fun extractDomain(url: String): String {
@@ -74,7 +76,7 @@ object LinkPreviewHelper {
     }.flowOn(Dispatchers.IO)
 
     suspend fun fetchPreview(rawUrl: String): LinkPreviewData? = withContext(Dispatchers.IO) {
-        val cleanUrl = rawUrl.trim().trimEnd('.', ',', ')', ']')
+        val cleanUrl = rawUrl.trim().trimEnd(*TRAILING_PUNCTUATION)
         if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
             return@withContext null
         }

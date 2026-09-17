@@ -188,6 +188,7 @@ fun ChatConversationScreen(
     // Mark as active chat on open, clear on dispose
     DisposableEffect(normPeer) {
         chatRepository.setActiveChatPeer(normPeer)
+        chatRepository.setIsAtBottom(true)
         // Dismiss any existing notification for this chat
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -196,6 +197,7 @@ fun ChatConversationScreen(
         onDispose {
             chatRepository.setTyping(normPeer, false)   // always clear typing on screen exit
             chatRepository.setActiveChatPeer(null)
+            chatRepository.setIsAtBottom(false)
             voiceHelper.release()
         }
     }
@@ -235,11 +237,19 @@ fun ChatConversationScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
 
+    val isNearBottom by remember {
+        derivedStateOf { listState.firstVisibleItemIndex <= 1 }
+    }
+
+    LaunchedEffect(isNearBottom) {
+        chatRepository.setIsAtBottom(isNearBottom)
+    }
+
     // Auto-mark conversation as read on screen open and whenever incoming messages exist,
-    // BUT ONLY WHEN the activity is RESUMED and screen is physically ON and UNLOCKED!
-    LaunchedEffect(normPeer, messages, lifecycleState) {
-        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
-            val isActivelyWatching = chatRepository.isUserActivelyViewingPeer(normPeer)
+    // BUT ONLY WHEN the activity is RESUMED, screen is physically ON, UNLOCKED, AND user is near bottom!
+    LaunchedEffect(normPeer, messages, lifecycleState, isNearBottom) {
+        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED) && isNearBottom) {
+            val isActivelyWatching = chatRepository.isUserInConversation(normPeer)
             if (isActivelyWatching && messages.isNotEmpty()) {
                 val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
                 if (hasUnread) {
@@ -627,6 +637,7 @@ fun ChatConversationScreen(
                             onClick = {
                                 coroutineScope.launch {
                                     listState.animateScrollToItem(0)
+                                    chatRepository.markConversationAsRead(normPeer)
                                 }
                             },
                             shape = CircleShape,

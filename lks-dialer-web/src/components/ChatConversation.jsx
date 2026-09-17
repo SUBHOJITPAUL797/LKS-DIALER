@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
-  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download
+  Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
+  ChevronDown, ExternalLink
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
@@ -524,6 +525,168 @@ function AudioDocumentCard({
   );
 }
 
+// ─── WhatsApp-Style Rich Link Preview & Clickable Links ────────────────────────
+const URL_REGEX = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s>])/i;
+const GLOBAL_URL_REGEX = /(https?:\/\/[^\s<]+[^<.,:;"')\]\s>])/gi;
+
+function extractFirstUrl(text) {
+  if (!text) return null;
+  const match = text.match(URL_REGEX);
+  return match ? match[0] : null;
+}
+
+function extractDomain(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+const linkPreviewCache = new Map();
+
+function LinkPreviewCardWeb({ url }) {
+  const [preview, setPreview] = useState(() => linkPreviewCache.get(url) || null);
+  const domain = useMemo(() => extractDomain(url), [url]);
+
+  useEffect(() => {
+    if (!url) return;
+    if (linkPreviewCache.has(url)) {
+      setPreview(linkPreviewCache.get(url));
+      return;
+    }
+
+    let isMounted = true;
+    if (/\.(jpeg|jpg|gif|png|webp)($|\?)/i.test(url)) {
+      const data = { url, domain, imageUrl: url, title: domain };
+      linkPreviewCache.set(url, data);
+      setPreview(data);
+      return;
+    }
+
+    fetch(`https://api.microlink.io?url=${encodeURIComponent(url)}`)
+      .then(res => res.json())
+      .then(json => {
+        if (!isMounted) return;
+        if (json && json.status === 'success' && json.data) {
+          const d = json.data;
+          const data = {
+            url,
+            domain: d.publisher || domain,
+            title: d.title || domain,
+            description: d.description || '',
+            imageUrl: d.image?.url || null
+          };
+          linkPreviewCache.set(url, data);
+          setPreview(data);
+        } else {
+          const fallback = { url, domain, title: domain };
+          linkPreviewCache.set(url, fallback);
+          setPreview(fallback);
+        }
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        const fallback = { url, domain, title: domain };
+        linkPreviewCache.set(url, fallback);
+        setPreview(fallback);
+      });
+
+    return () => { isMounted = false; };
+  }, [url, domain]);
+
+  if (!url) return null;
+
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        backgroundColor: '#2A3942',
+        borderRadius: 8,
+        overflow: 'hidden',
+        marginTop: 4,
+        marginBottom: 6,
+        border: '1px solid rgba(255,255,255,0.12)',
+        cursor: 'pointer',
+        maxWidth: 320,
+        textDecoration: 'none',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
+      }}
+      title={`Open ${url}`}
+    >
+      {preview?.imageUrl ? (
+        <img
+          src={preview.imageUrl}
+          alt="preview"
+          style={{ width: 76, height: 72, objectFit: 'cover', flexShrink: 0 }}
+          onError={(e) => { e.target.style.display = 'none'; }}
+        />
+      ) : (
+        <div style={{ width: 44, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#3B4A54', flexShrink: 0 }}>
+          <ExternalLink size={18} color="#8696A0" />
+        </div>
+      )}
+      <div style={{ padding: '6px 10px', flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {preview?.title || domain}
+        </div>
+        {preview?.description && (
+          <div style={{ fontSize: 11, color: '#8696A0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>
+            {preview.description}
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: '#00E676', display: 'flex', alignItems: 'center', gap: 4, marginTop: 4, fontWeight: 700 }}>
+          <span>🔗</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{domain}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClickableMessageTextWeb({ text, isOut }) {
+  const parts = useMemo(() => {
+    if (!text) return [];
+    return text.split(GLOBAL_URL_REGEX);
+  }, [text]);
+
+  const firstUrl = useMemo(() => extractFirstUrl(text), [text]);
+
+  return (
+    <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+      {firstUrl && <LinkPreviewCardWeb url={firstUrl} />}
+      {parts.map((part, i) => {
+        if (URL_REGEX.test(part)) {
+          return (
+            <a
+              key={i}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                color: isOut ? '#00796B' : '#00A884',
+                textDecoration: 'underline',
+                fontWeight: 700,
+                wordBreak: 'break-all'
+              }}
+            >
+              {part}
+            </a>
+          );
+        }
+        return part;
+      })}
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ChatConversation({
   peerNumber,
@@ -667,6 +830,8 @@ export default function ChatConversation({
   const [selectedVideoUrl, setSelectedVideoUrl] = useState(null);
 
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const docFileInputRef = useRef(null);
@@ -674,6 +839,24 @@ export default function ChatConversation({
   const scrollToBottom = (behavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
   };
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const isScrolledUp = distFromBottom > 80;
+    setShowScrollBottom(isScrolledUp);
+    chatRepositoryWeb.setIsAtBottom(!isScrolledUp);
+
+    if (!isScrolledUp) {
+      chatRepositoryWeb.markConversationAsRead(normPeer);
+    }
+  }, [normPeer]);
+
+  const unreadCountBelow = useMemo(() => {
+    if (!showScrollBottom) return 0;
+    return messages.filter(m => !m.isOutgoing && m.status !== 'READ').length;
+  }, [messages, showScrollBottom]);
 
   // ── Visual Viewport API — keyboard awareness ────────────────────────────────
   useEffect(() => {
@@ -702,6 +885,7 @@ export default function ChatConversation({
   // ── Chat listeners ──────────────────────────────────────────────────────────
   useEffect(() => {
     chatRepositoryWeb.setActiveChatPeer(normPeer);
+    chatRepositoryWeb.setIsAtBottom(true);
 
     const updateMessages = () => {
       const msgs = chatRepositoryWeb.getMessages(normPeer);
@@ -732,6 +916,7 @@ export default function ChatConversation({
 
     return () => {
       chatRepositoryWeb.setActiveChatPeer(null);
+      chatRepositoryWeb.setIsAtBottom(false);
       chatRepositoryWeb.setTyping(normPeer, false);
       unsubscribe();
       if (audioElementRef.current) {
@@ -746,8 +931,10 @@ export default function ChatConversation({
   }, [normPeer]);
 
   useEffect(() => {
-    scrollToBottom('smooth');
-  }, [messages.length, isTypingPeer]);
+    if (!showScrollBottom) {
+      scrollToBottom('smooth');
+    }
+  }, [messages.length, isTypingPeer, showScrollBottom]);
 
   // ── Swipe reply handler ─────────────────────────────────────────────────────
   const handleSwipeReply = useCallback((msg) => {
@@ -1322,15 +1509,19 @@ export default function ChatConversation({
       )}
 
       {/* ── MESSAGES AREA ── */}
-      <div style={{
-        flex: 1, overflowY: 'auto', padding: '16px 20px',
-        display: 'flex', flexDirection: 'column', gap: 10,
-        // Extra bottom padding so messages aren't hidden behind the input bar
-        paddingBottom: 20,
-        width: '100%',
-        maxWidth: '920px',
-        margin: '0 auto'
-      }}>
+      <div 
+        ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
+        style={{
+          flex: 1, overflowY: 'auto', padding: '16px 20px',
+          display: 'flex', flexDirection: 'column', gap: 10,
+          // Extra bottom padding so messages aren't hidden behind the input bar
+          paddingBottom: 20,
+          width: '100%',
+          maxWidth: '920px',
+          margin: '0 auto',
+          position: 'relative'
+        }}>
         {/* E2EE Banner */}
         <div style={{
           backgroundColor: '#fffbe6', border: '2px dashed #000', borderRadius: 8,
@@ -1648,11 +1839,9 @@ export default function ChatConversation({
                           );
                         })()}
 
-                        {/* Text */}
+                        {/* Text with Clickable Green Links & Rich WhatsApp Previews */}
                         {text && msg.mediaType !== 'DOCUMENT' ? (
-                          <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                            {text}
-                          </div>
+                          <ClickableMessageTextWeb text={text} isOut={isOut} />
                         ) : null}
                       </>
                     )}
@@ -1726,6 +1915,59 @@ export default function ChatConversation({
         )}
 
         <div ref={messagesEndRef} style={{ height: 4 }} />
+
+        {/* ── Scroll to Bottom Floating Button with Unread Badge ── */}
+        {showScrollBottom && (
+          <button
+            type="button"
+            onClick={() => {
+              scrollToBottom('smooth');
+              chatRepositoryWeb.markConversationAsRead(normPeer);
+            }}
+            className="neo-box"
+            style={{
+              position: 'fixed',
+              bottom: `calc(${inputPaddingBottom + 80}px)`,
+              right: isDesktop ? 'calc(50% - 440px)' : '20px',
+              width: 44,
+              height: 44,
+              borderRadius: '50%',
+              backgroundColor: '#ffffff',
+              border: '2.5px solid #000',
+              boxShadow: '3px 3px 0 #000',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              zIndex: 35,
+              padding: 0,
+              transition: 'all 0.15s ease'
+            }}
+            title="Scroll to bottom"
+          >
+            <ChevronDown size={22} color="#000" strokeWidth={3} />
+            {unreadCountBelow > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: -8,
+                  right: -8,
+                  backgroundColor: '#25D366',
+                  color: '#fff',
+                  fontSize: 11,
+                  fontWeight: 900,
+                  borderRadius: 12,
+                  padding: '1px 6px',
+                  border: '2px solid #000',
+                  boxShadow: '1px 1px 0 #000',
+                  lineHeight: '14px'
+                }}
+              >
+                {unreadCountBelow > 99 ? '99+' : unreadCountBelow}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {/* ── INPUT BAR (sticks above keyboard using visualViewport paddingBottom) ── */}
