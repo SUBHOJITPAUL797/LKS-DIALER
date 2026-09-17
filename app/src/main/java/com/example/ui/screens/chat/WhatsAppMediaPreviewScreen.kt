@@ -69,6 +69,7 @@ data class EditablePhotoItem(
 @Composable
 fun WhatsAppMediaPreviewScreen(
     initialPhotos: List<File>,
+    initialCaption: String = "",
     onSendPhotos: (List<Pair<File, String>>) -> Unit,
     onClose: () -> Unit
 ) {
@@ -77,7 +78,12 @@ fun WhatsAppMediaPreviewScreen(
     // List of photos currently being reviewed/edited
     val photoItems = remember {
         mutableStateListOf<EditablePhotoItem>().apply {
-            addAll(initialPhotos.map { EditablePhotoItem(originalFile = it) })
+            addAll(initialPhotos.mapIndexed { index, file ->
+                EditablePhotoItem(
+                    originalFile = file,
+                    caption = if (index == 0) initialCaption else ""
+                )
+            })
         }
     }
 

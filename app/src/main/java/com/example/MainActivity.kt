@@ -695,33 +695,37 @@ class MainActivity : ComponentActivity() {
                         // Android System Share Sheet: ACTION_SEND & ACTION_SEND_MULTIPLE
                         val action = incoming.action
                         if (action == android.content.Intent.ACTION_SEND || action == android.content.Intent.ACTION_SEND_MULTIPLE) {
-                            val payload = com.example.util.SharePayloadHelper.extractSharedPayload(context, incoming)
-                            if (payload != null) {
-                                val directPeer = payload.directTargetPeerNumber
-                                if (!directPeer.isNullOrBlank()) {
-                                    val peerUser = firebaseManager.lookupUserByNumber(directPeer)
-                                    chatPeerNumber = directPeer
-                                    chatPeerName = peerUser?.displayName?.takeIf { it.isNotBlank() } ?: directPeer
-                                    chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
+                            if (currentUser == null) {
+                                android.widget.Toast.makeText(context, "Please sign in to LKS Dialer to share", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                val payload = com.example.util.SharePayloadHelper.extractSharedPayload(context, incoming)
+                                if (payload != null) {
+                                    val directPeer = payload.directTargetPeerNumber
+                                    if (!directPeer.isNullOrBlank()) {
+                                        val peerUser = firebaseManager.lookupUserByNumber(directPeer)
+                                        chatPeerNumber = directPeer
+                                        chatPeerName = peerUser?.displayName?.takeIf { it.isNotBlank() } ?: directPeer
+                                        chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
 
-                                    when (payload.type) {
-                                        com.example.util.SharedPayloadType.IMAGES -> {
-                                            pendingSharedPhotos = payload.files
-                                            pendingSharedText = payload.text
-                                        }
-                                        com.example.util.SharedPayloadType.TEXT -> {
-                                            pendingSharedText = payload.text
-                                        }
-                                        com.example.util.SharedPayloadType.DOCUMENTS -> {
-                                            pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
-                                                Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
+                                        when (payload.type) {
+                                            com.example.util.SharedPayloadType.IMAGES -> {
+                                                pendingSharedPhotos = payload.files
+                                                pendingSharedText = payload.text
+                                            }
+                                            com.example.util.SharedPayloadType.TEXT -> {
+                                                pendingSharedText = payload.text
+                                            }
+                                            com.example.util.SharedPayloadType.DOCUMENTS -> {
+                                                pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
+                                                    Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
+                                                }
                                             }
                                         }
+                                        navState = AppNavState.CHAT_CONVERSATION
+                                    } else {
+                                        // Show WhatsApp-style "Send to..." contact picker modal
+                                        pendingSharedPayload = payload
                                     }
-                                    navState = AppNavState.CHAT_CONVERSATION
-                                } else {
-                                    // Show WhatsApp-style "Send to..." contact picker modal
-                                    pendingSharedPayload = payload
                                 }
                             }
                         }

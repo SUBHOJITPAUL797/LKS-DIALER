@@ -51,7 +51,13 @@ object SharePayloadHelper {
 
         return try {
             if (action == Intent.ACTION_SEND) {
-                handleSingleSend(context, intent, mimeType, directPeer)
+                // If clipData contains multiple items, delegate to multiple send handler
+                val clip = intent.clipData
+                if (clip != null && clip.itemCount > 1) {
+                    handleMultipleSend(context, intent, mimeType, directPeer)
+                } else {
+                    handleSingleSend(context, intent, mimeType, directPeer)
+                }
             } else {
                 handleMultipleSend(context, intent, mimeType, directPeer)
             }
@@ -194,27 +200,34 @@ object SharePayloadHelper {
                 if (!exists()) mkdirs()
             }
 
-            var displayName = "file_${System.currentTimeMillis()}"
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (nameIdx != -1) {
-                        val n = cursor.getString(nameIdx)
-                        if (!n.isNullOrBlank()) displayName = n
+            var displayName = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+                ?: "file_${System.currentTimeMillis()}"
+
+            try {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIdx != -1) {
+                            val n = cursor.getString(nameIdx)
+                            if (!n.isNullOrBlank()) displayName = n
+                        }
                     }
                 }
-            }
+            } catch (_: Exception) {}
 
             val rawExt = displayName.substringAfterLast('.', "")
             val resolvedExt = if (rawExt.isNotBlank() && rawExt.length <= 5) {
                 rawExt
             } else {
-                val resolvedMime = context.contentResolver.getType(uri)
+                val resolvedMime = try { context.contentResolver.getType(uri) } catch (_: Exception) { null }
                 MimeTypeMap.getSingleton().getExtensionFromMimeType(resolvedMime) ?: "bin"
             }
 
-            val sanitizedBase = displayName.substringBeforeLast('.').filter { it.isLetterOrDigit() || it == '_' || it == '-' }
-                .take(30).ifBlank { "item" }
+            val sanitizedBase = displayName.substringBeforeLast('.')
+                .replace(Regex("[/\\\\:*?\"<>|]"), "_")
+                .trim()
+                .take(45)
+                .ifBlank { "item" }
             val fileName = "${prefix}_${System.currentTimeMillis()}_$sanitizedBase.$resolvedExt"
             val targetFile = File(sharedDir, fileName)
 

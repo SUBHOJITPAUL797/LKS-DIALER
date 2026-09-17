@@ -154,7 +154,7 @@ fun ChatConversationScreen(
         FirebaseManager.isUserOnline(peerUser)
     }
 
-    var inputText by remember { mutableStateOf(initialSharedText ?: "") }
+    var inputText by remember { mutableStateOf(if (initialSharedPhotos.isNullOrEmpty()) (initialSharedText ?: "") else "") }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -189,9 +189,9 @@ fun ChatConversationScreen(
 
     val listState = rememberLazyListState()
 
-    // Handle shared text/link consumption
-    LaunchedEffect(initialSharedText) {
-        if (!initialSharedText.isNullOrBlank()) {
+    // Handle shared text/link consumption (when not attached to photos)
+    LaunchedEffect(initialSharedText, initialSharedPhotos) {
+        if (!initialSharedText.isNullOrBlank() && initialSharedPhotos.isNullOrEmpty()) {
             inputText = initialSharedText
             onSharedContentConsumed()
         }
@@ -1212,6 +1212,7 @@ fun ChatConversationScreen(
     if (photosToPreview != null && photosToPreview!!.isNotEmpty()) {
         WhatsAppMediaPreviewScreen(
             initialPhotos = photosToPreview!!,
+            initialCaption = initialSharedText ?: "",
             onSendPhotos = { results ->
                 photosToPreview = null
                 onSharedContentConsumed()

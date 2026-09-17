@@ -1,11 +1,11 @@
 package com.example.ui.screens.chat
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -14,14 +14,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.local.ConversationEntity
 import com.example.data.model.UserDto
 import com.example.data.repository.ChatRepository
@@ -41,6 +38,8 @@ fun ShareTargetPickerModal(
     onSelectTarget: (phoneNumber: String, displayName: String, avatarUrl: String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    BackHandler(onBack = onDismiss)
+
     val conversations by chatRepository.getConversationsFlow().collectAsState(initial = emptyList())
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val syncedContacts by firebaseManager.syncedContacts.collectAsState()
@@ -92,121 +91,117 @@ fun ShareTargetPickerModal(
         SharedPayloadType.TEXT -> "Link / Text message"
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = "Send to...",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = subtitleText,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    )
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = "Send to...",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
                 )
-            }
-        ) { paddingValues ->
-            Column(
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            // Search bar
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search name or number...") },
+                leadingIcon = {
+                    Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear")
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(24.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedBorderColor = TealPrimary
+                ),
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .background(MaterialTheme.colorScheme.background)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                // Search bar
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Search name or number...") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear")
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(24.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedBorderColor = TealPrimary
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                )
-
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp)
-                ) {
-                    // Recent Chats Section
-                    if (filteredConversations.isNotEmpty()) {
-                        item {
-                            SectionHeader(title = "RECENT CHATS (${filteredConversations.size})")
-                        }
-                        items(filteredConversations, key = { it.phoneNumber }) { conv ->
-                            RecentChatRow(
-                                conversation = conv,
-                                onClick = {
-                                    onSelectTarget(conv.phoneNumber, conv.contactName, conv.profilePicUrl)
-                                }
-                            )
-                        }
+                // Recent Chats Section
+                if (filteredConversations.isNotEmpty()) {
+                    item {
+                        SectionHeader(title = "RECENT CHATS (${filteredConversations.size})")
                     }
-
-                    // Other Contacts Section
-                    if (otherLksContacts.isNotEmpty()) {
-                        item {
-                            SectionHeader(title = "OTHER CONTACTS (${otherLksContacts.size})")
-                        }
-                        items(otherLksContacts, key = { it.phoneNumber }) { user ->
-                            OtherContactRow(
-                                user = user,
-                                onClick = {
-                                    onSelectTarget(user.phoneNumber, user.displayName, user.profilePictureUrl)
-                                }
-                            )
-                        }
-                    }
-
-                    if (filteredConversations.isEmpty() && otherLksContacts.isEmpty()) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 48.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = if (searchQuery.isBlank()) "No chats or contacts found" else "No matching contacts",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 14.sp
-                                )
+                    items(filteredConversations, key = { it.phoneNumber }) { conv ->
+                        RecentChatRow(
+                            conversation = conv,
+                            onClick = {
+                                onSelectTarget(conv.phoneNumber, conv.contactName, conv.profilePicUrl)
                             }
+                        )
+                    }
+                }
+
+                // Other Contacts Section
+                if (otherLksContacts.isNotEmpty()) {
+                    item {
+                        SectionHeader(title = "OTHER CONTACTS (${otherLksContacts.size})")
+                    }
+                    items(otherLksContacts, key = { it.phoneNumber }) { user ->
+                        OtherContactRow(
+                            user = user,
+                            onClick = {
+                                onSelectTarget(user.phoneNumber, user.displayName, user.profilePictureUrl)
+                            }
+                        )
+                    }
+                }
+
+                if (filteredConversations.isEmpty() && otherLksContacts.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (searchQuery.isBlank()) "No chats or contacts found" else "No matching contacts",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp
+                            )
                         }
                     }
                 }
