@@ -423,7 +423,7 @@ function App() {
           <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
             <a
               href={DIRECT_APK_URL}
-              download="LKS-DIALER-v2.8.1.apk"
+              download="LKS-DIALER-v2.8.2.apk"
               target="_blank"
               rel="noopener noreferrer"
               className="neo-btn"
@@ -503,7 +503,7 @@ function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <a
                 href={DIRECT_APK_URL}
-                download="LKS-DIALER-v2.8.1.apk"
+                download="LKS-DIALER-v2.8.2.apk"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="neo-box"

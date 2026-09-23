@@ -87,7 +87,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var activeCallListener: ListenerRegistration? = null
     private var iceCandidateListener: ListenerRegistration? = null
     
-    private val seenCallIds = mutableSetOf<String>()
+    private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
     private var lastProcessedIceRestartTimestamp = 0L
@@ -141,7 +141,7 @@ class WebRtcEngine private constructor(private val context: Context) {
      * they are never hardcoded in the APK. Falls back to static list on failure.
      */
     private fun fetchIceServersAsync(onDone: () -> Unit) {
-        Thread {
+        scope.launch(Dispatchers.IO) {
             try {
                 val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
                     .removeSuffix("/").let { if (it.endsWith("/call")) it.dropLast(5) else it }
@@ -179,7 +179,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 Log.w("WebRtcEngine", "TURN fetch failed, using fallback ICE servers: ${e.message}")
             }
             onDone()
-        }.start()
+        }
     }
 
 
@@ -558,120 +558,139 @@ class WebRtcEngine private constructor(private val context: Context) {
         return lines.joinToString("\r\n")
     }
 
+    private val isInitiatingCall = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile
     private var lastInitiateCallTimestamp: Long = 0L
 
-    @Synchronized
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
-        val now = System.currentTimeMillis()
-        if (now - lastInitiateCallTimestamp < 1500L) {
-            Log.w("WebRtcEngine", "initiateCall dropped: rapid call initiation debounce (${now - lastInitiateCallTimestamp}ms ago)")
+        // Non-blocking re-entrance guard (industry standard: Signal/Opal use AtomicBoolean instead of @Synchronized)
+        if (!isInitiatingCall.compareAndSet(false, true)) {
+            Log.w("WebRtcEngine", "initiateCall dropped: another initiateCall is already in progress")
             return
         }
-
-        val currentCall = _state.value.activeCall
-        val currentStatus = _state.value.callStatus
-        if (currentCall != null && (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING || currentStatus == CallStatus.ANSWERED)) {
-            if (com.example.util.ContactsHelper.numbersMatch(currentCall.calleeNumber, calleeNumber)) {
-                Log.w("WebRtcEngine", "initiateCall dropped: already calling or in active call with $calleeNumber (status=$currentStatus)")
-                return
-            } else {
-                Log.i("WebRtcEngine", "Switching call target: ending current call ${currentCall.callId} to call $calleeNumber")
-                endCall(currentCall.callId)
-            }
-        }
-
-        lastInitiateCallTimestamp = now
-        resetIdleJob?.cancel()
-        resetIdleJob = null
-        reconnectJob?.cancel()
-        reconnectJob = null
-
-        myPhoneNumber = callerNumber
-
-        // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
-        cleanupMediaAndPeerConnection()
-
-        val newCall = CallDto(
-            callId = UUID.randomUUID().toString(),
-            callerNumber = callerNumber,
-            callerName = callerName,
-            calleeNumber = calleeNumber,
-            calleeName = calleeName.ifBlank { calleeNumber },
-            callType = callType,
-            status = CallStatus.CALLING,
-            createdAt = System.currentTimeMillis()
-        )
-
-        _state.value = WebRtcState(
-            activeCall = newCall,
-            callStatus = CallStatus.CALLING,
-            callType = callType,
-            isSpeakerOn = callType == CallType.VIDEO,
-            connectionStatusText = "Calling ..."
-        )
-
-        hasProcessedOffer = false
-        hasProcessedAnswer = false
-
-        firestore.collection("calls").document(newCall.callId).set(newCall)
-        
-        // Trigger Push Notification via external Worker (Cloudflare / Vercel)
-        triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
-        
-        com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
-        headsetButtonManager.startListening()
         try {
-            com.example.services.LksTelecomManager.reportOutgoingCall(context, newCall.callId, calleeName, calleeNumber, callType)
-        } catch (_: Exception) {}
-        configureAudio(callType)
-        com.example.util.CallSoundEffectsManager.startRingbackTone(context)
-        
-        // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
-        scope.launch {
-            delay(30000) // Wait 30 seconds for recipient device to wake up and acknowledge RINGING
-            if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
-                _state.value = _state.value.copy(connectionStatusText = "User Offline / Unavailable")
-                delay(2000)
-                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) endCall()
-                return@launch
+            val now = System.currentTimeMillis()
+            if (now - lastInitiateCallTimestamp < 1500L) {
+                Log.w("WebRtcEngine", "initiateCall dropped: rapid call initiation debounce (${now - lastInitiateCallTimestamp}ms ago)")
+                return
             }
-            
-            // If it reached RINGING, give it another 45 seconds to answer
-            delay(45000)
-            if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) {
-                _state.value = _state.value.copy(connectionStatusText = "No Answer")
-                delay(2000)
-                if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) endCall()
-            }
-        }
-        
-        // Refresh TURN credentials in background for future calls / reconnects (non-blocking)
-        fetchIceServersAsync {}
 
-        // Create PeerConnection and generate Offer IMMEDIATELY using cached ICE servers (no network stall)
-        createPeerConnection(isCaller = true, callId = newCall.callId)
-
-        val constraints = MediaConstraints()
-        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-        constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
-
-        peerConnection?.createOffer(object : SdpObserver {
-            override fun onCreateSuccess(desc: SessionDescription?) {
-                if (desc != null) {
-                    val tunedSdp = preferOpusAndEnableFec(desc.description)
-                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                    peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
-                    firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
+            val currentCall = _state.value.activeCall
+            val currentStatus = _state.value.callStatus
+            if (currentCall != null && (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING || currentStatus == CallStatus.ANSWERED)) {
+                if (com.example.util.ContactsHelper.numbersMatch(currentCall.calleeNumber, calleeNumber)) {
+                    Log.w("WebRtcEngine", "initiateCall dropped: already calling or in active call with $calleeNumber (status=$currentStatus)")
+                    return
+                } else {
+                    Log.i("WebRtcEngine", "Switching call target: ending current call ${currentCall.callId} to call $calleeNumber")
+                    endCall(currentCall.callId)
                 }
             }
-            override fun onSetSuccess() {}
-            override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
-        }, constraints)
 
-        listenToActiveCall(newCall.callId, isCaller = true)
-        listenForIceCandidates(newCall.callId, isCaller = true)
+            lastInitiateCallTimestamp = now
+            resetIdleJob?.cancel()
+            resetIdleJob = null
+            reconnectJob?.cancel()
+            reconnectJob = null
+
+            myPhoneNumber = callerNumber
+
+            // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
+            cleanupMediaAndPeerConnection()
+
+            val newCall = CallDto(
+                callId = UUID.randomUUID().toString(),
+                callerNumber = callerNumber,
+                callerName = callerName,
+                calleeNumber = calleeNumber,
+                calleeName = calleeName.ifBlank { calleeNumber },
+                callType = callType,
+                status = CallStatus.CALLING,
+                createdAt = System.currentTimeMillis()
+            )
+
+            _state.value = WebRtcState(
+                activeCall = newCall,
+                callStatus = CallStatus.CALLING,
+                callType = callType,
+                isSpeakerOn = callType == CallType.VIDEO,
+                connectionStatusText = "Calling ..."
+            )
+
+            hasProcessedOffer = false
+            hasProcessedAnswer = false
+
+            // Industry Standard: Initial call document set with retry for network resilience
+            firestore.collection("calls").document(newCall.callId).set(newCall)
+                .addOnFailureListener { e ->
+                    Log.w("WebRtcEngine", "Initial call doc set failed: ${e.message}, retrying once in 500ms...")
+                    scope.launch {
+                        delay(500)
+                        if (_state.value.activeCall?.callId == newCall.callId) {
+                            firestore.collection("calls").document(newCall.callId).set(newCall)
+                        }
+                    }
+                }
+            
+            // Trigger Push Notification via external Worker (Cloudflare / Vercel)
+            triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
+            
+            com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
+            headsetButtonManager.startListening()
+            try {
+                com.example.services.LksTelecomManager.reportOutgoingCall(context, newCall.callId, calleeName, calleeNumber, callType)
+            } catch (_: Exception) {}
+            configureAudio(callType)
+            com.example.util.CallSoundEffectsManager.startRingbackTone(context)
+            
+            // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
+            scope.launch {
+                delay(30000) // Wait 30 seconds for recipient device to wake up and acknowledge RINGING
+                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
+                    _state.value = _state.value.copy(connectionStatusText = "User Offline / Unavailable")
+                    delay(2000)
+                    if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) endCall()
+                    return@launch
+                }
+                
+                // If it reached RINGING, give it another 45 seconds to answer
+                delay(45000)
+                if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) {
+                    _state.value = _state.value.copy(connectionStatusText = "No Answer")
+                    delay(2000)
+                    if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCall?.callId == newCall.callId) endCall()
+                }
+            }
+            
+            // Refresh TURN credentials in background for future calls / reconnects (non-blocking)
+            fetchIceServersAsync {}
+
+            // Create PeerConnection and generate Offer IMMEDIATELY using cached ICE servers (no network stall)
+            createPeerConnection(isCaller = true, callId = newCall.callId)
+
+            val constraints = MediaConstraints()
+            constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == CallType.VIDEO) "true" else "false"))
+
+            peerConnection?.createOffer(object : SdpObserver {
+                override fun onCreateSuccess(desc: SessionDescription?) {
+                    if (desc != null) {
+                        val tunedSdp = preferOpusAndEnableFec(desc.description)
+                        val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                        peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                        firestore.collection("calls").document(newCall.callId).update("offerSdp", tunedSdp)
+                    }
+                }
+                override fun onSetSuccess() {}
+                override fun onCreateFailure(p0: String?) {}
+                override fun onSetFailure(p0: String?) {}
+            }, constraints)
+
+            listenToActiveCall(newCall.callId, isCaller = true)
+            listenForIceCandidates(newCall.callId, isCaller = true)
+        } finally {
+            isInitiatingCall.set(false)
+        }
     } // end initiateCall
 
     fun listenForIncomingCalls(phoneNumber: String) {
@@ -1670,13 +1689,17 @@ class WebRtcEngine private constructor(private val context: Context) {
         markCallTerminated(callId)
         scope.launch {
             val activeCallId = _state.value.activeCall?.callId
-            if (activeCallId == null || activeCallId == callId || 
-                _state.value.callStatus == CallStatus.RINGING || 
-                _state.value.callStatus == CallStatus.CALLING || 
-                _state.value.callStatus == CallStatus.ANSWERED
-            ) {
+            // Industry Standard: ONLY end the call if the push callId matches the active call.
+            // Prevents stale pushes from a previous call killing a live call with a different person.
+            if (activeCallId != null && activeCallId == callId) {
                 Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status")
                 endCallInternalLocal(status)
+            } else if (activeCallId == null && (_state.value.callStatus == CallStatus.IDLE || _state.value.callStatus == CallStatus.ENDED)) {
+                // No active call — safe to process (e.g., clearing ringtone for a missed call push)
+                Log.d("WebRtcEngine", "forceEndCallFromPush: no active call, processing cleanup for push $callId")
+                endCallInternalLocal(status)
+            } else {
+                Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId)")
             }
         }
     }
@@ -1795,16 +1818,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (status != CallStatus.IDLE) {
             com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
         }
-
-        // Auto-cleanup call and candidates after 30 seconds so peer has ample time to receive terminal state
-        val endedCallId = prevCall?.callId
-        if (!endedCallId.isNullOrBlank()) {
-            scope.launch {
-                delay(30000)
-                Log.d("WebRtcEngine", "Deleting Firestore call document + ICE candidates for $endedCallId")
-                deleteCallAndCandidates(endedCallId)
-            }
-        }
+        // NOTE: 30s Firestore cleanup is scheduled by endCall()/declineCall() — not duplicated here.
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {
@@ -1826,7 +1840,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
             val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
             
-            Thread {
+            scope.launch(Dispatchers.IO) {
                 var conn: java.net.HttpURLConnection? = null
                 try {
                     val url = java.net.URL(workerUrl)
@@ -1834,6 +1848,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         requestMethod = "POST"
                         setRequestProperty("Content-Type", "application/json")
                         setRequestProperty("X-Worker-Secret", workerSecret)
+                        connectTimeout = 5000
+                        readTimeout = 5000
                         doOutput = true
                     }
                     
@@ -1862,7 +1878,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 } finally {
                     conn?.disconnect()
                 }
-            }.start()
+            }
         }
 
         fun tryDirectLookup(index: Int) {

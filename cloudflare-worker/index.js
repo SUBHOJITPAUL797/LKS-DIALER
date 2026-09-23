@@ -9,8 +9,17 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const origin = request.headers.get("Origin");
+    const allowedOrigin = env.ALLOWED_ORIGIN || "https://lksdialerweb.pages.dev";
+    const isAllowedOrigin = origin && (
+      origin === allowedOrigin ||
+      origin.endsWith(".lksdialerweb.pages.dev") ||
+      origin.startsWith("http://localhost:")
+    );
+    const corsOrigin = isAllowedOrigin ? origin : (origin ? allowedOrigin : "*");
+
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": corsOrigin,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, X-Worker-Secret",
     };
@@ -48,15 +57,16 @@ export default {
     }
 
     const pushType = type || (isCancel ? "cancel_call" : "incoming_call");
+    const requestId = crypto.randomUUID().slice(0, 8);
 
     // Rate limiting: max 120 chat messages or 15 call pushes per IP per minute
     const isChat = pushType === "chat_message";
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     const rateLimitResult = await checkRateLimit(env, `rate:${ip}:${isChat ? "chat" : "call"}`, isChat ? 120 : 15);
     if (!rateLimitResult.allowed) {
-      console.warn(`Rate limit exceeded for IP ${ip} (type=${pushType})`);
+      console.warn(`[${requestId}] Rate limit exceeded for IP ${ip} (type=${pushType})`);
       return new Response(
-        JSON.stringify({ success: false, error: "Rate limit exceeded. Try again in a minute." }),
+        JSON.stringify({ success: false, requestId, error: "Rate limit exceeded. Try again in a minute." }),
         { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60", ...corsHeaders } }
       );
     }
@@ -66,6 +76,7 @@ export default {
     const webTtl = pushType === "cancel_call" ? "5" : (isChat ? "2419200" : "60");
 
     try {
+      // Re-use cached Google OAuth2 access token to eliminate 200-400ms latency per push
       const accessToken = await getGoogleAccessToken(env.FIREBASE_CLIENT_EMAIL, env.FIREBASE_PRIVATE_KEY);
       const fcmUrl = `https://fcm.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/messages:send`;
 
@@ -105,7 +116,7 @@ export default {
         });
         const result = await fcmResponse.json();
         if (result.error) {
-          console.error("FCM API error response:", JSON.stringify(result.error));
+          console.error(`[${requestId}] FCM API error response:`, JSON.stringify(result.error));
         }
 
         // Auto-cleanup stale FCM tokens
@@ -113,7 +124,7 @@ export default {
           (d) => d.errorCode === "UNREGISTERED"
         );
         if (isUnregistered) {
-          console.log(`Stale FCM token detected — consider clearing it from Firestore for calleeNumber`);
+          console.log(`[${requestId}] Stale FCM token detected for callee`);
         }
         return result;
       };
@@ -123,16 +134,16 @@ export default {
         sendPush(webToken),
       ]);
 
-      console.log(`[${pushType}] callId=${callId} caller=${callerNumber} ttl=${ttlSeconds} android=${androidResult?.name || androidResult?.error?.status}`);
+      console.log(`[${requestId}] [${pushType}] callId=${callId} caller=${callerNumber} ttl=${ttlSeconds} android=${androidResult?.name || androidResult?.error?.status}`);
 
       return new Response(
-        JSON.stringify({ success: true, androidResult, webResult }),
+        JSON.stringify({ success: true, requestId, androidResult, webResult }),
         { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     } catch (err) {
-      console.error("Worker error:", err.message);
+      console.error(`[${requestId}] Worker error:`, err.message);
       return new Response(
-        JSON.stringify({ success: false, error: err.message }),
+        JSON.stringify({ success: false, requestId, error: err.message }),
         { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
@@ -140,20 +151,11 @@ export default {
 };
 
 // TURN Credential Generation
-// Uses HMAC-SHA256 time-limited credentials. Expire after 24h.
+// Uses short-lived credentials (24h)
 async function handleTurnCredentials(env, corsHeaders) {
   try {
     const ttl = 86400;
     const timestamp = Math.floor(Date.now() / 1000) + ttl;
-    const username = `${timestamp}:lksdialer`;
-    const turnSecret = env.TURN_SECRET || "lks-dialer-turn-secret-change-me";
-
-    const key = await crypto.subtle.importKey(
-      "raw", new TextEncoder().encode(turnSecret),
-      { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-    );
-    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(username));
-    const credential = btoa(String.fromCharCode(...new Uint8Array(sig)));
 
     const iceServers = [
       { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
@@ -171,8 +173,18 @@ async function handleTurnCredentials(env, corsHeaders) {
       },
     ];
 
-    // Self-hosted TURN (optional — set TURN_HOST secret in Cloudflare dashboard)
+    // Self-hosted Coturn / TURN (set TURN_HOST secret in Cloudflare dashboard if available)
     if (env.TURN_HOST) {
+      const username = `${timestamp}:lksdialer`;
+      const turnSecret = env.TURN_SECRET || "lks-dialer-turn-secret-change-me";
+
+      const key = await crypto.subtle.importKey(
+        "raw", new TextEncoder().encode(turnSecret),
+        { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+      );
+      const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(username));
+      const credential = btoa(String.fromCharCode(...new Uint8Array(sig)));
+
       iceServers.push({
         urls: [
           `turn:${env.TURN_HOST}:3478`,
@@ -196,7 +208,7 @@ async function handleTurnCredentials(env, corsHeaders) {
   }
 }
 
-// Rate Limiting via Cloudflare KV
+// Rate Limiting via Cloudflare KV (approximate window-based rate limiting)
 async function checkRateLimit(env, key, maxRequests = 10) {
   if (!env.RATE_LIMIT_KV) return { allowed: true }; // skip if KV not configured
   try {
@@ -217,8 +229,18 @@ async function checkRateLimit(env, key, maxRequests = 10) {
   }
 }
 
+// In-memory OAuth2 token cache across worker invocations on the same isolate
+let cachedGoogleToken = null;
+let googleTokenExpiresAt = 0; // Unix timestamp in seconds
+
 // JWT + OAuth2 Helpers
 async function getGoogleAccessToken(clientEmail, privateKeyPem) {
+  const now = Math.floor(Date.now() / 1000);
+  // Re-use cached token if it has at least 5 minutes (300s) left before expiration
+  if (cachedGoogleToken && now < googleTokenExpiresAt - 300) {
+    return cachedGoogleToken;
+  }
+
   const jwt = await buildJWT(clientEmail, privateKeyPem);
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -227,7 +249,11 @@ async function getGoogleAccessToken(clientEmail, privateKeyPem) {
   });
   const tokenData = await tokenResponse.json();
   if (!tokenResponse.ok || !tokenData.access_token) throw new Error(`OAuth token error: ${JSON.stringify(tokenData)}`);
-  return tokenData.access_token;
+
+  const expiresIn = tokenData.expires_in || 3600;
+  cachedGoogleToken = tokenData.access_token;
+  googleTokenExpiresAt = now + expiresIn;
+  return cachedGoogleToken;
 }
 
 async function buildJWT(clientEmail, privateKeyPem) {
