@@ -72,6 +72,7 @@ fun CallHistoryScreen(
 
     // 5-Second Inactivity Swipe Demo State
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
+    var lastCallClickTime by remember { mutableStateOf(0L) }
     var showSwipeHint by remember { mutableStateOf(false) }
     val demoSwipeOffset = remember { Animatable(0f) }
 
@@ -205,7 +206,11 @@ fun CallHistoryScreen(
                     Button(
                         onClick = {
                             selectedLogForDetail = null
-                            onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.AUDIO)
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.AUDIO)
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
                         modifier = Modifier.weight(1f),
@@ -219,7 +224,11 @@ fun CallHistoryScreen(
                     Button(
                         onClick = {
                             selectedLogForDetail = null
-                            onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.VIDEO)
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.VIDEO)
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
                         modifier = Modifier.weight(1f),
@@ -516,17 +525,25 @@ fun CallHistoryScreen(
                             selectedLogForDetail = log
                         },
                         onAudioCall = {
-                            lastInteractionTime = System.currentTimeMillis()
-                            coroutineScope.launch {
-                                delay(200)
-                                onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.AUDIO)
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                lastInteractionTime = now
+                                coroutineScope.launch {
+                                    delay(200)
+                                    onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.AUDIO)
+                                }
                             }
                         },
                         onVideoCall = {
-                            lastInteractionTime = System.currentTimeMillis()
-                            coroutineScope.launch {
-                                delay(200)
-                                onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.VIDEO)
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                lastInteractionTime = now
+                                coroutineScope.launch {
+                                    delay(200)
+                                    onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.VIDEO)
+                                }
                             }
                         }
                     )

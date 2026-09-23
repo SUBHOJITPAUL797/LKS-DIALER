@@ -55,6 +55,15 @@ fun DialerScreen(
     val configuration = LocalConfiguration.current
     val screenHeight = configuration.screenHeightDp
 
+    var lastCallClickTime by remember { mutableStateOf(0L) }
+    val safeCall = { num: String, name: String, type: CallType ->
+        val now = System.currentTimeMillis()
+        if (now - lastCallClickTime > 1500L) {
+            lastCallClickTime = now
+            onStartCall(num, name, type)
+        }
+    }
+
     // Adaptive sizing for all Android device screen sizes
     val keySize = when {
         screenHeight < 620 -> 50.dp
@@ -374,7 +383,7 @@ fun DialerScreen(
                                 dialNumber = clean
                             },
                             onCall = {
-                                onStartCall(match.phoneNumber, match.name, CallType.AUDIO)
+                                safeCall(match.phoneNumber, match.name, CallType.AUDIO)
                             }
                         )
                     }
@@ -429,7 +438,7 @@ fun DialerScreen(
                         if (dialNumber.isNotBlank()) {
                             val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
                             val calleeName = matchedUser?.displayName ?: fullNum
-                            onStartCall(fullNum, calleeName, CallType.AUDIO)
+                            safeCall(fullNum, calleeName, CallType.AUDIO)
                         }
                     },
                     enabled = dialNumber.isNotBlank(),
@@ -446,7 +455,7 @@ fun DialerScreen(
                         if (dialNumber.isNotBlank()) {
                             val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
                             val calleeName = matchedUser?.displayName ?: fullNum
-                            onStartCall(fullNum, calleeName, CallType.VIDEO)
+                            safeCall(fullNum, calleeName, CallType.VIDEO)
                         }
                     },
                     enabled = dialNumber.isNotBlank(),

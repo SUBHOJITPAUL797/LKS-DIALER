@@ -225,6 +225,28 @@ class WebRtcEngine private constructor(private val context: Context) {
                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
+            .setAudioRecordErrorCallback(object : JavaAudioDeviceModule.AudioRecordErrorCallback {
+                override fun onWebRtcAudioRecordInitError(errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioRecord Init Error: $errorMessage")
+                }
+                override fun onWebRtcAudioRecordStartError(errorCode: JavaAudioDeviceModule.AudioRecordStartErrorCode?, errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioRecord Start Error: $errorCode - $errorMessage")
+                }
+                override fun onWebRtcAudioRecordError(errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioRecord Runtime Error: $errorMessage")
+                }
+            })
+            .setAudioTrackErrorCallback(object : JavaAudioDeviceModule.AudioTrackErrorCallback {
+                override fun onWebRtcAudioTrackInitError(errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioTrack Init Error: $errorMessage")
+                }
+                override fun onWebRtcAudioTrackStartError(errorCode: JavaAudioDeviceModule.AudioTrackStartErrorCode?, errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioTrack Start Error: $errorCode - $errorMessage")
+                }
+                override fun onWebRtcAudioTrackError(errorMessage: String?) {
+                    Log.e("WebRtcEngine", "AudioTrack Runtime Error: $errorMessage")
+                }
+            })
             .createAudioDeviceModule()
 
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -237,6 +259,12 @@ class WebRtcEngine private constructor(private val context: Context) {
     
     private fun createAudioTrack() {
         if (peerConnectionFactory == null) return
+        try { localAudioTrack?.setEnabled(false) } catch (_: Exception) {}
+        try { localAudioTrack?.dispose() } catch (_: Exception) {}
+        localAudioTrack = null
+        try { audioSource?.dispose() } catch (_: Exception) {}
+        audioSource = null
+
         val audioConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("echoCancellation", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
@@ -248,7 +276,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
         localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
-        localAudioTrack?.setEnabled(true)
+        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
     }
 
     private fun createVideoTrack() {
@@ -287,7 +315,41 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Dedicated teardown for any active PeerConnection and media tracks.
+     * Prevents orphaned audio/video tracks and native AudioRecord/AudioTrack conflicts.
+     */
+    private fun cleanupMediaAndPeerConnection() {
+        try { localAudioTrack?.setEnabled(false) } catch (_: Exception) {}
+        try { localAudioTrack?.dispose() } catch (_: Exception) {}
+        localAudioTrack = null
+        try { audioSource?.dispose() } catch (_: Exception) {}
+        audioSource = null
+
+        try { _state.value.localVideoTrack?.dispose() } catch (_: Exception) {}
+        try { _state.value.remoteVideoTrack?.dispose() } catch (_: Exception) {}
+        
+        try {
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+        } catch (_: Exception) {}
+        videoCapturer = null
+        try { videoSource?.dispose() } catch (_: Exception) {}
+        videoSource = null
+        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
+        surfaceTextureHelper = null
+        
+        try {
+            peerConnection?.close()
+            peerConnection?.dispose()
+        } catch (_: Exception) {}
+        peerConnection = null
+    }
+
     private fun createPeerConnection(isCaller: Boolean, callId: String) {
+        // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
+        cleanupMediaAndPeerConnection()
+
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
@@ -307,6 +369,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         reconnectJob = null
                         _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
                         audioRouteManager.reassertCurrentRoute()
+                        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
@@ -382,6 +445,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         audioTrack.setEnabled(true)
                         audioTrack.setVolume(1.0)
                         Log.i("WebRtcEngine", "Enabled remote AudioTrack from stream: ${audioTrack.id()}")
+                        audioRouteManager.reassertCurrentRoute()
                     } catch (e: Exception) {
                         Log.w("WebRtcEngine", "Failed to enable remote AudioTrack: ${e.message}")
                     }
@@ -401,6 +465,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             track.setEnabled(true)
                             track.setVolume(1.0)
                             Log.i("WebRtcEngine", "Enabled remote AudioTrack: ${track.id()}")
+                            audioRouteManager.reassertCurrentRoute()
                         } catch (e: Exception) {
                             Log.w("WebRtcEngine", "Failed to configure remote AudioTrack: ${e.message}")
                         }
@@ -493,13 +558,40 @@ class WebRtcEngine private constructor(private val context: Context) {
         return lines.joinToString("\r\n")
     }
 
+    @Volatile
+    private var lastInitiateCallTimestamp: Long = 0L
+
+    @Synchronized
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
+        val now = System.currentTimeMillis()
+        if (now - lastInitiateCallTimestamp < 1500L) {
+            Log.w("WebRtcEngine", "initiateCall dropped: rapid call initiation debounce (${now - lastInitiateCallTimestamp}ms ago)")
+            return
+        }
+
+        val currentCall = _state.value.activeCall
+        val currentStatus = _state.value.callStatus
+        if (currentCall != null && (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING || currentStatus == CallStatus.ANSWERED)) {
+            if (com.example.util.ContactsHelper.numbersMatch(currentCall.calleeNumber, calleeNumber)) {
+                Log.w("WebRtcEngine", "initiateCall dropped: already calling or in active call with $calleeNumber (status=$currentStatus)")
+                return
+            } else {
+                Log.i("WebRtcEngine", "Switching call target: ending current call ${currentCall.callId} to call $calleeNumber")
+                endCall(currentCall.callId)
+            }
+        }
+
+        lastInitiateCallTimestamp = now
         resetIdleJob?.cancel()
         resetIdleJob = null
         reconnectJob?.cancel()
         reconnectJob = null
 
         myPhoneNumber = callerNumber
+
+        // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
+        cleanupMediaAndPeerConnection()
+
         val newCall = CallDto(
             callId = UUID.randomUUID().toString(),
             callerNumber = callerNumber,
@@ -643,6 +735,54 @@ class WebRtcEngine private constructor(private val context: Context) {
                     .filter { (it.status == CallStatus.CALLING || it.status == CallStatus.RINGING) && (now - it.createdAt <= 45_000L) }
                     .filter { it.callerNumber != myPhoneNumber && it.callerNumber.replace(Regex("[^0-9]"), "") != cleanDigits }
                     .maxByOrNull { it.createdAt }
+
+                // 1. Industry Standard: Call Glare / Collision Resolution (Both parties call each other simultaneously)
+                if (incomingCall != null && currentActive != null && _state.value.callStatus == CallStatus.CALLING &&
+                    com.example.util.ContactsHelper.numbersMatch(currentActive.calleeNumber, incomingCall.callerNumber) &&
+                    !isCallTerminated(incomingCall.callId)
+                ) {
+                    Log.i("WebRtcEngine", "⚡ Call Glare detected: simultaneous calls between $myPhoneNumber and ${incomingCall.callerNumber}")
+                    val myClean = myPhoneNumber.replace(Regex("[^0-9]"), "")
+                    val peerClean = incomingCall.callerNumber.replace(Regex("[^0-9]"), "")
+                    if (myClean > peerClean) {
+                        // We WIN tie-breaker as Caller. Maintain our outgoing call and decline peer's incoming call.
+                        Log.i("WebRtcEngine", "Glare resolved: We win as Caller. Continuing outgoing call ${currentActive.callId}")
+                        markCallTerminated(incomingCall.callId)
+                        firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.DECLINED.name)
+                    } else {
+                        // We YIELD tie-breaker as Callee. Cancel our outgoing call and answer peer's incoming call!
+                        Log.i("WebRtcEngine", "Glare resolved: We yield as Callee. Cancelling outgoing call ${currentActive.callId} and answering ${incomingCall.callId}")
+                        endCallInternalLocal(CallStatus.ENDED)
+                        seenCallIds.add(incomingCall.callId)
+                        attachToCall(
+                            callId = incomingCall.callId,
+                            autoAnswer = false,
+                            callerName = incomingCall.callerName,
+                            callerNumber = incomingCall.callerNumber,
+                            callTypeStr = incomingCall.callType.name
+                        )
+                    }
+                    return@addSnapshotListener
+                }
+
+                // 2. Industry Standard: Newer Call Upgrade from Same Caller (Caller retried while callee was already ringing)
+                if (incomingCall != null && currentActive != null && _state.value.callStatus == CallStatus.RINGING &&
+                    com.example.util.ContactsHelper.numbersMatch(currentActive.callerNumber, incomingCall.callerNumber) &&
+                    incomingCall.callId != currentActive.callId &&
+                    incomingCall.createdAt >= currentActive.createdAt &&
+                    !isCallTerminated(incomingCall.callId)
+                ) {
+                    Log.i("WebRtcEngine", "Caller initiated a newer call ${incomingCall.callId} (replacing ${currentActive.callId}). Upgrading active ringing call.")
+                    markCallTerminated(currentActive.callId)
+                    seenCallIds.add(incomingCall.callId)
+                    // Update new call in Firestore to RINGING
+                    firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
+                    // Update local state to point to new call
+                    _state.value = _state.value.copy(activeCall = incomingCall)
+                    listenToActiveCall(incomingCall.callId, isCaller = false)
+                    listenForIceCandidates(incomingCall.callId, isCaller = false)
+                    return@addSnapshotListener
+                }
 
                 // CRITICAL FIX: Guard on callStatus being IDLE/ENDED/DECLINED/MISSED, NOT on activeCall == null.
                 // Previously: activeCall == null → was only true after 1500ms (when UI reset to IDLE)
@@ -1571,30 +1711,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         } catch (_: Exception) {}
         incomingCallWakeLock = null
         
-        try { localAudioTrack?.dispose() } catch (_: Exception) {}
-        localAudioTrack = null
-        try { audioSource?.dispose() } catch (_: Exception) {}
-        audioSource = null
-
-        try { _state.value.localVideoTrack?.dispose() } catch (_: Exception) {}
-        try { _state.value.remoteVideoTrack?.dispose() } catch (_: Exception) {}
-        
-        try {
-            videoCapturer?.stopCapture()
-            videoCapturer?.dispose()
-        } catch (_: Exception) {}
-        videoCapturer = null
-        try { videoSource?.dispose() } catch (_: Exception) {}
-        videoSource = null
-        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
-        surfaceTextureHelper = null
-        
-        try {
-            peerConnection?.close()
-            peerConnection?.dispose()
-        } catch (_: Exception) {}
-        peerConnection = null
-        
+        cleanupMediaAndPeerConnection()
         val prevCall = _state.value.activeCall
 
         // Phase 3: Reliable call logs — record call ended for both caller and callee

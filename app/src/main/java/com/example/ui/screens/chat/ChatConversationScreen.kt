@@ -440,10 +440,23 @@ fun ChatConversationScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onStartCall(normPeer, peerDisplayName, CallType.AUDIO) }) {
+                    var lastCallClickTime by remember { mutableStateOf(0L) }
+                    IconButton(onClick = {
+                        val now = System.currentTimeMillis()
+                        if (now - lastCallClickTime > 1500L) {
+                            lastCallClickTime = now
+                            onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
+                        }
+                    }) {
                         Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = GreenCall)
                     }
-                    IconButton(onClick = { onStartCall(normPeer, peerDisplayName, CallType.VIDEO) }) {
+                    IconButton(onClick = {
+                        val now = System.currentTimeMillis()
+                        if (now - lastCallClickTime > 1500L) {
+                            lastCallClickTime = now
+                            onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
+                        }
+                    }) {
                         Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = TealPrimary)
                     }
                     Box {

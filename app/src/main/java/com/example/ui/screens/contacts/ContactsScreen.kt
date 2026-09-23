@@ -80,6 +80,7 @@ fun ContactsScreen(
 
     // 5-Second Inactivity Swipe Demo State
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
+    var lastCallClickTime by remember { mutableStateOf(0L) }
     var showSwipeHint by remember { mutableStateOf(false) }
     val demoSwipeOffset = remember { Animatable(0f) }
 
@@ -435,17 +436,25 @@ fun ContactsScreen(
                             isOnline = isOnline,
                             demoOffset = currentOffset,
                             onAudioCall = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                coroutineScope.launch {
-                                    delay(200)
-                                    onStartCall(contact.phoneNumber, contact.name, CallType.AUDIO)
+                                val now = System.currentTimeMillis()
+                                if (now - lastCallClickTime > 1500L) {
+                                    lastCallClickTime = now
+                                    lastInteractionTime = now
+                                    coroutineScope.launch {
+                                        delay(200)
+                                        onStartCall(contact.phoneNumber, contact.name, CallType.AUDIO)
+                                    }
                                 }
                             },
                             onVideoCall = {
-                                lastInteractionTime = System.currentTimeMillis()
-                                coroutineScope.launch {
-                                    delay(200)
-                                    onStartCall(contact.phoneNumber, contact.name, CallType.VIDEO)
+                                val now = System.currentTimeMillis()
+                                if (now - lastCallClickTime > 1500L) {
+                                    lastCallClickTime = now
+                                    lastInteractionTime = now
+                                    coroutineScope.launch {
+                                        delay(200)
+                                        onStartCall(contact.phoneNumber, contact.name, CallType.VIDEO)
+                                    }
                                 }
                             },
                             onRingtoneClick = {

@@ -736,8 +736,35 @@ class MainActivity : ComponentActivity() {
 
                 // Check active call overlay
                 val activeCall = rtcState.activeCall
-                val isCallActive = activeCall != null && (rtcState.callStatus == CallStatus.ANSWERED || rtcState.callStatus == CallStatus.CALLING)
+                val isCallActive = activeCall != null && (
+                    rtcState.callStatus == CallStatus.ANSWERED || 
+                    rtcState.callStatus == CallStatus.CALLING || 
+                    rtcState.callStatus == CallStatus.RINGING
+                )
                 val isCallRinging = activeCall != null && rtcState.callStatus == CallStatus.RINGING
+
+                var lastCallClickTime by remember { mutableStateOf(0L) }
+                val safeStartCall = { number: String, name: String, type: CallType ->
+                    if (isCallActive) {
+                        isCallMinimized = false
+                    } else {
+                        val now = System.currentTimeMillis()
+                        if (now - lastCallClickTime > 1500L) {
+                            lastCallClickTime = now
+                            val myNum = currentUser?.phoneNumber
+                            if (!myNum.isNullOrBlank()) {
+                                val myName = currentUser?.displayName?.ifBlank { null } ?: "Me"
+                                webRtcEngine.initiateCall(
+                                    calleeNumber = number,
+                                    calleeName = name,
+                                    callerNumber = myNum,
+                                    callerName = myName,
+                                    callType = type
+                                )
+                            }
+                        }
+                    }
+                }
 
                 val isIncoming = (activeCall?.callerNumber != currentUser?.phoneNumber) ||
                         (currentUser?.phoneNumber != null && com.example.util.ContactsHelper.numbersMatch(activeCall?.calleeNumber ?: "", currentUser?.phoneNumber ?: ""))
@@ -872,34 +899,12 @@ class MainActivity : ComponentActivity() {
                                             when (selectedTab) {
                                                 MainTab.DIALER -> DialerScreen(
                                                     firebaseManager = firebaseManager,
-                                                    onStartCall = { number, name, type ->
-                                                        if (isCallActive) {
-                                                            isCallMinimized = false
-                                                        } else {
-                                                            val myNum = currentUser?.phoneNumber ?: return@DialerScreen
-                                                            val myName = currentUser?.displayName ?: "Me"
-                                                            webRtcEngine.initiateCall(
-                                                                calleeNumber = number,
-                                                                calleeName = name,
-                                                                callerNumber = myNum,
-                                                                callerName = myName,
-                                                                callType = type
-                                                            )
-                                                        }
-                                                    },
+                                                    onStartCall = safeStartCall,
                                                     onNavigateToSettings = { navState = AppNavState.SETTINGS }
                                                 )
                                                 MainTab.RECENTS -> CallHistoryScreen(
                                                     firebaseManager = firebaseManager,
-                                                    onStartCall = { number, name, type ->
-                                                        if (isCallActive) {
-                                                            isCallMinimized = false
-                                                        } else {
-                                                            val myNum = currentUser?.phoneNumber ?: return@CallHistoryScreen
-                                                            val myName = currentUser?.displayName ?: "Me"
-                                                            webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                                        }
-                                                    },
+                                                    onStartCall = safeStartCall,
                                                     onOpenChat = { number, name ->
                                                         chatPeerNumber = number
                                                         chatPeerName = name
@@ -925,15 +930,7 @@ class MainActivity : ComponentActivity() {
                                                 )
                                                 MainTab.CONTACTS -> ContactsScreen(
                                                     firebaseManager = firebaseManager,
-                                                    onStartCall = { number, name, type ->
-                                                        if (isCallActive) {
-                                                            isCallMinimized = false
-                                                        } else {
-                                                            val myNum = currentUser?.phoneNumber ?: return@ContactsScreen
-                                                            val myName = currentUser?.displayName ?: "Me"
-                                                            webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                                        }
-                                                    },
+                                                    onStartCall = safeStartCall,
                                                     onOpenChat = { number, name ->
                                                         chatPeerNumber = number
                                                         chatPeerName = name
@@ -969,15 +966,7 @@ class MainActivity : ComponentActivity() {
                                             navState = AppNavState.MAIN
                                             selectedTab = MainTab.CHATS
                                         },
-                                        onStartCall = { number, name, type ->
-                                            if (isCallActive) {
-                                                isCallMinimized = false
-                                            } else {
-                                                val myNum = currentUser?.phoneNumber ?: return@ChatConversationScreen
-                                                val myName = currentUser?.displayName ?: "Me"
-                                                webRtcEngine.initiateCall(number, name, myNum, myName, type)
-                                            }
-                                        }
+                                        onStartCall = safeStartCall
                                     )
                                 }
                                 AppNavState.STORAGE_MANAGEMENT -> {
