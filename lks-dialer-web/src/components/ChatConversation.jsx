@@ -565,7 +565,7 @@ function LinkPreviewCardWeb({ url }) {
       return;
     }
 
-    const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+    const ytMatch = url.match(/(?:youtube\.com\/(?:[^\s]*[?&]v=|shorts\/|embed\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
     if (ytMatch) {
       const videoId = ytMatch[1];
       const hqThumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
@@ -784,11 +784,16 @@ function ClickableMessageTextWeb({ text, isOut }) {
   }, [text]);
 
   const firstUrl = useMemo(() => extractFirstUrl(text), [text]);
+  const isPureUrl = useMemo(() => {
+    if (!firstUrl || !text) return false;
+    const cleanText = text.trim().replace(/[.,)"'\]}:;!?~*]+$/, '');
+    return cleanText.toLowerCase() === firstUrl.trim().toLowerCase();
+  }, [text, firstUrl]);
 
   return (
     <div style={{ fontSize: 15, fontWeight: 600, color: '#000', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
       {firstUrl && <LinkPreviewCardWeb url={firstUrl} />}
-      {parts.map((part, i) => {
+      {!isPureUrl && parts.map((part, i) => {
         if (URL_REGEX.test(part)) {
           return (
             <a

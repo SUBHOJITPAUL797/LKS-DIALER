@@ -35,7 +35,7 @@ object LinkPreviewHelper {
     )
 
     private val YOUTUBE_VIDEO_PATTERNS = listOf(
-        Regex("""(?:youtube\.com/(?:watch\?v=|shorts/|embed/|v/)|youtu\.be/)([a-zA-Z0-9_-]{11})""", RegexOption.IGNORE_CASE),
+        Regex("""(?:youtube\.com/(?:[^\s]*[?&]v=|shorts/|embed/|v/)|youtu\.be/)([a-zA-Z0-9_-]{11})""", RegexOption.IGNORE_CASE),
         Regex("""youtube\.com/live/([a-zA-Z0-9_-]{11})""", RegexOption.IGNORE_CASE)
     )
 
@@ -48,7 +48,7 @@ object LinkPreviewHelper {
             .build()
     }
 
-    private val TRAILING_PUNCTUATION = charArrayOf('.', ',', ')', ']', '"', '\'', ';', ':', '>', '}')
+    val TRAILING_PUNCTUATION = charArrayOf('.', ',', ')', ']', '"', '\'', ';', ':', '>', '}', '!', '?', '*', '~')
 
     fun extractUrls(text: String): List<String> {
         if (text.isBlank()) return emptyList()
@@ -169,12 +169,15 @@ object LinkPreviewHelper {
                     return@withContext imgPreview
                 }
 
-                val bodySource = response.body?.source() ?: return@withContext LinkPreviewData(url = cleanUrl, domain = domain)
+                val body = response.body ?: return@withContext LinkPreviewData(url = cleanUrl, domain = domain)
+                val bodySource = body.source()
 
-                // Read up to 100KB of HTML head to parse meta tags
+                // Read up to 100KB of HTML head safely without throwing EOFException on smaller pages
                 val maxBytes = 100 * 1024L
-                val htmlHead = bodySource.buffer.clone().readUtf8(minOf(bodySource.buffer.size, maxBytes)).takeIf { it.isNotBlank() }
-                    ?: bodySource.readUtf8(maxBytes)
+                bodySource.request(maxBytes)
+                val buffer = bodySource.buffer
+                val bytesToRead = minOf(buffer.size, maxBytes)
+                val htmlHead = buffer.clone().readUtf8(bytesToRead)
 
                 val ogTitle = extractMetaContent(htmlHead, "og:title")
                     ?: extractMetaContent(htmlHead, "twitter:title")
@@ -288,7 +291,7 @@ object LinkPreviewHelper {
                     if (descMatcher.find()) {
                         val simpleDesc = descMatcher.group(1)
                         if (!simpleDesc.isNullOrBlank()) {
-                            description = unescapeUnicode(unescapeHtml(simpleDesc))
+                            description = unescapeUnicode(unescapeHtml(simpleDesc)).take(180)
                         }
                     } else {
                         val shortDescMatcher = Pattern.compile(""""shortDescription":"([^"]*)"""").matcher(pageHtml)

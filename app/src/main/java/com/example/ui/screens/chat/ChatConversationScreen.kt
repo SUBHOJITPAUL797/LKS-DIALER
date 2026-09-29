@@ -1949,8 +1949,9 @@ private fun MessageBubble(
     }
 
     val isDeleted = message.text.startsWith("🚫 ")
-    val hasHeroPreview = linkPreview != null && !linkPreview!!.imageUrl.isNullOrBlank() && !isDeleted
-    val isPureUrlMessage = displayText.trim().equals(linkPreview?.url?.trim(), ignoreCase = true)
+    val hasLinkPreview = linkPreview != null && !isDeleted
+    val hasHeroPreview = hasLinkPreview && !linkPreview!!.imageUrl.isNullOrBlank()
+    val isPureUrlMessage = firstUrl != null && displayText.trim().trimEnd(*LinkPreviewHelper.TRAILING_PUNCTUATION).equals(firstUrl.trim(), ignoreCase = true)
     val isHeroPreviewOnly = hasHeroPreview && isPureUrlMessage
 
     val isImageOnly = !isDeleted && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
@@ -1973,6 +1974,7 @@ private fun MessageBubble(
                 .widthIn(
                     min = when {
                         hasHeroPreview -> 270.dp
+                        hasLinkPreview -> 240.dp
                         message.mediaType == ChatMediaType.IMAGE.name && !isDeleted -> 200.dp
                         else -> 0.dp
                     },
@@ -2398,8 +2400,14 @@ private fun ClickableMessageText(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
         )
     } else {
-        val linkColor = if (isOutgoing) Color(0xFF86EFAC) else Color(0xFF25D366) // WhatsApp vibrant green
-        val annotatedString = remember(text, isOutgoing) {
+        val isDark = isSystemInDarkTheme()
+        val linkColor = when {
+            isOutgoing && isDark  -> Color(0xFF86EFAC) // Mint green on dark green bubble
+            isOutgoing && !isDark -> Color(0xFF0F5132) // Forest green on light green bubble
+            !isOutgoing && isDark -> Color(0xFF53BDEB) // Soft blue on dark slate bubble
+            else                  -> Color(0xFF0D6EFD) // Vibrant link blue on white bubble
+        }
+        val annotatedString = remember(text, isOutgoing, isDark) {
             androidx.compose.ui.text.buildAnnotatedString {
                 var lastIdx = 0
                 for (match in urls) {
@@ -2408,18 +2416,26 @@ private fun ClickableMessageText(
                     if (start > lastIdx) {
                         append(text.substring(lastIdx, start))
                     }
-                    val url = match.value
-                    pushStringAnnotation(tag = "URL", annotation = url)
-                    withStyle(
-                        style = androidx.compose.ui.text.SpanStyle(
-                            color = linkColor,
-                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                            fontWeight = FontWeight.Medium
-                        )
-                    ) {
-                        append(url)
+                    val rawUrl = match.value
+                    val cleanUrl = rawUrl.trimEnd(*LinkPreviewHelper.TRAILING_PUNCTUATION)
+                    val trailingPunct = rawUrl.substring(cleanUrl.length)
+
+                    if (cleanUrl.isNotEmpty()) {
+                        pushStringAnnotation(tag = "URL", annotation = cleanUrl)
+                        withStyle(
+                            style = androidx.compose.ui.text.SpanStyle(
+                                color = linkColor,
+                                textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                                fontWeight = FontWeight.Medium
+                            )
+                        ) {
+                            append(cleanUrl)
+                        }
+                        pop()
                     }
-                    pop()
+                    if (trailingPunct.isNotEmpty()) {
+                        append(trailingPunct)
+                    }
                     lastIdx = end
                 }
                 if (lastIdx < text.length) {
