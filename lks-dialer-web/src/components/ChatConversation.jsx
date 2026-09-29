@@ -565,6 +565,43 @@ function LinkPreviewCardWeb({ url }) {
       return;
     }
 
+    const ytMatch = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+    if (ytMatch) {
+      const videoId = ytMatch[1];
+      const hqThumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`)
+        .then(res => res.json())
+        .then(json => {
+          if (!isMounted) return;
+          const data = {
+            url,
+            domain: 'youtube.com',
+            title: json.title || (url.includes('/shorts/') ? 'YouTube Shorts' : 'YouTube Video'),
+            description: json.author_name ? (url.includes('/shorts/') ? `YouTube Shorts • ${json.author_name}` : `YouTube • ${json.author_name}`) : 'YouTube',
+            imageUrl: json.thumbnail_url || hqThumb,
+            isVideo: true,
+            isYouTube: true
+          };
+          linkPreviewCache.set(url, data);
+          setPreview(data);
+        })
+        .catch(() => {
+          if (!isMounted) return;
+          const fallback = {
+            url,
+            domain: 'youtube.com',
+            title: url.includes('/shorts/') ? 'YouTube Shorts' : 'YouTube Video',
+            description: 'youtube.com',
+            imageUrl: hqThumb,
+            isVideo: true,
+            isYouTube: true
+          };
+          linkPreviewCache.set(url, fallback);
+          setPreview(fallback);
+        });
+      return;
+    }
+
     fetch(`https://api.microlink.io?url=${encodeURIComponent(url)}`)
       .then(res => res.json())
       .then(json => {
@@ -576,7 +613,8 @@ function LinkPreviewCardWeb({ url }) {
             domain: d.publisher || domain,
             title: d.title || domain,
             description: d.description || '',
-            imageUrl: d.image?.url || null
+            imageUrl: d.image?.url || null,
+            isVideo: d.video != null
           };
           linkPreviewCache.set(url, data);
           setPreview(data);
@@ -597,6 +635,104 @@ function LinkPreviewCardWeb({ url }) {
   }, [url, domain]);
 
   if (!url) return null;
+
+  const isHero = !!preview?.imageUrl;
+  const isYouTube = preview?.isYouTube || domain.includes('youtube') || domain.includes('youtu.be');
+
+  if (isHero) {
+    return (
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          backgroundColor: '#025144',
+          borderRadius: 12,
+          overflow: 'hidden',
+          marginTop: 4,
+          marginBottom: 6,
+          cursor: 'pointer',
+          maxWidth: 320,
+          textDecoration: 'none',
+          boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+        }}
+        title={`Open ${url}`}
+      >
+        <div style={{ position: 'relative', width: '100%', height: 160, backgroundColor: '#000' }}>
+          <img
+            src={preview.imageUrl}
+            alt="preview"
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            onError={(e) => { e.target.style.display = 'none'; }}
+          />
+          {(preview?.isVideo || isYouTube) && (
+            <div style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 50,
+              height: 50,
+              borderRadius: '50%',
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              border: '2px solid rgba(255,255,255,0.85)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <div style={{
+                width: 0,
+                height: 0,
+                borderTop: '10px solid transparent',
+                borderBottom: '10px solid transparent',
+                borderLeft: '16px solid #fff',
+                marginLeft: 3
+              }} />
+            </div>
+          )}
+        </div>
+        <div style={{ padding: '8px 10px' }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: '#fff', lineHeight: '17px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {preview?.title || domain}
+          </div>
+          {preview?.description && (
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 3, lineHeight: '15px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+              {preview.description}
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span>🔗</span>
+              <span>{domain || 'youtube.com'}</span>
+            </div>
+            {isYouTube && (
+              <div style={{
+                backgroundColor: '#FF0000',
+                borderRadius: 4,
+                width: 24,
+                height: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <div style={{
+                  width: 0,
+                  height: 0,
+                  borderTop: '4px solid transparent',
+                  borderBottom: '4px solid transparent',
+                  borderLeft: '7px solid #fff',
+                  marginLeft: 1
+                }} />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -620,18 +756,9 @@ function LinkPreviewCardWeb({ url }) {
       }}
       title={`Open ${url}`}
     >
-      {preview?.imageUrl ? (
-        <img
-          src={preview.imageUrl}
-          alt="preview"
-          style={{ width: 76, height: 72, objectFit: 'cover', flexShrink: 0 }}
-          onError={(e) => { e.target.style.display = 'none'; }}
-        />
-      ) : (
-        <div style={{ width: 44, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#3B4A54', flexShrink: 0 }}>
-          <ExternalLink size={18} color="#8696A0" />
-        </div>
-      )}
+      <div style={{ width: 64, height: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#384954', flexShrink: 0 }}>
+        <ExternalLink size={22} color="#8696A0" />
+      </div>
       <div style={{ padding: '6px 10px', flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 700, fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {preview?.title || domain}

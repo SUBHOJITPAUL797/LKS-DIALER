@@ -17,6 +17,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -157,6 +159,25 @@ fun ChatConversationScreen(
     }
 
     var inputText by remember { mutableStateOf(if (initialSharedPhotos.isNullOrEmpty()) (initialSharedText ?: "") else "") }
+    var dismissedTypingUrl by remember { mutableStateOf<String?>(null) }
+    val currentTypingUrl = remember(inputText) { LinkPreviewHelper.extractFirstUrl(inputText) }
+    var typingPreviewData by remember { mutableStateOf<com.example.util.LinkPreviewData?>(null) }
+
+    LaunchedEffect(currentTypingUrl, dismissedTypingUrl) {
+        if (currentTypingUrl == null || currentTypingUrl == dismissedTypingUrl) {
+            typingPreviewData = null
+        } else {
+            val cached = LinkPreviewHelper.getCachedPreview(currentTypingUrl)
+            if (cached != null) {
+                typingPreviewData = cached
+            }
+            LinkPreviewHelper.getPreviewFlow(currentTypingUrl).collect { preview ->
+                if (currentTypingUrl != dismissedTypingUrl) {
+                    typingPreviewData = preview
+                }
+            }
+        }
+    }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -850,6 +871,117 @@ fun ChatConversationScreen(
                 }
             }
 
+            // ── Live Typing Link Preview Banner (WhatsApp style) ───────────────
+            AnimatedVisibility(
+                visible = typingPreviewData != null && currentTypingUrl != null && currentTypingUrl != dismissedTypingUrl,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                typingPreviewData?.let { preview ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                        tonalElevation = 2.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Thumbnail or Link Icon
+                            if (!preview.imageUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = preview.imageUrl,
+                                    contentDescription = "Thumbnail",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surface),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Link,
+                                        contentDescription = null,
+                                        tint = GreenCall,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            // Title and Domain
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = preview.title?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = preview.description?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Link,
+                                        contentDescription = null,
+                                        tint = GreenCall,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = preview.domain.ifBlank { "link" },
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            color = GreenCall,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+                            }
+
+                            // Dismiss 'X' Button
+                            IconButton(
+                                onClick = {
+                                    dismissedTypingUrl = currentTypingUrl
+                                    typingPreviewData = null
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Dismiss link preview",
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── Bottom Input Bar ─────────────────────────────────────────────
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1018,6 +1150,7 @@ fun ChatConversationScreen(
                                     if (textToSend.isNotEmpty()) {
                                         inputText = ""
                                         replyingTo = null
+                                        dismissedTypingUrl = null
                                         chatRepository.setTyping(normPeer, false)
                                         coroutineScope.launch {
                                             // Embed reply metadata in message text as JSON if replying
@@ -1761,8 +1894,17 @@ private fun MessageBubble(
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
 
-    val firstUrl = remember(message.text, message.mediaType) {
-        if (message.mediaType == ChatMediaType.TEXT.name) LinkPreviewHelper.extractFirstUrl(message.text) else null
+    val displayText = remember(message.text) {
+        if (message.mediaType == ChatMediaType.TEXT.name) {
+            try {
+                val obj = org.json.JSONObject(message.text)
+                obj.optString("text", message.text)
+            } catch (_: Exception) { message.text }
+        } else message.text
+    }
+
+    val firstUrl = remember(displayText, message.mediaType) {
+        if (message.mediaType == ChatMediaType.TEXT.name) LinkPreviewHelper.extractFirstUrl(displayText) else null
     }
     val linkPreview by produceState<LinkPreviewData?>(
         initialValue = firstUrl?.let { LinkPreviewHelper.getCachedPreview(it) },
@@ -1806,18 +1948,16 @@ private fun MessageBubble(
         } else null
     }
 
-    val displayText = remember(message.text) {
-        if (message.mediaType == ChatMediaType.TEXT.name) {
-            try {
-                val obj = org.json.JSONObject(message.text)
-                obj.optString("text", message.text)
-            } catch (_: Exception) { message.text }
-        } else message.text
-    }
-
     val isDeleted = message.text.startsWith("🚫 ")
+    val hasHeroPreview = linkPreview != null && !linkPreview!!.imageUrl.isNullOrBlank() && !isDeleted
+    val isPureUrlMessage = displayText.trim().equals(linkPreview?.url?.trim(), ignoreCase = true)
+    val isHeroPreviewOnly = hasHeroPreview && isPureUrlMessage
+
     val isImageOnly = !isDeleted && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
-    val bubblePadding = if (isImageOnly) PaddingValues(4.dp) else PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+    val bubblePadding = when {
+        isImageOnly || isHeroPreviewOnly -> PaddingValues(4.dp)
+        else -> PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+    }
 
     Box(
         modifier = Modifier
@@ -1830,7 +1970,14 @@ private fun MessageBubble(
             shape = bubbleShape,
             shadowElevation = 1.dp,
             modifier = Modifier
-                .widthIn(max = 310.dp, min = if (message.mediaType == ChatMediaType.IMAGE.name && !isDeleted) 200.dp else 0.dp)
+                .widthIn(
+                    min = when {
+                        hasHeroPreview -> 270.dp
+                        message.mediaType == ChatMediaType.IMAGE.name && !isDeleted -> 200.dp
+                        else -> 0.dp
+                    },
+                    max = if (hasHeroPreview) 320.dp else 310.dp
+                )
                 .combinedClickable(
                     onClick = {
                         if (message.mediaType == ChatMediaType.TEXT.name) {
@@ -2157,6 +2304,7 @@ private fun MessageBubble(
                 if (linkPreview != null && !isDeleted) {
                     LinkPreviewCard(
                         preview = linkPreview!!,
+                        isOutgoing = isOutgoing,
                         onOpenUrl = { url ->
                             try {
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
@@ -2174,7 +2322,7 @@ private fun MessageBubble(
                 }
 
                 // ── Text / Caption with Clickable Links ───────────────────────
-                if (displayText.isNotBlank() && message.mediaType != ChatMediaType.DOCUMENT.name) {
+                if (displayText.isNotBlank() && !isHeroPreviewOnly && message.mediaType != ChatMediaType.DOCUMENT.name) {
                     ClickableMessageText(
                         text = displayText,
                         isOutgoing = isOutgoing,
@@ -2316,100 +2464,271 @@ private fun ClickableMessageText(
 @Composable
 private fun LinkPreviewCard(
     preview: LinkPreviewData,
+    isOutgoing: Boolean,
     onOpenUrl: (String) -> Unit,
     onLongClick: (() -> Unit)? = null
 ) {
     val isDark = isSystemInDarkTheme()
-    val cardBg = if (isDark) Color(0xFF2A3942) else Color(0xFFE2E8F0).copy(alpha = 0.7f)
+    val isHero = !preview.imageUrl.isNullOrBlank()
 
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = cardBg,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 2.dp, vertical = 3.dp)
-            .combinedClickable(
-                onClick = { onOpenUrl(preview.url) },
-                onLongClick = onLongClick
-            )
-    ) {
-        Row(
+    if (isHero) {
+        // ── HERO PREVIEW (Screenshot 2: YouTube / Video / Rich Web) ────────────
+        val cardBg = if (isOutgoing) {
+            if (isDark) Color(0xFF025144) else Color(0xFFD6F8C8)
+        } else {
+            if (isDark) Color(0xFF1E2B32) else Color(0xFFF0F2F5)
+        }
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = cardBg,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(IntrinsicSize.Min),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Thumbnail Image on Left
-            if (!preview.imageUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = preview.imageUrl,
-                    contentDescription = preview.title ?: "Preview",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(width = 82.dp, height = 76.dp)
-                        .clip(RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp))
+                .padding(vertical = 2.dp)
+                .combinedClickable(
+                    onClick = { onOpenUrl(preview.url) },
+                    onLongClick = onLongClick
                 )
-            } else {
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Large Hero Image with Video Play Button overlay
                 Box(
                     modifier = Modifier
-                        .size(width = 44.dp, height = 64.dp)
-                        .background(if (isDark) Color(0xFF3B4A54) else Color(0xFFCBD5E1)),
+                        .fillMaxWidth()
+                        .height(180.dp)
+                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = preview.imageUrl,
+                        contentDescription = preview.title ?: "Link Preview",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                    )
+
+                    // Video Play Button Overlay
+                    val isYouTube = preview.domain.contains("youtube", ignoreCase = true) ||
+                                    preview.domain.contains("youtu.be", ignoreCase = true) ||
+                                    preview.siteName?.contains("youtube", ignoreCase = true) == true
+
+                    if (preview.isVideo || isYouTube) {
+                        Box(
+                            modifier = Modifier
+                                .size(54.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.45f))
+                                .border(1.5.dp, Color.White.copy(alpha = 0.85f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = "Play",
+                                tint = Color.White,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .offset(x = 1.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Info Section
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    // Bold Title
+                    Text(
+                        text = preview.title?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp
+                        ),
+                        color = if (isOutgoing) {
+                            if (isDark) Color.White else Color(0xFF0F2E28)
+                        } else {
+                            if (isDark) Color.White else Color(0xFF111B21)
+                        },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    // Description
+                    if (!preview.description.isNullOrBlank() && preview.description != preview.title) {
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = preview.description,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            ),
+                            color = if (isOutgoing) {
+                                if (isDark) Color.White.copy(alpha = 0.72f) else Color(0xFF24473F)
+                            } else {
+                                if (isDark) Color.White.copy(alpha = 0.7f) else Color(0xFF667781)
+                            },
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Domain & Brand Badge Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        // Left: 🔗 domain.com
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Link,
+                                contentDescription = null,
+                                tint = if (isOutgoing) {
+                                    if (isDark) Color.White.copy(alpha = 0.6f) else Color(0xFF3B665A)
+                                } else {
+                                    if (isDark) Color.White.copy(alpha = 0.55f) else Color(0xFF667781)
+                                },
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = preview.domain.ifBlank { "youtube.com" },
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Normal
+                                ),
+                                color = if (isOutgoing) {
+                                    if (isDark) Color.White.copy(alpha = 0.65f) else Color(0xFF3B665A)
+                                } else {
+                                    if (isDark) Color.White.copy(alpha = 0.6f) else Color(0xFF667781)
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        // Right: YouTube red play badge
+                        val isYouTube = preview.domain.contains("youtube", ignoreCase = true) ||
+                                        preview.domain.contains("youtu.be", ignoreCase = true) ||
+                                        preview.siteName?.contains("youtube", ignoreCase = true) == true
+
+                        if (isYouTube) {
+                            Surface(
+                                color = Color(0xFFFF0000),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.size(width = 24.dp, height = 16.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Filled.PlayArrow,
+                                        contentDescription = "YouTube",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // ── COMPACT PREVIEW (Screenshot 1: Generic Sites / No Hero Image) ───────
+        val cardBg = if (isOutgoing) {
+            if (isDark) Color(0xFF025144) else Color(0xFFD6F8C8)
+        } else {
+            if (isDark) Color(0xFF2A3942) else Color(0xFFE2E8F0).copy(alpha = 0.7f)
+        }
+
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = cardBg,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp)
+                .combinedClickable(
+                    onClick = { onOpenUrl(preview.url) },
+                    onLongClick = onLongClick
+                )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Left square gray box with 🔗 Link icon (matching Screenshot 1)
+                Box(
+                    modifier = Modifier
+                        .size(width = 64.dp, height = 64.dp)
+                        .clip(RoundedCornerShape(topStart = 10.dp, bottomStart = 10.dp))
+                        .background(if (isDark) Color(0xFF384954) else Color(0xFFCBD5E1)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Default.Link,
                         contentDescription = null,
-                        tint = Color.Gray,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            // Text Info on Right
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = preview.title?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    ),
-                    color = if (isDark) Color.White else Color.Black,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                if (!preview.description.isNullOrBlank() && preview.description != preview.title) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = preview.description,
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.65f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        tint = if (isDark) Color(0xFF8696A0) else Color(0xFF64748B),
+                        modifier = Modifier.size(24.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.Link,
-                        contentDescription = null,
-                        tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
-                        modifier = Modifier.size(12.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
+                // Text Info on Right
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.Center
+                ) {
                     Text(
-                        text = preview.domain.ifBlank { "link" },
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                        text = preview.title?.ifBlank { null } ?: preview.domain.ifBlank { preview.url },
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        ),
+                        color = if (isOutgoing) {
+                            if (isDark) Color.White else Color(0xFF0F2E28)
+                        } else {
+                            if (isDark) Color.White else Color.Black
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+
+                    if (!preview.description.isNullOrBlank() && preview.description != preview.title) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = preview.description,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.65f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Link,
+                            contentDescription = null,
+                            tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = preview.domain.ifBlank { "link" },
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
