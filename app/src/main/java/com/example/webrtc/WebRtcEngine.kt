@@ -94,6 +94,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     // Pre-warm state: answer SDP prepared during ringing so Accept tap is instant
     @Volatile private var prebuiltAnswerSdp: String? = null
+    @Volatile private var prebuiltCallId: String? = null
     @Volatile private var preWarmDone = false
 
     // WebRTC Core
@@ -280,10 +281,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
         localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
-        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+        val shouldEnable = (_state.value.callStatus == CallStatus.ANSWERED || _state.value.callStatus == CallStatus.CALLING)
+        localAudioTrack?.setEnabled(shouldEnable && !_state.value.isMuted && !_state.value.isOnHold)
     }
 
-    private fun createVideoTrack() {
+    private fun createVideoTrack(startCaptureNow: Boolean = true) {
         if (peerConnectionFactory == null) return
         val enumerator = Camera2Enumerator(context)
         val deviceNames = enumerator.deviceNames
@@ -310,13 +312,22 @@ class WebRtcEngine private constructor(private val context: Context) {
             surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
             videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
             videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-            videoCapturer?.startCapture(1280, 720, 30)
+            if (startCaptureNow) {
+                try { videoCapturer?.startCapture(1280, 720, 30) } catch (_: Exception) {}
+            }
             
             val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
-            videoTrack?.setEnabled(true)
+            videoTrack?.setEnabled(startCaptureNow)
             
             _state.value = _state.value.copy(localVideoTrack = videoTrack)
         }
+    }
+
+    private fun startVideoCaptureIfNeeded() {
+        try {
+            videoCapturer?.startCapture(1280, 720, 30)
+            _state.value.localVideoTrack?.setEnabled(true)
+        } catch (_: Exception) {}
     }
 
     /**
@@ -371,9 +382,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> {
                         reconnectJob?.cancel()
                         reconnectJob = null
-                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
-                        audioRouteManager.reassertCurrentRoute()
-                        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+                        if (_state.value.callStatus == CallStatus.ANSWERED) {
+                            _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                            audioRouteManager.reassertCurrentRoute()
+                            localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+                        }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
@@ -444,12 +457,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
             override fun onAddStream(stream: MediaStream?) {
+                val shouldEnable = _state.value.callStatus == CallStatus.ANSWERED
                 stream?.audioTracks?.forEach { audioTrack ->
                     try {
-                        audioTrack.setEnabled(true)
-                        audioTrack.setVolume(1.0)
-                        Log.i("WebRtcEngine", "Enabled remote AudioTrack from stream: ${audioTrack.id()}")
-                        audioRouteManager.reassertCurrentRoute()
+                        audioTrack.setEnabled(shouldEnable)
+                        audioTrack.setVolume(if (shouldEnable) 1.0 else 0.0)
+                        Log.i("WebRtcEngine", "Remote AudioTrack from stream: ${audioTrack.id()}, enabled=$shouldEnable")
+                        if (shouldEnable) audioRouteManager.reassertCurrentRoute()
                     } catch (e: Exception) {
                         Log.w("WebRtcEngine", "Failed to enable remote AudioTrack: ${e.message}")
                     }
@@ -461,15 +475,18 @@ class WebRtcEngine private constructor(private val context: Context) {
             override fun onAddTrack(receiver: RtpReceiver?, mediaStreams: Array<out MediaStream>?) {
                 val track = receiver?.track()
                 scope.launch {
-                    _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                    val shouldEnable = _state.value.callStatus == CallStatus.ANSWERED
+                    if (shouldEnable) {
+                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                    }
                     if (track is VideoTrack) {
                         _state.value = _state.value.copy(remoteVideoTrack = track)
                     } else if (track is AudioTrack) {
                         try {
-                            track.setEnabled(true)
-                            track.setVolume(1.0)
-                            Log.i("WebRtcEngine", "Enabled remote AudioTrack: ${track.id()}")
-                            audioRouteManager.reassertCurrentRoute()
+                            track.setEnabled(shouldEnable)
+                            track.setVolume(if (shouldEnable) 1.0 else 0.0)
+                            Log.i("WebRtcEngine", "Remote AudioTrack enabled=$shouldEnable: ${track.id()}")
+                            if (shouldEnable) audioRouteManager.reassertCurrentRoute()
                         } catch (e: Exception) {
                             Log.w("WebRtcEngine", "Failed to configure remote AudioTrack: ${e.message}")
                         }
@@ -479,7 +496,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         })
 
         if (_state.value.callType == CallType.VIDEO) {
-            createVideoTrack()
+            val startCapture = isCaller || _state.value.callStatus == CallStatus.ANSWERED
+            createVideoTrack(startCaptureNow = startCapture)
             _state.value.localVideoTrack?.let {
                 peerConnection?.addTrack(it, listOf("ARDAMS"))
             }
@@ -573,13 +591,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     val tunedDesc = SessionDescription(desc.type, tunedSdp)
                                     pc.setLocalDescription(object : SimpleSdpObserver() {
                                         override fun onSetSuccess() {
-                                            // 🎯 Answer is READY. Store it so answerCall() just needs one Firestore write.
-                                            prebuiltAnswerSdp = tunedSdp
-                                            Log.i("WebRtcEngine", "🎯 Pre-warm complete: answer SDP ready for ${call.callId}")
+                                            // 🎯 Answer is READY. Ensure this belongs to the active call!
+                                            if (_state.value.activeCall?.callId == call.callId) {
+                                                if (_state.value.callStatus == CallStatus.RINGING) {
+                                                    prebuiltAnswerSdp = tunedSdp
+                                                    prebuiltCallId = call.callId
+                                                    Log.i("WebRtcEngine", "🎯 Pre-warm complete: answer SDP ready for ${call.callId}")
+                                                } else if (_state.value.callStatus == CallStatus.ANSWERED) {
+                                                    // User tapped answer while pre-warm was finishing! Upload SDP directly!
+                                                    Log.i("WebRtcEngine", "⚡ User answered mid-pre-warm — uploading generated answer SDP directly for ${call.callId}")
+                                                    firestore.collection("calls").document(call.callId).update("answerSdp", tunedSdp)
+                                                }
+                                            }
                                         }
                                         override fun onSetFailure(error: String?) {
                                             Log.w("WebRtcEngine", "Pre-warm setLocalDescription failed: $error — will renegotiate on accept")
                                             prebuiltAnswerSdp = null
+                                            prebuiltCallId = null
                                             preWarmDone = false
                                         }
                                     }, tunedDesc)
@@ -588,6 +616,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             override fun onCreateFailure(error: String?) {
                                 Log.w("WebRtcEngine", "Pre-warm createAnswer failed: $error — will renegotiate on accept")
                                 prebuiltAnswerSdp = null
+                                prebuiltCallId = null
                                 preWarmDone = false
                             }
                         }, constraints)
@@ -596,12 +625,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                         Log.w("WebRtcEngine", "Pre-warm setRemoteDescription failed: $error — will renegotiate on accept")
                         hasProcessedOffer = false
                         prebuiltAnswerSdp = null
+                        prebuiltCallId = null
                         preWarmDone = false
                     }
                 }, sessionDescription)
             } catch (e: Exception) {
                 Log.w("WebRtcEngine", "Pre-warm exception: ${e.message} — will renegotiate on accept")
                 prebuiltAnswerSdp = null
+                prebuiltCallId = null
                 preWarmDone = false
             }
         }
@@ -1162,11 +1193,12 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         // ⚡ INSTANT PATH: Pre-warm completed during ringing — just write the answer SDP to Firestore.
         // This is a single Firestore write (~100ms) vs. the normal 5-8s SDP negotiation chain.
-        val cachedAnswer = prebuiltAnswerSdp
+        val cachedAnswer = if (prebuiltCallId == call.callId) prebuiltAnswerSdp else null
         if (cachedAnswer != null && peerConnection != null) {
             Log.i("WebRtcEngine", "⚡ INSTANT ANSWER: using pre-warmed SDP for ${call.callId}")
             // Snapshot & clear pre-warm state for the next call
             prebuiltAnswerSdp = null
+            prebuiltCallId = null
             preWarmDone = false
 
             // Write status + answerSdp atomically in one Firestore document update
@@ -1180,6 +1212,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Reset pre-warm flags so processOfferSdpIfAvailable() runs the full negotiation.
             Log.d("WebRtcEngine", "Pre-warm miss for ${call.callId} — falling back to standard SDP negotiation")
             prebuiltAnswerSdp = null
+            prebuiltCallId = null
             preWarmDone = false
             hasProcessedOffer = false
 
@@ -1190,6 +1223,25 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             createPeerConnection(isCaller = false, callId = call.callId)
             processOfferSdpIfAvailable()
+        }
+
+        // Unmute local audio track now that user tapped answer
+        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+
+        // If video call, start camera capture if it was deferred during pre-warm
+        if (call.callType == CallType.VIDEO) {
+            startVideoCaptureIfNeeded()
+        }
+
+        // Enable any remote audio tracks that were received while ringing
+        peerConnection?.receivers?.forEach { rtpReceiver ->
+            val track = rtpReceiver.track()
+            if (track is AudioTrack) {
+                try {
+                    track.setEnabled(true)
+                    track.setVolume(1.0)
+                } catch (_: Exception) {}
+            }
         }
 
         // Phase 3: Reliable call logs — record call start immediately on answer
@@ -1856,6 +1908,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         sentIceCandidateHashes.clear()
         // Reset pre-warm state for the next incoming call
         prebuiltAnswerSdp = null
+        prebuiltCallId = null
         preWarmDone = false
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
