@@ -92,6 +92,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
     private var lastProcessedIceRestartTimestamp = 0L
 
+    // Pre-warm state: answer SDP prepared during ringing so Accept tap is instant
+    @Volatile private var prebuiltAnswerSdp: String? = null
+    @Volatile private var preWarmDone = false
+
     // WebRTC Core
     private val eglBase = EglBase.create()
     val eglBaseContext: EglBase.Context = eglBase.eglBaseContext
@@ -519,6 +523,91 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * ⚡ Pre-Warm: Called the moment we go to RINGING state.
+     * Creates the PeerConnection and processes the offer SDP NOW (during ringtone playback)
+     * so by the time the user taps Accept, the answer SDP is already fully built.
+     * answerCall() then only needs to fire one Firestore write (~100ms) instead of
+     * running the full 5-8 second SDP negotiation chain.
+     */
+    private fun preWarmForIncomingCall(call: com.example.data.model.CallDto) {
+        if (preWarmDone) return
+        val offerSdp = call.offerSdp
+        if (offerSdp.isNullOrBlank()) {
+            // Offer not yet in Firestore — listenToActiveCall will call us again when it arrives
+            Log.d("WebRtcEngine", "⏳ Pre-warm deferred: offer SDP not yet available for ${call.callId}")
+            return
+        }
+        preWarmDone = true
+        Log.i("WebRtcEngine", "🔥 Pre-warming PeerConnection for incoming call ${call.callId}")
+
+        scope.launch(Dispatchers.Main) {
+            try {
+                // Create the PeerConnection ahead of time with same config as answerCall
+                createPeerConnection(isCaller = false, callId = call.callId)
+
+                val pc = peerConnection ?: run {
+                    Log.w("WebRtcEngine", "Pre-warm: peerConnection is null after create, aborting")
+                    preWarmDone = false
+                    return@launch
+                }
+
+                // Process offer SDP — same chain as processOfferSdpIfAvailable but stores answer locally
+                hasProcessedOffer = true
+                val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
+                pc.setRemoteDescription(object : SimpleSdpObserver() {
+                    override fun onSetSuccess() {
+                        Log.i("WebRtcEngine", "Pre-warm: remote offer set ✅")
+                        drainQueuedRemoteIceCandidates()
+
+                        val constraints = MediaConstraints().apply {
+                            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo",
+                                if (call.callType == CallType.VIDEO) "true" else "false"))
+                        }
+
+                        pc.createAnswer(object : SimpleSdpObserver() {
+                            override fun onCreateSuccess(desc: SessionDescription?) {
+                                if (desc != null) {
+                                    val tunedSdp = preferOpusAndEnableFec(desc.description)
+                                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                                    pc.setLocalDescription(object : SimpleSdpObserver() {
+                                        override fun onSetSuccess() {
+                                            // 🎯 Answer is READY. Store it so answerCall() just needs one Firestore write.
+                                            prebuiltAnswerSdp = tunedSdp
+                                            Log.i("WebRtcEngine", "🎯 Pre-warm complete: answer SDP ready for ${call.callId}")
+                                        }
+                                        override fun onSetFailure(error: String?) {
+                                            Log.w("WebRtcEngine", "Pre-warm setLocalDescription failed: $error — will renegotiate on accept")
+                                            prebuiltAnswerSdp = null
+                                            preWarmDone = false
+                                        }
+                                    }, tunedDesc)
+                                }
+                            }
+                            override fun onCreateFailure(error: String?) {
+                                Log.w("WebRtcEngine", "Pre-warm createAnswer failed: $error — will renegotiate on accept")
+                                prebuiltAnswerSdp = null
+                                preWarmDone = false
+                            }
+                        }, constraints)
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.w("WebRtcEngine", "Pre-warm setRemoteDescription failed: $error — will renegotiate on accept")
+                        hasProcessedOffer = false
+                        prebuiltAnswerSdp = null
+                        preWarmDone = false
+                    }
+                }, sessionDescription)
+            } catch (e: Exception) {
+                Log.w("WebRtcEngine", "Pre-warm exception: ${e.message} — will renegotiate on accept")
+                prebuiltAnswerSdp = null
+                preWarmDone = false
+            }
+        }
+    }
+
+
     private fun preferOpusAndEnableFec(sdp: String): String {
         val lines = sdp.split("\r\n").toMutableList()
         var opusPayloadType: String? = null
@@ -912,6 +1001,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } catch (_: Exception) {}
 
                     listenToActiveCall(incomingCall.callId, isCaller = false)
+
+                    // ⚡ Pre-warm: build answer SDP NOW during ringing so Accept tap is instant
+                    prebuiltAnswerSdp = null
+                    preWarmDone = false
+                    preWarmForIncomingCall(incomingCall)
                 }
             }
     }
@@ -927,10 +1021,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         resetIdleJob = null
         reconnectJob?.cancel()
         reconnectJob = null
-
-        hasProcessedOffer = false
-        hasProcessedAnswer = false
-
+        if (_state.value.activeCall?.callId != callId) {
+            hasProcessedOffer = false
+            hasProcessedAnswer = false
+            prebuiltAnswerSdp = null
+            preWarmDone = false
+        }
         val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
         if (firebaseMgr.isDndEnabled() || (callerNumber != null && firebaseMgr.isNumberBlocked(callerNumber))) {
             Log.d("WebRtcEngine", "attachToCall auto-declined by DND or Blocklist: $callId from $callerNumber")
@@ -1024,7 +1120,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     )
                     headsetButtonManager.startListening()
                     listenToActiveCall(callId, isCaller = false)
-                    if (autoAnswer) answerCall()
+                    if (autoAnswer) {
+                        answerCall()
+                    } else if (!preWarmDone) {
+                        preWarmForIncomingCall(call)
+                    }
                 } else if (_state.value.callStatus == CallStatus.ANSWERED) {
                     _state.value = _state.value.copy(
                         activeCall = call.copy(status = CallStatus.ANSWERED)
@@ -1040,17 +1140,17 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun answerCall() {
         val call = _state.value.activeCall ?: return
-        
+
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
             connectionStatusText = "Connecting P2P..."
         )
-        
+
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         notificationManager.cancel(1001)
         com.example.util.LksIncomingRingtonePlayer.stop()
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
-        
+
         com.example.services.ActiveCallService.start(context, call.callId, call.callType.name)
         headsetButtonManager.startListening()
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -1059,15 +1159,39 @@ class WebRtcEngine private constructor(private val context: Context) {
             } catch (_: Exception) {}
         }
         configureAudio(call.callType)
-        
-        firestore.collection("calls").document(call.callId).update(
-            "status", CallStatus.ANSWERED.name,
-            "answeredAt", System.currentTimeMillis()
-        )
-        
-        createPeerConnection(isCaller = false, callId = call.callId)
-        processOfferSdpIfAvailable()
-        
+
+        // ⚡ INSTANT PATH: Pre-warm completed during ringing — just write the answer SDP to Firestore.
+        // This is a single Firestore write (~100ms) vs. the normal 5-8s SDP negotiation chain.
+        val cachedAnswer = prebuiltAnswerSdp
+        if (cachedAnswer != null && peerConnection != null) {
+            Log.i("WebRtcEngine", "⚡ INSTANT ANSWER: using pre-warmed SDP for ${call.callId}")
+            // Snapshot & clear pre-warm state for the next call
+            prebuiltAnswerSdp = null
+            preWarmDone = false
+
+            // Write status + answerSdp atomically in one Firestore document update
+            firestore.collection("calls").document(call.callId).update(
+                "status", CallStatus.ANSWERED.name,
+                "answeredAt", System.currentTimeMillis(),
+                "answerSdp", cachedAnswer
+            )
+        } else {
+            // 🔁 FALLBACK PATH: Pre-warm not ready (e.g. offer arrived late, or pre-warm failed).
+            // Reset pre-warm flags so processOfferSdpIfAvailable() runs the full negotiation.
+            Log.d("WebRtcEngine", "Pre-warm miss for ${call.callId} — falling back to standard SDP negotiation")
+            prebuiltAnswerSdp = null
+            preWarmDone = false
+            hasProcessedOffer = false
+
+            firestore.collection("calls").document(call.callId).update(
+                "status", CallStatus.ANSWERED.name,
+                "answeredAt", System.currentTimeMillis()
+            )
+
+            createPeerConnection(isCaller = false, callId = call.callId)
+            processOfferSdpIfAvailable()
+        }
+
         // Phase 3: Reliable call logs — record call start immediately on answer
         com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
             callId = call.callId,
@@ -1274,11 +1398,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 startCallTimer()
                             }
                         }
-                        
+
                         if (!isCaller && call.offerSdp != null && (!hasProcessedOffer || call.offerSdp != oldCall?.offerSdp)) {
-                            processOfferSdpIfAvailable()
+                            // If still ringing and pre-warm not done, retry pre-warm now that offer has arrived
+                            if (_state.value.callStatus == CallStatus.RINGING && !preWarmDone) {
+                                preWarmForIncomingCall(call)
+                            } else {
+                                processOfferSdpIfAvailable()
+                            }
                         }
-                        
+
                         // Hold State synchronization
                         val remoteHold = snapshot.getBoolean("isOnHold") == true || snapshot.getBoolean("onHold") == true || call.isOnHold
                         val heldBy = snapshot.getString("heldBy") ?: call.heldBy ?: ""
@@ -1725,6 +1854,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         hasProcessedAnswer = false
         lastProcessedIceRestartTimestamp = 0L
         sentIceCandidateHashes.clear()
+        // Reset pre-warm state for the next incoming call
+        prebuiltAnswerSdp = null
+        preWarmDone = false
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
