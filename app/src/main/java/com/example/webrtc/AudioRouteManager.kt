@@ -92,12 +92,12 @@ class AudioRouteManager(
     }
 
     fun configureAudio(callType: CallType) {
-        lastNonBluetoothAudioDevice = if (callType == CallType.VIDEO) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
+        val isSpeaker = callType == CallType.VIDEO || currentSelectedDevice == AudioDeviceType.SPEAKERPHONE
+        lastNonBluetoothAudioDevice = if (isSpeaker) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         // Activate Samsung One UI Voice Focus hardware noise suppression pipeline
-        com.example.util.SamsungVoiceFocusManager.start(context)
-        com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = callType == CallType.VIDEO, context = context)
+        com.example.util.SamsungVoiceFocusManager.start(isSpeaker = isSpeaker, context = context)
 
         registerAudioDeviceListeners()
 
@@ -399,16 +399,19 @@ class AudioRouteManager(
         val targetDevice: AudioDeviceOption
 
         val now = System.currentTimeMillis()
-        if (defaultCallType == null && (now - lastUserExplicitSelectionTime < 2500L)) {
-            val explicitType = userExplicitSelectedDevice ?: currentSelected
+        if (defaultCallType == null && userExplicitSelectedDevice != null) {
+            val explicitType = userExplicitSelectedDevice!!
             val target = deviceList.firstOrNull { it.type == explicitType }
-                ?: (earpieceOption ?: speakerOption ?: deviceList.first())
+                ?: (if (explicitType == AudioDeviceType.SPEAKERPHONE) speakerOption ?: earpieceOption else earpieceOption ?: speakerOption)
+                ?: deviceList.first()
             val updatedList = deviceList.map {
                 it.copy(isSelected = it.id == target.id || it.type == target.type)
             }
             currentAvailableDevices = updatedList
             currentSelectedDevice = target.type
             onRouteChanged(target, updatedList, target.type == AudioDeviceType.SPEAKERPHONE)
+            // Re-assert audio routing to hardware so Android HAL/Telecom doesn't reset to earpiece
+            selectAudioDevice(target, updateDeviceList = false)
             return
         }
 
@@ -417,6 +420,7 @@ class AudioRouteManager(
                 btOption != null -> btOption
                 wiredOption != null -> wiredOption
                 defaultCallType == CallType.VIDEO -> speakerOption ?: earpieceOption ?: deviceList.first()
+                userExplicitSelectedDevice == AudioDeviceType.SPEAKERPHONE || currentSelected == AudioDeviceType.SPEAKERPHONE -> speakerOption ?: earpieceOption ?: deviceList.first()
                 else -> earpieceOption ?: speakerOption ?: deviceList.first()
             }
             selectAudioDevice(targetDevice, updateDeviceList = false)
@@ -439,7 +443,8 @@ class AudioRouteManager(
                 }
                 else -> {
                     val matchedCurrent = deviceList.firstOrNull { it.type == currentSelected }
-                    matchedCurrent ?: (earpieceOption ?: speakerOption ?: deviceList.first())
+                    matchedCurrent ?: (if (currentSelected == AudioDeviceType.SPEAKERPHONE) speakerOption ?: earpieceOption else earpieceOption ?: speakerOption)
+                        ?: deviceList.first()
                 }
             }
             selectAudioDevice(targetDevice, updateDeviceList = false)
@@ -516,6 +521,9 @@ class AudioRouteManager(
                         }
                     } catch (_: Exception) {}
 
+                    @Suppress("DEPRECATION")
+                    audioManager.isSpeakerphoneOn = true
+
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         val speaker = (device.rawDevice as? AudioDeviceInfo)
                             ?: audioManager.availableCommunicationDevices.firstOrNull {
@@ -525,13 +533,22 @@ class AudioRouteManager(
                             val res = audioManager.setCommunicationDevice(speaker)
                             Log.d(TAG, "setCommunicationDevice(SPEAKER): $res")
                             if (!res) {
-                                audioManager.clearCommunicationDevice()
-                                audioManager.setCommunicationDevice(speaker)
+                                mainHandler.postDelayed({
+                                    if (currentSelectedDevice == AudioDeviceType.SPEAKERPHONE) {
+                                        val retrySpeaker = audioManager.availableCommunicationDevices.firstOrNull {
+                                            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                                        }
+                                        if (retrySpeaker != null) {
+                                            val r2 = audioManager.setCommunicationDevice(retrySpeaker)
+                                            Log.d(TAG, "Retry setCommunicationDevice(SPEAKER): $r2")
+                                        }
+                                        @Suppress("DEPRECATION")
+                                        audioManager.isSpeakerphoneOn = true
+                                    }
+                                }, 300L)
                             }
                         }
                     }
-                    @Suppress("DEPRECATION")
-                    audioManager.isSpeakerphoneOn = true
                     com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = true, context = context)
                 }
                 AudioDeviceType.EARPIECE -> {
@@ -701,30 +718,36 @@ class AudioRouteManager(
                 },
                 type = type
             )
-        selectAudioDevice(target)
+        userExplicitSelectedDevice = type
+        lastUserExplicitSelectionTime = System.currentTimeMillis()
+        selectAudioDevice(target, updateDeviceList = true)
     }
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
-        val now = System.currentTimeMillis()
         val explicit = userExplicitSelectedDevice
+        val current = currentSelectedDevice
 
-        if (now - lastUserExplicitSelectionTime < 5000L) {
-            if (explicit != null && explicit != targetType) {
-                Log.d(TAG, "Ignoring Telecom route change to $targetType (user explicitly selected $explicit ${now - lastUserExplicitSelectionTime}ms ago)")
-                return
+        Log.d(TAG, "Telecom onTelecomAudioRouteChanged: targetType=$targetType, current=$current, explicit=$explicit")
+
+        // 🛡️ PERMANENT LOUDSPEAKER PROTECTION:
+        // If the call is currently on SPEAKERPHONE or user explicitly selected SPEAKERPHONE,
+        // Telecom MUST NEVER automatically degrade the audio route to EARPIECE!
+        if ((current == AudioDeviceType.SPEAKERPHONE || explicit == AudioDeviceType.SPEAKERPHONE) && targetType == AudioDeviceType.EARPIECE) {
+            Log.d(TAG, "🛡️ Ignoring Telecom transition to EARPIECE because call is locked on SPEAKERPHONE")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                try {
+                    com.example.services.LksConnectionService.setAudioRoute(android.telecom.CallAudioState.ROUTE_SPEAKER)
+                } catch (_: Exception) {}
             }
-        }
-
-        if (explicit == AudioDeviceType.SPEAKERPHONE && (targetType == AudioDeviceType.EARPIECE || targetType == AudioDeviceType.BLUETOOTH)) {
-            Log.d(TAG, "Ignoring Telecom automatic transition to $targetType because user explicitly chose SPEAKERPHONE")
             return
         }
+
         if (explicit == AudioDeviceType.EARPIECE && targetType == AudioDeviceType.BLUETOOTH) {
             Log.d(TAG, "Ignoring Telecom automatic transition to BLUETOOTH because user explicitly chose EARPIECE")
             return
         }
 
-        if (currentSelectedDevice != targetType) {
+        if (current != targetType) {
             Log.i(TAG, "Syncing route from Telecom: $targetType")
             userExplicitSelectedDevice = targetType
             selectAudioDeviceType(targetType)
@@ -741,15 +764,22 @@ class AudioRouteManager(
             val wired = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
             val earpiece = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.EARPIECE }
             val target = bt ?: wired ?: earpiece ?: AudioDeviceOption(id = "earpiece_default", name = "Phone Earpiece", type = AudioDeviceType.EARPIECE)
-            selectAudioDevice(target)
+            userExplicitSelectedDevice = target.type
+            lastUserExplicitSelectionTime = System.currentTimeMillis()
+            selectAudioDevice(target, updateDeviceList = true)
         } else {
             val speaker = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
                 ?: AudioDeviceOption(id = "speaker_default", name = "Speaker", type = AudioDeviceType.SPEAKERPHONE)
-            selectAudioDevice(speaker)
+            userExplicitSelectedDevice = AudioDeviceType.SPEAKERPHONE
+            lastUserExplicitSelectionTime = System.currentTimeMillis()
+            selectAudioDevice(speaker, updateDeviceList = true)
         }
     }
 
     fun resetAudioRouting() {
+        userExplicitSelectedDevice = null
+        lastUserExplicitSelectionTime = 0L
+
         // Release Samsung One UI Voice Focus pipeline
         com.example.util.SamsungVoiceFocusManager.stop()
 
@@ -794,6 +824,20 @@ class AudioRouteManager(
         mainHandler.post {
             val selected = currentSelectedDevice
             Log.d(TAG, "🔊 Re-asserting current audio route: $selected")
+            if (selected == AudioDeviceType.SPEAKERPHONE) {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = true
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    }
+                    if (speaker != null) {
+                        val res = audioManager.setCommunicationDevice(speaker)
+                        Log.d(TAG, "🔊 reassertCurrentRoute setCommunicationDevice(SPEAKER): $res")
+                    }
+                }
+                com.example.util.SamsungVoiceFocusManager.updateRoute(isSpeaker = true, context = context)
+            }
             val target = currentAvailableDevices.firstOrNull { it.type == selected }
             if (target != null) {
                 selectAudioDevice(target, updateDeviceList = false)
