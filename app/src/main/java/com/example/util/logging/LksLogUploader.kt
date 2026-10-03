@@ -121,10 +121,21 @@ object LksLogUploader {
             val deviceId = DeviceUtils.getDeviceId(context)
             val crashId = "crash_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
 
+            val (vName, vCode) = try {
+                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else @Suppress("DEPRECATION") pInfo.versionCode.toLong()
+                (pInfo.versionName ?: "2.8.9") to code
+            } catch (_: Exception) {
+                "2.8.9" to 157L
+            }
+
             val payload = hashMapOf<String, Any?>(
                 "crashId" to crashId,
                 "timestamp" to System.currentTimeMillis(),
                 "formattedTime" to synchronized(dateFormat) { dateFormat.format(Date()) },
+                "appId" to "com.subhojit.lksdialer.app",
+                "appName" to "LKS-DIALER-ANDROID",
+                "platform" to "android",
                 "userName" to userName,
                 "userPhone" to userPhone,
                 "deviceId" to deviceId,
@@ -135,8 +146,8 @@ object LksLogUploader {
                 "deviceHardware" to Build.HARDWARE,
                 "androidVersion" to Build.VERSION.RELEASE,
                 "sdkInt" to Build.VERSION.SDK_INT,
-                "appVersionName" to "2.8.8",
-                "appVersionCode" to 156L,
+                "appVersionName" to vName,
+                "appVersionCode" to vCode,
                 "exceptionClass" to throwable.javaClass.name,
                 "exceptionMessage" to (throwable.message ?: "No message"),
                 "stackTrace" to Log.getStackTraceString(throwable),
@@ -176,11 +187,22 @@ object LksLogUploader {
             val deviceId = DeviceUtils.getDeviceId(context)
             val reportId = "report_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
 
+            val (vName, vCode) = try {
+                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else @Suppress("DEPRECATION") pInfo.versionCode.toLong()
+                (pInfo.versionName ?: "2.8.9") to code
+            } catch (_: Exception) {
+                "2.8.9" to 157L
+            }
+
             val payload = hashMapOf<String, Any?>(
                 "reportId" to reportId,
                 "timestamp" to System.currentTimeMillis(),
                 "formattedTime" to synchronized(dateFormat) { dateFormat.format(Date()) },
                 "triggerType" to triggerType,
+                "appId" to "com.subhojit.lksdialer.app",
+                "appName" to "LKS-DIALER-ANDROID",
+                "platform" to "android",
                 "userName" to userName,
                 "userPhone" to userPhone,
                 "deviceId" to deviceId,
@@ -188,8 +210,8 @@ object LksLogUploader {
                 "deviceManufacturer" to Build.MANUFACTURER,
                 "deviceModel" to Build.MODEL,
                 "androidVersion" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                "appVersionName" to "2.8.8",
-                "appVersionCode" to 156L,
+                "appVersionName" to vName,
+                "appVersionCode" to vCode,
                 "userNote" to userNote.ifBlank { "No note provided" },
                 "deviceState" to captureDeviceState(context),
                 "recentLogs" to logs.takeLast(600),
@@ -207,6 +229,10 @@ object LksLogUploader {
             val cleanPhone = userPhone.replace(Regex("[^0-9+]"), "").ifBlank { "anonymous" }
             val logDocId = "${cleanPhone}_${deviceId}"
             val sessionPayload = hashMapOf<String, Any?>(
+                "appId" to "com.subhojit.lksdialer.app",
+                "platform" to "android",
+                "appVersionName" to vName,
+                "appVersionCode" to vCode,
                 "deviceId" to deviceId,
                 "userPhone" to userPhone,
                 "userName" to userName,
