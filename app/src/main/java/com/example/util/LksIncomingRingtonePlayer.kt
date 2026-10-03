@@ -68,6 +68,18 @@ object LksIncomingRingtonePlayer {
             synchronized(LksIncomingRingtonePlayer) {
                 if (!isRinging) return
                 try {
+                    // 🔊 XIAOMI MIUI FIX: Re-assert loudspeaker routing every 800ms.
+                    // MIUI's audio policy daemon resets isSpeakerphoneOn after a few seconds when it
+                    // detects a VoIP session, switching STREAM_RING back to earpiece. Continuously
+                    // re-pinning speaker here prevents that re-routing from taking effect.
+                    val am = appContext?.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+                    if (am?.mode == android.media.AudioManager.MODE_NORMAL) {
+                        try {
+                            @Suppress("DEPRECATION")
+                            am.isSpeakerphoneOn = true
+                        } catch (_: Exception) {}
+                    }
+
                     if (mediaPlayer != null) {
                         if (!mediaPlayer!!.isPlaying) {
                             Log.d(TAG, "MediaPlayer paused or finished loop cycle, restarting...")
@@ -123,15 +135,27 @@ object LksIncomingRingtonePlayer {
             Log.w(TAG, "Failed to acquire ringtone wake lock: ${e.message}")
         }
 
-        // 2. Set AudioManager mode to MODE_RINGTONE
+        // 2. Set AudioManager mode to MODE_NORMAL for STREAM_RING loudspeaker routing
         val audioManager = appCtx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         val ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
 
         try {
-            // Keep MODE_NORMAL so Android routes STREAM_RING directly through the loudspeaker at full ringtone volume
+            // MODE_NORMAL routes STREAM_RING through loudspeaker at full volume (not earpiece).
+            // MODE_IN_COMMUNICATION would route to earpiece — we must NOT use that here.
             audioManager?.mode = AudioManager.MODE_NORMAL
         } catch (e: Exception) {
             Log.w(TAG, "Failed to set audio mode: ${e.message}")
+        }
+
+        // 🔊 XIAOMI / MIUI FIX: Explicitly force loudspeaker BEFORE audio focus request and BEFORE
+        // MediaPlayer starts. MIUI aggressively grabs the audio session and re-routes to earpiece
+        // unless we pin the speaker first with isSpeakerphoneOn=true while still in MODE_NORMAL.
+        try {
+            @Suppress("DEPRECATION")
+            audioManager?.isSpeakerphoneOn = true
+            Log.d(TAG, "🔊 Forced isSpeakerphoneOn=true before ringtone start (Xiaomi MIUI fix)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to force speakerphone for ringtone: ${e.message}")
         }
 
         // Start Vibration (if not in silent mode)
@@ -145,10 +169,12 @@ object LksIncomingRingtonePlayer {
             return
         }
 
-        // Request Audio Focus on STREAM_RING (AUDIOFOCUS_GAIN_TRANSIENT so nothing ducks us)
+        // Request Audio Focus on STREAM_RING.
+        // Use AUDIOFOCUS_GAIN (not TRANSIENT) so Xiaomi MIUI doesn't reclaim focus after a few seconds
+        // and drop the ringtone to earpiece. GAIN ensures our ringtone keeps ownership for full duration.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                val focusReq = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -156,13 +182,31 @@ object LksIncomingRingtonePlayer {
                             .setLegacyStreamType(AudioManager.STREAM_RING)
                             .build()
                     )
+                    .setAcceptsDelayedFocusGain(false)
+                    .setWillPauseWhenDucked(false)
                     .setOnAudioFocusChangeListener { focusChange ->
                         Log.d(TAG, "Ringtone AudioFocus changed: $focusChange")
-                        if (focusChange == AudioManager.AUDIOFOCUS_GAIN && isRinging) {
-                            try {
-                                if (mediaPlayer?.isPlaying == false) mediaPlayer?.start()
-                                if (ringtone?.isPlaying == false) ringtone?.play()
-                            } catch (_: Exception) {}
+                        when (focusChange) {
+                            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                                // MIUI/Xiaomi transient focus loss (e.g. notification sound) — keep ringing
+                                Log.d(TAG, "Transient focus loss during ringtone — keeping ringtone active")
+                                // Re-assert speaker to prevent MIUI from re-routing to earpiece
+                                try {
+                                    @Suppress("DEPRECATION")
+                                    audioManager?.isSpeakerphoneOn = true
+                                } catch (_: Exception) {}
+                            }
+                            AudioManager.AUDIOFOCUS_GAIN -> {
+                                if (isRinging) {
+                                    try {
+                                        @Suppress("DEPRECATION")
+                                        audioManager?.isSpeakerphoneOn = true
+                                        if (mediaPlayer?.isPlaying == false) mediaPlayer?.start()
+                                        if (ringtone?.isPlaying == false) ringtone?.play()
+                                    } catch (_: Exception) {}
+                                }
+                            }
                         }
                     }
                     .build()
@@ -170,7 +214,7 @@ object LksIncomingRingtonePlayer {
                 audioManager?.requestAudioFocus(focusReq)
             } else {
                 @Suppress("DEPRECATION")
-                audioManager?.requestAudioFocus(null, AudioManager.STREAM_RING, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                audioManager?.requestAudioFocus(null, AudioManager.STREAM_RING, AudioManager.AUDIOFOCUS_GAIN)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Audio focus request failed: ${e.message}")
@@ -244,6 +288,12 @@ object LksIncomingRingtonePlayer {
                 true
             }
             player.prepare()
+            // 🔊 MIUI FIX: Re-assert speaker AFTER prepare() but BEFORE start().
+            // prepare() can trigger internal AudioManager callbacks on Xiaomi that flip routing back to earpiece.
+            try {
+                @Suppress("DEPRECATION")
+                audioManager?.isSpeakerphoneOn = true
+            } catch (_: Exception) {}
             player.start()
             mediaPlayer = player
             playedViaMediaPlayer = true
@@ -373,6 +423,8 @@ object LksIncomingRingtonePlayer {
             }
         } catch (_: Exception) {}
         audioFocusRequest = null
+        // NOTE: Do NOT reset isSpeakerphoneOn here - AudioRouteManager owns speaker routing after
+        // the call is answered. Resetting it here would break the in-call loudspeaker.
     }
 
     /**

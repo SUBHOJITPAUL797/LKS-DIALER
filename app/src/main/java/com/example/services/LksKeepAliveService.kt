@@ -184,6 +184,18 @@ class LksKeepAliveService : Service() {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         }
 
+        // 🔊 XIAOMI / MIUI FIX: Force loudspeaker BEFORE starting MediaPlayer.
+        // MIUI's audio policy routes STREAM_RING to earpiece unless we explicitly pin the speaker.
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        try {
+            am?.mode = AudioManager.MODE_NORMAL
+            @Suppress("DEPRECATION")
+            am?.isSpeakerphoneOn = true
+            Log.d(TAG, "🔊 Forced isSpeakerphoneOn=true before keep-alive ringtone (Xiaomi MIUI fix)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to force speaker for keep-alive ringtone: ${e.message}")
+        }
+
         // Try MediaPlayer first (better control: looping, volume)
         try {
             ringtonePlayer = MediaPlayer().apply {
@@ -192,10 +204,18 @@ class LksKeepAliveService : Service() {
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        // 🔊 MIUI FIX: setLegacyStreamType is required for MIUI to route correctly.
+                        // AudioAttributes alone are ignored by Xiaomi's audio HAL — it needs explicit stream.
+                        .setLegacyStreamType(AudioManager.STREAM_RING)
                         .build()
                 )
                 isLooping = true
                 prepare()
+                // Re-assert speaker AFTER prepare() — MIUI can flip routing during prepare()
+                try {
+                    @Suppress("DEPRECATION")
+                    am?.isSpeakerphoneOn = true
+                } catch (_: Exception) {}
                 start()
             }
             Log.d(TAG, "Ringtone playing via MediaPlayer: $ringtoneUri")
