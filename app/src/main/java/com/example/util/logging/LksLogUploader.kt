@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
 import android.util.Log
+import com.example.BuildConfig
 import com.example.util.DeviceUtils
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
@@ -21,11 +22,16 @@ import java.util.UUID
 /**
  * LksLogUploader
  * Handles organized, structured upload of logs and crash reports to Firebase Firestore.
- * 
+ *
  * Collections:
- * 1. critical_crashes  -> Automatically caught fatal exceptions with system state & stacktrace
- * 2. user_shake_reports -> Reports triggered when user shakes phone or requests help from settings
- * 3. app_logs           -> Device-organized session logs for proactive debugging across all devices
+ * 1. critical_crashes       → Fatal exceptions with system state & stacktrace
+ * 2. user_shake_reports     → Reports triggered when user shakes phone or uses Settings report button
+ * 3. app_logs               → Device-organized session logs for proactive debugging
+ *
+ * NOTE: Firestore documents have a hard 1 MB size limit.
+ * To avoid hitting this limit (which silently fails), logs are stored in a
+ * sub-collection "log_chunks" under the parent report document, NOT inline.
+ * Only the last MAX_INLINE_LOGS lines are kept inline for a quick preview.
  */
 object LksLogUploader {
 
@@ -34,7 +40,17 @@ object LksLogUploader {
     private const val COLLECTION_SHAKE_REPORTS = "user_shake_reports"
     private const val COLLECTION_APP_LOGS = "app_logs"
 
+    /** Max log lines stored inline in the main document (safe < 1 MB margin) */
+    private const val MAX_INLINE_LOGS = 80
+
+    /** Max log lines per sub-document chunk */
+    private const val LOGS_PER_CHUNK = 200
+
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Device State Capture
+    // ─────────────────────────────────────────────────────────────────────────
 
     /**
      * Gathers a comprehensive snapshot of device hardware, battery, audio, and network state.
@@ -49,7 +65,8 @@ object LksLogUploader {
             val scale = batteryStatus?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
             val batteryPct = if (level >= 0 && scale > 0) (level * 100) / scale else -1
             val status = batteryStatus?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == BatteryManager.BATTERY_STATUS_FULL
             state["batteryPercent"] = batteryPct
             state["isCharging"] = isCharging
 
@@ -74,7 +91,7 @@ object LksLogUploader {
             }
             state["networkType"] = netType
 
-            // 4. Audio State (Critical for debugging Xiaomi / Samsung routing issues)
+            // 4. Audio State (Critical for debugging Xiaomi/Samsung audio routing bugs)
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val modeStr = when (audioManager?.mode) {
                 AudioManager.MODE_NORMAL -> "MODE_NORMAL"
@@ -93,7 +110,7 @@ object LksLogUploader {
                 else -> "UNKNOWN"
             }
 
-            // 5. Call state (if WebRTC active)
+            // 5. Call state (if WebRTC engine is active)
             val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
             state["callStatus"] = rtcState?.callStatus?.name ?: "IDLE"
             state["callType"] = rtcState?.callType?.name ?: "NONE"
@@ -105,8 +122,13 @@ object LksLogUploader {
         return state
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Critical Crash Upload
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
      * Uploads an uncaught crash to the `critical_crashes` collection in Firestore.
+     * Logs are chunked into sub-documents to avoid the 1 MB Firestore document limit.
      */
     suspend fun uploadCriticalCrash(
         context: Context,
@@ -121,13 +143,7 @@ object LksLogUploader {
             val deviceId = DeviceUtils.getDeviceId(context)
             val crashId = "crash_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
 
-            val (vName, vCode) = try {
-                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-                val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else @Suppress("DEPRECATION") pInfo.versionCode.toLong()
-                (pInfo.versionName ?: "2.8.9") to code
-            } catch (_: Exception) {
-                "2.8.9" to 157L
-            }
+            Log.i(TAG, "Uploading critical crash... crashId=$crashId user=$userName device=$deviceId logs=${logs.size}")
 
             val payload = hashMapOf<String, Any?>(
                 "crashId" to crashId,
@@ -146,33 +162,45 @@ object LksLogUploader {
                 "deviceHardware" to Build.HARDWARE,
                 "androidVersion" to Build.VERSION.RELEASE,
                 "sdkInt" to Build.VERSION.SDK_INT,
-                "appVersionName" to vName,
-                "appVersionCode" to vCode,
+                "appVersionName" to BuildConfig.VERSION_NAME,
+                "appVersionCode" to BuildConfig.VERSION_CODE.toLong(),
                 "exceptionClass" to throwable.javaClass.name,
                 "exceptionMessage" to (throwable.message ?: "No message"),
-                "stackTrace" to Log.getStackTraceString(throwable),
+                // Truncate stacktrace to 4000 chars (stays well within limits)
+                "stackTrace" to Log.getStackTraceString(throwable).take(4000),
                 "crashingThread" to thread.name,
                 "deviceState" to captureDeviceState(context),
-                "recentLogs" to logs.takeLast(400),
+                // Only inline the last MAX_INLINE_LOGS lines; full logs go to sub-collection
+                "recentLogsSummary" to logs.takeLast(MAX_INLINE_LOGS),
+                "totalLogLines" to logs.size,
                 "status" to "UNRESOLVED"
             )
 
-            FirebaseFirestore.getInstance()
-                .collection(COLLECTION_CRASHES)
-                .document(crashId)
-                .set(payload)
-                .await()
+            val db = FirebaseFirestore.getInstance()
+            val docRef = db.collection(COLLECTION_CRASHES).document(crashId)
 
-            Log.i(TAG, "✅ Critical crash report uploaded to Firestore: $crashId")
+            // 1. Write main document
+            docRef.set(payload).await()
+            Log.i(TAG, "✅ Main crash doc written: $crashId")
+
+            // 2. Write full logs as chunked sub-documents (avoids 1MB limit)
+            uploadLogChunks(docRef, logs)
+
+            Log.i(TAG, "✅ Critical crash report fully uploaded: $crashId")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to upload critical crash to Firestore: ${e.message}")
+            Log.e(TAG, "❌ Failed to upload critical crash: ${e.javaClass.simpleName}: ${e.message}", e)
             false
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // User Shake / Diagnostic Report Upload
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Uploads a user-initiated report (via Shake or Settings screen).
+     * Uploads a user-initiated diagnostic report (via Shake gesture or Settings screen).
+     * Logs are chunked into sub-documents to avoid the 1 MB Firestore document limit.
      */
     suspend fun uploadUserShakeReport(
         context: Context,
@@ -187,13 +215,7 @@ object LksLogUploader {
             val deviceId = DeviceUtils.getDeviceId(context)
             val reportId = "report_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}"
 
-            val (vName, vCode) = try {
-                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-                val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pInfo.longVersionCode else @Suppress("DEPRECATION") pInfo.versionCode.toLong()
-                (pInfo.versionName ?: "2.8.9") to code
-            } catch (_: Exception) {
-                "2.8.9" to 157L
-            }
+            Log.i(TAG, "Uploading shake report... reportId=$reportId user=$userName device=$deviceId logs=${logs.size} trigger=$triggerType")
 
             val payload = hashMapOf<String, Any?>(
                 "reportId" to reportId,
@@ -210,48 +232,89 @@ object LksLogUploader {
                 "deviceManufacturer" to Build.MANUFACTURER,
                 "deviceModel" to Build.MODEL,
                 "androidVersion" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-                "appVersionName" to vName,
-                "appVersionCode" to vCode,
+                "appVersionName" to BuildConfig.VERSION_NAME,
+                "appVersionCode" to BuildConfig.VERSION_CODE.toLong(),
                 "userNote" to userNote.ifBlank { "No note provided" },
                 "deviceState" to captureDeviceState(context),
-                "recentLogs" to logs.takeLast(600),
-                "logCount" to logs.size,
+                // Only inline the last MAX_INLINE_LOGS lines; full logs go to sub-collection
+                "recentLogsSummary" to logs.takeLast(MAX_INLINE_LOGS),
+                "totalLogLines" to logs.size,
                 "status" to "NEW"
             )
 
-            FirebaseFirestore.getInstance()
-                .collection(COLLECTION_SHAKE_REPORTS)
-                .document(reportId)
-                .set(payload)
-                .await()
+            val db = FirebaseFirestore.getInstance()
+            val docRef = db.collection(COLLECTION_SHAKE_REPORTS).document(reportId)
 
-            // Also update app_logs session for this device
+            // 1. Write main document first
+            docRef.set(payload).await()
+            Log.i(TAG, "✅ Main shake report doc written: $reportId")
+
+            // 2. Write full logs as chunked sub-documents (avoids 1MB limit)
+            uploadLogChunks(docRef, logs)
+
+            // 3. Update app_logs session index for this device (small doc, just summary)
             val cleanPhone = userPhone.replace(Regex("[^0-9+]"), "").ifBlank { "anonymous" }
             val logDocId = "${cleanPhone}_${deviceId}"
             val sessionPayload = hashMapOf<String, Any?>(
                 "appId" to "com.subhojit.lksdialer.app",
                 "platform" to "android",
-                "appVersionName" to vName,
-                "appVersionCode" to vCode,
+                "appVersionName" to BuildConfig.VERSION_NAME,
+                "appVersionCode" to BuildConfig.VERSION_CODE.toLong(),
                 "deviceId" to deviceId,
                 "userPhone" to userPhone,
                 "userName" to userName,
                 "deviceName" to "${Build.MANUFACTURER} ${Build.MODEL}",
                 "lastReportTime" to System.currentTimeMillis(),
                 "lastReportId" to reportId,
-                "recentLogsSummary" to logs.takeLast(100)
+                "recentLogsSummary" to logs.takeLast(80)
             )
-            FirebaseFirestore.getInstance()
-                .collection(COLLECTION_APP_LOGS)
+            db.collection(COLLECTION_APP_LOGS)
                 .document(logDocId)
                 .set(sessionPayload)
                 .await()
 
-            Log.i(TAG, "✅ User shake report uploaded successfully: $reportId")
+            Log.i(TAG, "✅ User shake report fully uploaded: $reportId (${logs.size} total log lines)")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to upload shake report to Firestore: ${e.message}")
+            Log.e(TAG, "❌ Failed to upload shake report: ${e.javaClass.simpleName}: ${e.message}", e)
             false
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Log Chunk Sub-Collection Writer
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Stores full log lines as chunked sub-documents under a parent document reference.
+     * Each chunk holds up to LOGS_PER_CHUNK lines to stay well within the 1 MB Firestore limit.
+     * Sub-collection path: {parentCollection}/{docId}/log_chunks/chunk_0, chunk_1, ...
+     */
+    private suspend fun uploadLogChunks(
+        parentRef: com.google.firebase.firestore.DocumentReference,
+        logs: List<String>
+    ) {
+        if (logs.isEmpty()) {
+            Log.w(TAG, "uploadLogChunks: no logs to upload")
+            return
+        }
+        try {
+            val chunks = logs.chunked(LOGS_PER_CHUNK)
+            chunks.forEachIndexed { index, chunk ->
+                val chunkDoc = hashMapOf<String, Any>(
+                    "chunkIndex" to index,
+                    "totalChunks" to chunks.size,
+                    "lineCount" to chunk.size,
+                    "lines" to chunk
+                )
+                parentRef.collection("log_chunks")
+                    .document("chunk_$index")
+                    .set(chunkDoc)
+                    .await()
+            }
+            Log.i(TAG, "✅ Uploaded ${logs.size} log lines in ${chunks.size} chunk(s) to log_chunks sub-collection")
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ Log chunk upload failed (main report doc still saved): ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 }

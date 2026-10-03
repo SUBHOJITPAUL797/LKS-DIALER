@@ -54,7 +54,7 @@ object LksLogger {
         i(TAG, "🚀 LKS DIALER LOGGING ENGINE STARTED (PID: $pid)")
         i(TAG, "Device: ${Build.MANUFACTURER} ${Build.MODEL} (${Build.PRODUCT})")
         i(TAG, "Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-        i(TAG, "App Version: 2.8.8 (Code 156)")
+        i(TAG, "App Version: ${com.example.BuildConfig.VERSION_NAME} (Code ${com.example.BuildConfig.VERSION_CODE})")
         i(TAG, "==================================================")
 
         startLogcatCollector(pid)

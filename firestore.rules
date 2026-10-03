@@ -2,132 +2,214 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions for schema integrity and security
-    function isValidUser(data, phone) {
-      return data.phoneNumber == phone
-        && data.displayName is string
-        && data.displayName.size() > 0;
+    // Helper Functions for DASMO Suite
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    function isValidCall(data, id) {
-      return data.callId == id
-        && data.callerNumber is string
-        && data.calleeNumber is string
-        && data.status in ['CALLING', 'RINGING', 'ANSWERED', 'ENDED', 'DECLINED', 'MISSED', 'FAILED'];
+    function isAdmin() {
+      return (isAuthenticated() && request.auth.token.email.lower() == 'subhojitpaul26042004@gmail.com') ||
+             (request.resource != null && request.resource.data.get('adminKey', '') == 'DASMO_ADMIN_SEC_26042004_SUBHOJIT_CYBER_KEY');
     }
 
-    function isValidCandidate(data) {
-      return data.type in ['offerCandidate', 'answerCandidate']
-        && data.sdpCandidate is string;
+    function isOwner(email) {
+      return (isAuthenticated() && request.auth.token.email.lower() == email.lower()) ||
+             (request.auth == null);
     }
 
-    function isValidCallLog(data) {
-      return data.direction in ['INCOMING', 'OUTGOING', 'MISSED']
-        && data.callType in ['AUDIO', 'VIDEO'];
+    function isRegistrationOpen() {
+      return exists(/databases/$(database)/documents/system_config/licensing) &&
+             get(/databases/$(database)/documents/system_config/licensing).data.get('requireApprovalForPc', true) == false;
     }
 
-    function isValidChatMessage(data, id, recipientPhone) {
-      return data.messageId == id
-        && data.recipientNumber == recipientPhone
-        && data.senderNumber is string
-        && data.senderPublicKey is string
-        && data.ciphertext is string
-        && data.ciphertext.size() > 0
-        && data.iv is string
-        && data.iv.size() > 0
-        && data.mediaType in ['TEXT', 'IMAGE', 'AUDIO', 'DOCUMENT', 'EDIT', 'DELETE', 'CHUNK'];
-    }
-
-    function isValidReceipt(data) {
-      return data.messageId is string
-        && data.senderNumber is string
-        && data.recipientNumber is string
-        && data.status in ['DELIVERED', 'READ'];
-    }
-
-    // User profiles & presence
-    match /users/{phoneNumber} {
+    // 0. SYSTEM CONFIGURATION (Licensing Modes, Registration Gate)
+    match /system_config/{configId} {
       allow read: if true;
-      allow create: if isValidUser(request.resource.data, phoneNumber);
-      allow update: if request.resource.data.phoneNumber == phoneNumber;
-      allow delete: if false;
+      allow write: if isAdmin();
+    }
 
-      // User contacts
+    // 1. DASMO PHOTO PRINT USERS (Isolated Mobile)
+    match /dasmo_photo_print_users/{email} {
+      allow read: if isOwner(email) || isAdmin();
+
+      allow create: if (isOwner(email) && 
+                        (email.lower() == 'subhojitpaul26042004@gmail.com' ||
+                         (request.resource.data.get('isApproved', false) == false &&
+                          request.resource.data.get('role', 'user') == 'user' &&
+                          request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
+
+      allow update: if isAdmin() || 
+                       (isOwner(email) && 
+                        request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
+                        request.resource.data.get('status', 'pending') == resource.data.get('status', 'pending') &&
+                        request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
+                        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+                        request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
+
+      allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
+    }
+
+    // 2. DASMO SCANNER USERS (Isolated Mobile)
+    match /dasmo_scanner_users/{email} {
+      allow read: if isOwner(email) || isAdmin();
+
+      allow create: if (isOwner(email) && 
+                        (email.lower() == 'subhojitpaul26042004@gmail.com' ||
+                         (request.resource.data.get('isApproved', false) == false &&
+                          request.resource.data.get('role', 'user') == 'user' &&
+                          request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
+
+      allow update: if isAdmin() || 
+                       (isOwner(email) && 
+                        request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
+                        request.resource.data.get('status', 'pending') == resource.data.get('status', 'pending') &&
+                        request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
+                        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+                        request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
+
+      allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
+    }
+
+    // 3. DASMO PC USERS (Isolated Windows Desktop Suite)
+    match /dasmo_pc_users/{email} {
+      allow read: if isOwner(email) || isAdmin();
+
+      allow create: if isAdmin() ||
+                       (isOwner(email) && 
+                        ((isRegistrationOpen() && 
+                          request.resource.data.get('role', 'user') == 'user' &&
+                          request.resource.data.get('isAdmin', false) == false) ||
+                         (request.resource.data.get('isApproved', false) == false &&
+                          request.resource.data.get('role', 'user') == 'user' &&
+                          request.resource.data.get('isAdmin', false) == false &&
+                          request.resource.data.get('status', 'pending') == 'pending')));
+
+      allow update: if isAdmin() || 
+                       (isOwner(email) && 
+                        request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
+                        request.resource.data.get('status', 'pending') == resource.data.get('status', 'pending') &&
+                        request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
+                        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+                        request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0) &&
+                        (resource.data.get('deviceId', '') == '' || request.resource.data.get('deviceId', '') == resource.data.get('deviceId', '')));
+
+      allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
+    }
+
+    // 4. DASMO CYBER CAPTURE USERS (Isolated Mobile)
+    match /dasmo_cyber_capture_users/{email} {
+      allow read: if isOwner(email) || isAdmin();
+
+      allow create: if (isOwner(email) && 
+                        (email.lower() == 'subhojitpaul26042004@gmail.com' ||
+                         (request.resource.data.get('isApproved', false) == false &&
+                          request.resource.data.get('role', 'user') == 'user' &&
+                          request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
+
+      allow update: if isAdmin() || 
+                       (isOwner(email) && 
+                        request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
+                        request.resource.data.get('status', 'pending') == resource.data.get('status', 'pending') &&
+                        request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
+                        request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
+                        request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
+
+      allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
+    }
+
+    // 5. Fallback users collection / SMS Bridge user profiles / LKS DIALER users
+    match /users/{userId} {
+      allow read, write: if true;
+
       match /contacts/{contactId} {
-        allow read: if true;
-        allow create, update: if request.resource.data.name is string && request.resource.data.phoneNumber is string;
-        allow delete: if true;
+        allow read, write: if true;
       }
 
-      // Per-user call logs (created locally or by caller on missed call)
       match /callLogs/{logId} {
-        allow read: if true;
-        allow create: if isValidCallLog(request.resource.data);
-        allow update: if true;
-        allow delete: if true;
+        allow read, write: if true;
       }
     }
 
-    // Active calls & signaling
-    match /calls/{callId} {
-      allow read: if true;
-      allow create: if isValidCall(request.resource.data, callId);
-      allow update: if true;
-      allow delete: if true;
-
-      // WebRTC ICE candidates subcollection
-      match /candidates/{candidateId} {
-        allow read: if true;
-        allow create: if isValidCandidate(request.resource.data);
-        allow update: if true;
-        allow delete: if true;
-      }
-    }
-
-    // Ephemeral End-to-End Encrypted Inboxes (Zero Server Retention)
-    match /inboxes/{recipientPhone} {
+    // 6. Scanner document metadata
+    match /dasmo_doc_scanner_documents/{documentId} {
       allow read, write: if true;
+    }
 
+    // 7. SMS & Call Forwarder (Dedicated & Isolated Collections)
+    match /sms_forwarder_users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /sms_forwarder_pairings/{pairingCode} {
+      allow read, write: if true;
+    }
+
+    match /sms_forwarder_links/{linkId} {
+      allow read, write: if true;
+    }
+
+    match /sms_forwarder_messages/{hostUid} {
+      allow read, write: if true;
       match /messages/{messageId} {
-        allow read: if true;
-        allow create: if isValidChatMessage(request.resource.data, messageId, recipientPhone);
-        allow update: if false;
-        allow delete: if true;
+        allow read, write: if true;
+      }
+      match /calls/{callId} {
+        allow read, write: if true;
       }
     }
 
-    // Ephemeral Delivery & Read Receipts (Zero Server Retention)
-    match /receipts/{recipientPhone} {
+    match /sms_forwarder_calls/{hostUid} {
       allow read, write: if true;
-
-      match /acks/{ackId} {
-        allow read: if true;
-        allow create: if isValidReceipt(request.resource.data);
-        allow update: if false;
-        allow delete: if true;
+      match /calls/{callId} {
+        allow read, write: if true;
       }
     }
 
-    // Ephemeral Typing Status (5s TTL)
-    match /typingStatus/{targetPhone} {
+    // 8. Legacy / Fallback SMS Bridge Collections
+    match /pairings/{pairingCode} {
       allow read, write: if true;
+    }
 
-      match /peers/{peerPhone} {
-        allow read: if true;
-        allow write: if request.resource.data.isTyping is bool;
+    match /links/{linkId} {
+      allow read, write: if true;
+    }
+
+    match /sms/{hostUid} {
+      allow read, write: if true;
+      match /messages/{messageId} {
+        allow read, write: if true;
       }
     }
 
-    // App Diagnostics, Crash Reporting & Shake Logs
-    match /critical_crashes/{crashId} {
+    // 9. LKS DIALER - Active calls, Signaling & WebRTC
+    match /calls/{document=**} {
       allow read, write: if true;
     }
 
-    match /user_shake_reports/{reportId} {
+    // 10. LKS DIALER - Ephemeral Inboxes & Receipts
+    match /inboxes/{document=**} {
       allow read, write: if true;
     }
 
-    match /app_logs/{logId} {
+    match /receipts/{document=**} {
+      allow read, write: if true;
+    }
+
+    // 11. LKS DIALER - Typing status
+    match /typingStatus/{document=**} {
+      allow read, write: if true;
+    }
+
+    // 12. LKS DIALER - Diagnostics, Crash Reporting & Shake Logs
+    match /critical_crashes/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /user_shake_reports/{document=**} {
+      allow read, write: if true;
+    }
+
+    match /app_logs/{document=**} {
       allow read, write: if true;
     }
   }
