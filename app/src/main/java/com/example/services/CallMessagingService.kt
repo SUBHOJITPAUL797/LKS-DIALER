@@ -51,6 +51,7 @@ class CallMessagingService : FirebaseMessagingService() {
         if (remoteMessage.data.isNotEmpty()) {
             Log.d("FCM", "Data payload: ${remoteMessage.data}")
             val type = remoteMessage.data["type"]
+            com.example.util.logging.LksLogger.breadcrumb("FCM", "Push received: type=$type, keys=${remoteMessage.data.keys}")
 
             if (type == "chat_message") {
                 Log.d("FCM", "Received chat_message push notification, handling via ChatRepository")

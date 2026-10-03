@@ -469,6 +469,7 @@ class AudioRouteManager(
         }
 
         Log.i(TAG, "🔊 Switching audio route to: ${device.type} (${device.name})")
+        com.example.util.logging.LksLogger.breadcrumb("AUDIO_ROUTE", "Switching route to: ${device.type} (${device.name})")
 
         try {
             audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -728,6 +729,7 @@ class AudioRouteManager(
         val current = currentSelectedDevice
 
         Log.d(TAG, "Telecom onTelecomAudioRouteChanged: targetType=$targetType, current=$current, explicit=$explicit")
+        com.example.util.logging.LksLogger.breadcrumb("AUDIO_ROUTE", "Telecom route event: target=$targetType, current=$current, explicit=$explicit")
 
         // 🛡️ PERMANENT LOUDSPEAKER PROTECTION:
         // If the call is currently on SPEAKERPHONE or user explicitly selected SPEAKERPHONE,

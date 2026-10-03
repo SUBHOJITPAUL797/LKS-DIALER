@@ -87,6 +87,10 @@ class MainActivity : ComponentActivity() {
     // when the activity is already running (e.g. user taps Accept while app is open)
     private val _incomingIntent = androidx.compose.runtime.mutableStateOf<android.content.Intent?>(null)
 
+    // Shake-to-Report Crash & Diagnostic Logger
+    private var shakeDetector: com.example.util.logging.ShakeDetector? = null
+    private val _showShakeDialog = androidx.compose.runtime.mutableStateOf(false)
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -127,6 +131,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
+        shakeDetector?.start()
         com.example.data.repository.FirebaseManager.getInstance(this).startPresenceHeartbeat()
         com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(true)
         com.example.data.repository.ChatRepository.getInstance(this).fetchPendingMessagesAndReceipts()
@@ -187,6 +192,7 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         isForeground = false
+        shakeDetector?.stop()
         com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
         com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(false)
     }
@@ -195,6 +201,8 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         isForeground = false
         isInPipMode = false
+        shakeDetector?.stop()
+        shakeDetector = null
         com.example.data.repository.ChatRepository.getInstance(this).setAppForeground(false)
         if (!isChangingConfigurations) {
             com.example.data.repository.FirebaseManager.getInstance(this).stopPresenceHeartbeat()
@@ -364,6 +372,11 @@ class MainActivity : ComponentActivity() {
         // Pass the launch intent in so the Compose side can read it
         _incomingIntent.value = intent
         enableEdgeToEdge()
+
+        // Initialize Shake-to-Report Crash & Diagnostic Logger
+        shakeDetector = com.example.util.logging.ShakeDetector(this) {
+            _showShakeDialog.value = true
+        }
 
         setContent {
             val context = LocalContext.current
@@ -1204,8 +1217,16 @@ class MainActivity : ComponentActivity() {
                                 updateInfo = null
                             }
                         )
+                    }
+
+                    // Show Shake-to-Report Crash & Diagnostic Dialog
+                    if (_showShakeDialog.value) {
+                        com.example.ui.components.ShakeReportDialog(
+                            triggerType = "SHAKE_GESTURE",
+                            onDismiss = { _showShakeDialog.value = false }
+                        )
+                    }
                 }
             }
         }
     }
-}

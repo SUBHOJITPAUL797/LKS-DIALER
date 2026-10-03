@@ -105,6 +105,10 @@ fun SettingsScreen(
     var isDataSaverOn by remember { mutableStateOf(false) }
     var isVibrateOn by remember { mutableStateOf(true) }
     var showDeveloperModal by remember { mutableStateOf(false) }
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
+    var showLiveLogsDialog by remember { mutableStateOf(false) }
+    val dialerPrefs = remember { context.getSharedPreferences("dialer_prefs", android.content.Context.MODE_PRIVATE) }
+    var isShakeEnabled by remember { mutableStateOf(dialerPrefs.getBoolean("shake_to_report_enabled", true)) }
 
     val powerManager = remember { context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager }
     var isIgnoringBattery by remember {
@@ -160,6 +164,19 @@ fun SettingsScreen(
         BlockNumberPickerModal(
             firebaseManager = firebaseManager,
             onDismiss = { showBlockNumberDialog = false }
+        )
+    }
+
+    if (showDiagnosticsDialog) {
+        com.example.ui.components.ShakeReportDialog(
+            triggerType = "MANUAL_SETTINGS",
+            onDismiss = { showDiagnosticsDialog = false }
+        )
+    }
+
+    if (showLiveLogsDialog) {
+        com.example.ui.components.LiveLogViewerDialog(
+            onDismiss = { showLiveLogsDialog = false }
         )
     }
 
@@ -1152,6 +1169,87 @@ fun SettingsScreen(
                             Text(
                                 text = "All media packets are encrypted using DTLS-SRTP. Neither server nor relay can decrypt media.",
                                 style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Diagnostics, System Logs & Crash Reports
+            SettingsSectionHeader("Diagnostics, Logs & Bug Reports")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Shake to report switch
+                    SettingsSwitchTile(
+                        title = "Shake Device to Report Issue",
+                        subtitle = "Shaking the phone captures system state & logs to send to developers",
+                        icon = Icons.Default.Vibration,
+                        checked = isShakeEnabled,
+                        onCheckedChange = { enabled ->
+                            isShakeEnabled = enabled
+                            dialerPrefs.edit().putBoolean("shake_to_report_enabled", enabled).apply()
+                            Toast.makeText(
+                                context,
+                                if (enabled) "Shake to report enabled" else "Shake to report disabled",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+
+                    // Send diagnostic logs button
+                    Button(
+                        onClick = { showDiagnosticsDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                    ) {
+                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Send Diagnostic Report to Cloud", fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // View live logs button
+                    OutlinedButton(
+                        onClick = { showLiveLogsDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("View Live System & Audio Logs")
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Diagnostic info badge
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Info, contentDescription = null, tint = currentThemeColor.primary, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} • Android ${android.os.Build.VERSION.RELEASE} • Buffer: ${com.example.util.logging.LksLogger.getLogCount()} lines",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }

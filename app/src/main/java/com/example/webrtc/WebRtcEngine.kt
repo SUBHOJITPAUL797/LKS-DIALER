@@ -683,6 +683,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var lastInitiateCallTimestamp: Long = 0L
 
     fun initiateCall(calleeNumber: String, calleeName: String, callerNumber: String, callerName: String, callType: CallType) {
+        com.example.util.logging.LksLogger.breadcrumb("CALL", "Initiating $callType call to $calleeNumber ($calleeName)")
         // Non-blocking re-entrance guard (industry standard: Signal/Opal use AtomicBoolean instead of @Synchronized)
         if (!isInitiatingCall.compareAndSet(false, true)) {
             Log.w("WebRtcEngine", "initiateCall dropped: another initiateCall is already in progress")
@@ -1171,6 +1172,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun answerCall() {
         val call = _state.value.activeCall ?: return
+        com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
 
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
@@ -1888,6 +1890,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private fun endCallInternalLocal(status: CallStatus) {
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
+        com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status")
         
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
         com.example.util.CallSoundEffectsManager.stopHoldReminder()

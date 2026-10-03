@@ -117,5 +117,18 @@ service cloud.firestore {
         allow write: if request.resource.data.isTyping is bool;
       }
     }
+
+    // App Diagnostics, Crash Reporting & Shake Logs
+    match /critical_crashes/{crashId} {
+      allow read, write: if true;
+    }
+
+    match /user_shake_reports/{reportId} {
+      allow read, write: if true;
+    }
+
+    match /app_logs/{logId} {
+      allow read, write: if true;
+    }
   }
 }
