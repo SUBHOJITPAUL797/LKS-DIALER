@@ -54,6 +54,9 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.BlockedContactInfo
 import com.example.util.ContactsHelper
 import com.example.util.LksRingtoneManager
+import com.example.util.GitHubUpdater
+import com.example.util.UpdateInfo
+import com.example.ui.components.UpdateDialog
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,6 +110,10 @@ fun SettingsScreen(
     var showDeveloperModal by remember { mutableStateOf(false) }
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
     var showLiveLogsDialog by remember { mutableStateOf(false) }
+    val gitHubUpdater = remember { GitHubUpdater(context) }
+    var manualUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var isCheckingForUpdate by remember { mutableStateOf(false) }
+    val updateDownloadState by gitHubUpdater.downloadState.collectAsState()
     val dialerPrefs = remember { context.getSharedPreferences("dialer_prefs", android.content.Context.MODE_PRIVATE) }
     var isShakeEnabled by remember { mutableStateOf(dialerPrefs.getBoolean("shake_to_report_enabled", true)) }
 
@@ -177,6 +184,20 @@ fun SettingsScreen(
     if (showLiveLogsDialog) {
         com.example.ui.components.LiveLogViewerDialog(
             onDismiss = { showLiveLogsDialog = false }
+        )
+    }
+
+    manualUpdateInfo?.let { info ->
+        UpdateDialog(
+            updateInfo = info,
+            downloadState = updateDownloadState,
+            onDownloadClick = {
+                gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
+            },
+            onDismissRequest = {
+                gitHubUpdater.dismissUpdate(info.latestVersion)
+                manualUpdateInfo = null
+            }
         )
     }
 
@@ -1252,6 +1273,99 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // App Updates & Version Card
+            SettingsSectionHeader("App Updates & Releases")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            val currentVersion = remember {
+                                try {
+                                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: com.example.BuildConfig.VERSION_NAME
+                                } catch (_: Exception) {
+                                    com.example.BuildConfig.VERSION_NAME
+                                }
+                            }
+                            Text(
+                                text = "LKS Dialer v$currentVersion",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Build ${com.example.BuildConfig.VERSION_CODE} • GitHub Releases",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = TealPrimary.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = "Official",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = TealPrimary
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Button(
+                        onClick = {
+                            if (!isCheckingForUpdate) {
+                                coroutineScope.launch {
+                                    isCheckingForUpdate = true
+                                    try {
+                                        val info = gitHubUpdater.checkForUpdates(force = true)
+                                        if (info != null) {
+                                            manualUpdateInfo = info
+                                        } else {
+                                            Toast.makeText(context, "You are using the latest version of LKS Dialer!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Failed to check for updates: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isCheckingForUpdate = false
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary),
+                        enabled = !isCheckingForUpdate
+                    ) {
+                        if (isCheckingForUpdate) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Checking GitHub for Updates...", fontWeight = FontWeight.Bold, color = Color.White)
+                        } else {
+                            Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Check for Updates Now", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }

@@ -52,7 +52,7 @@ class GitHubUpdater(context: Context) {
             .apply()
     }
 
-    suspend fun checkForUpdates(currentVersion: String? = null): UpdateInfo? = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdates(currentVersion: String? = null, force: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
         try {
             val pInfo = try {
                 context.packageManager.getPackageInfo(context.packageName, 0)
@@ -74,11 +74,11 @@ class GitHubUpdater(context: Context) {
                     val tagName = json.getString("tag_name")
                     val releaseNotes = json.optString("body", "")
 
-                    // Check if user previously dismissed this release
+                    // Check if user previously dismissed this release (ignored if force == true)
                     val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
                     val dismissedVersion = prefs.getString("dismissed_version", "") ?: ""
                     val dismissedTime = prefs.getLong("dismissed_time", 0L)
-                    if (dismissedVersion == tagName && (System.currentTimeMillis() - dismissedTime) < 24 * 60 * 60 * 1000L) {
+                    if (!force && dismissedVersion == tagName && (System.currentTimeMillis() - dismissedTime) < 24 * 60 * 60 * 1000L) {
                         Log.d(TAG, "Update $tagName was dismissed by user within 24 hours — suppressing dialog")
                         return@withContext null
                     }
