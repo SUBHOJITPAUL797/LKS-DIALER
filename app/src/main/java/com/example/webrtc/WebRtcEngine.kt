@@ -103,6 +103,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
+    private var audioDeviceModule: JavaAudioDeviceModule? = null  // kept to mute/unmute playout during pre-warm
     
     private var audioSource: AudioSource? = null
     private var localAudioTrack: AudioTrack? = null
@@ -219,7 +220,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
 
-        val audioDeviceModule = JavaAudioDeviceModule.builder(context)
+        val audioDeviceModule: JavaAudioDeviceModule = JavaAudioDeviceModule.builder(context)
             .setUseHardwareAcousticEchoCanceler(isAecSupported)
             .setUseHardwareNoiseSuppressor(isNsSupported)
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
@@ -254,6 +255,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             })
             .createAudioDeviceModule()
 
+        this.audioDeviceModule = audioDeviceModule
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setOptions(options)
             .setAudioDeviceModule(audioDeviceModule)
@@ -549,93 +551,17 @@ class WebRtcEngine private constructor(private val context: Context) {
      * running the full 5-8 second SDP negotiation chain.
      */
     private fun preWarmForIncomingCall(call: com.example.data.model.CallDto) {
-        if (preWarmDone) return
-        val offerSdp = call.offerSdp
-        if (offerSdp.isNullOrBlank()) {
-            // Offer not yet in Firestore — listenToActiveCall will call us again when it arrives
-            Log.d("WebRtcEngine", "⏳ Pre-warm deferred: offer SDP not yet available for ${call.callId}")
-            return
-        }
-        preWarmDone = true
-        Log.i("WebRtcEngine", "🔥 Pre-warming PeerConnection for incoming call ${call.callId}")
-
-        scope.launch(Dispatchers.Main) {
-            try {
-                // Create the PeerConnection ahead of time with same config as answerCall
-                createPeerConnection(isCaller = false, callId = call.callId)
-
-                val pc = peerConnection ?: run {
-                    Log.w("WebRtcEngine", "Pre-warm: peerConnection is null after create, aborting")
-                    preWarmDone = false
-                    return@launch
-                }
-
-                // Process offer SDP — same chain as processOfferSdpIfAvailable but stores answer locally
-                hasProcessedOffer = true
-                val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
-                pc.setRemoteDescription(object : SimpleSdpObserver() {
-                    override fun onSetSuccess() {
-                        Log.i("WebRtcEngine", "Pre-warm: remote offer set ✅")
-                        drainQueuedRemoteIceCandidates()
-
-                        val constraints = MediaConstraints().apply {
-                            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-                            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo",
-                                if (call.callType == CallType.VIDEO) "true" else "false"))
-                        }
-
-                        pc.createAnswer(object : SimpleSdpObserver() {
-                            override fun onCreateSuccess(desc: SessionDescription?) {
-                                if (desc != null) {
-                                    val tunedSdp = preferOpusAndEnableFec(desc.description)
-                                    val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                                    pc.setLocalDescription(object : SimpleSdpObserver() {
-                                        override fun onSetSuccess() {
-                                            // 🎯 Answer is READY. Ensure this belongs to the active call!
-                                            if (_state.value.activeCall?.callId == call.callId) {
-                                                if (_state.value.callStatus == CallStatus.RINGING) {
-                                                    prebuiltAnswerSdp = tunedSdp
-                                                    prebuiltCallId = call.callId
-                                                    Log.i("WebRtcEngine", "🎯 Pre-warm complete: answer SDP ready for ${call.callId}")
-                                                } else if (_state.value.callStatus == CallStatus.ANSWERED) {
-                                                    // User tapped answer while pre-warm was finishing! Upload SDP directly!
-                                                    Log.i("WebRtcEngine", "⚡ User answered mid-pre-warm — uploading generated answer SDP directly for ${call.callId}")
-                                                    firestore.collection("calls").document(call.callId).update("answerSdp", tunedSdp)
-                                                }
-                                            }
-                                        }
-                                        override fun onSetFailure(error: String?) {
-                                            Log.w("WebRtcEngine", "Pre-warm setLocalDescription failed: $error — will renegotiate on accept")
-                                            prebuiltAnswerSdp = null
-                                            prebuiltCallId = null
-                                            preWarmDone = false
-                                        }
-                                    }, tunedDesc)
-                                }
-                            }
-                            override fun onCreateFailure(error: String?) {
-                                Log.w("WebRtcEngine", "Pre-warm createAnswer failed: $error — will renegotiate on accept")
-                                prebuiltAnswerSdp = null
-                                prebuiltCallId = null
-                                preWarmDone = false
-                            }
-                        }, constraints)
-                    }
-                    override fun onSetFailure(error: String?) {
-                        Log.w("WebRtcEngine", "Pre-warm setRemoteDescription failed: $error — will renegotiate on accept")
-                        hasProcessedOffer = false
-                        prebuiltAnswerSdp = null
-                        prebuiltCallId = null
-                        preWarmDone = false
-                    }
-                }, sessionDescription)
-            } catch (e: Exception) {
-                Log.w("WebRtcEngine", "Pre-warm exception: ${e.message} — will renegotiate on accept")
-                prebuiltAnswerSdp = null
-                prebuiltCallId = null
-                preWarmDone = false
-            }
-        }
+        // 🛡️ CRITICAL FIX: Pre-warming creates a WebRTC PeerConnection with JavaAudioDeviceModule.
+        // As soon as remoteDescription is set, WebRTC C++ initializes an AudioTrack with
+        // USAGE_VOICE_COMMUNICATION. On Samsung and Xiaomi/MIUI devices, having an active
+        // VOICE_COMMUNICATION AudioTrack immediately causes the Android AudioPolicyService
+        // to switch the hardware audio route to the EARPIECE, hijacking the ringtone MediaPlayer!
+        // Standard SDP negotiation in answerCall() takes <100ms and runs cleanly AFTER the ringtone
+        // is stopped and after audio routing is properly configured.
+        Log.d("WebRtcEngine", "🛡️ Pre-warm skipped for ${call.callId} to preserve loudspeaker ringtone")
+        prebuiltAnswerSdp = null
+        prebuiltCallId = null
+        preWarmDone = false
     }
 
 
@@ -787,6 +713,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             fetchIceServersAsync {}
 
             // Create PeerConnection and generate Offer IMMEDIATELY using cached ICE servers (no network stall)
+            try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
             createPeerConnection(isCaller = true, callId = newCall.callId)
 
             val constraints = MediaConstraints()
@@ -1191,6 +1118,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 com.example.services.LksConnectionService.setCallActive()
             } catch (_: Exception) {}
         }
+        try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
         configureAudio(call.callType)
 
         // ⚡ INSTANT PATH: Pre-warm completed during ringing — just write the answer SDP to Firestore.
@@ -1918,6 +1846,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         prebuiltAnswerSdp = null
         prebuiltCallId = null
         preWarmDone = false
+        try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
