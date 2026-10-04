@@ -196,10 +196,11 @@ class GitHubUpdater(context: Context) {
         }
     }
     
-    private fun installApk(uri: Uri) {
+    fun installApk(uri: Uri) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!context.packageManager.canRequestPackageInstalls()) {
+                    android.widget.Toast.makeText(context, "Please allow 'Install unknown apps' to complete update", android.widget.Toast.LENGTH_LONG).show()
                     val settingsIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                         data = Uri.parse("package:${context.packageName}")
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -213,9 +214,17 @@ class GitHubUpdater(context: Context) {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
             }
+
+            val resolveInfoList = context.packageManager.queryIntentActivities(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            for (resolveInfo in resolveInfoList) {
+                val pkgName = resolveInfo.activityInfo.packageName
+                context.grantUriPermission(pkgName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to install APK", e)
+            android.widget.Toast.makeText(context, "Install failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
     

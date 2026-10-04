@@ -24,6 +24,7 @@ fun UpdateDialog(
     updateInfo: UpdateInfo,
     downloadState: DownloadState,
     onDownloadClick: () -> Unit,
+    onInstallClick: (android.net.Uri) -> Unit = {},
     onDismissRequest: () -> Unit
 ) {
     AlertDialog(
@@ -111,9 +112,10 @@ fun UpdateDialog(
                     }
                     is DownloadState.Downloaded -> {
                         Text(
-                            text = "Download complete. Starting installation...",
+                            text = "✅ Download complete! Tap 'Install APK' below.",
                             color = TealPrimary,
-                            style = MaterialTheme.typography.labelMedium
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                     is DownloadState.Error -> {
@@ -130,19 +132,48 @@ fun UpdateDialog(
             }
         },
         confirmButton = {
-            if (downloadState is DownloadState.Idle || downloadState is DownloadState.Error) {
-                Button(
-                    onClick = onDownloadClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
-                ) {
-                    Text("Download & Install")
+            when (downloadState) {
+                is DownloadState.Downloaded -> {
+                    Button(
+                        onClick = { onInstallClick(downloadState.fileUri) },
+                        colors = ButtonDefaults.buttonColors(containerColor = com.example.ui.theme.GreenCall)
+                    ) {
+                        Text("Install APK")
+                    }
+                }
+                is DownloadState.Downloading -> {
+                    // Downloading
+                }
+                else -> {
+                    Button(
+                        onClick = onDownloadClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                    ) {
+                        Text("Download & Install")
+                    }
                 }
             }
         },
         dismissButton = {
-            if (!updateInfo.isMandatory && (downloadState is DownloadState.Idle || downloadState is DownloadState.Error)) {
-                TextButton(onClick = onDismissRequest) {
-                    Text("Later")
+            if (!updateInfo.isMandatory && downloadState !is DownloadState.Downloading) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        try {
+                            val browserIntent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(updateInfo.downloadUrl)
+                            ).apply {
+                                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(browserIntent)
+                        } catch (_: Exception) {}
+                    }) {
+                        Text("Browser")
+                    }
+                    TextButton(onClick = onDismissRequest) {
+                        Text("Later")
+                    }
                 }
             }
         },

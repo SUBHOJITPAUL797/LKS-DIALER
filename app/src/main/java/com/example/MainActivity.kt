@@ -1212,6 +1212,9 @@ class MainActivity : ComponentActivity() {
                             onDownloadClick = {
                                 gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
                             },
+                            onInstallClick = { uri ->
+                                gitHubUpdater.installApk(uri)
+                            },
                             onDismissRequest = {
                                 gitHubUpdater.dismissUpdate(info.latestVersion)
                                 updateInfo = null
