@@ -61,6 +61,9 @@ class AudioRouteManager(
     private var isCellularCallInterrupting: Boolean = false
     @Volatile
     private var callAudioFocusGrantedAt: Long = 0L
+    @Volatile
+    var isAudioConfigured: Boolean = false
+        private set
 
     var currentAvailableDevices: List<AudioDeviceOption> = emptyList()
         private set
@@ -92,6 +95,7 @@ class AudioRouteManager(
     }
 
     fun configureAudio(callType: CallType) {
+        isAudioConfigured = true
         val isSpeaker = callType == CallType.VIDEO || currentSelectedDevice == AudioDeviceType.SPEAKERPHONE
         lastNonBluetoothAudioDevice = if (isSpeaker) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
@@ -468,6 +472,12 @@ class AudioRouteManager(
             lastNonBluetoothAudioDevice = device.type
         }
 
+        if (!isAudioConfigured) {
+            Log.d(TAG, "🛡️ selectAudioDevice: Audio not yet configured (call not active). Storing preferred device ${device.type} without modifying hardware audioManager.")
+            currentSelectedDevice = device.type
+            return
+        }
+
         Log.i(TAG, "🔊 Switching audio route to: ${device.type} (${device.name})")
         com.example.util.logging.LksLogger.breadcrumb("AUDIO_ROUTE", "Switching route to: ${device.type} (${device.name})")
 
@@ -725,6 +735,11 @@ class AudioRouteManager(
     }
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
+        if (!isAudioConfigured) {
+            Log.d(TAG, "🛡️ Suppressing onTelecomAudioRouteChanged($targetType): Audio not configured / call not active")
+            return
+        }
+
         val explicit = userExplicitSelectedDevice
         val current = currentSelectedDevice
 
@@ -779,6 +794,7 @@ class AudioRouteManager(
     }
 
     fun resetAudioRouting() {
+        isAudioConfigured = false
         userExplicitSelectedDevice = null
         lastUserExplicitSelectionTime = 0L
 
@@ -823,6 +839,10 @@ class AudioRouteManager(
      * device (e.g. when WebRTC finishes ICE negotiation and starts media tracks).
      */
     fun reassertCurrentRoute() {
+        if (!isAudioConfigured) {
+            Log.d(TAG, "🛡️ reassertCurrentRoute: Ignored because audio is not configured / call not active")
+            return
+        }
         mainHandler.post {
             val selected = currentSelectedDevice
             Log.d(TAG, "🔊 Re-asserting current audio route: $selected")

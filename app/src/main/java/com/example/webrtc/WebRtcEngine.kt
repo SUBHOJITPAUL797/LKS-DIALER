@@ -1725,6 +1725,11 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
+        val status = _state.value.callStatus
+        if (status == CallStatus.RINGING || status == CallStatus.IDLE) {
+            Log.d("WebRtcEngine", "🛡️ Suppressing onTelecomAudioRouteChanged($targetType) while callStatus is $status (ringing/idle)")
+            return
+        }
         audioRouteManager.onTelecomAudioRouteChanged(targetType)
     }
 

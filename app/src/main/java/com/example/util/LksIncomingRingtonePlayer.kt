@@ -73,12 +73,20 @@ object LksIncomingRingtonePlayer {
                     // detects a VoIP session, switching STREAM_RING back to earpiece. Continuously
                     // re-pinning speaker here prevents that re-routing from taking effect.
                     val am = appContext?.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
-                    if (am?.mode == android.media.AudioManager.MODE_NORMAL) {
+                    if (am?.mode != android.media.AudioManager.MODE_NORMAL) {
                         try {
-                            @Suppress("DEPRECATION")
-                            am.isSpeakerphoneOn = true
+                            am?.mode = android.media.AudioManager.MODE_NORMAL
                         } catch (_: Exception) {}
                     }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try {
+                            am?.clearCommunicationDevice()
+                        } catch (_: Exception) {}
+                    }
+                    try {
+                        @Suppress("DEPRECATION")
+                        am?.isSpeakerphoneOn = true
+                    } catch (_: Exception) {}
 
                     if (mediaPlayer != null) {
                         if (!mediaPlayer!!.isPlaying) {
@@ -147,13 +155,16 @@ object LksIncomingRingtonePlayer {
             Log.w(TAG, "Failed to set audio mode: ${e.message}")
         }
 
-        // 🔊 XIAOMI / MIUI FIX: Explicitly force loudspeaker BEFORE audio focus request and BEFORE
-        // MediaPlayer starts. MIUI aggressively grabs the audio session and re-routes to earpiece
-        // unless we pin the speaker first with isSpeakerphoneOn=true while still in MODE_NORMAL.
+        // 🔊 XIAOMI / MIUI / SAMSUNG FIX: Explicitly force loudspeaker BEFORE audio focus request and BEFORE
+        // MediaPlayer starts. MIUI and Samsung aggressively grab the audio session and re-route to earpiece
+        // unless we clear communication device and pin the speaker first with isSpeakerphoneOn=true while still in MODE_NORMAL.
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager?.clearCommunicationDevice()
+            }
             @Suppress("DEPRECATION")
             audioManager?.isSpeakerphoneOn = true
-            Log.d(TAG, "🔊 Forced isSpeakerphoneOn=true before ringtone start (Xiaomi MIUI fix)")
+            Log.d(TAG, "🔊 Forced isSpeakerphoneOn=true and cleared communication device before ringtone start")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to force speakerphone for ringtone: ${e.message}")
         }

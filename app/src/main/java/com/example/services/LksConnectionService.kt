@@ -37,6 +37,10 @@ class LksConnectionService : ConnectionService() {
 
         fun setAudioRoute(route: Int) {
             activeConnection?.let {
+                if (it.state == android.telecom.Connection.STATE_RINGING || it.state == android.telecom.Connection.STATE_INITIALIZING) {
+                    Log.d(TAG, "🛡️ Suppressing setAudioRoute($route) while Connection is in STATE_RINGING/INITIALIZING")
+                    return
+                }
                 try {
                     it.setAudioRoute(route)
                     Log.d(TAG, "Telecom Connection setAudioRoute to: $route")
@@ -242,7 +246,23 @@ class LksCallConnection(
         super.onCallAudioStateChanged(state)
         val route = state?.route ?: return
         Log.d("LksCallConnection", "Telecom onCallAudioStateChanged: route=$route, isMuted=${state.isMuted}")
+
+        // 🛡️ CRITICAL GUARD: During incoming ringing, Telecom defaults to ROUTE_EARPIECE on Samsung/Xiaomi.
+        // We MUST NOT pass this route change to WebRtcEngine/AudioRouteManager while ringing,
+        // otherwise Android forces AudioManager.MODE_IN_COMMUNICATION with EARPIECE,
+        // which hijacks the incoming ringtone from loudspeaker to the earpiece!
+        if (this.state == android.telecom.Connection.STATE_RINGING || this.state == android.telecom.Connection.STATE_INITIALIZING) {
+            Log.d("LksCallConnection", "🛡️ Suppressing onCallAudioStateChanged during STATE_RINGING / INITIALIZING")
+            return
+        }
+
         val engine = WebRtcEngine.getInstanceIfCreated() ?: return
+        if (engine.state.value.callStatus == com.example.data.model.CallStatus.RINGING ||
+            engine.state.value.callStatus == com.example.data.model.CallStatus.IDLE) {
+            Log.d("LksCallConnection", "🛡️ Suppressing onCallAudioStateChanged because WebRtcEngine callStatus is ${engine.state.value.callStatus}")
+            return
+        }
+
         val targetType = when (route) {
             android.telecom.CallAudioState.ROUTE_SPEAKER -> com.example.webrtc.AudioDeviceType.SPEAKERPHONE
             android.telecom.CallAudioState.ROUTE_BLUETOOTH -> com.example.webrtc.AudioDeviceType.BLUETOOTH
