@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.util.UUID
 
 sealed class RegisterResult {
@@ -396,19 +397,22 @@ class FirebaseManager private constructor(private val context: Context) {
             scope.launch {
                 try {
                     val db = FirebaseFirestore.getInstance()
-                    db.collection("users").document(cleanNumber).get().addOnSuccessListener { doc ->
-                        pendingLookups.remove(cleanNumber)
-                        val user = doc.toObject(UserDto::class.java)
-                        if (user != null && user.phoneNumber.isNotBlank()) {
-                            val list = _registeredUsers.value.toMutableList()
-                            if (list.none { it.phoneNumber == user.phoneNumber }) {
-                                list.add(user)
-                                _registeredUsers.value = list
+                    val variations = ContactsHelper.generateNumberVariations(cleanNumber)
+                    for (variant in variations) {
+                        try {
+                            val doc = db.collection("users").document(variant).get().await()
+                            val user = doc.toObject(UserDto::class.java)
+                            if (user != null && user.phoneNumber.isNotBlank()) {
+                                val list = _registeredUsers.value.toMutableList()
+                                if (list.none { it.phoneNumber == user.phoneNumber }) {
+                                    list.add(user)
+                                    _registeredUsers.value = list
+                                }
+                                break
                             }
-                        }
-                    }.addOnFailureListener {
-                        pendingLookups.remove(cleanNumber)
+                        } catch (_: Exception) {}
                     }
+                    pendingLookups.remove(cleanNumber)
                 } catch (_: Exception) {
                     pendingLookups.remove(cleanNumber)
                 }

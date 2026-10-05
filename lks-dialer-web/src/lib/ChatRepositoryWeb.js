@@ -1,6 +1,6 @@
 import { db } from './firebase';
 import { 
-  collection, doc, setDoc, getDoc, deleteDoc, onSnapshot 
+  collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, where 
 } from 'firebase/firestore';
 import { chatCryptoWeb } from './ChatCryptoWeb';
 import { formatAvatarUrl } from './ImageUtils';
@@ -13,6 +13,30 @@ import { P2pFileTransferWeb } from './P2pFileTransferWeb';
 export function normalizePhoneNumber(number) {
   if (!number) return '';
   return String(number).replace(/[^0-9+]/g, '');
+}
+
+/**
+ * Generates common variations of a phone number (with +, without +, last 10 digits)
+ * for robust multi-variant Firestore matching across Web & Android.
+ */
+export function generateNumberVariations(number) {
+  if (!number) return [];
+  const raw = String(number).trim();
+  const variations = [raw];
+  const cleanDigits = raw.replace(/[^0-9]/g, '');
+  if (cleanDigits) {
+    variations.push(cleanDigits);
+    if (cleanDigits.length > 10) {
+      variations.push(cleanDigits.slice(-10));
+    }
+    if (!raw.startsWith('+')) {
+      variations.push('+' + cleanDigits);
+    }
+    if (!cleanDigits.startsWith('0') && cleanDigits.length === 10) {
+      variations.push('0' + cleanDigits);
+    }
+  }
+  return Array.from(new Set(variations.filter(Boolean))).slice(0, 10);
 }
 
 /**
@@ -43,9 +67,12 @@ class ChatRepositoryWeb {
     this.typingStatus = {}; // { [peerPhone]: boolean }
     this.subscribers = new Set();
 
-    this.unsubInbox = null;
-    this.unsubReceipts = null;
-    this.unsubTyping = null;
+    // Multi-variant listener arrays matching Android
+    this.activeInboxListeners = [];
+    this.activeReceiptsListeners = [];
+    this.activeTypingListeners = [];
+    this.processedMessageIds = new Set();
+    this.processedReceiptIds = new Set();
     this.typingTimeouts = {};
 
     // Active file transfer progress: { [messageId]: FileTransferProgress }
@@ -56,15 +83,25 @@ class ChatRepositoryWeb {
     this.cancelledTransfers = new Set();
     this.isUserNearBottom = true;
 
-    // Window focus & visibility listeners for auto-read when returning to tab
+    // Window focus & visibility listeners for auto-read and proactive message draining
     if (typeof window !== 'undefined' && typeof document !== 'undefined') {
       const handleActive = () => {
-        if (!document.hidden && document.hasFocus() && this.activeChatPeerNumber && this.isUserNearBottom) {
-          this.markConversationAsRead(this.activeChatPeerNumber);
+        if (!document.hidden && document.hasFocus()) {
+          if (this.activeChatPeerNumber && this.isUserNearBottom) {
+            this.markConversationAsRead(this.activeChatPeerNumber);
+          }
+          if (this.currentListeningPhone) {
+            this.fetchPendingMessagesAndReceipts();
+          }
         }
       };
       document.addEventListener('visibilitychange', handleActive);
       window.addEventListener('focus', handleActive);
+      window.addEventListener('online', () => {
+        if (this.currentListeningPhone) {
+          this.fetchPendingMessagesAndReceipts();
+        }
+      });
     }
 
     try {
@@ -129,22 +166,53 @@ class ChatRepositoryWeb {
     }
   }
 
-  getMessages(peerPhoneNumber) {
+  _resolveMessagesKey(peerPhoneNumber) {
     const norm = normalizePhoneNumber(peerPhoneNumber);
-    try {
-      let raw = localStorage.getItem(`lks_web_chat_messages_${norm}`);
-      if (!raw) {
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('lks_web_chat_messages_')) {
-            const num = k.replace('lks_web_chat_messages_', '');
-            if (numbersMatch(num, norm)) {
-              raw = localStorage.getItem(k);
-              break;
-            }
-          }
+    if (!norm) return null;
+    const matchingKeys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('lks_web_chat_messages_')) {
+        const num = k.replace('lks_web_chat_messages_', '');
+        if (numbersMatch(num, norm)) {
+          matchingKeys.push(k);
         }
       }
+    }
+    if (matchingKeys.length === 0) {
+      return `lks_web_chat_messages_${norm}`;
+    }
+    if (matchingKeys.length === 1) {
+      return matchingKeys[0];
+    }
+    // Multiple keys found for same peer variations — merge them cleanly!
+    const canonicalKey = matchingKeys[0];
+    const allMessages = [];
+    const seenIds = new Set();
+    for (const k of matchingKeys) {
+      try {
+        const msgs = JSON.parse(localStorage.getItem(k) || '[]');
+        for (const m of msgs) {
+          if (m && m.id && !seenIds.has(m.id)) {
+            seenIds.add(m.id);
+            allMessages.push(m);
+          }
+        }
+      } catch {}
+      if (k !== canonicalKey) {
+        localStorage.removeItem(k);
+      }
+    }
+    allMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    localStorage.setItem(canonicalKey, JSON.stringify(allMessages));
+    return canonicalKey;
+  }
+
+  getMessages(peerPhoneNumber) {
+    const key = this._resolveMessagesKey(peerPhoneNumber);
+    if (!key) return [];
+    try {
+      const raw = localStorage.getItem(key);
       const messages = raw ? JSON.parse(raw) : [];
 
       // Retroactive Read Heal: If peer has replied at timestamp T, all earlier DELIVERED outgoing messages (<= T) were read
@@ -159,13 +227,13 @@ class ChatRepositoryWeb {
       if (lastIncomingTime > 0) {
         let healed = false;
         messages.forEach(m => {
-          if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp <= lastIncomingTime)) {
+          if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= lastIncomingTime) {
             m.status = 'READ';
             healed = true;
           }
         });
         if (healed) {
-          this.saveMessages(norm, messages);
+          this.saveMessages(peerPhoneNumber, messages);
         }
       }
 
@@ -176,20 +244,10 @@ class ChatRepositoryWeb {
   }
 
   saveMessages(peerPhoneNumber, messages) {
-    const norm = normalizePhoneNumber(peerPhoneNumber);
+    const key = this._resolveMessagesKey(peerPhoneNumber);
+    if (!key) return;
     try {
-      let targetKey = `lks_web_chat_messages_${norm}`;
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('lks_web_chat_messages_')) {
-          const num = k.replace('lks_web_chat_messages_', '');
-          if (numbersMatch(num, norm)) {
-            targetKey = k;
-            break;
-          }
-        }
-      }
-      localStorage.setItem(targetKey, JSON.stringify(messages));
+      localStorage.setItem(key, JSON.stringify(messages));
     } catch (e) {
       console.warn('Failed to save messages to localStorage:', e);
     }
@@ -229,89 +287,201 @@ class ChatRepositoryWeb {
     return convs.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
   }
 
-  // --- FIRESTORE REAL-TIME LISTENERS ---
-  attachChatListeners(myPhoneNumber) {
+  // --- FIRESTORE REAL-TIME LISTENERS (MULTI-VARIANT) ---
+  async attachChatListeners(myPhoneNumber) {
     if (!myPhoneNumber) return;
     const normalizedMyPhone = normalizePhoneNumber(myPhoneNumber);
 
     // Always run reconcile on attach
     this.reconcileConversations();
 
-    if (this.currentListeningPhone === normalizedMyPhone && this.unsubInbox) return;
+    if (this.currentListeningPhone === normalizedMyPhone && this.activeInboxListeners.length > 0) {
+      this.fetchPendingMessagesAndReceipts();
+      return;
+    }
 
     this.currentListeningPhone = normalizedMyPhone;
     this.detachChatListeners();
 
-    console.log(`[ChatRepositoryWeb] Attaching ephemeral chat listeners for: ${normalizedMyPhone}`);
+    const variations = generateNumberVariations(normalizedMyPhone);
+    console.log(`[ChatRepositoryWeb] Attaching multi-variant ephemeral chat listeners for: ${normalizedMyPhone} across:`, variations);
 
-    // 1. INBOX LISTENER: receives encrypted messages for me
-    const inboxCol = collection(db, 'inboxes', normalizedMyPhone, 'messages');
-    this.unsubInbox = onSnapshot(inboxCol, (snapshot) => {
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'added') {
-          const docRef = change.doc.ref;
-          const data = change.doc.data();
-          this.processIncomingMessage(data, docRef);
+    // Ensure public key is synced to all variations in users collection in Firestore
+    try {
+      const myPubKey = await chatCryptoWeb.getMyPublicKeyBase64();
+      if (myPubKey) {
+        for (const variant of variations) {
+          try {
+            await setDoc(doc(db, 'users', variant), {
+              publicKey: myPubKey,
+              phoneNumber: normalizedMyPhone,
+              lastSeen: Date.now()
+            }, { merge: true });
+          } catch {}
         }
-      });
-    }, (err) => console.error('[ChatRepositoryWeb] Inbox listener error:', err));
+        console.log(`[ChatRepositoryWeb] Synced public key to all variations in Firestore`);
+      }
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] Public key sync warning:', e);
+    }
 
-    // 2. RECEIPTS LISTENER: receives DELIVERED and READ receipts
-    const receiptsCol = collection(db, 'receipts', normalizedMyPhone, 'acks');
-    this.unsubReceipts = onSnapshot(receiptsCol, (snapshot) => {
-      snapshot.docChanges().forEach(change => {
-        if (change.type === 'added') {
-          const docRef = change.doc.ref;
-          const data = change.doc.data();
-          this.processIncomingReceipt(data, docRef);
-        }
-      });
-    }, (err) => console.error('[ChatRepositoryWeb] Receipts listener error:', err));
+    // Attach real-time listeners across all variations
+    for (const variant of variations) {
+      // 1. INBOX LISTENER: receives encrypted messages for me
+      try {
+        const inboxCol = collection(db, 'inboxes', variant, 'messages');
+        const unsubInbox = onSnapshot(inboxCol, (snapshot) => {
+          snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') {
+              const docRef = change.doc.ref;
+              const data = change.doc.data();
+              this.processIncomingMessage(data, docRef);
+            }
+          });
+        }, (err) => console.error(`[ChatRepositoryWeb] Inbox listener error for ${variant}:`, err));
+        this.activeInboxListeners.push(unsubInbox);
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Failed to attach inbox listener for ${variant}:`, e);
+      }
 
-    // 3. TYPING STATUS LISTENER
-    const typingCol = collection(db, 'typingStatus', normalizedMyPhone, 'peers');
-    this.unsubTyping = onSnapshot(typingCol, (snapshot) => {
-      const now = Date.now();
-      const updated = { ...this.typingStatus };
-      snapshot.forEach(docSnap => {
-        const peer = docSnap.id;
-        const d = docSnap.data();
-        const isTyping = Boolean(d.isTyping);
-        const timestamp = Number(d.timestamp) || 0;
-        updated[peer] = isTyping && (now - timestamp < 5000);
-      });
-      this.typingStatus = updated;
-      this.notifySubscribers();
-    }, (err) => console.error('[ChatRepositoryWeb] Typing listener error:', err));
+      // 2. RECEIPTS LISTENER: receives DELIVERED and READ receipts
+      try {
+        const receiptsCol = collection(db, 'receipts', variant, 'acks');
+        const unsubReceipts = onSnapshot(receiptsCol, (snapshot) => {
+          snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') {
+              const docRef = change.doc.ref;
+              const data = change.doc.data();
+              this.processIncomingReceipt(data, docRef);
+            }
+          });
+        }, (err) => console.error(`[ChatRepositoryWeb] Receipts listener error for ${variant}:`, err));
+        this.activeReceiptsListeners.push(unsubReceipts);
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Failed to attach receipts listener for ${variant}:`, e);
+      }
+
+      // 3. TYPING STATUS LISTENER
+      try {
+        const typingCol = collection(db, 'typingStatus', variant, 'peers');
+        const unsubTyping = onSnapshot(typingCol, (snapshot) => {
+          const now = Date.now();
+          const updated = { ...this.typingStatus };
+          snapshot.forEach(docSnap => {
+            const peer = docSnap.id;
+            const d = docSnap.data();
+            const isTyping = Boolean(d.isTyping);
+            const timestamp = Number(d.timestamp) || 0;
+            updated[peer] = isTyping && (now - timestamp < 5000);
+          });
+          this.typingStatus = updated;
+          this.notifySubscribers();
+        }, (err) => console.error(`[ChatRepositoryWeb] Typing listener error for ${variant}:`, err));
+        this.activeTypingListeners.push(unsubTyping);
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Failed to attach typing listener for ${variant}:`, e);
+      }
+    }
+
+    // Proactively drain pending messages across all variations immediately
+    this.fetchPendingMessagesAndReceipts();
   }
 
   detachChatListeners() {
-    if (this.unsubInbox) { this.unsubInbox(); this.unsubInbox = null; }
-    if (this.unsubReceipts) { this.unsubReceipts(); this.unsubReceipts = null; }
-    if (this.unsubTyping) { this.unsubTyping(); this.unsubTyping = null; }
+    this.activeInboxListeners.forEach(unsub => { try { unsub(); } catch {} });
+    this.activeInboxListeners = [];
+    this.activeReceiptsListeners.forEach(unsub => { try { unsub(); } catch {} });
+    this.activeReceiptsListeners = [];
+    this.activeTypingListeners.forEach(unsub => { try { unsub(); } catch {} });
+    this.activeTypingListeners = [];
+  }
+
+  // --- PROACTIVE FETCH (DRAIN PENDING MESSAGES & RECEIPTS) ---
+  async fetchPendingMessagesAndReceipts() {
+    if (!this.currentListeningPhone) return;
+    const variations = generateNumberVariations(this.currentListeningPhone);
+
+    for (const variant of variations) {
+      // 1. Drain pending inbox messages
+      try {
+        const inboxCol = collection(db, 'inboxes', variant, 'messages');
+        const snap = await getDocs(inboxCol);
+        if (!snap.empty) {
+          console.log(`[ChatRepositoryWeb] Proactive fetch found ${snap.size} pending message(s) for ${variant}`);
+          for (const docSnap of snap.docs) {
+            await this.processIncomingMessage(docSnap.data(), docSnap.ref);
+          }
+        }
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Error draining inbox for ${variant}:`, e);
+      }
+
+      // 2. Drain pending receipts
+      try {
+        const receiptsCol = collection(db, 'receipts', variant, 'acks');
+        const snap = await getDocs(receiptsCol);
+        if (!snap.empty) {
+          console.log(`[ChatRepositoryWeb] Proactive fetch found ${snap.size} pending receipt(s) for ${variant}`);
+          for (const docSnap of snap.docs) {
+            await this.processIncomingReceipt(docSnap.data(), docSnap.ref);
+          }
+        }
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Error draining receipts for ${variant}:`, e);
+      }
+    }
   }
 
   // --- PROCESS INCOMING MESSAGE (ZERO-RETENTION STORE & FORWARD) ---
   async processIncomingMessage(dto, docRef) {
     if (!dto || !dto.messageId || !dto.ciphertext) {
-      try { await deleteDoc(docRef); } catch {}
+      if (docRef) {
+        try { await deleteDoc(docRef); } catch {}
+      }
       return;
     }
 
+    // Deduplication check: ignore if already processed in this runtime session
+    if (this.processedMessageIds.has(dto.messageId)) {
+      if (docRef) {
+        try { await deleteDoc(docRef); } catch {}
+      }
+      return;
+    }
+
+    const senderNorm = normalizePhoneNumber(dto.senderNumber);
+
+    // Deduplication check: ignore if already present in local conversation store
+    const existingMessages = this.getMessages(senderNorm);
+    if (existingMessages.some(m => m.id === dto.messageId)) {
+      this.processedMessageIds.add(dto.messageId);
+      if (docRef) {
+        try { await deleteDoc(docRef); } catch {}
+      }
+      return;
+    }
+
+    this.processedMessageIds.add(dto.messageId);
+
     try {
       // 1. Decrypt ciphertext using NIST P-256 ECDH + AES-GCM
-      const decryptedRaw = await chatCryptoWeb.decrypt(
-        dto.ciphertext,
-        dto.iv,
-        dto.senderPublicKey
-      );
+      let decryptedRaw;
+      try {
+        decryptedRaw = await chatCryptoWeb.decrypt(
+          dto.ciphertext,
+          dto.iv,
+          dto.senderPublicKey
+        );
+      } catch (cryptoErr) {
+        console.error('[ChatRepositoryWeb] Decryption error for message:', dto.messageId, 'from:', dto.senderNumber, cryptoErr);
+        decryptedRaw = '🔒 [Unable to decrypt message - End-to-End Encryption key mismatch]';
+      }
 
-      const senderNorm = normalizePhoneNumber(dto.senderNumber);
       const isWatching = this.isUserInConversation(senderNorm);
       const isCurrentPeer = this.isUserActivelyViewingPeer(senderNorm);
 
       // Handle EDIT message packet
-      if (dto.mediaType === 'EDIT') {
+      if (dto.mediaType === 'EDIT' && !decryptedRaw.startsWith('🔒')) {
         try {
           const parsed = JSON.parse(decryptedRaw);
           const originalId = parsed.originalMessageId;
@@ -352,7 +522,7 @@ class ChatRepositoryWeb {
       }
 
       // Handle DELETE message packet
-      if (dto.mediaType === 'DELETE') {
+      if (dto.mediaType === 'DELETE' && !decryptedRaw.startsWith('🔒')) {
         try {
           const parsed = JSON.parse(decryptedRaw);
           const targetMessageId = parsed.targetMessageId;
@@ -384,7 +554,7 @@ class ChatRepositoryWeb {
       }
 
       // Handle CHUNK packet (large file transfer from Android / Web)
-      if (dto.mediaType === 'CHUNK') {
+      if (dto.mediaType === 'CHUNK' && !decryptedRaw.startsWith('🔒')) {
         try {
           const parsed = JSON.parse(decryptedRaw);
           const { parentMessageId, fileName, chunkIndex, totalChunks, bytes, fileSize } = parsed;
@@ -504,7 +674,7 @@ class ChatRepositoryWeb {
       }
 
       // Handle P2P_OFFER (incoming WebRTC DataChannel file transfer)
-      if (dto.mediaType === 'P2P_OFFER') {
+      if (dto.mediaType === 'P2P_OFFER' && !decryptedRaw.startsWith('🔒')) {
         try {
           const parsed = JSON.parse(decryptedRaw);
           const { sessionId, messageId: parentMessageId, fileName, fileSize, offerSdp, mediaType: offerMediaType, caption, duration } = parsed;
@@ -761,9 +931,20 @@ class ChatRepositoryWeb {
   // --- PROCESS INCOMING RECEIPT (DELIVERY & READ TICKS) ---
   async processIncomingReceipt(receipt, docRef) {
     if (!receipt || !receipt.messageId) {
-      try { await deleteDoc(docRef); } catch {}
+      if (docRef) {
+        try { await deleteDoc(docRef); } catch {}
+      }
       return;
     }
+
+    const receiptKey = `${receipt.receiptId || receipt.messageId}_${receipt.status}`;
+    if (this.processedReceiptIds.has(receiptKey)) {
+      if (docRef) {
+        try { await deleteDoc(docRef); } catch {}
+      }
+      return;
+    }
+    this.processedReceiptIds.add(receiptKey);
 
     try {
       // 1. Resolve peer:

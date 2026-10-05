@@ -234,9 +234,13 @@ class WebRtcEngine {
     if (!this.currentUser || !this.currentUser.phoneNumber) return;
     try {
       const pubKey = await chatCryptoWeb.getMyPublicKeyBase64();
-      if (pubKey && this.currentUser.publicKey !== pubKey) {
-        const userRef = doc(db, 'users', this.currentUser.phoneNumber);
-        await updateDoc(userRef, { publicKey: pubKey });
+      if (pubKey) {
+        const phone = this.currentUser.phoneNumber;
+        const cleanPhone = phone.replace(/[^0-9]/g, '');
+        await setDoc(doc(db, 'users', phone), { publicKey: pubKey }, { merge: true });
+        if (cleanPhone && cleanPhone !== phone) {
+          await setDoc(doc(db, 'users', cleanPhone), { publicKey: pubKey }, { merge: true });
+        }
         this.currentUser.publicKey = pubKey;
         localStorage.setItem('lksDialerUser', JSON.stringify(this.currentUser));
         console.log("Synced E2EE public key to Firestore for:", this.currentUser.phoneNumber);
@@ -493,10 +497,19 @@ class WebRtcEngine {
       this.setCurrentUser(userData);
     }
 
-    // Also persist webToken on clean phone variation so lookup from Android or Web never misses
-    if (webToken && cleanPhone && cleanPhone !== phoneNumber) {
+    // Also persist webToken and publicKey on clean phone variation so lookup from Android or Web never misses
+    if (cleanPhone && cleanPhone !== phoneNumber) {
       try {
-        await setDoc(doc(db, 'users', cleanPhone), { webToken }, { merge: true });
+        await setDoc(doc(db, 'users', cleanPhone), { 
+          ...(webToken && { webToken }),
+          ...(publicKey && { publicKey }),
+          phoneNumber: cleanPhone,
+          displayName,
+          registeredDeviceId: userData.registeredDeviceId,
+          isOnline: true,
+          online: true,
+          lastSeen: now
+        }, { merge: true });
       } catch {}
     }
     

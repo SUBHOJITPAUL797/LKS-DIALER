@@ -95,13 +95,19 @@ class ChatCryptoWeb {
 
   async getMyPublicKeyBase64() {
     await this.initPromise;
+    if (!this.publicKeyBase64) {
+      await this.init();
+    }
     return this.publicKeyBase64 || '';
   }
 
   async deriveSharedAesKey(peerPublicKeyBase64) {
     await this.initPromise;
     if (!this.keyPair?.privateKey) {
-      throw new Error('Local EC private key not initialized');
+      await this.init();
+      if (!this.keyPair?.privateKey) {
+        throw new Error('Local EC private key not initialized');
+      }
     }
 
     const peerBuffer = base64ToArrayBuffer(peerPublicKeyBase64);

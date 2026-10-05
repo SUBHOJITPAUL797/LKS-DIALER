@@ -2051,15 +2051,20 @@ class ChatRepository private constructor(private val context: Context) {
             return cached!!.publicKey
         }
 
-        // Fetch from Firestore
-        return try {
-            val doc = firestore.collection("users").document(phoneNumber).get().await()
-            val user = doc.toObject(UserDto::class.java)
-            user?.publicKey?.ifBlank { null }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error looking up public key for $phoneNumber: ${e.message}")
-            null
+        // Fetch from Firestore checking all variations
+        val variations = ContactsHelper.generateNumberVariations(phoneNumber)
+        for (variant in variations) {
+            try {
+                val doc = firestore.collection("users").document(variant).get().await()
+                val user = doc.toObject(UserDto::class.java)
+                if (!user?.publicKey.isNullOrBlank()) {
+                    return user!!.publicKey
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error looking up public key for variant $variant: ${e.message}")
+            }
         }
+        return null
     }
 
     private fun sendFcmWakeup(
