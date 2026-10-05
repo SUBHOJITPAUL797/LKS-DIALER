@@ -423,7 +423,7 @@ function App() {
           <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
             <a
               href={DIRECT_APK_URL}
-              download="LKS-DIALER-v2.8.2.apk"
+              download={`LKS-DIALER-${LATEST_APP_VERSION}.apk`}
               target="_blank"
               rel="noopener noreferrer"
               className="neo-btn"
@@ -503,7 +503,7 @@ function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <a
                 href={DIRECT_APK_URL}
-                download="LKS-DIALER-v2.8.2.apk"
+                download={`LKS-DIALER-${LATEST_APP_VERSION}.apk`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="neo-box"
@@ -575,9 +575,9 @@ function App() {
             /* Mobile View: ChatList (ChatConversation handled by early return if active) */
             <ChatList onOpenChat={handleOpenChat} />
           )
-        ) : (
-          <div className={isDesktop ? "desktop-tab-content" : "mobile-tab-viewport"} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', flex: 1, minHeight: 0 }}>
-            <div className={isDesktop ? "desktop-card-container" : ""} style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+        ) : isDesktop ? (
+          <div className="desktop-tab-content">
+            <div className="desktop-card-container">
               {activeTab === 'recents' && (
                 <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
               )}
@@ -591,6 +591,21 @@ function App() {
                 <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} />
               )}
             </div>
+          </div>
+        ) : (
+          <div className="mobile-tab-viewport">
+            {activeTab === 'recents' && (
+              <RecentCalls onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+            )}
+            {activeTab === 'contacts' && (
+              <Contacts onStartCall={handleStartCall} onOpenChat={handleOpenChat} />
+            )}
+            {activeTab === 'dialer' && (
+              <Dialer onStartCall={handleStartCall} />
+            )}
+            {activeTab === 'profile' && (
+              <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} />
+            )}
           </div>
         )}
       </div>

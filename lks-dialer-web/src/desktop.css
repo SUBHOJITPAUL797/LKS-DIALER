@@ -111,24 +111,70 @@
   /* Desktop Tab Content (Keypad, Recents, Contacts, Profile) */
   .desktop-tab-content {
     flex: 1;
+    min-height: 0;
     height: 100%;
-    overflow-y: auto;
+    overflow-y: auto !important;
+    overflow-x: hidden;
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 36px 24px;
+    padding: 32px 24px 64px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+  }
+
+  .desktop-tab-content::-webkit-scrollbar {
+    display: block;
+    width: 6px;
+  }
+
+  .desktop-tab-content::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .desktop-tab-content::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.25);
+    border-radius: 4px;
+  }
+
+  .desktop-tab-content::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(0, 0, 0, 0.45);
   }
 
   .desktop-card-container {
     width: 100%;
     max-width: 680px;
     margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: min-content;
   }
 
   .desktop-tab-content .scrollable-content {
-    overflow-y: visible;
-    padding: 0;
-    max-width: 100%;
+    overflow-y: visible !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    flex: none !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  /* Refined scrollbar for conversations list on desktop */
+  .desktop-chatlist-pane .scrollable-content {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+  }
+
+  .desktop-chatlist-pane .scrollable-content::-webkit-scrollbar {
+    display: block;
+    width: 5px;
+  }
+
+  .desktop-chatlist-pane .scrollable-content::-webkit-scrollbar-thumb {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
   }
 }
 
