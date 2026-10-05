@@ -195,27 +195,27 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
 
       {/* Conversation List */}
       {filteredConversations.length === 0 ? (
-        <div className="neo-box" style={{ padding: '36px 20px', textAlign: 'center' }}>
+        <div className="neo-box" style={{ padding: '36px 20px', textAlign: 'center', backgroundColor: '#FFFFFF', border: '1px solid rgba(0,0,0,0.08)' }}>
           <div style={{
             width: '64px', height: '64px', borderRadius: '50%',
-            backgroundColor: 'var(--accent)', border: '3px solid #000',
+            backgroundColor: 'var(--primary-light)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px auto', boxShadow: '3px 3px 0 #000'
+            margin: '0 auto 16px auto', boxShadow: '0 4px 14px rgba(0, 128, 105, 0.15)'
           }}>
-            <MessageSquare size={32} color="#000" />
+            <MessageSquare size={30} color="var(--primary)" />
           </div>
-          <h3 style={{ fontSize: '20px', fontWeight: '900', marginBottom: '8px' }}>
+          <h3 style={{ fontSize: '19px', fontWeight: '800', marginBottom: '8px', color: 'var(--text-main)' }}>
             No Conversations Yet
           </h3>
-          <p style={{ color: '#666', fontWeight: '600', marginBottom: '16px' }}>
+          <p style={{ color: 'var(--text-muted)', fontWeight: '500', marginBottom: '16px', fontSize: '14px' }}>
             Start an End-to-End Encrypted chat with zero server retention.
           </p>
           <button 
             className="neo-btn" 
-            style={{ margin: '0 auto', fontSize: '15px', padding: '12px 24px' }}
+            style={{ margin: '0 auto', fontSize: '14px', padding: '12px 22px' }}
             onClick={openNewChatModal}
           >
-            <Plus size={18} /> START FIRST CHAT
+            <Plus size={18} /> Start First Chat
           </button>
         </div>
       ) : (
@@ -234,26 +234,32 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
               onClick={() => onOpenChat(conv.phoneNumber, contactDisplayName, avatarUrl)}
               className="neo-box"
               style={{
-                padding: '16px',
+                padding: '14px 16px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 cursor: 'pointer',
-                backgroundColor: isSelected ? '#FFE600' : 'var(--card-bg)',
-                boxShadow: isSelected ? '4px 4px 0 var(--primary)' : 'var(--shadow-offset) var(--shadow-offset) 0 var(--shadow-color)',
-                transform: isSelected ? 'translate(-1px, -1px)' : 'none',
-                borderLeft: isSelected ? '6px solid var(--primary)' : 'var(--border-width) solid var(--border-color)'
+                backgroundColor: isSelected ? '#E8FAF6' : 'var(--card-bg)',
+                boxShadow: isSelected ? '0 2px 8px rgba(0, 128, 105, 0.12)' : 'var(--shadow-sm)',
+                transform: 'none',
+                borderLeft: isSelected ? '4px solid var(--primary)' : '1px solid var(--border-color)',
+                borderTop: '1px solid var(--border-color)',
+                borderRight: '1px solid var(--border-color)',
+                borderBottom: '1px solid var(--border-color)',
+                borderRadius: '14px',
+                marginBottom: '8px'
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 1, minWidth: 0 }}>
                 {/* Avatar */}
                 <div style={{ position: 'relative', flexShrink: 0 }}>
                   <div style={{
-                    width: '50px', height: '50px', borderRadius: '50%',
-                    backgroundColor: 'var(--secondary)', border: '3px solid #000',
+                    width: '48px', height: '48px', borderRadius: '50%',
+                    backgroundColor: '#E0F2F1',
+                    color: 'var(--primary)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontWeight: '900', fontSize: '20px', overflow: 'hidden',
-                    boxShadow: '2px 2px 0 #000'
+                    fontWeight: '800', fontSize: '18px', overflow: 'hidden',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.06)'
                   }}>
                     {avatarUrl && (
                       <img 

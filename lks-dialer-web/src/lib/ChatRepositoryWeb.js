@@ -717,7 +717,8 @@ class ChatRepositoryWeb {
         phoneNumber: senderNorm,
         contactName: resolvedName,
         profilePicUrl: profilePic,
-        lastMessageText: dto.mediaType === 'IMAGE' ? '📷 Photo' 
+        lastMessageText: dto.mediaType === 'STICKER' ? '✨ Sticker'
+                       : dto.mediaType === 'IMAGE' ? (displayText && (displayText.includes('.gif') || displayText.startsWith('http')) ? '👾 GIF' : '📷 Photo') 
                        : dto.mediaType === 'AUDIO' ? '🎤 Voice message' 
                        : dto.mediaType === 'DOCUMENT' ? `📄 ${displayText}`
                        : displayText,
@@ -1356,7 +1357,8 @@ class ChatRepositoryWeb {
       phoneNumber: normRecipient,
       contactName: recipientName || peerUser?.displayName || existingConv?.contactName || normRecipient,
       profilePicUrl: peerUser?.profilePictureUrl || existingConv?.profilePicUrl || '',
-      lastMessageText: mediaType === 'IMAGE' ? '📷 Photo'
+      lastMessageText: mediaType === 'STICKER' ? '✨ Sticker'
+                     : mediaType === 'IMAGE' ? (text && (text.includes('.gif') || text.startsWith('http')) ? '👾 GIF' : '📷 Photo')
                      : mediaType === 'AUDIO' ? '🎤 Voice message'
                      : mediaType === 'DOCUMENT' ? `📄 ${text || 'Document'}`
                      : text,
@@ -1397,8 +1399,9 @@ class ChatRepositoryWeb {
     }
 
     // 6. Send FCM wakeup push notification via Cloudflare Worker
-    const displayPreview = when => {
-      if (mediaType === 'IMAGE') return text || '📷 Photo';
+    const displayPreview = () => {
+      if (mediaType === 'STICKER') return '✨ Sticker';
+      if (mediaType === 'IMAGE') return (text && (text.includes('.gif') || text.startsWith('http'))) ? '👾 GIF' : (text || '📷 Photo');
       if (mediaType === 'AUDIO') return '🎤 Voice message';
       if (mediaType === 'DOCUMENT') return `📄 ${text || 'Document'}`;
       return text || 'New message';
@@ -1412,6 +1415,17 @@ class ChatRepositoryWeb {
     );
 
     return localMsg;
+  }
+
+  // --- PUBLIC API: SEND STICKER ---
+  async sendSticker(recipientNumber, recipientName, stickerCode, stickerName, stickerUrl = null) {
+    const text = stickerUrl ? `[sticker_url:${stickerUrl}:${stickerName || 'sticker'}]` : `[sticker:${stickerCode}:${stickerName || 'sticker'}]`;
+    return this.sendMessage(recipientNumber, recipientName, text, 'STICKER');
+  }
+
+  // --- PUBLIC API: SEND GIF ---
+  async sendGif(recipientNumber, recipientName, gifUrl, gifTitle = '') {
+    return this.sendMessage(recipientNumber, recipientName, gifUrl, 'IMAGE');
   }
 
   // --- PUBLIC API: EDIT MESSAGE ---

@@ -29,6 +29,23 @@ class LksApplication : Application() {
         // 2. Install Bulletproof Uncaught Crash Handler
         LksCrashHandler.install(this)
 
+        // 3. Initialize Coil ImageLoader with GIF & Animated WebP Support
+        try {
+            val imageLoader = coil.ImageLoader.Builder(this)
+                .components {
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        add(coil.decode.ImageDecoderDecoder.Factory())
+                    } else {
+                        add(coil.decode.GifDecoder.Factory())
+                    }
+                }
+                .crossfade(true)
+                .build()
+            coil.Coil.setImageLoader(imageLoader)
+        } catch (e: Exception) {
+            android.util.Log.w("LksApplication", "Failed to init Coil GIF decoder: ${e.message}")
+        }
+
         // 3. Track Activity Lifecycles for Breadcrumbs & UI Dialog Anchor
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {

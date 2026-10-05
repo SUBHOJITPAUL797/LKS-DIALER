@@ -43,7 +43,8 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Shader
-import androidx.core.graphics.drawable.IconCompat
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -744,16 +745,19 @@ class ChatRepository private constructor(private val context: Context) {
                     val displayMsgText = when (offerMediaType) {
                         ChatMediaType.IMAGE.name -> if (caption.isNotBlank()) caption else ""
                         ChatMediaType.AUDIO.name -> "Voice message"
+                        ChatMediaType.STICKER.name -> if (caption.isNotBlank()) caption else "Sticker"
                         else -> fileName
                     }
                     val summaryText = when (offerMediaType) {
                         ChatMediaType.IMAGE.name -> if (caption.isNotBlank()) "📷 $caption" else "📷 Photo"
                         ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                        ChatMediaType.STICKER.name -> if (caption.isNotBlank()) "🦄 $caption" else "🦄 Sticker"
                         else -> "📄 $fileName"
                     }
                     val filePrefix = when (offerMediaType) {
                         ChatMediaType.IMAGE.name -> "img_"
                         ChatMediaType.AUDIO.name -> "voice_"
+                        ChatMediaType.STICKER.name -> "sticker_"
                         else -> "doc_"
                     }
 
@@ -873,20 +877,36 @@ class ChatRepository private constructor(private val context: Context) {
             var localMediaPath: String? = null
             var durationMs = dto.mediaDurationMs
 
-            // Handle structured JSON payloads (Images and Audio Notes)
+            // Handle structured JSON payloads (Images, Stickers, and Audio Notes)
             if (dto.mediaType == ChatMediaType.IMAGE.name) {
                 try {
                     val json = JSONObject(decryptedRaw)
                     displayText = json.optString("caption", "Photo")
+                    val ext = json.optString("ext", "jpg")
                     val base64Data = json.optString("bytes", "")
                     if (base64Data.isNotBlank()) {
-                        val imgFile = File(ensureMediaDirectory(), "img_${dto.messageId}.jpg")
+                        val imgFile = File(ensureMediaDirectory(), "img_${dto.messageId}.$ext")
                         val bytes = Base64.decode(base64Data, Base64.NO_WRAP)
                         FileOutputStream(imgFile).use { it.write(bytes) }
                         localMediaPath = imgFile.absolutePath
                     }
                 } catch (_: Exception) {
                     displayText = "Photo"
+                }
+            } else if (dto.mediaType == ChatMediaType.STICKER.name) {
+                try {
+                    val json = JSONObject(decryptedRaw)
+                    displayText = json.optString("caption", "Sticker")
+                    val ext = json.optString("ext", "png")
+                    val base64Data = json.optString("bytes", "")
+                    if (base64Data.isNotBlank()) {
+                        val stickerFile = File(ensureMediaDirectory(), "sticker_${dto.messageId}.$ext")
+                        val bytes = Base64.decode(base64Data, Base64.NO_WRAP)
+                        FileOutputStream(stickerFile).use { it.write(bytes) }
+                        localMediaPath = stickerFile.absolutePath
+                    }
+                } catch (_: Exception) {
+                    displayText = decryptedRaw.ifBlank { "Sticker" }
                 }
             } else if (dto.mediaType == ChatMediaType.AUDIO.name) {
                 try {
@@ -1172,16 +1192,33 @@ class ChatRepository private constructor(private val context: Context) {
         if (mediaFile != null && mediaFile.exists()) {
             val isAudio = mediaType == ChatMediaType.AUDIO
             val isImage = mediaType == ChatMediaType.IMAGE
+            val isSticker = mediaType == ChatMediaType.STICKER
 
             val savedFile = when {
                 isImage -> {
-                    val target = File(ensureMediaDirectory(), "img_$messageId.jpg")
-                    com.example.util.ImageUtils.compressAndSaveChatImage(
-                        inputFile = mediaFile,
-                        outputFile = target,
-                        maxDimension = 1600,
-                        targetMaxBytes = 450 * 1024
-                    )
+                    val isAnimatedOrLossless = mediaFile.extension.equals("gif", ignoreCase = true) ||
+                                               mediaFile.extension.equals("webp", ignoreCase = true) ||
+                                               mediaFile.extension.equals("png", ignoreCase = true)
+                    if (isAnimatedOrLossless) {
+                        val ext = mediaFile.extension.ifBlank { "gif" }
+                        val target = File(ensureMediaDirectory(), "img_$messageId.$ext")
+                        mediaFile.copyTo(target, overwrite = true)
+                        target
+                    } else {
+                        val target = File(ensureMediaDirectory(), "img_$messageId.jpg")
+                        com.example.util.ImageUtils.compressAndSaveChatImage(
+                            inputFile = mediaFile,
+                            outputFile = target,
+                            maxDimension = 1600,
+                            targetMaxBytes = 450 * 1024
+                        )
+                        target
+                    }
+                }
+                isSticker -> {
+                    val ext = mediaFile.extension.ifBlank { "png" }
+                    val target = File(ensureMediaDirectory(), "sticker_$messageId.$ext")
+                    mediaFile.copyTo(target, overwrite = true)
                     target
                 }
                 isAudio -> {
@@ -1200,17 +1237,20 @@ class ChatRepository private constructor(private val context: Context) {
 
             val displayNameText = when {
                 isAudio -> "Voice message"
+                isSticker -> "Sticker"
                 isImage -> text
                 else -> text.ifBlank { mediaFile.name }
             }
             val displaySummaryText = when {
                 isAudio -> "🎤 Voice message"
-                isImage -> if (text.isNotBlank()) "📷 $text" else "📷 Photo"
+                isSticker -> "🦄 Sticker"
+                isImage -> if (mediaFile.extension.equals("gif", ignoreCase = true)) "🎬 GIF" else if (text.isNotBlank()) "📷 $text" else "📷 Photo"
                 else -> "📄 ${text.ifBlank { mediaFile.name }}"
             }
             val fileNameToSend = when {
                 isAudio -> "voice_$messageId.m4a"
-                isImage -> "img_$messageId.jpg"
+                isSticker -> "sticker_$messageId.${mediaFile.extension.ifBlank { "png" }}"
+                isImage -> "img_$messageId.${savedFile.extension}"
                 else -> text.ifBlank { mediaFile.name }
             }
 
@@ -1341,13 +1381,14 @@ class ChatRepository private constructor(private val context: Context) {
             }
 
             // ── FALLBACK TO RELAY ──
-            if (isImage && savedFile.length() <= 450 * 1024L) {
+            if ((isImage || isSticker) && savedFile.length() <= 450 * 1024L) {
                 try {
                     val fileBytes = savedFile.readBytes()
                     val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
                     val json = JSONObject().apply {
                         put("caption", text)
                         put("bytes", base64Data)
+                        put("ext", savedFile.extension.ifBlank { if (isSticker) "png" else "jpg" })
                     }
                     val (ciphertext, iv) = cryptoManager.encrypt(json.toString(), recipientPublicKey)
                     val chatDto = ChatMessageDto(
@@ -1357,7 +1398,7 @@ class ChatRepository private constructor(private val context: Context) {
                         senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
                         ciphertext = ciphertext,
                         iv = iv,
-                        mediaType = ChatMediaType.IMAGE.name,
+                        mediaType = if (isSticker) ChatMediaType.STICKER.name else ChatMediaType.IMAGE.name,
                         timestamp = now
                     )
                     firestore.collection("inboxes")
@@ -1366,13 +1407,13 @@ class ChatRepository private constructor(private val context: Context) {
                         .document(messageId)
                         .set(chatDto)
                         .await()
-                    Log.d(TAG, "Image delivered via inline relay fallback for $messageId")
+                    Log.d(TAG, "${if (isSticker) "Sticker" else "Image"} delivered via inline relay fallback for $messageId")
                     activeTransferJobs.remove(messageId)
                     _activeTransfers.value = _activeTransfers.value - messageId
-                    sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, ChatMediaType.IMAGE.name, messageId)
+                    sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, if (isSticker) ChatMediaType.STICKER.name else ChatMediaType.IMAGE.name, messageId)
                     return@withContext Result.success(messageEntity)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send inline image relay: ${e.message}", e)
+                    Log.e(TAG, "Failed to send inline media relay: ${e.message}", e)
                 }
             } else if (isAudio && savedFile.length() <= 500 * 1024L) {
                 try {
@@ -1684,9 +1725,10 @@ class ChatRepository private constructor(private val context: Context) {
             contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
             profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
             lastMessageText = when (mediaType) {
-                ChatMediaType.IMAGE -> "📷 Photo"
+                ChatMediaType.IMAGE -> if (text.isNotBlank()) "📷 $text" else "📷 Photo"
                 ChatMediaType.AUDIO -> "🎤 Voice message"
                 ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
+                ChatMediaType.STICKER -> if (text.isNotBlank()) "🦄 $text" else "🦄 Sticker"
                 else -> extractCleanText(text)
             },
             lastMessageType = mediaType.name,
@@ -1731,6 +1773,7 @@ class ChatRepository private constructor(private val context: Context) {
             ChatMediaType.IMAGE -> if (text.isNotBlank()) text else "📷 Photo"
             ChatMediaType.AUDIO -> "🎤 Voice message"
             ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
+            ChatMediaType.STICKER -> if (text.isNotBlank()) "🦄 $text" else "🦄 Sticker"
             else -> text
         }
         sendFcmWakeup(
@@ -1742,6 +1785,71 @@ class ChatRepository private constructor(private val context: Context) {
         )
 
         Result.success(messageEntity)
+    }
+
+    /**
+     * Sends an expressive sticker (emoji sticker or graphic sticker) to the recipient.
+     */
+    suspend fun sendSticker(
+        recipientNumber: String,
+        recipientName: String,
+        stickerCode: String,
+        stickerName: String,
+        stickerUrl: String? = null
+    ): Result<MessageEntity> = withContext(Dispatchers.IO) {
+        val payload = if (stickerUrl.isNullOrBlank()) {
+            "[sticker:$stickerCode:$stickerName]"
+        } else {
+            "[sticker_url:$stickerUrl:$stickerName]"
+        }
+        sendMessage(
+            recipientNumber = recipientNumber,
+            recipientName = recipientName,
+            text = payload,
+            mediaType = ChatMediaType.STICKER
+        )
+    }
+
+    /**
+     * Downloads an animated GIF from url and sends it end-to-end encrypted to the recipient.
+     */
+    suspend fun sendGif(
+        recipientNumber: String,
+        recipientName: String,
+        gifUrl: String,
+        gifTitle: String
+    ): Result<MessageEntity> = withContext(Dispatchers.IO) {
+        try {
+            val cacheFile = File(context.cacheDir, "gif_${UUID.randomUUID()}.gif")
+            val request = Request.Builder().url(gifUrl).build()
+            val client = OkHttpClient()
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful && response.body != null) {
+                cacheFile.writeBytes(response.body!!.bytes())
+                sendMessage(
+                    recipientNumber = recipientNumber,
+                    recipientName = recipientName,
+                    text = gifTitle,
+                    mediaType = ChatMediaType.IMAGE,
+                    mediaFile = cacheFile
+                )
+            } else {
+                sendMessage(
+                    recipientNumber = recipientNumber,
+                    recipientName = recipientName,
+                    text = gifUrl,
+                    mediaType = ChatMediaType.TEXT
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to download GIF, sending as link: ${e.message}")
+            sendMessage(
+                recipientNumber = recipientNumber,
+                recipientName = recipientName,
+                text = gifUrl,
+                mediaType = ChatMediaType.TEXT
+            )
+        }
     }
 
     /**
@@ -2248,6 +2356,7 @@ class ChatRepository private constructor(private val context: Context) {
             messageType == ChatMediaType.IMAGE.name -> "📷 Photo"
             messageType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
             messageType == ChatMediaType.DOCUMENT.name -> "📄 Document"
+            messageType == ChatMediaType.STICKER.name -> "🦄 Sticker"
             else -> "New message"
         }
 
@@ -2658,6 +2767,7 @@ class ChatRepository private constructor(private val context: Context) {
                 ChatMediaType.IMAGE.name -> if (messageText.isNotBlank()) "📷 $messageText" else "📷 Photo"
                 ChatMediaType.AUDIO.name -> "🎤 Voice message"
                 ChatMediaType.DOCUMENT.name -> if (messageText.isNotBlank()) "📄 $messageText" else "📄 Document"
+                ChatMediaType.STICKER.name -> if (messageText.isNotBlank()) "🦄 $messageText" else "🦄 Sticker"
                 else -> messageText.ifBlank { "New message" }
             }
             showIncomingMessageNotification(

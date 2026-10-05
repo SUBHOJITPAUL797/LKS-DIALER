@@ -54,6 +54,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -118,9 +119,11 @@ fun ChatConversationScreen(
     onStartCall: (number: String, name: String, callType: CallType) -> Unit
 ) {
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val coroutineScope = rememberCoroutineScope()
     val chatRepository = remember { ChatRepository.getInstance(context) }
     val voiceHelper = remember { VoiceRecorderHelper(context) }
+    var showMediaPicker by remember { mutableStateOf(false) }
 
     val normPeer = remember(peerPhoneNumber) { ContactsHelper.normalizePhoneNumber(peerPhoneNumber) }
     var pageSize by remember { mutableIntStateOf(50) }
@@ -988,12 +991,13 @@ fun ChatConversationScreen(
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 4.dp
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                     if (isRecording) {
                         // Voice Recording UI
                         IconButton(
@@ -1088,6 +1092,24 @@ fun ChatConversationScreen(
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
                         }
                     } else {
+                        // Emoji / Sticker / GIF Keyboard Toggle
+                        IconButton(
+                            onClick = {
+                                if (showMediaPicker) {
+                                    showMediaPicker = false
+                                    keyboardController?.show()
+                                } else {
+                                    keyboardController?.hide()
+                                    showMediaPicker = true
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = if (showMediaPicker) "⌨️" else "😊",
+                                fontSize = 22.sp
+                            )
+                        }
+
                         // Standard Input UI: Attachment button opens options (Camera, Gallery, Document)
                         IconButton(onClick = { showAttachmentMenu = true }) {
                             Icon(Icons.Default.AttachFile, contentDescription = "Attach", tint = TealPrimary)
@@ -1098,6 +1120,7 @@ fun ChatConversationScreen(
                             onValueChange = { text ->
                                 inputText = text
                                 chatRepository.setTyping(normPeer, text.isNotBlank())
+                                if (showMediaPicker) showMediaPicker = false
                             },
                             placeholder = {
                                 Text(
@@ -1150,6 +1173,7 @@ fun ChatConversationScreen(
                                     if (textToSend.isNotEmpty()) {
                                         inputText = ""
                                         replyingTo = null
+                                        showMediaPicker = false
                                         dismissedTypingUrl = null
                                         chatRepository.setTyping(normPeer, false)
                                         coroutineScope.launch {
@@ -1201,9 +1225,53 @@ fun ChatConversationScreen(
                         }
                     }
                 }
+
+                // ── Animated Emoji / Sticker / GIF Media Keyboard ─────────
+                AnimatedVisibility(
+                    visible = showMediaPicker,
+                    enter = expandVertically(animationSpec = tween(250)) + fadeIn(),
+                    exit = shrinkVertically(animationSpec = tween(200)) + fadeOut()
+                ) {
+                    ChatMediaKeyboardPicker(
+                        onEmojiSelected = { emoji ->
+                            inputText += emoji
+                            chatRepository.setTyping(normPeer, true)
+                        },
+                        onBackspace = {
+                            if (inputText.isNotEmpty()) {
+                                inputText = dropLastCodePoint(inputText)
+                                chatRepository.setTyping(normPeer, inputText.isNotBlank())
+                            }
+                        },
+                        onStickerSelected = { stickerUrl, stickerName ->
+                            coroutineScope.launch {
+                                chatRepository.sendSticker(
+                                    recipientNumber = normPeer,
+                                    recipientName = peerDisplayName,
+                                    stickerCode = stickerUrl.ifBlank { stickerName },
+                                    stickerName = stickerName,
+                                    stickerUrl = stickerUrl.takeIf { it.startsWith("http") }
+                                )
+                                listState.animateScrollToItem(0)
+                            }
+                        },
+                        onGifSelected = { gifUrl, gifTitle ->
+                            coroutineScope.launch {
+                                chatRepository.sendGif(
+                                    recipientNumber = normPeer,
+                                    recipientName = peerDisplayName,
+                                    gifUrl = gifUrl,
+                                    gifTitle = gifTitle
+                                )
+                                listState.animateScrollToItem(0)
+                            }
+                        }
+                    )
+                }
             }
         }
     }
+}
 
     // Clear Chat Granular Dialog
     if (showClearChatDialog) {
@@ -1922,17 +1990,30 @@ private fun MessageBubble(
         }
     }
 
+    val isDeleted = message.text.startsWith("🚫 ")
+
+    val isStickerMessage = !isDeleted && (message.mediaType == ChatMediaType.STICKER.name ||
+                           (message.mediaType == ChatMediaType.TEXT.name && message.text.startsWith("[sticker")))
+    val (isPureEmojiMsg, emojiCount) = remember(displayText, message.text, isDeleted, message.mediaType) {
+        if (!isDeleted && (message.mediaType == ChatMediaType.TEXT.name || message.mediaType.isBlank()) && !isStickerMessage) {
+            isPureEmoji(displayText)
+        } else Pair(false, 0)
+    }
+
+    val isFrameless = isStickerMessage || isPureEmojiMsg
+
     val bubbleColor = when {
+        isFrameless            -> Color.Transparent
         isOutgoing && isDark  -> Color(0xFF005D4B)
         isOutgoing && !isDark -> Color(0xFFE7FFDB)
         !isOutgoing && isDark -> Color(0xFF1F2C34)
         else                   -> Color.White
     }
 
-    val bubbleShape = if (isOutgoing) {
-        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
-    } else {
-        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
+    val bubbleShape = when {
+        isFrameless -> RoundedCornerShape(0.dp)
+        isOutgoing  -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
+        else        -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
     }
 
     // Try to parse reply context from message text
@@ -1948,7 +2029,6 @@ private fun MessageBubble(
         } else null
     }
 
-    val isDeleted = message.text.startsWith("🚫 ")
     val hasLinkPreview = linkPreview != null && !isDeleted
     val hasHeroPreview = hasLinkPreview && !linkPreview!!.imageUrl.isNullOrBlank()
     val isPureUrlMessage = firstUrl != null && displayText.trim().trimEnd(*LinkPreviewHelper.TRAILING_PUNCTUATION).equals(firstUrl.trim(), ignoreCase = true)
@@ -1956,6 +2036,7 @@ private fun MessageBubble(
 
     val isImageOnly = !isDeleted && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
     val bubblePadding = when {
+        isFrameless -> PaddingValues(2.dp)
         isImageOnly || isHeroPreviewOnly -> PaddingValues(4.dp)
         else -> PaddingValues(horizontal = 8.dp, vertical = 6.dp)
     }
@@ -1969,10 +2050,11 @@ private fun MessageBubble(
         Surface(
             color = bubbleColor,
             shape = bubbleShape,
-            shadowElevation = 1.dp,
+            shadowElevation = if (isFrameless) 0.dp else 1.dp,
             modifier = Modifier
                 .widthIn(
                     min = when {
+                        isFrameless -> 0.dp
                         hasHeroPreview -> 270.dp
                         hasLinkPreview -> 240.dp
                         message.mediaType == ChatMediaType.IMAGE.name && !isDeleted -> 200.dp
@@ -2014,6 +2096,68 @@ private fun MessageBubble(
                         )
                     }
                 } else {
+
+                // ── Pure Emoji Rendering (Large size without bubble) ────────
+                if (isPureEmojiMsg) {
+                    val emojiFontSize = when (emojiCount) {
+                        1 -> 44.sp
+                        2 -> 36.sp
+                        else -> 28.sp
+                    }
+                    Text(
+                        text = displayText,
+                        fontSize = emojiFontSize,
+                        lineHeight = (emojiFontSize.value * 1.25f).sp,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+
+                // ── Sticker Rendering (Borderless) ──────────────────────────
+                if (isStickerMessage) {
+                    val rawStickerText = message.text
+                    val isEmojiSticker = rawStickerText.startsWith("[sticker:")
+                    val isUrlSticker = rawStickerText.startsWith("[sticker_url:")
+
+                    if (isEmojiSticker) {
+                        val parts = rawStickerText.removeSurrounding("[sticker:", "]").split(":")
+                        val stickerEmoji = parts.getOrNull(0) ?: "🦄"
+                        Box(
+                            modifier = Modifier
+                                .padding(6.dp)
+                                .sizeIn(minWidth = 90.dp, minHeight = 90.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = stickerEmoji,
+                                fontSize = 72.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        val stickerModel = if (!message.mediaPath.isNullOrBlank()) {
+                            message.mediaPath
+                        } else if (isUrlSticker) {
+                            val parts = rawStickerText.removeSurrounding("[sticker_url:", "]").split(":")
+                            parts.getOrNull(0) ?: ""
+                        } else ""
+
+                        if (stickerModel.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .size(140.dp)
+                                    .padding(4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                AsyncImage(
+                                    model = stickerModel,
+                                    contentDescription = "Sticker",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        }
+                    }
+                }
 
                 // ── Reply Quote ──────────────────────────────────────────────
                 if (parsedReply != null) {
@@ -2437,7 +2581,7 @@ private fun MessageBubble(
                 }
 
                 // ── Text / Caption with Clickable Links ───────────────────────
-                if (displayText.isNotBlank() && !isHeroPreviewOnly && message.mediaType != ChatMediaType.DOCUMENT.name) {
+                if (displayText.isNotBlank() && !isHeroPreviewOnly && !isFrameless && message.mediaType != ChatMediaType.DOCUMENT.name) {
                     ClickableMessageText(
                         text = displayText,
                         isOutgoing = isOutgoing,
@@ -2463,7 +2607,16 @@ private fun MessageBubble(
                 Row(
                     modifier = Modifier
                         .align(Alignment.End)
-                        .padding(end = 4.dp, bottom = 2.dp),
+                        .then(
+                            if (isFrameless) {
+                                Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            } else {
+                                Modifier.padding(end = 4.dp, bottom = 2.dp)
+                            }
+                        ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (message.isEdited && !isDeleted) {
@@ -3039,4 +3192,47 @@ private fun FileTransferProgressCard(
             )
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Helpers for Pure Emojis & Backspace Code Points
+// ──────────────────────────────────────────────────────────────────────────────
+private fun isPureEmoji(text: String): Pair<Boolean, Int> {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return Pair(false, 0)
+    var count = 0
+    var i = 0
+    while (i < trimmed.length) {
+        val codePoint = trimmed.codePointAt(i)
+        val charCount = Character.charCount(codePoint)
+        if (Character.isWhitespace(codePoint)) {
+            i += charCount
+            continue
+        }
+        val isEmoji = Character.isSurrogate(trimmed[i]) ||
+                codePoint in 0x1F600..0x1F64F || // Emoticons
+                codePoint in 0x1F300..0x1F5FF || // Misc Symbols and Pictographs
+                codePoint in 0x1F680..0x1F6FF || // Transport and Map
+                codePoint in 0x1F1E0..0x1F1FF || // Regional indicator flags
+                codePoint in 0x2600..0x26FF ||   // Misc symbols
+                codePoint in 0x2700..0x27BF ||   // Dingbats
+                codePoint in 0xFE00..0xFE0F ||   // Variation Selectors
+                codePoint in 0x1F900..0x1F9FF || // Supplemental Symbols
+                codePoint in 0x1FA70..0x1FAFF || // Symbols and Pictographs Extended-A
+                codePoint == 0x200D              // Zero Width Joiner
+
+        if (!isEmoji) return Pair(false, 0)
+        if (codePoint != 0x200D && codePoint !in 0xFE00..0xFE0F) {
+            count++
+        }
+        i += charCount
+    }
+    return Pair(count in 1..3, count)
+}
+
+private fun dropLastCodePoint(text: String): String {
+    if (text.isEmpty()) return ""
+    val lastCodePoint = text.codePointBefore(text.length)
+    val charCount = Character.charCount(lastCodePoint)
+    return text.dropLast(charCount)
 }

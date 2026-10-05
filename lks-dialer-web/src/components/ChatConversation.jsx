@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ExternalLink
+  ChevronDown, ExternalLink, Smile, Sparkles
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
@@ -10,6 +10,23 @@ import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWe
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { mediaStorageWeb } from '../lib/MediaStorageWeb';
+import ChatMediaPickerWeb from './ChatMediaPickerWeb';
+
+// ─── Pure Emoji Message Detector (1-3 pure emojis) ───────────────────────────
+function isPureEmojiWeb(text) {
+  if (!text) return { isPure: false, count: 0 };
+  const trimmed = text.trim();
+  if (!trimmed) return { isPure: false, count: 0 };
+  try {
+    const emojiRegex = /^(\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier_Base}|\u200d|\ufe0f|\s)+$/u;
+    if (!emojiRegex.test(trimmed)) return { isPure: false, count: 0 };
+    const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+    const segments = [...segmenter.segment(trimmed)].filter(s => s.segment.trim().length > 0);
+    return { isPure: segments.length >= 1 && segments.length <= 3, count: segments.length };
+  } catch {
+    return { isPure: false, count: 0 };
+  }
+}
 
 // ─── Swipeable Message Bubble ─────────────────────────────────────────────────
 function SwipeableMessage({ msg, onSwipeReply, children }) {
@@ -375,11 +392,11 @@ function AudioDocumentCard({
         flexDirection: 'column',
         gap: 8,
         padding: '12px 14px',
-        backgroundColor: isOut ? '#E1F5FE' : '#FFFFFF',
-        borderRadius: 12,
+        backgroundColor: isOut ? '#E8FAF6' : '#FFFFFF',
+        borderRadius: 14,
         marginBottom: 4,
-        border: '2.5px solid #000',
-        boxShadow: '3px 3px 0px #000',
+        border: '1px solid rgba(0, 0, 0, 0.08)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
         minWidth: 260,
         maxWidth: 340
       }}
@@ -390,14 +407,13 @@ function AudioDocumentCard({
           width: 42,
           height: 42,
           borderRadius: 10,
-          backgroundColor: '#E91E63',
+          backgroundColor: '#008069',
           color: '#fff',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          border: '2px solid #000',
-          boxShadow: '1.5px 1.5px 0px #000',
+          boxShadow: '0 2px 6px rgba(0, 128, 105, 0.25)',
           flexShrink: 0
         }}>
           <span style={{ fontSize: 13, lineHeight: 1 }}>🎵</span>
@@ -961,6 +977,9 @@ export default function ChatConversation({
   const [activeTransfers, setActiveTransfers] = useState(new Map());
   const [selectedVideoUrl, setSelectedVideoUrl] = useState(null);
 
+  // Emoji / Sticker / GIF media keyboard picker modal
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
+
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
@@ -1131,10 +1150,30 @@ export default function ChatConversation({
     }
   };
 
-  // ── Send image ──────────────────────────────────────────────────────────────
+  // ── Send image or GIF ───────────────────────────────────────────────────────
   const handleImageSelected = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+    if (isGif) {
+      // Don't flatten animated GIFs through 2D canvas!
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const rawBase64 = String(event.target.result || '').replace(/^data:image\/[a-z]+;base64,/, '');
+        try {
+          await chatRepositoryWeb.sendGif(normPeer, peerName || normPeer, `data:image/gif;base64,${rawBase64}`, file.name);
+        } catch (err) {
+          alert(err.message || 'Failed to send GIF');
+        } finally {
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          setTimeout(() => scrollToBottom('smooth'), 50);
+        }
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const img = new Image();
@@ -1153,11 +1192,53 @@ export default function ChatConversation({
           alert(err.message || 'Failed to send image');
         } finally {
           if (fileInputRef.current) fileInputRef.current.value = '';
+          setTimeout(() => scrollToBottom('smooth'), 50);
         }
       };
       img.src = event.target.result;
     };
     reader.readAsDataURL(file);
+  };
+
+  // ── Send Sticker from Media Picker ──────────────────────────────────────────
+  const handleSelectSticker = async (sticker) => {
+    try {
+      await chatRepositoryWeb.sendSticker(
+        normPeer,
+        peerName || normPeer,
+        sticker.code || '✨',
+        sticker.name || 'sticker',
+        sticker.url || null
+      );
+      setShowMediaPicker(false);
+      setTimeout(() => scrollToBottom('smooth'), 50);
+    } catch (err) {
+      console.error('Failed to send sticker:', err);
+    }
+  };
+
+  // ── Send GIF from Media Picker ──────────────────────────────────────────────
+  const handleSelectGif = async (gifUrl, gifTitle) => {
+    try {
+      await chatRepositoryWeb.sendGif(
+        normPeer,
+        peerName || normPeer,
+        gifUrl,
+        gifTitle || 'GIF'
+      );
+      setShowMediaPicker(false);
+      setTimeout(() => scrollToBottom('smooth'), 50);
+    } catch (err) {
+      console.error('Failed to send GIF:', err);
+    }
+  };
+
+  // ── Select Emoji from Media Picker ──────────────────────────────────────────
+  const handleSelectEmoji = (emoji) => {
+    setInputText(prev => prev + emoji);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
   };
 
   // ── Send document ───────────────────────────────────────────────────────────
@@ -1676,14 +1757,166 @@ export default function ChatConversation({
             const { text, replyTo } = parseMessage(msg);
             const isDeleted = Boolean(msg.text && msg.text.startsWith('🚫 '));
 
+            // Check if Sticker
+            const isStickerMsg = !isDeleted && (
+              msg.mediaType === 'STICKER' ||
+              (Boolean(msg.text) && (msg.text.startsWith('[sticker:') || msg.text.startsWith('[sticker_url:')))
+            );
+
+            let stickerCode = null;
+            let stickerName = null;
+            let stickerUrl = null;
+            if (isStickerMsg) {
+              const raw = msg.text || '';
+              if (raw.startsWith('[sticker_url:')) {
+                const parts = raw.slice(13, -1).split(':');
+                stickerUrl = parts[0];
+                stickerName = parts[1] || 'sticker';
+              } else if (raw.startsWith('[sticker:')) {
+                const parts = raw.slice(9, -1).split(':');
+                stickerCode = parts[0];
+                stickerName = parts[1] || 'sticker';
+              } else {
+                stickerUrl = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : null);
+                stickerCode = msg.text;
+              }
+            }
+
+            // Check if Pure Emoji (1-3 emojis)
+            const pureEmoji = (!isDeleted && msg.mediaType === 'TEXT' && !isStickerMsg)
+              ? isPureEmojiWeb(text)
+              : { isPure: false, count: 0 };
+
+            // 1. Frameless Sticker Rendering
+            if (isStickerMsg) {
+              return (
+                <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start', margin: '4px 0' }}>
+                    <div style={{
+                      position: 'relative',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: 4,
+                      userSelect: 'none'
+                    }}>
+                      {stickerUrl ? (
+                        <img
+                          src={stickerUrl}
+                          alt={stickerName || 'sticker'}
+                          loading="lazy"
+                          style={{
+                            width: 130,
+                            height: 130,
+                            objectFit: 'contain',
+                            display: 'block',
+                            filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.12))'
+                          }}
+                        />
+                      ) : (
+                        <span style={{
+                          fontSize: 72,
+                          lineHeight: 1.1,
+                          display: 'block',
+                          filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.1))'
+                        }}>
+                          {stickerCode || '✨'}
+                        </span>
+                      )}
+                      <span style={{
+                        position: 'absolute',
+                        bottom: 4,
+                        right: 6,
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                        backdropFilter: 'blur(4px)',
+                        color: '#FFFFFF',
+                        borderRadius: 10,
+                        padding: '2px 7px',
+                        fontSize: 10,
+                        fontWeight: 700,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 3
+                      }}>
+                        {timeStr}
+                        {isOut && renderTicks(msg.status)}
+                      </span>
+                    </div>
+                  </div>
+                </SwipeableMessage>
+              );
+            }
+
+            // 2. Frameless Pure Emoji Rendering
+            if (pureEmoji.isPure) {
+              const emojiFontSize = pureEmoji.count === 1 ? 52 : pureEmoji.count === 2 ? 40 : 32;
+              return (
+                <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start', margin: '3px 0' }}>
+                    <div style={{
+                      position: 'relative',
+                      display: 'inline-flex',
+                      flexDirection: 'column',
+                      alignItems: isOut ? 'flex-end' : 'flex-start',
+                      padding: '2px 6px'
+                    }}>
+                      {replyTo && (
+                        <div style={{
+                          backgroundColor: isOut ? 'rgba(0,0,0,0.07)' : 'rgba(0,180,216,0.1)',
+                          borderLeft: `3px solid ${isOut ? '#00838f' : '#FF3366'}`,
+                          padding: '4px 8px', borderRadius: 6, marginBottom: 4
+                        }}>
+                          <div style={{ fontSize: 11, fontWeight: 900, color: isOut ? '#00838f' : '#FF3366', marginBottom: 2 }}>
+                            {replyTo.senderLabel}
+                          </div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#444' }}>
+                            {replyTo.text}
+                          </div>
+                        </div>
+                      )}
+                      <span style={{
+                        fontSize: emojiFontSize,
+                        lineHeight: 1.15,
+                        letterSpacing: pureEmoji.count > 1 ? 4 : 0,
+                        filter: 'drop-shadow(0 2px 5px rgba(0,0,0,0.08))'
+                      }}>
+                        {text}
+                      </span>
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 3,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: '#777',
+                        marginTop: 2
+                      }}>
+                        {Boolean(msg.isEdited) && !isDeleted && (
+                          <span style={{ fontStyle: 'italic', opacity: 0.75, fontSize: 9, color: '#2e7d32' }}>
+                            Edited •
+                          </span>
+                        )}
+                        {timeStr}
+                        {isOut && renderTicks(msg.status)}
+                      </div>
+                    </div>
+                  </div>
+                </SwipeableMessage>
+              );
+            }
+
             return (
               <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start' }}>
-                  <div className="neo-box" style={{
-                    backgroundColor: isOut ? '#d4fcd4' : '#ffffff',
-                    padding: '8px 12px', borderRadius: 12, boxShadow: '3px 3px 0 #000',
+                  <div style={{
+                    backgroundColor: isOut ? '#D9FDD3' : '#FFFFFF',
+                    border: '1px solid rgba(0, 0, 0, 0.06)',
+                    padding: '8px 12px',
+                    borderRadius: isOut ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.03)',
                     display: 'flex', flexDirection: 'column', gap: 4,
-                    maxWidth: '100%'
+                    maxWidth: '100%',
+                    position: 'relative'
                   }}>
                     {isDeleted ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontStyle: 'italic', color: '#777', fontSize: 13, padding: '2px 4px' }}>
@@ -1712,15 +1945,51 @@ export default function ChatConversation({
                           </div>
                         )}
 
-                        {/* Image */}
-                        {msg.mediaType === 'IMAGE' && msg.mediaData && (
-                          <img
-                            src={msg.mediaData.startsWith('data:') ? msg.mediaData : `data:image/jpeg;base64,${msg.mediaData}`}
-                            alt="Photo"
-                            onClick={() => setSelectedImageModal(msg.mediaData)}
-                            style={{ width: '100%', maxHeight: 240, objectFit: 'cover', borderRadius: 8, border: '2px solid #000', cursor: 'pointer', marginBottom: 4 }}
-                          />
-                        )}
+                        {/* Image / GIF */}
+                        {msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl) && (() => {
+                          const src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : `data:image/jpeg;base64,${msg.mediaData}`);
+                          const isGif = Boolean(
+                            (msg.mediaUrl && msg.mediaUrl.toLowerCase().includes('.gif')) ||
+                            (msg.fileName && msg.fileName.toLowerCase().endsWith('.gif')) ||
+                            (msg.text && (msg.text.toLowerCase().endsWith('.gif') || msg.text.toLowerCase().includes('.gif') || msg.text.startsWith('http'))) ||
+                            (msg.mediaData && msg.mediaData.startsWith('data:image/gif'))
+                          );
+                          return (
+                            <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 8, marginBottom: 4 }}>
+                              <img
+                                src={src}
+                                alt={isGif ? "GIF" : "Photo"}
+                                onClick={() => setSelectedImageModal(src)}
+                                style={{
+                                  width: '100%',
+                                  maxHeight: isGif ? 300 : 240,
+                                  maxWidth: 320,
+                                  objectFit: 'cover',
+                                  borderRadius: 8,
+                                  border: '2px solid #000',
+                                  cursor: 'pointer',
+                                  display: 'block'
+                                }}
+                              />
+                              {isGif && (
+                                <span style={{
+                                  position: 'absolute',
+                                  top: 6,
+                                  left: 6,
+                                  backgroundColor: 'rgba(0,0,0,0.65)',
+                                  color: '#fff',
+                                  borderRadius: 6,
+                                  padding: '2px 6px',
+                                  fontSize: 10,
+                                  fontWeight: 900,
+                                  letterSpacing: 0.5
+                                }}>
+                                  GIF
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Audio / Voice Note */}
                         {msg.mediaType === 'AUDIO' && msg.mediaData && (
@@ -2041,7 +2310,7 @@ export default function ChatConversation({
 
         {/* Typing indicator */}
         {isTypingPeer && (
-          <div style={{ alignSelf: 'flex-start', padding: '8px 14px', backgroundColor: '#fff', borderRadius: 12, border: '3px solid #000', boxShadow: '3px 3px 0 #000', fontSize: 13, fontWeight: 800, color: '#00838f', fontStyle: 'italic' }}>
+          <div style={{ alignSelf: 'flex-start', padding: '8px 14px', backgroundColor: '#FFFFFF', borderRadius: 14, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 2px 8px rgba(0,0,0,0.05)', fontSize: 13, fontWeight: 600, color: 'var(--primary)', fontStyle: 'italic' }}>
             {peerName || normPeer} is typing…
           </div>
         )}
@@ -2064,9 +2333,9 @@ export default function ChatConversation({
               width: 44,
               height: 44,
               borderRadius: '50%',
-              backgroundColor: '#ffffff',
-              border: '2.5px solid #000',
-              boxShadow: '3px 3px 0 #000',
+              backgroundColor: '#FFFFFF',
+              border: '1px solid rgba(0,0,0,0.08)',
+              boxShadow: '0 4px 14px rgba(0,0,0,0.12)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -2114,7 +2383,26 @@ export default function ChatConversation({
         marginBottom: inputPaddingBottom,
         transition: 'margin-bottom 0.15s ease-out'
       }}>
-        <div style={{ maxWidth: '920px', margin: '0 auto', width: '100%' }}>
+        <div style={{ maxWidth: '920px', margin: '0 auto', width: '100%', position: 'relative' }}>
+          {/* Media Keyboard Popover (Emojis, Stickers, GIFs) */}
+          {showMediaPicker && (
+            <div style={{
+              position: 'absolute',
+              bottom: '100%',
+              left: 10,
+              marginBottom: 10,
+              zIndex: 500,
+              boxShadow: '0 12px 36px rgba(0, 0, 0, 0.2)'
+            }}>
+              <ChatMediaPickerWeb
+                onSelectEmoji={handleSelectEmoji}
+                onSelectSticker={handleSelectSticker}
+                onSelectGif={handleSelectGif}
+                onClose={() => setShowMediaPicker(false)}
+              />
+            </div>
+          )}
+
           {/* Reply Preview Bar */}
           {replyingTo && (
             <div style={{
@@ -2193,6 +2481,25 @@ export default function ChatConversation({
             <form onSubmit={handleSendText} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
               <input type="file" accept="image/*" ref={fileInputRef} style={{ display: 'none' }} onChange={handleImageSelected} />
               <input type="file" ref={docFileInputRef} style={{ display: 'none' }} onChange={handleDocSelected} />
+              <button
+                type="button"
+                onClick={() => setShowMediaPicker(prev => !prev)}
+                className="neo-box"
+                style={{
+                  width: 44,
+                  height: 44,
+                  padding: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: showMediaPicker ? '#E0F2F1' : '#fff',
+                  cursor: 'pointer',
+                  flexShrink: 0
+                }}
+                title="Emojis, Stickers & GIFs"
+              >
+                {showMediaPicker ? <X size={20} color="#008069" /> : <Smile size={22} color="#008069" />}
+              </button>
               <button type="button" onClick={() => fileInputRef.current?.click()} className="neo-box"
                 style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }}
                 title="Attach Photo">
@@ -2245,7 +2552,7 @@ export default function ChatConversation({
               <X size={20} />
             </button>
             <img
-              src={selectedImageModal.startsWith('data:') ? selectedImageModal : `data:image/jpeg;base64,${selectedImageModal}`}
+              src={selectedImageModal.startsWith('http') || selectedImageModal.startsWith('data:') ? selectedImageModal : `data:image/jpeg;base64,${selectedImageModal}`}
               alt="Enlarged"
               style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', border: '3px solid #000' }}
             />

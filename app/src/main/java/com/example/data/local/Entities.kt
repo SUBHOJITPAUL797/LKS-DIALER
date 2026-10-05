@@ -20,7 +20,8 @@ enum class ChatMediaType {
     EDIT,
     DELETE,
     CHUNK,
-    P2P_OFFER    // WebRTC DataChannel P2P file transfer signaling
+    P2P_OFFER,    // WebRTC DataChannel P2P file transfer signaling
+    STICKER
 }
 
 @Entity(

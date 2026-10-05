@@ -1,31 +1,44 @@
 :root {
-  /* Neo-Brutalism Colors */
-  --bg-color: #fdf5e6; /* Off-white/cream */
-  --card-bg: #ffffff;
-  --primary: #FF3366; /* Hot Pink */
-  --secondary: #00E5FF; /* Cyan */
-  --accent: #FFCC00; /* Yellow */
-  --text-main: #0f0f0f;
-  --border-color: #000000;
+  /* Appllama Design System Tokens (Apple HIG / Top-Tier Messaging Fidelity) */
+  --bg-color: #F0F2F5; /* WhatsApp/iMessage clean grey canvas */
+  --bg-subtle: #E9ECEF;
+  --card-bg: #FFFFFF;
+  --card-hover: #F8F9FA;
+  --primary: #008069; /* Elegant Emerald Teal */
+  --primary-hover: #00705C;
+  --primary-light: #E8FAF6;
+  --secondary: #00A884; /* Fresh Emerald Accent */
+  --accent: #25D366; /* Vibrant Call Green */
+  --text-main: #111B21; /* High contrast, non-harsh dark */
+  --text-muted: #667781;
+  --text-secondary: #8696A0;
+  --border-color: rgba(0, 0, 0, 0.08);
   
-  --border-width: 3px;
-  --border-radius: 12px;
-  --shadow-color: #000000;
-  --shadow-offset: 6px;
-  --shadow-offset-hover: 3px;
+  --border-width: 1px;
+  --border-radius: 16px;
+  --border-radius-sm: 10px;
+  --border-radius-lg: 22px;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 16px -2px rgba(0, 0, 0, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 12px 32px -4px rgba(0, 0, 0, 0.12), 0 4px 12px -2px rgba(0, 0, 0, 0.06);
+  --shadow-focus: 0 0 0 3px rgba(0, 128, 105, 0.22);
+  --shadow-color: rgba(0, 0, 0, 0.08);
+  --shadow-offset: 2px;
+  --shadow-offset-hover: 4px;
 }
 
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   background-color: var(--bg-color);
   color: var(--text-main);
-  /* The app will be centered on desktop to look like a phone */
   display: flex;
   justify-content: center;
   align-items: center;
@@ -52,81 +65,96 @@ body {
   overflow: hidden;
 }
 
-/* 🎨 Neo-Brutalism Utilities */
+/* 🎨 Elevated Card Utilities (Appllama Benchmark) */
 .neo-box {
   background-color: var(--card-bg);
-  border: var(--border-width) solid var(--border-color);
+  border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
-  box-shadow: var(--shadow-offset) var(--shadow-offset) 0 var(--shadow-color);
-  transition: all 0.2s ease;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .neo-input {
   background-color: var(--card-bg);
-  border: var(--border-width) solid var(--border-color);
-  border-radius: var(--border-radius);
-  padding: 16px;
-  font-size: 18px;
-  font-weight: 600;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-main);
   width: 100%;
   outline: none;
-  box-shadow: 4px 4px 0 var(--shadow-color);
-  transition: all 0.2s ease;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .neo-input:focus {
-  transform: translate(2px, 2px);
-  box-shadow: 2px 2px 0 var(--shadow-color);
+  border-color: var(--primary);
+  box-shadow: var(--shadow-focus);
 }
 
 .neo-btn {
   background-color: var(--primary);
-  color: #fff;
-  border: var(--border-width) solid var(--border-color);
-  border-radius: var(--border-radius);
-  padding: 16px 24px;
-  font-size: 18px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 1px;
+  color: #FFFFFF;
+  border: 1px solid rgba(0, 0, 0, 0.05);
+  border-radius: 14px;
+  padding: 13px 22px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
   cursor: pointer;
-  box-shadow: var(--shadow-offset) var(--shadow-offset) 0 var(--shadow-color);
-  transition: all 0.1s ease;
+  box-shadow: 0 2px 6px rgba(0, 128, 105, 0.25);
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
+}
+
+.neo-btn:hover {
+  background-color: var(--primary-hover);
+  box-shadow: 0 4px 12px rgba(0, 128, 105, 0.35);
+  transform: translateY(-1px);
 }
 
 .neo-btn:active {
-  transform: translate(var(--shadow-offset), var(--shadow-offset));
-  box-shadow: 0px 0px 0 var(--shadow-color);
+  transform: scale(0.98);
+  box-shadow: 0 1px 3px rgba(0, 128, 105, 0.2);
 }
 
 .neo-btn.secondary {
-  background-color: var(--secondary);
-  color: #000;
+  background-color: var(--bg-subtle);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+
+.neo-btn.secondary:hover {
+  background-color: #DFE3E6;
+  box-shadow: var(--shadow-md);
 }
 
 .neo-btn.accent {
-  background-color: var(--accent);
-  color: #000;
+  background-color: var(--secondary);
+  color: #FFFFFF;
 }
 
 .neo-btn.success {
-  background-color: #00E676; /* Bright Green */
-  color: #000;
+  background-color: #25D366;
+  color: #FFFFFF;
+  box-shadow: 0 2px 8px rgba(37, 211, 102, 0.3);
 }
 
 .neo-btn.danger {
-  background-color: #FF1744; /* Bright Red */
-  color: #fff;
+  background-color: #EA4335;
+  color: #FFFFFF;
+  box-shadow: 0 2px 8px rgba(234, 67, 53, 0.3);
 }
 
 /* Keypad Button */
 .keypad-btn {
   background-color: var(--card-bg);
-  border: var(--border-width) solid var(--border-color);
+  border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 50%;
   width: 72px;
   height: 72px;
@@ -135,29 +163,37 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 4px 4px 0 var(--shadow-color);
-  transition: all 0.1s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.keypad-btn:hover {
+  background-color: #F8F9FA;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.09);
+  border-color: rgba(0, 0, 0, 0.12);
 }
 
 .keypad-btn:active {
-  transform: translate(4px, 4px);
-  box-shadow: 0px 0px 0 var(--shadow-color);
-  background-color: var(--accent);
+  transform: scale(0.95);
+  background-color: var(--primary-light);
+  border-color: var(--primary);
+  box-shadow: 0 1px 4px rgba(0, 128, 105, 0.15);
 }
 
 .keypad-btn span.number {
-  font-size: 28px;
-  font-weight: 800;
+  font-size: 26px;
+  font-weight: 700;
   color: var(--text-main);
   line-height: 1;
 }
 
 .keypad-btn span.letters {
   font-size: 10px;
-  font-weight: 600;
-  color: #666;
-  margin-top: 4px;
-  letter-spacing: 1px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-top: 3px;
+  letter-spacing: 1.5px;
 }
 
 /* Bottom Navigation */
@@ -166,9 +202,11 @@ body {
   display: flex;
   justify-content: space-around;
   align-items: center;
-  background-color: var(--card-bg);
-  border-top: var(--border-width) solid var(--border-color);
-  padding: 8px 4px calc(12px + env(safe-area-inset-bottom, 0px)) 4px;
+  background-color: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--border-color);
+  padding: 8px 6px calc(10px + env(safe-area-inset-bottom, 0px)) 6px;
   z-index: 50;
   width: 100%;
   flex-shrink: 0;
@@ -180,23 +218,27 @@ body {
   align-items: center;
   justify-content: center;
   gap: 3px;
-  color: #666;
+  color: var(--text-muted);
   cursor: pointer;
-  padding: 6px 8px;
-  border-radius: 12px;
-  transition: all 0.2s ease;
-  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 20px;
+  transition: all 0.18s ease;
+  font-weight: 600;
   font-size: 11px;
   flex: 1;
-  max-width: 76px;
+  max-width: 80px;
   user-select: none;
 }
 
+.nav-item:hover {
+  color: var(--primary);
+  background-color: rgba(0, 128, 105, 0.05);
+}
+
 .nav-item.active {
-  color: var(--border-color);
-  background-color: var(--accent);
-  border: 2px solid var(--border-color);
-  box-shadow: 2px 2px 0 var(--border-color);
+  color: var(--primary);
+  background-color: var(--primary-light);
+  font-weight: 800;
 }
 
 .mobile-tab-viewport {
@@ -260,24 +302,23 @@ body {
 }
 
 /* 💀 Skeleton Loading Utilities */
-@keyframes neo-pulse {
-  0% { opacity: 0.5; transform: scale(0.99); }
-  50% { opacity: 0.8; transform: scale(1); }
-  100% { opacity: 0.5; transform: scale(0.99); }
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 .neo-skeleton {
-  background-color: #e0e0e0;
-  border: var(--border-width) dashed #000;
+  background: linear-gradient(90deg, #E5E7EB 25%, #F3F4F6 50%, #E5E7EB 75%);
+  background-size: 200% 100%;
   border-radius: var(--border-radius);
-  animation: neo-pulse 1.5s infinite ease-in-out;
+  animation: shimmer 1.5s infinite;
 }
 
 .neo-skeleton-circle {
-  background-color: #e0e0e0;
-  border: var(--border-width) dashed #000;
+  background: linear-gradient(90deg, #E5E7EB 25%, #F3F4F6 50%, #E5E7EB 75%);
+  background-size: 200% 100%;
   border-radius: 50%;
-  animation: neo-pulse 1.5s infinite ease-in-out;
+  animation: shimmer 1.5s infinite;
 }
 
 /* 🎵 Audio Waveform & Equalizer Animations */
@@ -295,10 +336,10 @@ body {
 
 @keyframes waveGlow {
   0%, 100% {
-    filter: drop-shadow(0 0 1px rgba(0, 230, 118, 0.4));
+    filter: drop-shadow(0 0 1px rgba(0, 168, 132, 0.4));
   }
   50% {
-    filter: drop-shadow(0 0 6px rgba(0, 230, 118, 0.9));
+    filter: drop-shadow(0 0 6px rgba(0, 168, 132, 0.8));
   }
 }
 
@@ -307,7 +348,7 @@ body {
     transform: scale(1);
   }
   50% {
-    transform: scale(1.22);
+    transform: scale(1.18);
   }
 }
 
