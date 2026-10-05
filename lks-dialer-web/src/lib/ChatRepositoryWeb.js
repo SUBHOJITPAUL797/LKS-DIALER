@@ -795,8 +795,18 @@ class ChatRepositoryWeb {
           const parsed = JSON.parse(decryptedRaw);
           displayText = parsed.caption || 'Photo';
           mediaData = parsed.bytes || '';
+          if (parsed.url) mediaUrl = parsed.url;
         } catch {
-          displayText = 'Photo';
+          if (decryptedRaw.startsWith('[gif:')) {
+            const parts = decryptedRaw.slice(5, -1).split(':');
+            mediaUrl = parts[0];
+            displayText = parts.slice(1).join(':') || 'GIF';
+          } else if (decryptedRaw.startsWith('http')) {
+            mediaUrl = decryptedRaw;
+            displayText = '';
+          } else {
+            displayText = decryptedRaw || 'Photo';
+          }
         }
       } else if (dto.mediaType === 'AUDIO') {
         try {
@@ -1606,7 +1616,8 @@ class ChatRepositoryWeb {
 
   // --- PUBLIC API: SEND GIF ---
   async sendGif(recipientNumber, recipientName, gifUrl, gifTitle = '') {
-    return this.sendMessage(recipientNumber, recipientName, gifUrl, 'IMAGE');
+    const payload = `[gif:${gifUrl}:${gifTitle}]`;
+    return this.sendMessage(recipientNumber, recipientName, payload, 'IMAGE');
   }
 
   // --- PUBLIC API: EDIT MESSAGE ---

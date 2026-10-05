@@ -28,6 +28,53 @@ function isPureEmojiWeb(text) {
   }
 }
 
+// ─── Sticker Emoji Resolver ───────────────────────────────────────────────────
+const STICKER_NAME_EMOJI_MAP = {
+  'Cool Shades': '😎',
+  'Happy Doge': '🐶',
+  'Fire 100': '🔥',
+  'Heart Eyes': '😍',
+  'LOL Tears': '🤣',
+  'Party Popper': '🎉',
+  'Mind Blown': '🤯',
+  'Thumbs Up': '👍',
+  'Top Score 100': '💯',
+  'To The Moon': '🚀',
+  'Applause': '👏',
+  'Respect / Thanks': '🙏',
+  'Magic Vibe': '✨',
+  'Peeking Cat': '🐱',
+  'Panda Hug': '🐼',
+  'Sly Fox': '🦊',
+  'Sweet Bunny': '🐰',
+  'Dancing Penguin': '🐧',
+  'Munch Hamster': '🐹',
+  'Chill Koala': '🐨',
+  'Brave Lion': '🦁',
+  'Kermit Vibe': '🐸',
+  'Sparkle Unicorn': '🦄',
+  'Sleepy Sloth': '🦥',
+  'Call Me Now': '🤙',
+  'Coffee First': '☕',
+  'Hustle Mode': '💻',
+  'Shipped It!': '📦',
+  'Nailed It': '🎯',
+  'Popcorn Time': '🍿',
+  'Peace Out': '✌️',
+  'Facepalm': '🤦',
+  'Galaxy Brain': '🧠',
+  'GG Bro': '🤝',
+  'Brain Loading': '⏳',
+  'Cheers Drink': '🍻'
+};
+
+function resolveWebStickerEmoji(code, name) {
+  if (code && code.length <= 4 && !code.includes(' ')) return code;
+  if (name && STICKER_NAME_EMOJI_MAP[name]) return STICKER_NAME_EMOJI_MAP[name];
+  if (code && STICKER_NAME_EMOJI_MAP[code]) return STICKER_NAME_EMOJI_MAP[code];
+  return code || '✨';
+}
+
 // ─── Swipeable Message Bubble ─────────────────────────────────────────────────
 function SwipeableMessage({ msg, onSwipeReply, children }) {
   const touchStartX = useRef(null);
@@ -1813,16 +1860,20 @@ export default function ChatConversation({
                             filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.12))'
                           }}
                         />
-                      ) : (
-                        <span style={{
-                          fontSize: 72,
-                          lineHeight: 1.1,
-                          display: 'block',
-                          filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.1))'
-                        }}>
-                          {stickerCode || '✨'}
-                        </span>
-                      )}
+                      ) : (() => {
+                        const displayEmoji = resolveWebStickerEmoji(stickerCode, stickerName);
+                        const isShort = displayEmoji && displayEmoji.length <= 4;
+                        return (
+                          <span style={{
+                            fontSize: isShort ? 72 : 24,
+                            lineHeight: 1.1,
+                            display: 'block',
+                            filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.1))'
+                          }}>
+                            {displayEmoji}
+                          </span>
+                        );
+                      })()}
                       <span style={{
                         position: 'absolute',
                         bottom: 4,
@@ -1946,12 +1997,23 @@ export default function ChatConversation({
                         )}
 
                         {/* Image / GIF */}
-                        {msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl) && (() => {
-                          const src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : `data:image/jpeg;base64,${msg.mediaData}`);
+                        {msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl || (msg.text && (msg.text.startsWith('http') || msg.text.startsWith('[gif:')))) && (() => {
+                          let src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : null);
+                          let gifTitle = '';
+                          if (!src && msg.text) {
+                            if (msg.text.startsWith('[gif:')) {
+                              const parts = msg.text.slice(5, -1).split(':');
+                              src = parts[0];
+                              gifTitle = parts.slice(1).join(':') || '';
+                            } else if (msg.text.startsWith('http')) {
+                              src = msg.text;
+                            }
+                          }
+                          if (!src && msg.mediaData) src = `data:image/jpeg;base64,${msg.mediaData}`;
                           const isGif = Boolean(
-                            (msg.mediaUrl && msg.mediaUrl.toLowerCase().includes('.gif')) ||
+                            (src && src.toLowerCase().includes('.gif')) ||
                             (msg.fileName && msg.fileName.toLowerCase().endsWith('.gif')) ||
-                            (msg.text && (msg.text.toLowerCase().endsWith('.gif') || msg.text.toLowerCase().includes('.gif') || msg.text.startsWith('http'))) ||
+                            (msg.text && (msg.text.startsWith('[gif:') || msg.text.toLowerCase().includes('.gif') || msg.text.startsWith('http'))) ||
                             (msg.mediaData && msg.mediaData.startsWith('data:image/gif'))
                           );
                           return (

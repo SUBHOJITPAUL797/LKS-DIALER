@@ -60,25 +60,49 @@ fun ChatMediaKeyboardPicker(
     modifier: Modifier = Modifier,
     onEmojiSelected: (String) -> Unit,
     onBackspace: () -> Unit,
-    onStickerSelected: (stickerUrl: String, stickerName: String) -> Unit,
+    onStickerSelected: (stickerCode: String, stickerName: String, stickerUrl: String) -> Unit,
     onGifSelected: (gifUrl: String, gifTitle: String) -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(MediaKeyboardTab.EMOJI) }
+    var isExpanded by remember { mutableStateOf(false) }
+
+    val animatedHeight by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (isExpanded) 520.dp else 360.dp,
+        animationSpec = tween(durationMillis = 250),
+        label = "mediaPickerHeight"
+    )
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(290.dp),
+            .height(animatedHeight),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 6.dp,
         shadowElevation = 8.dp
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Drag / resize handle pill at top (clickable to toggle expanded view)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded }
+                    .padding(top = 6.dp, bottom = 2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .width(38.dp)
+                        .height(4.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                ) {}
+            }
+
             // ── Top Media Tabs Header (WhatsApp / Telegram style) ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -113,18 +137,35 @@ fun ChatMediaKeyboardPicker(
                     }
                 }
 
-                // If in Emoji tab, show quick backspace key on far right
-                if (selectedTab == MediaKeyboardTab.EMOJI) {
+                // Right controls: Expand/Collapse toggle button + Backspace (in Emoji tab)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     IconButton(
-                        onClick = onBackspace,
+                        onClick = { isExpanded = !isExpanded },
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Filled.Backspace,
-                            contentDescription = "Backspace",
+                            imageVector = if (isExpanded) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
+                            contentDescription = if (isExpanded) "Collapse picker" else "Expand picker",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
+                    }
+
+                    if (selectedTab == MediaKeyboardTab.EMOJI) {
+                        IconButton(
+                            onClick = onBackspace,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Backspace,
+                                contentDescription = "Backspace",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -420,7 +461,7 @@ private fun GifPickerContent(
 // ──────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun StickerPickerContent(
-    onStickerSelected: (stickerUrl: String, stickerName: String) -> Unit
+    onStickerSelected: (stickerCode: String, stickerName: String, stickerUrl: String) -> Unit
 ) {
     val packs = remember { StickerCatalog.packs }
     var selectedPackIndex by remember { mutableIntStateOf(0) }
@@ -481,7 +522,10 @@ private fun StickerPickerContent(
                     modifier = Modifier
                         .aspectRatio(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { onStickerSelected(sticker.imageUrl, sticker.name) }
+                        .clickable {
+                            val code = sticker.previewEmoji.ifBlank { sticker.name }
+                            onStickerSelected(code, sticker.name, sticker.imageUrl)
+                        }
                         .padding(4.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -649,6 +693,21 @@ object StickerCatalog {
             )
         )
     )
+
+    fun resolveEmoji(codeOrName: String): String {
+        if (codeOrName.isBlank()) return "✨"
+        if (codeOrName.length <= 4 && !codeOrName.contains(" ")) return codeOrName
+        for (pack in packs) {
+            for (item in pack.stickers) {
+                if (item.name.equals(codeOrName, ignoreCase = true) ||
+                    item.id.equals(codeOrName, ignoreCase = true) ||
+                    item.previewEmoji.equals(codeOrName, ignoreCase = true)) {
+                    return item.previewEmoji
+                }
+            }
+        }
+        return codeOrName
+    }
 }
 
 object GifCatalog {

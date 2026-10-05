@@ -891,7 +891,8 @@ class ChatRepository private constructor(private val context: Context) {
                         localMediaPath = imgFile.absolutePath
                     }
                 } catch (_: Exception) {
-                    displayText = "Photo"
+                    // Non-JSON image: can be a GIF payload "[gif:url:title]" or direct URL "http..."
+                    displayText = decryptedRaw.ifBlank { "Photo" }
                 }
             } else if (dto.mediaType == ChatMediaType.STICKER.name) {
                 try {
@@ -989,9 +990,10 @@ class ChatRepository private constructor(private val context: Context) {
                 contactName = resolvedName,
                 profilePicUrl = profilePic,
                 lastMessageText = when (dto.mediaType) {
-                    ChatMediaType.IMAGE.name -> "📷 Photo"
+                    ChatMediaType.IMAGE.name -> if (displayText.startsWith("[gif:")) "🎬 GIF" else "📷 Photo"
                     ChatMediaType.AUDIO.name -> "🎤 Voice message"
                     ChatMediaType.DOCUMENT.name -> "📄 $displayText"
+                    ChatMediaType.STICKER.name -> "🦄 Sticker"
                     else -> notificationDisplayText
                 },
                 lastMessageType = dto.mediaType,
@@ -1027,9 +1029,10 @@ class ChatRepository private constructor(private val context: Context) {
                     senderNumber = senderNorm,
                     senderName = resolvedName,
                     messageText = when (dto.mediaType) {
-                        ChatMediaType.IMAGE.name -> if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"
+                        ChatMediaType.IMAGE.name -> if (displayText.startsWith("[gif:")) "🎬 GIF" else if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"
                         ChatMediaType.AUDIO.name -> "🎤 Voice message"
                         ChatMediaType.DOCUMENT.name -> "📄 $displayText"
+                        ChatMediaType.STICKER.name -> "🦄 Sticker"
                         else -> notificationDisplayText
                     },
                     messageType = dto.mediaType
@@ -1725,10 +1728,10 @@ class ChatRepository private constructor(private val context: Context) {
             contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
             profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
             lastMessageText = when (mediaType) {
-                ChatMediaType.IMAGE -> if (text.isNotBlank()) "📷 $text" else "📷 Photo"
+                ChatMediaType.IMAGE -> if (text.startsWith("[gif:")) "🎬 GIF" else if (text.isNotBlank()) "📷 $text" else "📷 Photo"
                 ChatMediaType.AUDIO -> "🎤 Voice message"
                 ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
-                ChatMediaType.STICKER -> if (text.isNotBlank()) "🦄 $text" else "🦄 Sticker"
+                ChatMediaType.STICKER -> if (text.startsWith("[sticker")) "🦄 Sticker" else if (text.isNotBlank()) "🦄 $text" else "🦄 Sticker"
                 else -> extractCleanText(text)
             },
             lastMessageType = mediaType.name,
@@ -1819,37 +1822,13 @@ class ChatRepository private constructor(private val context: Context) {
         gifUrl: String,
         gifTitle: String
     ): Result<MessageEntity> = withContext(Dispatchers.IO) {
-        try {
-            val cacheFile = File(context.cacheDir, "gif_${UUID.randomUUID()}.gif")
-            val request = Request.Builder().url(gifUrl).build()
-            val client = OkHttpClient()
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful && response.body != null) {
-                cacheFile.writeBytes(response.body!!.bytes())
-                sendMessage(
-                    recipientNumber = recipientNumber,
-                    recipientName = recipientName,
-                    text = gifTitle,
-                    mediaType = ChatMediaType.IMAGE,
-                    mediaFile = cacheFile
-                )
-            } else {
-                sendMessage(
-                    recipientNumber = recipientNumber,
-                    recipientName = recipientName,
-                    text = gifUrl,
-                    mediaType = ChatMediaType.TEXT
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to download GIF, sending as link: ${e.message}")
-            sendMessage(
-                recipientNumber = recipientNumber,
-                recipientName = recipientName,
-                text = gifUrl,
-                mediaType = ChatMediaType.TEXT
-            )
-        }
+        val payload = "[gif:$gifUrl:$gifTitle]"
+        sendMessage(
+            recipientNumber = recipientNumber,
+            recipientName = recipientName,
+            text = payload,
+            mediaType = ChatMediaType.IMAGE
+        )
     }
 
     /**

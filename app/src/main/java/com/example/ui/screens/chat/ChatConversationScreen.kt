@@ -1243,12 +1243,12 @@ fun ChatConversationScreen(
                                 chatRepository.setTyping(normPeer, inputText.isNotBlank())
                             }
                         },
-                        onStickerSelected = { stickerUrl, stickerName ->
+                        onStickerSelected = { stickerCode, stickerName, stickerUrl ->
                             coroutineScope.launch {
                                 chatRepository.sendSticker(
                                     recipientNumber = normPeer,
                                     recipientName = peerDisplayName,
-                                    stickerCode = stickerUrl.ifBlank { stickerName },
+                                    stickerCode = stickerCode.ifBlank { "✨" },
                                     stickerName = stickerName,
                                     stickerUrl = stickerUrl.takeIf { it.startsWith("http") }
                                 )
@@ -2120,7 +2120,9 @@ private fun MessageBubble(
 
                     if (isEmojiSticker) {
                         val parts = rawStickerText.removeSurrounding("[sticker:", "]").split(":")
-                        val stickerEmoji = parts.getOrNull(0) ?: "🦄"
+                        val rawCode = parts.getOrNull(0) ?: "🦄"
+                        val rawName = parts.getOrNull(1) ?: ""
+                        val resolvedEmoji = StickerCatalog.resolveEmoji(rawCode.ifBlank { rawName })
                         Box(
                             modifier = Modifier
                                 .padding(6.dp)
@@ -2128,8 +2130,8 @@ private fun MessageBubble(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = stickerEmoji,
-                                fontSize = 72.sp,
+                                text = resolvedEmoji,
+                                fontSize = if (resolvedEmoji.length <= 4) 72.sp else 24.sp,
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -2203,20 +2205,37 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Image (Dynamic aspect ratio so image is never cut off) ──
+                // ── Image / Animated GIF ──
                 if (message.mediaType == ChatMediaType.IMAGE.name) {
-                    if (!message.mediaPath.isNullOrBlank()) {
-                        val imageRatio = remember(message.mediaPath) {
-                            try {
+                    val rawText = message.text
+                    val isGifMsg = rawText.startsWith("[gif:") ||
+                                   rawText.startsWith("http") ||
+                                   (message.mediaPath?.endsWith(".gif", ignoreCase = true) == true)
+
+                    val gifUrlFromText = if (rawText.startsWith("[gif:")) {
+                        rawText.removeSurrounding("[gif:", "]").split(":").getOrNull(0) ?: ""
+                    } else if (rawText.startsWith("http")) {
+                        rawText
+                    } else null
+
+                    val gifTitle = if (rawText.startsWith("[gif:")) {
+                        rawText.removeSurrounding("[gif:", "]").split(":").drop(1).joinToString(":").ifBlank { "GIF" }
+                    } else ""
+
+                    val effectiveImageModel = message.mediaPath.takeIf { !it.isNullOrBlank() } ?: gifUrlFromText
+
+                    if (!effectiveImageModel.isNullOrBlank()) {
+                        val imageRatio = remember(effectiveImageModel) {
+                            if (isGifMsg) null else try {
                                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                BitmapFactory.decodeFile(message.mediaPath, opts)
+                                BitmapFactory.decodeFile(effectiveImageModel, opts)
                                 if (opts.outWidth > 0 && opts.outHeight > 0) {
                                     (opts.outWidth.toFloat() / opts.outHeight.toFloat()).coerceIn(0.55f, 1.85f)
                                 } else null
                             } catch (_: Exception) { null }
                         }
 
-                        val isTransferring = transferProgress != null && transferProgress.percent < 100
+                        val isTransferring = !isGifMsg && transferProgress != null && transferProgress.percent < 100
                         val unblurPercent = transferProgress?.percent ?: 100
                         val imgBlurRadius = remember(unblurPercent, isTransferring, isOutgoing) {
                             if (!isOutgoing && isTransferring) {
@@ -2227,15 +2246,15 @@ private fun MessageBubble(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .aspectRatio(imageRatio ?: 1f)
+                                .then(if (imageRatio != null) Modifier.aspectRatio(imageRatio) else Modifier.heightIn(min = 140.dp, max = if (isGifMsg) 280.dp else 360.dp))
                                 .clip(RoundedCornerShape(12.dp))
-                                .pointerInput(message.id, message.mediaPath) {
+                                .pointerInput(message.id, effectiveImageModel) {
                                     detectTapGestures(
                                         onTap = {
                                             if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                                 onMarkMessageRead(message.id)
                                             }
-                                            onImageClick(message.mediaPath)
+                                            onImageClick(effectiveImageModel)
                                         },
                                         onLongPress = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -2245,15 +2264,44 @@ private fun MessageBubble(
                                 }
                         ) {
                             AsyncImage(
-                                model = message.mediaPath,
-                                contentDescription = "Photo",
+                                model = effectiveImageModel,
+                                contentDescription = if (isGifMsg) "GIF" else "Photo",
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier),
-                                contentScale = ContentScale.Crop
+                                contentScale = if (isGifMsg) ContentScale.Fit else ContentScale.Crop
+                            )
+
+                            if (isGifMsg) {
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier
+                                        .padding(8.dp)
+                                        .align(Alignment.TopStart)
+                                ) {
+                                    Text(
+                                        text = "GIF",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (isGifMsg && gifTitle.isNotBlank() && gifTitle != "GIF") {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = gifTitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (isDark) Color(0xFFE9EDEF) else Color(0xFF111B21),
+                                modifier = Modifier.padding(horizontal = 4.dp)
                             )
                         }
-                        if (transferProgress != null) {
+
+                        if (transferProgress != null && !isGifMsg) {
                             Spacer(modifier = Modifier.height(6.dp))
                             FileTransferProgressCard(
                                 progress = transferProgress,

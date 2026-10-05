@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, X, Smile, Sparkles, Film, ArrowLeft } from 'lucide-react';
+import { Search, X, Smile, Sparkles, Film, ArrowLeft, Maximize2, Minimize2 } from 'lucide-react';
 
 // ── Emoji Catalog ─────────────────────────────────────────────────────────────
 const EMOJI_CATEGORIES = [
@@ -207,6 +207,7 @@ export default function ChatMediaPickerWeb({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEmojiCategory, setSelectedEmojiCategory] = useState(0);
   const [selectedStickerPack, setSelectedStickerPack] = useState(0);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   // Filtered Emojis
   const displayEmojis = useMemo(() => {
@@ -247,7 +248,7 @@ export default function ChatMediaPickerWeb({
       style={{
         width: '100%',
         maxWidth: 420,
-        height: 380,
+        height: isExpanded ? 520 : 400,
         backgroundColor: '#FFFFFF',
         borderRadius: 18,
         border: '1px solid rgba(0, 0, 0, 0.08)',
@@ -255,6 +256,7 @@ export default function ChatMediaPickerWeb({
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        transition: 'height 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
         animation: 'pickerSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
       }}
     >
@@ -349,26 +351,49 @@ export default function ChatMediaPickerWeb({
           </button>
         </div>
 
-        {/* Close Button */}
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            border: 'none',
-            background: 'transparent',
-            cursor: 'pointer',
-            padding: 6,
-            borderRadius: '50%',
-            color: '#777',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'background-color 0.15s'
-          }}
-          title="Close picker"
-        >
-          <X size={18} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {/* Expand/Collapse Button */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded(!isExpanded)}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 6,
+              borderRadius: '50%',
+              color: '#777',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'background-color 0.15s'
+            }}
+            title={isExpanded ? "Collapse picker" : "Expand picker"}
+          >
+            {isExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
+
+          {/* Close Button */}
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              padding: 6,
+              borderRadius: '50%',
+              color: '#777',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'background-color 0.15s'
+            }}
+            title="Close picker"
+          >
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
       {/* ── Search Bar ── */}
