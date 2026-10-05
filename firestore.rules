@@ -212,5 +212,10 @@ service cloud.firestore {
     match /app_logs/{document=**} {
       allow read, write: if true;
     }
+
+    // 13. LKS DIALER - P2P WebRTC DataChannel Transfers
+    match /p2p_transfers/{document=**} {
+      allow read, write: if true;
+    }
   }
 }

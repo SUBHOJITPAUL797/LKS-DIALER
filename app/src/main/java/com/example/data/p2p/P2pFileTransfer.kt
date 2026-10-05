@@ -51,7 +51,7 @@ class P2pFileTransfer(private val context: Context) {
         private const val TAG = "P2pFileTransfer"
         private const val CHUNK_SIZE = 16 * 1024            // 16 KB per DataChannel send
         private const val BUFFER_LOW_THRESHOLD = 65536L     // 64 KB backpressure
-        private const val ICE_TIMEOUT_MS = 30000L           // 30 seconds for mobile cellular networks
+        private const val ICE_TIMEOUT_MS = 15000L           // 15s handshake timeout before seamless relay fallback
         private const val COLLECTION = "p2p_transfers"
 
         @Volatile private var sharedFactory: PeerConnectionFactory? = null
@@ -90,6 +90,22 @@ class P2pFileTransfer(private val context: Context) {
                 )
             ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         )
+
+        fun getEffectiveIceServers(context: Context? = null): List<PeerConnection.IceServer> {
+            val engineServers = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.getIceServers()
+            if (!engineServers.isNullOrEmpty()) {
+                return engineServers
+            }
+            if (context != null) {
+                try {
+                    val fromInstance = com.example.webrtc.WebRtcEngine.getInstance(context).getIceServers()
+                    if (!fromInstance.isNullOrEmpty()) {
+                        return fromInstance
+                    }
+                } catch (_: Exception) {}
+            }
+            return STATIC_ICE_SERVERS
+        }
     }
 
     private val firestore = FirebaseFirestore.getInstance()
@@ -102,7 +118,7 @@ class P2pFileTransfer(private val context: Context) {
 
     // --- Helper: build RTCConfiguration ---
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration =
-        PeerConnection.RTCConfiguration(STATIC_ICE_SERVERS).apply {
+        PeerConnection.RTCConfiguration(getEffectiveIceServers(context)).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
@@ -263,32 +279,42 @@ class P2pFileTransfer(private val context: Context) {
                 override fun onMessage(b: DataChannel.Buffer?) {}
             })
 
+            // If DataChannel is already open upon observer registration, start streaming immediately
+            if (dc.state() == DataChannel.State.OPEN) {
+                scope.launch {
+                    val success = streamFile(
+                        dc = dc, file = file,
+                        totalChunks = totalChunks,
+                        sessionId = sessionId, fileName = fileName,
+                        totalBytes = totalBytes, onProgress = onProgress
+                    )
+                    if (!deferred.isCompleted) deferred.complete(success)
+                }
+            }
+
             // Create and set local offer
             val offerSdp = pc.createOfferSuspend() ?: run {
                 deferred.complete(false); cleanup(sessionId); return@withContext false
             }
             pc.setLocalSuspend(offerSdp)
 
-            // Write session document to dedicated p2p_transfers collection
-            firestore.collection(COLLECTION).document(sessionId).set(mapOf(
-                "sessionId" to sessionId,
-                "senderPhone" to myPhone,
-                "recipientPhone" to recipientPhone,
-                "fileName" to fileName,
-                "fileSize" to totalBytes,
-                "offerSdp" to offerSdp.description,
-                "status" to "PENDING",
-                "timestamp" to System.currentTimeMillis()
-            )).await()
-
-            // Invoke callback to dispatch P2P_OFFER containing offerSdp to recipient inbox
+            // 1. Write session document to dedicated p2p_transfers collection with merge to avoid overwriting early answer
             try {
-                onOfferReady?.invoke(offerSdp.description)
+                firestore.collection(COLLECTION).document(sessionId).set(mapOf(
+                    "sessionId" to sessionId,
+                    "senderPhone" to myPhone,
+                    "recipientPhone" to recipientPhone,
+                    "fileName" to fileName,
+                    "fileSize" to totalBytes,
+                    "offerSdp" to offerSdp.description,
+                    "status" to "PENDING",
+                    "timestamp" to System.currentTimeMillis()
+                ), com.google.firebase.firestore.SetOptions.merge()).await()
             } catch (e: Exception) {
-                Log.w(TAG, "onOfferReady callback failed: ${e.message}")
+                Log.w(TAG, "p2p_transfers session write warning: ${e.message}")
             }
 
-            // Listen for answer SDP and queue early candidates to prevent race condition
+            // 2. Listen for answer SDP and queue early candidates to prevent race condition
             var answerApplied = false
             val pendingCandidates = mutableListOf<IceCandidate>()
 
@@ -315,7 +341,7 @@ class P2pFileTransfer(private val context: Context) {
                 }
             listeners.add(answerListener)
 
-            // Listen for receiver ICE candidates
+            // 3. Listen for receiver ICE candidates
             val rxIceListener = firestore.collection(COLLECTION).document(sessionId)
                 .collection("receiver_ice")
                 .addSnapshotListener { snap, err ->
@@ -339,6 +365,13 @@ class P2pFileTransfer(private val context: Context) {
                     }
                 }
             listeners.add(rxIceListener)
+
+            // 4. NOW that listeners and session doc are completely armed, dispatch P2P_OFFER to recipient inbox
+            try {
+                onOfferReady?.invoke(offerSdp.description)
+            } catch (e: Exception) {
+                Log.w(TAG, "onOfferReady callback failed: ${e.message}")
+            }
 
             // ICE connection timeout (extended to 30s for cellular handshakes)
             scope.launch {
@@ -508,6 +541,7 @@ class P2pFileTransfer(private val context: Context) {
                 if (tempOutputFile.exists()) tempOutputFile.delete()
 
                 val fileOutputStream = java.io.BufferedOutputStream(FileOutputStream(tempOutputFile, true))
+                var isFinished = false
                 var totalChunks = -1
                 var receivedChunkCount = 0
                 var receivedBytes = 0L
@@ -549,6 +583,7 @@ class P2pFileTransfer(private val context: Context) {
                             }
                             override fun onMessage(buffer: DataChannel.Buffer?) {
                                 buffer ?: return
+                                if (isFinished) return
                                 val data = ByteArray(buffer.data.remaining())
                                 buffer.data.get(data)
 
@@ -570,6 +605,8 @@ class P2pFileTransfer(private val context: Context) {
                                     try {
                                         fileOutputStream.write(data)
                                     } catch (e: Exception) {
+                                        if (isFinished) return
+                                        isFinished = true
                                         Log.e(TAG, "Chunk write error: ${e.message}")
                                         try { fileOutputStream.close() } catch (_: Exception) {}
                                         try { tempOutputFile.delete() } catch (_: Exception) {}
@@ -598,7 +635,8 @@ class P2pFileTransfer(private val context: Context) {
                                     val isComplete = (totalChunks > 0 && receivedChunkCount >= totalChunks) ||
                                             (totalBytes > 0 && receivedBytes >= totalBytes)
 
-                                    if (isComplete) {
+                                    if (isComplete && !isFinished) {
+                                        isFinished = true
                                         scope.launch {
                                             try {
                                                 fileOutputStream.flush()
@@ -630,6 +668,14 @@ class P2pFileTransfer(private val context: Context) {
                                 }
                             }
                         })
+                        // If DataChannel is already OPEN upon arrival, notify progress immediately
+                        if (dc.state() == DataChannel.State.OPEN) {
+                            onProgress(FileTransferProgress(
+                                messageId = sessionId, fileName = fileName,
+                                totalBytes = totalBytes, status = TransferStatus.TRANSFERRING,
+                                mode = TransferMode.P2P, isIncoming = true
+                            ))
+                        }
                     }
                     override fun onSignalingChange(s: PeerConnection.SignalingState?) {}
                     override fun onIceGatheringChange(s: PeerConnection.IceGatheringState?) {}

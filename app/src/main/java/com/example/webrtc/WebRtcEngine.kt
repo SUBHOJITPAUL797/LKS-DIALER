@@ -141,6 +141,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             .createIceServer()
     )
 
+    fun getIceServers(): List<PeerConnection.IceServer> = iceServers
+
     /**
      * Fetch fresh TURN credentials from Cloudflare Worker before each call.
      * Credentials are short-lived (24h) and generated server-side via HMAC so

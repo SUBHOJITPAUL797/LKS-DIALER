@@ -738,8 +738,9 @@ class ChatRepository private constructor(private val context: Context) {
 
                     Log.d(TAG, "P2P_OFFER received for sessionId=$sessionId fileName=$fileName hasOfferSdp=${offerSdp != null}")
 
-                    // Insert a placeholder DOCUMENT message into Room DB (shows "Receiving...")
-                    val receivingPlaceholder = MessageEntity(
+                    // Insert a placeholder DOCUMENT message into Room DB if not already present with assembled file
+                    val existing = messageDao.getMessageById(parentMessageId)
+                    val receivingPlaceholder = existing ?: MessageEntity(
                         id = parentMessageId,
                         conversationId = senderNorm,
                         senderNumber = dto.senderNumber,
@@ -752,7 +753,9 @@ class ChatRepository private constructor(private val context: Context) {
                         status = MessageStatus.DELIVERED.name,
                         isOutgoing = false
                     )
-                    messageDao.insertMessage(receivingPlaceholder)
+                    if (existing == null || existing.mediaPath.isNullOrBlank()) {
+                        messageDao.insertMessage(receivingPlaceholder)
+                    }
 
                     // Emit progress: CONNECTING
                     val initProgress = FileTransferProgress(
@@ -787,6 +790,42 @@ class ChatRepository private constructor(private val context: Context) {
                                     if (isCurrentPeer) {
                                         sendReceipt(dto.senderNumber, parentMessageId, MessageStatus.READ.name)
                                     }
+
+                                    // Update conversation summary in Room DB
+                                    val firebaseManager = FirebaseManager.getInstance(context)
+                                    val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
+                                    val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
+                                    val resolvedName = registeredUser?.displayName?.ifBlank { null }
+                                        ?: contactInfo?.name?.ifBlank { null }
+                                        ?: senderNorm
+                                    val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
+
+                                    val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
+                                    val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
+                                    val convEntity = ConversationEntity(
+                                        phoneNumber = existingConv?.phoneNumber ?: senderNorm,
+                                        contactName = resolvedName,
+                                        profilePicUrl = profilePic,
+                                        lastMessageText = "📄 $fileName",
+                                        lastMessageType = ChatMediaType.DOCUMENT.name,
+                                        lastMessageTimestamp = receivingPlaceholder.timestamp,
+                                        lastMessageStatus = MessageStatus.DELIVERED.name,
+                                        lastMessageIsOutgoing = false,
+                                        unreadCount = unreadCount,
+                                        isPinned = existingConv?.isPinned ?: false
+                                    )
+                                    conversationDao.upsertConversation(convEntity)
+
+                                    if (!isCurrentPeer) {
+                                        showIncomingMessageNotification(
+                                            senderNumber = senderNorm,
+                                            senderName = resolvedName,
+                                            messageText = "📄 $fileName",
+                                            messageType = ChatMediaType.DOCUMENT.name,
+                                            profilePicUrl = profilePic
+                                        )
+                                    }
+
                                     // Remove from active transfers after short delay (UI sees DONE state)
                                     delay(3000)
                                     _activeTransfers.value = _activeTransfers.value - parentMessageId
@@ -1148,171 +1187,142 @@ class ChatRepository private constructor(private val context: Context) {
             mediaFile.copyTo(savedFile, overwrite = true)
             localSavedPath = savedFile.absolutePath
 
-            // ── P2P-FIRST for ALL large files (> 500 KB) ─────────────────────────────────
-            // 1. If recipient is online → attempt WebRTC DataChannel P2P (unlimited size, fastest)
-            // 2. If P2P fails / offline → fall back to Firestore 512KB chunked relay (up to 50MB)
-            if (mediaFile.length() > 500 * 1024L) {
-                val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
-                val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+            // ── P2P-FIRST for ALL documents and large media ─────────────────────────────
+            // 1. Always attempt WebRTC DataChannel P2P first (direct, unlimited speed, zero server storage)
+            // 2. If P2P fails or times out (15s) → seamlessly fall back to Firestore relay
+            val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
+            val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
 
-                val displayNameText = if (isAudio) "Voice message" else text.ifBlank { mediaFile.name }
-                val displaySummaryText = if (isAudio) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
+            val displayNameText = if (isAudio) "Voice message" else text.ifBlank { mediaFile.name }
+            val displaySummaryText = if (isAudio) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
 
-                // Save message entity for display immediately (Sending state)
-                val messageEntity = MessageEntity(
-                    id = messageId,
-                    conversationId = targetConvPhone,
-                    senderNumber = myPhone,
-                    recipientNumber = canonicalRecipient,
-                    text = displayNameText,
-                    mediaType = mediaType.name,
-                    mediaPath = localSavedPath,
-                    mediaDurationMs = mediaDurationMs,
-                    timestamp = now,
-                    status = MessageStatus.SENT.name,
-                    isOutgoing = true
-                )
-                messageDao.insertMessage(messageEntity)
+            // Save message entity for display immediately (Sending state)
+            val messageEntity = MessageEntity(
+                id = messageId,
+                conversationId = targetConvPhone,
+                senderNumber = myPhone,
+                recipientNumber = canonicalRecipient,
+                text = displayNameText,
+                mediaType = mediaType.name,
+                mediaPath = localSavedPath,
+                mediaDurationMs = mediaDurationMs,
+                timestamp = now,
+                status = MessageStatus.SENT.name,
+                isOutgoing = true
+            )
+            messageDao.insertMessage(messageEntity)
 
-                val convEntity = ConversationEntity(
-                    phoneNumber = targetConvPhone,
-                    contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
-                    profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
-                    lastMessageText = displaySummaryText,
-                    lastMessageType = mediaType.name,
-                    lastMessageTimestamp = now,
-                    lastMessageStatus = MessageStatus.SENT.name,
-                    lastMessageIsOutgoing = true,
-                    unreadCount = existingConv?.unreadCount ?: 0,
-                    isPinned = existingConv?.isPinned ?: false
-                )
-                conversationDao.upsertConversation(convEntity)
+            val convEntity = ConversationEntity(
+                phoneNumber = targetConvPhone,
+                contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
+                profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
+                lastMessageText = displaySummaryText,
+                lastMessageType = mediaType.name,
+                lastMessageTimestamp = now,
+                lastMessageStatus = MessageStatus.SENT.name,
+                lastMessageIsOutgoing = true,
+                unreadCount = existingConv?.unreadCount ?: 0,
+                isPinned = existingConv?.isPinned ?: false
+            )
+            conversationDao.upsertConversation(convEntity)
 
-                // Register current coroutine Job for instant cancellation
-                coroutineContext[kotlinx.coroutines.Job]?.let { activeTransferJobs[messageId] = it }
+            // Register current coroutine Job for instant cancellation
+            coroutineContext[kotlinx.coroutines.Job]?.let { activeTransferJobs[messageId] = it }
 
-                // ── ATTEMPT P2P (WebRTC DataChannel) ────────────────────────────────────────
-                val isRecipientOnline = run {
-                    val userFromMemory = firebaseManager.lookupUserByNumber(canonicalRecipient)
-                        ?: firebaseManager.lookupUserByNumber(normRecipient)
-                    if (userFromMemory != null) {
-                        val isOnline = userFromMemory.isOnline
-                        val lastSeen = userFromMemory.lastSeen
-                        if (isOnline || (System.currentTimeMillis() - lastSeen) < 90_000L) {
-                            Log.d(TAG, "Peer $canonicalRecipient is ONLINE in memory (isOnline=$isOnline, lastSeen=$lastSeen)")
-                            return@run true
-                        }
-                    }
+            // ── ATTEMPT P2P FIRST (WebRTC DataChannel) ───────────────────────────
+            Log.d(TAG, "Attempting P2P DataChannel transfer for $messageId to $canonicalRecipient ⚡")
+            val p2p = P2pFileTransfer(context)
+            activeP2pTransfers[messageId] = p2p
+
+            // Emit initial CONNECTING progress with P2P mode
+            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                messageId = messageId, fileName = mediaFile.name,
+                totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
+            ))
+
+            // Start P2P DataChannel sender; onOfferReady dispatches P2P_OFFER with offerSdp
+            val p2pSuccess = p2p.sendFile(
+                sessionId = messageId,
+                myPhone = myPhone,
+                recipientPhone = canonicalRecipient,
+                file = savedFile,
+                onOfferReady = { offerSdp ->
+                    val offerPayload = JSONObject().apply {
+                        put("sessionId", messageId)
+                        put("messageId", messageId)
+                        put("fileName", text.ifBlank { mediaFile.name })
+                        put("fileSize", mediaFile.length())
+                        put("offerSdp", offerSdp)
+                    }.toString()
                     try {
-                        val userSnap = firestore.collection("users").document(canonicalRecipient).get().await()
-                        val isOnline = userSnap.getBoolean("isOnline") ?: false
-                        val lastSeen = userSnap.getLong("lastSeen") ?: 0L
-                        isOnline || (System.currentTimeMillis() - lastSeen) < 90_000L
-                    } catch (_: Exception) { false }
-                }
+                        val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
+                        val offerDto = ChatMessageDto(
+                            messageId = "${messageId}_p2p_offer",
+                            senderNumber = myPhone,
+                            recipientNumber = canonicalRecipient,
+                            senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                            ciphertext = offerCiphertext,
+                            iv = offerIv,
+                            mediaType = ChatMediaType.P2P_OFFER.name,
+                            timestamp = now
+                        )
+                        firestore.collection("inboxes")
+                            .document(canonicalRecipient)
+                            .collection("messages")
+                            .document("${messageId}_p2p_offer")
+                            .set(offerDto)
+                            .await()
+                        Log.d(TAG, "P2P_OFFER (with offerSdp) sent to $canonicalRecipient for sessionId=$messageId")
 
-                val wasInitiallyOnline = isRecipientOnline
-                var hasAttemptedP2p = isRecipientOnline
-
-                if (isRecipientOnline) {
-                    Log.d(TAG, "Peer $canonicalRecipient is ONLINE — attempting P2P DataChannel transfer")
-                    val p2p = P2pFileTransfer(context)
-                    activeP2pTransfers[messageId] = p2p
-
-                    // Emit initial CONNECTING progress
-                    _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                        messageId = messageId, fileName = mediaFile.name,
-                        totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
-                    ))
-
-                    // Start P2P DataChannel sender; onOfferReady dispatches P2P_OFFER with offerSdp
-                    val p2pSuccess = p2p.sendFile(
-                        sessionId = messageId,
-                        myPhone = myPhone,
-                        recipientPhone = canonicalRecipient,
-                        file = savedFile,
-                        onOfferReady = { offerSdp ->
-                            val offerPayload = JSONObject().apply {
-                                put("sessionId", messageId)
-                                put("messageId", messageId)
-                                put("fileName", text.ifBlank { mediaFile.name })
-                                put("fileSize", mediaFile.length())
-                                put("offerSdp", offerSdp)
-                            }.toString()
-                            try {
-                                val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
-                                val offerDto = ChatMessageDto(
-                                    messageId = "${messageId}_p2p_offer",
-                                    senderNumber = myPhone,
-                                    recipientNumber = canonicalRecipient,
-                                    senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
-                                    ciphertext = offerCiphertext,
-                                    iv = offerIv,
-                                    mediaType = ChatMediaType.P2P_OFFER.name,
-                                    timestamp = now
-                                )
-                                firestore.collection("inboxes")
-                                    .document(canonicalRecipient)
-                                    .collection("messages")
-                                    .document("${messageId}_p2p_offer")
-                                    .set(offerDto)
-                                    .await()
-                                Log.d(TAG, "P2P_OFFER (with offerSdp) sent to $canonicalRecipient for sessionId=$messageId")
-
-                                // Wake up peer's device via high-priority FCM so they accept P2P even if app is closed
-                                sendFcmWakeup(
-                                    recipientPhone = canonicalRecipient,
-                                    senderPhone = myPhone,
-                                    previewText = text.ifBlank { mediaFile.name },
-                                    mediaType = ChatMediaType.P2P_OFFER.name,
-                                    messageId = messageId
-                                )
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to send P2P_OFFER signal: ${e.message}")
-                            }
-                        },
-                        onProgress = { progress ->
-                            if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
-                                _activeTransfers.value = _activeTransfers.value + (messageId to progress)
-                            }
-                        }
-                    )
-                    activeP2pTransfers.remove(messageId)
-
-                    // CRITICAL: Check if transfer was cancelled by user during P2P — DO NOT fall through to relay!
-                    if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
-                        Log.d(TAG, "Transfer $messageId was cancelled by user during P2P — aborting without fallback to relay")
-                        cancelledTransfers.remove(messageId)
-                        _activeTransfers.value = _activeTransfers.value - messageId
-                        activeTransferJobs.remove(messageId)
-                        messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
-                        return@withContext Result.failure(CancellationException("Cancelled by user"))
+                        // Wake up peer's device via high-priority FCM so they accept P2P even if app is closed
+                        sendFcmWakeup(
+                            recipientPhone = canonicalRecipient,
+                            senderPhone = myPhone,
+                            previewText = text.ifBlank { mediaFile.name },
+                            mediaType = ChatMediaType.P2P_OFFER.name,
+                            messageId = messageId
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to send P2P_OFFER signal: ${e.message}")
                     }
-
-                    if (p2pSuccess) {
-                        Log.d(TAG, "P2P transfer SUCCEEDED for $messageId ⚡")
-                        messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
-                        activeTransferJobs.remove(messageId)
-                        delay(3000)
-                        _activeTransfers.value = _activeTransfers.value - messageId
-                        return@withContext Result.success(messageEntity)
-                    } else {
-                        Log.w(TAG, "P2P transfer FAILED — falling back to Firestore relay ☁")
-                        hasAttemptedP2p = true
-                        _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                            messageId = messageId, fileName = mediaFile.name,
-                            totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
-                        ))
+                },
+                onProgress = { progress ->
+                    if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                        _activeTransfers.value = _activeTransfers.value + (messageId to progress)
                     }
-                } else {
-                    Log.d(TAG, "Peer $canonicalRecipient is OFFLINE — using Firestore relay directly ☁")
-                    _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                        messageId = messageId, fileName = mediaFile.name,
-                        totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
-                    ))
                 }
+            )
+            activeP2pTransfers.remove(messageId)
 
-                // ── FALLBACK: Firestore 512KB Chunk Relay with Auto-Switch to P2P ───────────────
+            // CRITICAL: Check if transfer was cancelled by user during P2P — DO NOT fall through to relay!
+            if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                Log.d(TAG, "Transfer $messageId was cancelled by user during P2P — aborting without fallback to relay")
+                cancelledTransfers.remove(messageId)
+                _activeTransfers.value = _activeTransfers.value - messageId
+                activeTransferJobs.remove(messageId)
+                messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                return@withContext Result.failure(CancellationException("Cancelled by user"))
+            }
+
+            if (p2pSuccess) {
+                Log.d(TAG, "P2P transfer SUCCEEDED for $messageId ⚡")
+                messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
+                activeTransferJobs.remove(messageId)
+                delay(3000)
+                _activeTransfers.value = _activeTransfers.value - messageId
+                return@withContext Result.success(messageEntity)
+            } else {
+                Log.w(TAG, "P2P transfer FAILED or timed out — falling back to Firestore relay ☁")
+                _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                    messageId = messageId, fileName = mediaFile.name,
+                    totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                ))
+            }
+
+            var hasAttemptedP2p = true
+            val wasInitiallyOnline = true
+
+            // ── FALLBACK: Firestore 512KB Chunk Relay with Auto-Switch to P2P ───────────────
                 val chunkSize = 512 * 1024
                 val fileBytes = mediaFile.readBytes()
                 val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
@@ -1550,16 +1560,6 @@ class ChatRepository private constructor(private val context: Context) {
                 )
 
                 return@withContext Result.success(messageEntity)
-            }
-
-            val fileBytes = savedFile.readBytes()
-            val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
-            val json = JSONObject().apply {
-                put("fileName", text.ifBlank { mediaFile.name })
-                put("fileSize", savedFile.length())
-                put("bytes", base64Data)
-            }
-            payloadToEncrypt = json.toString()
         }
 
         // 3. Encrypt via ChatCryptoManager
@@ -2552,7 +2552,8 @@ class ChatRepository private constructor(private val context: Context) {
         if (!isWatchingConversation && senderNorm.isNotBlank() &&
             mediaType != ChatMediaType.EDIT.name &&
             mediaType != ChatMediaType.DELETE.name &&
-            mediaType != ChatMediaType.CHUNK.name) {
+            mediaType != ChatMediaType.CHUNK.name &&
+            mediaType != ChatMediaType.P2P_OFFER.name) {
             val firebaseManager = FirebaseManager.getInstance(context)
             val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
             val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
