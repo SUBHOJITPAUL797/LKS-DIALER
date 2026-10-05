@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.unit.IntOffset
@@ -1962,12 +1963,19 @@ private fun MessageBubble(
     val isDark = isSystemInDarkTheme()
     val isOutgoing = message.isOutgoing
 
-    val displayText = remember(message.text) {
+    val displayText = remember(message.text, message.mediaType) {
         if (message.mediaType == ChatMediaType.TEXT.name) {
             try {
                 val obj = org.json.JSONObject(message.text)
                 obj.optString("text", message.text)
             } catch (_: Exception) { message.text }
+        } else if (message.mediaType == ChatMediaType.IMAGE.name) {
+            val raw = message.text.trim()
+            if (raw.startsWith("[gif:") || raw.startsWith("http://") || raw.startsWith("https://")) {
+                "" // GIFs do not display URL/code as text caption
+            } else {
+                raw
+            }
         } else message.text
     }
 
@@ -2207,22 +2215,13 @@ private fun MessageBubble(
 
                 // ── Image / Animated GIF ──
                 if (message.mediaType == ChatMediaType.IMAGE.name) {
-                    val rawText = message.text
+                    val rawText = message.text.trim()
                     val isGifMsg = rawText.startsWith("[gif:") ||
-                                   rawText.startsWith("http") ||
+                                   rawText.contains(".gif", ignoreCase = true) ||
                                    (message.mediaPath?.endsWith(".gif", ignoreCase = true) == true)
 
-                    val gifUrlFromText = if (rawText.startsWith("[gif:")) {
-                        rawText.removeSurrounding("[gif:", "]").split(":").getOrNull(0) ?: ""
-                    } else if (rawText.startsWith("http")) {
-                        rawText
-                    } else null
-
-                    val gifTitle = if (rawText.startsWith("[gif:")) {
-                        rawText.removeSurrounding("[gif:", "]").split(":").drop(1).joinToString(":").ifBlank { "GIF" }
-                    } else ""
-
-                    val effectiveImageModel = message.mediaPath.takeIf { !it.isNullOrBlank() } ?: gifUrlFromText
+                    val gifUrlFromText = ChatRepository.extractGifUrl(rawText)
+                    val effectiveImageModel = message.mediaPath.takeIf { !it.isNullOrBlank() && File(it).exists() } ?: gifUrlFromText
 
                     if (!effectiveImageModel.isNullOrBlank()) {
                         val imageRatio = remember(effectiveImageModel) {
@@ -2246,8 +2245,9 @@ private fun MessageBubble(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .then(if (imageRatio != null) Modifier.aspectRatio(imageRatio) else Modifier.heightIn(min = 140.dp, max = if (isGifMsg) 280.dp else 360.dp))
+                                .then(if (imageRatio != null) Modifier.aspectRatio(imageRatio) else Modifier.heightIn(min = 160.dp, max = if (isGifMsg) 280.dp else 360.dp))
                                 .clip(RoundedCornerShape(12.dp))
+                                .background(if (isDark) Color(0xFF182229) else Color(0xFFE9EDEF))
                                 .pointerInput(message.id, effectiveImageModel) {
                                     detectTapGestures(
                                         onTap = {
@@ -2264,14 +2264,18 @@ private fun MessageBubble(
                                 }
                         ) {
                             AsyncImage(
-                                model = effectiveImageModel,
+                                model = ImageRequest.Builder(context)
+                                    .data(effectiveImageModel)
+                                    .crossfade(true)
+                                    .build(),
                                 contentDescription = if (isGifMsg) "GIF" else "Photo",
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier),
-                                contentScale = if (isGifMsg) ContentScale.Fit else ContentScale.Crop
+                                contentScale = if (isGifMsg) ContentScale.Crop else ContentScale.Crop
                             )
 
+                            // Top-Start: WhatsApp-style "GIF" badge
                             if (isGifMsg) {
                                 Surface(
                                     color = Color.Black.copy(alpha = 0.65f),
@@ -2289,16 +2293,44 @@ private fun MessageBubble(
                                     )
                                 }
                             }
-                        }
 
-                        if (isGifMsg && gifTitle.isNotBlank() && gifTitle != "GIF") {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = gifTitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (isDark) Color(0xFFE9EDEF) else Color(0xFF111B21),
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
+                            // Bottom-End: WhatsApp-style floating timestamp & tick badge for image-only (including GIFs)
+                            if (isImageOnly) {
+                                Surface(
+                                    color = Color.Black.copy(alpha = 0.55f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .padding(6.dp)
+                                        .align(Alignment.BottomEnd)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (message.isEdited && !isDeleted) {
+                                            Text(
+                                                text = "Edited",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 9.sp,
+                                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                                ),
+                                                color = Color.White.copy(alpha = 0.85f)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                        }
+                                        val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
+                                        Text(
+                                            text = timeString,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                            color = Color.White
+                                        )
+                                        if (isOutgoing) {
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            StatusTickIcon(status = message.status)
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         if (transferProgress != null && !isGifMsg) {
@@ -2649,44 +2681,45 @@ private fun MessageBubble(
                 }
                 }
 
-                Spacer(modifier = Modifier.height(2.dp))
-
-                // ── Timestamp & Ticks ────────────────────────────────────────
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .then(
-                            if (isFrameless) {
-                                Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            } else {
-                                Modifier.padding(end = 4.dp, bottom = 2.dp)
-                            }
-                        ),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (message.isEdited && !isDeleted) {
-                        Text(
-                            text = "Edited",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
-                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                // ── Timestamp & Ticks (Only if not already rendered inside image/GIF overlay) ──
+                if (!isImageOnly) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.End)
+                            .then(
+                                if (isFrameless) {
+                                    Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                } else {
+                                    Modifier.padding(end = 4.dp, bottom = 2.dp)
+                                }
                             ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (message.isEdited && !isDeleted) {
+                            Text(
+                                text = "Edited",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 9.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
+                        Text(
+                            text = timeString,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
-                    Text(
-                        text = timeString,
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
-                    if (isOutgoing) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        StatusTickIcon(status = message.status)
+                        if (isOutgoing) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            StatusTickIcon(status = message.status)
+                        }
                     }
                 }
             }

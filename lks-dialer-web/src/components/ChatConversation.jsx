@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
-import { chatRepositoryWeb, normalizePhoneNumber } from '../lib/ChatRepositoryWeb';
+import { chatRepositoryWeb, normalizePhoneNumber, extractGifUrlWeb } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { mediaStorageWeb } from '../lib/MediaStorageWeb';
@@ -1608,7 +1608,14 @@ export default function ChatConversation({
 
   // ── Parse message payload (may contain reply metadata) ─────────────────────
   const parseMessage = (msg) => {
-    if (msg.mediaType !== 'TEXT') return { text: msg.text, replyTo: null };
+    if (msg.mediaType === 'IMAGE') {
+      const raw = String(msg.text || '').trim();
+      if (raw.startsWith('[gif:') || raw.startsWith('http://') || raw.startsWith('https://')) {
+        return { text: '', replyTo: null };
+      }
+      return { text: msg.text || '', replyTo: null };
+    }
+    if (msg.mediaType !== 'TEXT') return { text: msg.text || '', replyTo: null };
     try {
       const parsed = JSON.parse(msg.text);
       if (parsed && parsed.text !== undefined) {
@@ -1999,15 +2006,8 @@ export default function ChatConversation({
                         {/* Image / GIF */}
                         {msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl || (msg.text && (msg.text.startsWith('http') || msg.text.startsWith('[gif:')))) && (() => {
                           let src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : null);
-                          let gifTitle = '';
                           if (!src && msg.text) {
-                            if (msg.text.startsWith('[gif:')) {
-                              const parts = msg.text.slice(5, -1).split(':');
-                              src = parts[0];
-                              gifTitle = parts.slice(1).join(':') || '';
-                            } else if (msg.text.startsWith('http')) {
-                              src = msg.text;
-                            }
+                            src = extractGifUrlWeb(msg.text);
                           }
                           if (!src && msg.mediaData) src = `data:image/jpeg;base64,${msg.mediaData}`;
                           const isGif = Boolean(
@@ -2016,19 +2016,25 @@ export default function ChatConversation({
                             (msg.text && (msg.text.startsWith('[gif:') || msg.text.toLowerCase().includes('.gif') || msg.text.startsWith('http'))) ||
                             (msg.mediaData && msg.mediaData.startsWith('data:image/gif'))
                           );
+                          const isImageOnly = !text;
                           return (
-                            <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 8, marginBottom: 4 }}>
+                            <div style={{
+                              position: 'relative',
+                              overflow: 'hidden',
+                              borderRadius: 12,
+                              marginBottom: isImageOnly ? 0 : 4,
+                              maxWidth: 300
+                            }}>
                               <img
                                 src={src}
                                 alt={isGif ? "GIF" : "Photo"}
                                 onClick={() => setSelectedImageModal(src)}
                                 style={{
                                   width: '100%',
-                                  maxHeight: isGif ? 300 : 240,
-                                  maxWidth: 320,
+                                  maxHeight: isGif ? 280 : 260,
+                                  maxWidth: 300,
                                   objectFit: 'cover',
-                                  borderRadius: 8,
-                                  border: '2px solid #000',
+                                  borderRadius: 12,
                                   cursor: 'pointer',
                                   display: 'block'
                                 }}
@@ -2036,8 +2042,8 @@ export default function ChatConversation({
                               {isGif && (
                                 <span style={{
                                   position: 'absolute',
-                                  top: 6,
-                                  left: 6,
+                                  top: 8,
+                                  left: 8,
                                   backgroundColor: 'rgba(0,0,0,0.65)',
                                   color: '#fff',
                                   borderRadius: 6,
@@ -2047,6 +2053,29 @@ export default function ChatConversation({
                                   letterSpacing: 0.5
                                 }}>
                                   GIF
+                                </span>
+                              )}
+                              {isImageOnly && (
+                                <span style={{
+                                  position: 'absolute',
+                                  bottom: 6,
+                                  right: 6,
+                                  backgroundColor: 'rgba(0,0,0,0.55)',
+                                  backdropFilter: 'blur(3px)',
+                                  color: '#fff',
+                                  borderRadius: 8,
+                                  padding: '2px 7px',
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 3
+                                }}>
+                                  {Boolean(msg.isEdited) && !isDeleted && (
+                                    <span style={{ fontStyle: 'italic', opacity: 0.85, marginRight: 2, fontSize: 9 }}>Edited •</span>
+                                  )}
+                                  {timeStr}
+                                  {isOut && renderTicks(msg.status)}
                                 </span>
                               )}
                             </div>
@@ -2309,60 +2338,62 @@ export default function ChatConversation({
                       </>
                     )}
 
-                    {/* Timestamp + ticks */}
-                    <div style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 700, color: '#555', marginTop: 2 }}>
-                      {Boolean(msg.isEdited) && !isDeleted && (
-                        <span style={{ fontStyle: 'italic', opacity: 0.75, marginRight: 4, fontSize: 10, color: '#2e7d32' }}>
-                          Edited •
-                        </span>
-                      )}
-                      {timeStr}
-                      {isOut && renderTicks(msg.status)}
-                      {isOut && !isDeleted && msg.mediaType === 'TEXT' && (Date.now() - (msg.timestamp || 0) <= 10 * 60 * 1000) && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setEditingMessage(msg);
-                            setInputText(text);
-                            inputRef.current?.focus();
-                          }}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: '0 0 0 5px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            opacity: 0.6
-                          }}
-                          title="Edit message (10 min window)"
-                        >
-                          <Edit2 size={12} color="#00838f" />
-                        </button>
-                      )}
-                      {!isDeleted && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedMessageForDelete(msg);
-                          }}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            padding: '0 0 0 5px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            opacity: 0.6
-                          }}
-                          title="Delete message"
-                        >
-                          <Trash2 size={12} color="#d32f2f" />
-                        </button>
-                      )}
-                    </div>
+                    {/* Timestamp + ticks (Only if not already shown inside image/GIF overlay) */}
+                    {(!msg.mediaType || msg.mediaType !== 'IMAGE' || Boolean(text)) && (
+                      <div style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 700, color: '#555', marginTop: 2 }}>
+                        {Boolean(msg.isEdited) && !isDeleted && (
+                          <span style={{ fontStyle: 'italic', opacity: 0.75, marginRight: 4, fontSize: 10, color: '#2e7d32' }}>
+                            Edited •
+                          </span>
+                        )}
+                        {timeStr}
+                        {isOut && renderTicks(msg.status)}
+                        {isOut && !isDeleted && msg.mediaType === 'TEXT' && (Date.now() - (msg.timestamp || 0) <= 10 * 60 * 1000) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingMessage(msg);
+                              setInputText(text);
+                              inputRef.current?.focus();
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '0 0 0 5px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              opacity: 0.6
+                            }}
+                            title="Edit message (10 min window)"
+                          >
+                            <Edit2 size={12} color="#00838f" />
+                          </button>
+                        )}
+                        {!isDeleted && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedMessageForDelete(msg);
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              padding: '0 0 0 5px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              opacity: 0.6
+                            }}
+                            title="Delete message"
+                          >
+                            <Trash2 size={12} color="#d32f2f" />
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </SwipeableMessage>

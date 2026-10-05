@@ -60,6 +60,26 @@ function generateUuid() {
   return 'msg-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now();
 }
 
+export function extractGifUrlWeb(raw) {
+  if (!raw) return null;
+  const text = String(raw).trim();
+  if (text.startsWith('[gif:') && text.endsWith(']')) {
+    const inner = text.slice(5, -1).trim();
+    const protocolEnd = inner.toLowerCase().startsWith('https://') ? 8
+                      : inner.toLowerCase().startsWith('http://') ? 7 : 0;
+    if (protocolEnd > 0) {
+      const colonIdx = inner.indexOf(':', protocolEnd);
+      const pipeIdx = inner.indexOf('|', protocolEnd);
+      const delims = [colonIdx, pipeIdx].filter(i => i > 0);
+      const endIdx = delims.length > 0 ? Math.min(...delims) : -1;
+      return endIdx > 0 ? inner.slice(0, endIdx).trim() : inner;
+    }
+    return inner;
+  }
+  if (text.startsWith('http://') || text.startsWith('https://')) return text;
+  return null;
+}
+
 class ChatRepositoryWeb {
   constructor() {
     this.currentListeningPhone = null;
@@ -798,9 +818,8 @@ class ChatRepositoryWeb {
           if (parsed.url) mediaUrl = parsed.url;
         } catch {
           if (decryptedRaw.startsWith('[gif:')) {
-            const parts = decryptedRaw.slice(5, -1).split(':');
-            mediaUrl = parts[0];
-            displayText = parts.slice(1).join(':') || 'GIF';
+            mediaUrl = extractGifUrlWeb(decryptedRaw);
+            displayText = '';
           } else if (decryptedRaw.startsWith('http')) {
             mediaUrl = decryptedRaw;
             displayText = '';
@@ -1616,7 +1635,7 @@ class ChatRepositoryWeb {
 
   // --- PUBLIC API: SEND GIF ---
   async sendGif(recipientNumber, recipientName, gifUrl, gifTitle = '') {
-    const payload = `[gif:${gifUrl}:${gifTitle}]`;
+    const payload = `[gif:${gifUrl}]`;
     return this.sendMessage(recipientNumber, recipientName, payload, 'IMAGE');
   }
 

@@ -79,8 +79,35 @@ class ChatRepository private constructor(private val context: Context) {
             }
         }
 
+        fun extractGifUrl(rawText: String): String? {
+            val text = rawText.trim()
+            if (text.startsWith("[gif:") && text.endsWith("]")) {
+                val inner = text.substring(5, text.length - 1).trim()
+                val protocolEnd = if (inner.startsWith("https://", ignoreCase = true)) 8
+                                  else if (inner.startsWith("http://", ignoreCase = true)) 7
+                                  else 0
+                val delimiterIdx = if (protocolEnd > 0) {
+                    val colonIdx = inner.indexOf(':', startIndex = protocolEnd)
+                    val pipeIdx = inner.indexOf('|', startIndex = protocolEnd)
+                    when {
+                        colonIdx > 0 && pipeIdx > 0 -> minOf(colonIdx, pipeIdx)
+                        colonIdx > 0 -> colonIdx
+                        pipeIdx > 0 -> pipeIdx
+                        else -> -1
+                    }
+                } else -1
+                return if (delimiterIdx > 0) inner.substring(0, delimiterIdx).trim() else inner
+            } else if (text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true)) {
+                return text
+            }
+            return null
+        }
+
         fun extractCleanText(rawText: String): String {
             if (rawText.isBlank()) return ""
+            if (rawText.startsWith("[gif:") || rawText.startsWith("http://") || rawText.startsWith("https://")) {
+                return ""
+            }
             return try {
                 val obj = JSONObject(rawText)
                 obj.optString("text", rawText)
@@ -891,8 +918,30 @@ class ChatRepository private constructor(private val context: Context) {
                         localMediaPath = imgFile.absolutePath
                     }
                 } catch (_: Exception) {
-                    // Non-JSON image: can be a GIF payload "[gif:url:title]" or direct URL "http..."
+                    // Non-JSON image: can be a GIF payload "[gif:url]" or direct URL "http..."
                     displayText = decryptedRaw.ifBlank { "Photo" }
+                    val gifUrl = extractGifUrl(decryptedRaw)
+                    if (!gifUrl.isNullOrBlank()) {
+                        repositoryScope.launch(Dispatchers.IO) {
+                            try {
+                                val targetFile = File(ensureMediaDirectory(), "gif_${dto.messageId}.gif")
+                                if (!targetFile.exists()) {
+                                    val url = java.net.URL(gifUrl)
+                                    val conn = url.openConnection() as java.net.HttpURLConnection
+                                    conn.connectTimeout = 10000
+                                    conn.readTimeout = 10000
+                                    if (conn.responseCode == 200) {
+                                        conn.inputStream.use { input ->
+                                            FileOutputStream(targetFile).use { output ->
+                                                input.copyTo(output)
+                                            }
+                                        }
+                                        messageDao.updateMessageMedia(dto.messageId, targetFile.absolutePath)
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                    }
                 }
             } else if (dto.mediaType == ChatMediaType.STICKER.name) {
                 try {
@@ -1814,21 +1863,47 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     /**
-     * Downloads an animated GIF from url and sends it end-to-end encrypted to the recipient.
+     * Sends an animated GIF via lightweight URL payload.
+     * Caches file to disk in background for offline viewing and sharing.
      */
     suspend fun sendGif(
         recipientNumber: String,
         recipientName: String,
         gifUrl: String,
-        gifTitle: String
+        gifTitle: String = ""
     ): Result<MessageEntity> = withContext(Dispatchers.IO) {
-        val payload = "[gif:$gifUrl:$gifTitle]"
-        sendMessage(
+        val payload = "[gif:$gifUrl]"
+        val result = sendMessage(
             recipientNumber = recipientNumber,
             recipientName = recipientName,
             text = payload,
             mediaType = ChatMediaType.IMAGE
         )
+        // Background cache download so the GIF is stored locally on disk
+        result.onSuccess { msgEntity ->
+            repositoryScope.launch(Dispatchers.IO) {
+                try {
+                    val targetFile = File(ensureMediaDirectory(), "gif_${msgEntity.id}.gif")
+                    if (!targetFile.exists()) {
+                        val url = java.net.URL(gifUrl)
+                        val conn = url.openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 10000
+                        conn.readTimeout = 10000
+                        if (conn.responseCode == 200) {
+                            conn.inputStream.use { input ->
+                                FileOutputStream(targetFile).use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            messageDao.updateMessageMedia(msgEntity.id, targetFile.absolutePath)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Background GIF cache download failed: ${e.message}")
+                }
+            }
+        }
+        result
     }
 
     /**
