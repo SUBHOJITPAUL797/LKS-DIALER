@@ -1,0 +1,6 @@
+LKS Dialer v2.9.10 Update:
+- WhatsApp-Style GIF Bubble: GIFs now render cleanly directly inside chat bubbles with zero blank green boxes or broken previews.
+- Zero Raw Markup / URL Text: Completely eliminated raw markup tags like [gif:https://...] and search query titles (e.g. "Minion LOL") from displaying under or inside message bubbles.
+- Modern WhatsApp Media Overlays: Translucent dark 'GIF' badge pill in top-left corner and floating timestamp + delivery status ticks in bottom-right corner over the media.
+- Local Disk Cache & Persistence: GIFs automatically download and cache to local device storage for instant offline viewing.
+- Seamless Cross-Platform Playback: Full animated playback and matching UI layout on both Android app and Cloudflare Pages Web client.
