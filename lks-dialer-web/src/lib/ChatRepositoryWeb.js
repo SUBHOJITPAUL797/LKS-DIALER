@@ -507,9 +507,11 @@ class ChatRepositoryWeb {
       if (dto.mediaType === 'P2P_OFFER') {
         try {
           const parsed = JSON.parse(decryptedRaw);
-          const { sessionId, messageId: parentMessageId, fileName, fileSize, offerSdp } = parsed;
+          const { sessionId, messageId: parentMessageId, fileName, fileSize, offerSdp, mediaType: offerMediaType, caption, duration } = parsed;
+          const resolvedType = offerMediaType || 'DOCUMENT';
+          const resolvedText = resolvedType === 'IMAGE' ? (caption || 'Photo') : (resolvedType === 'AUDIO' ? 'Voice message' : (fileName || 'file'));
 
-          console.log('[ChatRepositoryWeb] P2P_OFFER received, sessionId:', sessionId, 'file:', fileName, 'hasOfferSdp:', Boolean(offerSdp));
+          console.log('[ChatRepositoryWeb] P2P_OFFER received, sessionId:', sessionId, 'type:', resolvedType, 'file:', fileName, 'hasOfferSdp:', Boolean(offerSdp));
 
           // Insert a placeholder message immediately (shows "Receiving via P2P...")
           const now = dto.timestamp || Date.now();
@@ -518,13 +520,13 @@ class ChatRepositoryWeb {
             conversationId: senderNorm,
             senderNumber: dto.senderNumber,
             recipientNumber: dto.recipientNumber,
-            text: fileName || 'file',
-            mediaType: 'DOCUMENT',
+            text: resolvedText,
+            mediaType: resolvedType,
             mediaData: null,
             mediaUrl: null,
             fileSize: fileSize || 0,
             fileName: fileName || 'file',
-            mediaDurationMs: 0,
+            mediaDurationMs: duration || 0,
             timestamp: now,
             status: isCurrentPeer ? 'READ' : 'DELIVERED',
             isOutgoing: false,
@@ -568,6 +570,15 @@ class ChatRepositoryWeb {
                   if (idx >= 0) {
                     allMsgs[idx] = { ...allMsgs[idx], mediaData: `idb:${placeholder.id}`, mediaUrl: blobUrl, p2pReceiving: false };
                     this.saveMessages(senderNorm, allMsgs);
+                  }
+                  // Update conversation summary
+                  const conversations = this.getConversations();
+                  let conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+                  const summaryText = resolvedType === 'IMAGE' ? (caption ? `📷 ${caption}` : '📷 Photo') : (resolvedType === 'AUDIO' ? '🎤 Voice message' : `📄 ${fileName}`);
+                  if (conv) {
+                    conv.lastMessageText = summaryText;
+                    conv.lastMessageType = resolvedType;
+                    this.saveConversations(conversations);
                   }
                   // Send receipts to sender
                   this.sendReceipt(dto.senderNumber, placeholder.id, 'DELIVERED');

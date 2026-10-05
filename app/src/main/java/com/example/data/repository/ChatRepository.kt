@@ -735,20 +735,39 @@ class ChatRepository private constructor(private val context: Context) {
                     val fileSize = json.optLong("fileSize", 0L)
                     val parentMessageId = json.optString("messageId", sessionId)
                     val offerSdp = json.optString("offerSdp", "").takeIf { it.isNotBlank() }
+                    val offerMediaType = json.optString("mediaType", ChatMediaType.DOCUMENT.name)
+                    val caption = json.optString("caption", "")
+                    val duration = json.optLong("duration", 0L)
 
-                    Log.d(TAG, "P2P_OFFER received for sessionId=$sessionId fileName=$fileName hasOfferSdp=${offerSdp != null}")
+                    Log.d(TAG, "P2P_OFFER received for sessionId=$sessionId mediaType=$offerMediaType fileName=$fileName hasOfferSdp=${offerSdp != null}")
 
-                    // Insert a placeholder DOCUMENT message into Room DB if not already present with assembled file
+                    val displayMsgText = when (offerMediaType) {
+                        ChatMediaType.IMAGE.name -> if (caption.isNotBlank()) caption else ""
+                        ChatMediaType.AUDIO.name -> "Voice message"
+                        else -> fileName
+                    }
+                    val summaryText = when (offerMediaType) {
+                        ChatMediaType.IMAGE.name -> if (caption.isNotBlank()) "📷 $caption" else "📷 Photo"
+                        ChatMediaType.AUDIO.name -> "🎤 Voice message"
+                        else -> "📄 $fileName"
+                    }
+                    val filePrefix = when (offerMediaType) {
+                        ChatMediaType.IMAGE.name -> "img_"
+                        ChatMediaType.AUDIO.name -> "voice_"
+                        else -> "doc_"
+                    }
+
+                    // Insert a placeholder message into Room DB if not already present with assembled file
                     val existing = messageDao.getMessageById(parentMessageId)
                     val receivingPlaceholder = existing ?: MessageEntity(
                         id = parentMessageId,
                         conversationId = senderNorm,
                         senderNumber = dto.senderNumber,
                         recipientNumber = dto.recipientNumber,
-                        text = fileName,
-                        mediaType = ChatMediaType.DOCUMENT.name,
+                        text = displayMsgText,
+                        mediaType = offerMediaType,
                         mediaPath = null,
-                        mediaDurationMs = 0L,
+                        mediaDurationMs = duration,
                         timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                         status = MessageStatus.DELIVERED.name,
                         isOutgoing = false
@@ -773,6 +792,7 @@ class ChatRepository private constructor(private val context: Context) {
                         initialOfferSdp = offerSdp,
                         initialFileName = fileName,
                         initialFileSize = fileSize,
+                        filePrefix = filePrefix,
                         outputDir = ensureMediaDirectory(),
                         onProgress = { progress ->
                             repositoryScope.launch(Dispatchers.Main) {
@@ -806,8 +826,8 @@ class ChatRepository private constructor(private val context: Context) {
                                         phoneNumber = existingConv?.phoneNumber ?: senderNorm,
                                         contactName = resolvedName,
                                         profilePicUrl = profilePic,
-                                        lastMessageText = "📄 $fileName",
-                                        lastMessageType = ChatMediaType.DOCUMENT.name,
+                                        lastMessageText = summaryText,
+                                        lastMessageType = offerMediaType,
                                         lastMessageTimestamp = receivingPlaceholder.timestamp,
                                         lastMessageStatus = MessageStatus.DELIVERED.name,
                                         lastMessageIsOutgoing = false,
@@ -820,8 +840,8 @@ class ChatRepository private constructor(private val context: Context) {
                                         showIncomingMessageNotification(
                                             senderNumber = senderNorm,
                                             senderName = resolvedName,
-                                            messageText = "📄 $fileName",
-                                            messageType = ChatMediaType.DOCUMENT.name,
+                                            messageText = summaryText,
+                                            messageType = offerMediaType,
                                             profilePicUrl = profilePic
                                         )
                                     }
@@ -829,7 +849,7 @@ class ChatRepository private constructor(private val context: Context) {
                                     // Remove from active transfers after short delay (UI sees DONE state)
                                     delay(3000)
                                     _activeTransfers.value = _activeTransfers.value - parentMessageId
-                                    Log.d(TAG, "P2P file received: ${assembledFile.absolutePath}")
+                                    Log.d(TAG, "P2P $offerMediaType received: ${assembledFile.absolutePath}")
                                 } else {
                                     Log.w(TAG, "P2P receive failed for $parentMessageId")
                                     _activeTransfers.value = _activeTransfers.value - parentMessageId
@@ -1149,54 +1169,55 @@ class ChatRepository private constructor(private val context: Context) {
         var payloadToEncrypt = text
         var localSavedPath: String? = null
 
-        if (mediaType == ChatMediaType.IMAGE && mediaFile != null && mediaFile.exists()) {
-            // Compress and copy file to persistent app media folder (guarantees < 450KB and max 1600px HD)
-            val savedFile = File(ensureMediaDirectory(), "img_$messageId.jpg")
-            com.example.util.ImageUtils.compressAndSaveChatImage(
-                inputFile = mediaFile,
-                outputFile = savedFile,
-                maxDimension = 1600,
-                targetMaxBytes = 450 * 1024
-            )
-            localSavedPath = savedFile.absolutePath
-
-            val fileBytes = savedFile.readBytes()
-            val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
-            val json = JSONObject().apply {
-                put("caption", text)
-                put("bytes", base64Data)
-            }
-            payloadToEncrypt = json.toString()
-        } else if (mediaType == ChatMediaType.AUDIO && mediaFile != null && mediaFile.exists() && mediaFile.length() <= 500 * 1024L) {
-            val savedFile = File(ensureMediaDirectory(), "voice_$messageId.m4a")
-            mediaFile.copyTo(savedFile, overwrite = true)
-            localSavedPath = savedFile.absolutePath
-
-            val fileBytes = savedFile.readBytes()
-            val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
-            val json = JSONObject().apply {
-                put("duration", mediaDurationMs)
-                put("bytes", base64Data)
-            }
-            payloadToEncrypt = json.toString()
-        } else if ((mediaType == ChatMediaType.DOCUMENT || (mediaType == ChatMediaType.AUDIO && mediaFile?.let { it.length() > 500 * 1024L } == true)) && mediaFile != null && mediaFile.exists()) {
+        if (mediaFile != null && mediaFile.exists()) {
             val isAudio = mediaType == ChatMediaType.AUDIO
-            val ext = if (isAudio) mediaFile.extension.ifBlank { "m4a" } else mediaFile.extension.ifBlank { "bin" }
-            val prefix = if (isAudio) "voice_" else "doc_"
-            val savedFile = File(ensureMediaDirectory(), "${prefix}${messageId}.$ext")
-            mediaFile.copyTo(savedFile, overwrite = true)
+            val isImage = mediaType == ChatMediaType.IMAGE
+
+            val savedFile = when {
+                isImage -> {
+                    val target = File(ensureMediaDirectory(), "img_$messageId.jpg")
+                    com.example.util.ImageUtils.compressAndSaveChatImage(
+                        inputFile = mediaFile,
+                        outputFile = target,
+                        maxDimension = 1600,
+                        targetMaxBytes = 450 * 1024
+                    )
+                    target
+                }
+                isAudio -> {
+                    val target = File(ensureMediaDirectory(), "voice_$messageId.m4a")
+                    mediaFile.copyTo(target, overwrite = true)
+                    target
+                }
+                else -> {
+                    val ext = mediaFile.extension.ifBlank { "bin" }
+                    val target = File(ensureMediaDirectory(), "doc_${messageId}.$ext")
+                    mediaFile.copyTo(target, overwrite = true)
+                    target
+                }
+            }
             localSavedPath = savedFile.absolutePath
 
-            // ── P2P-FIRST for ALL documents and large media ─────────────────────────────
-            // 1. Always attempt WebRTC DataChannel P2P first (direct, unlimited speed, zero server storage)
-            // 2. If P2P fails or times out (15s) → seamlessly fall back to Firestore relay
+            val displayNameText = when {
+                isAudio -> "Voice message"
+                isImage -> text
+                else -> text.ifBlank { mediaFile.name }
+            }
+            val displaySummaryText = when {
+                isAudio -> "🎤 Voice message"
+                isImage -> if (text.isNotBlank()) "📷 $text" else "📷 Photo"
+                else -> "📄 ${text.ifBlank { mediaFile.name }}"
+            }
+            val fileNameToSend = when {
+                isAudio -> "voice_$messageId.m4a"
+                isImage -> "img_$messageId.jpg"
+                else -> text.ifBlank { mediaFile.name }
+            }
+
+            // Save message entity for display immediately (Sending state)
             val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
             val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
 
-            val displayNameText = if (isAudio) "Voice message" else text.ifBlank { mediaFile.name }
-            val displaySummaryText = if (isAudio) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
-
-            // Save message entity for display immediately (Sending state)
             val messageEntity = MessageEntity(
                 id = messageId,
                 conversationId = targetConvPhone,
@@ -1230,17 +1251,16 @@ class ChatRepository private constructor(private val context: Context) {
             coroutineContext[kotlinx.coroutines.Job]?.let { activeTransferJobs[messageId] = it }
 
             // ── ATTEMPT P2P FIRST (WebRTC DataChannel) ───────────────────────────
-            Log.d(TAG, "Attempting P2P DataChannel transfer for $messageId to $canonicalRecipient ⚡")
+            Log.d(TAG, "Attempting P2P DataChannel transfer for $messageId (${mediaType.name}) to $canonicalRecipient ⚡")
             val p2p = P2pFileTransfer(context)
             activeP2pTransfers[messageId] = p2p
 
             // Emit initial CONNECTING progress with P2P mode
             _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                messageId = messageId, fileName = mediaFile.name,
-                totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
+                messageId = messageId, fileName = fileNameToSend,
+                totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
             ))
 
-            // Start P2P DataChannel sender; onOfferReady dispatches P2P_OFFER with offerSdp
             val p2pSuccess = p2p.sendFile(
                 sessionId = messageId,
                 myPhone = myPhone,
@@ -1250,8 +1270,11 @@ class ChatRepository private constructor(private val context: Context) {
                     val offerPayload = JSONObject().apply {
                         put("sessionId", messageId)
                         put("messageId", messageId)
-                        put("fileName", text.ifBlank { mediaFile.name })
-                        put("fileSize", mediaFile.length())
+                        put("fileName", fileNameToSend)
+                        put("fileSize", savedFile.length())
+                        put("mediaType", mediaType.name)
+                        put("caption", text)
+                        put("duration", mediaDurationMs)
                         put("offerSdp", offerSdp)
                     }.toString()
                     try {
@@ -1272,13 +1295,12 @@ class ChatRepository private constructor(private val context: Context) {
                             .document("${messageId}_p2p_offer")
                             .set(offerDto)
                             .await()
-                        Log.d(TAG, "P2P_OFFER (with offerSdp) sent to $canonicalRecipient for sessionId=$messageId")
+                        Log.d(TAG, "P2P_OFFER (${mediaType.name}) sent to $canonicalRecipient for sessionId=$messageId")
 
-                        // Wake up peer's device via high-priority FCM so they accept P2P even if app is closed
                         sendFcmWakeup(
                             recipientPhone = canonicalRecipient,
                             senderPhone = myPhone,
-                            previewText = text.ifBlank { mediaFile.name },
+                            previewText = displaySummaryText,
                             mediaType = ChatMediaType.P2P_OFFER.name,
                             messageId = messageId
                         )
@@ -1294,7 +1316,6 @@ class ChatRepository private constructor(private val context: Context) {
             )
             activeP2pTransfers.remove(messageId)
 
-            // CRITICAL: Check if transfer was cancelled by user during P2P — DO NOT fall through to relay!
             if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
                 Log.d(TAG, "Transfer $messageId was cancelled by user during P2P — aborting without fallback to relay")
                 cancelledTransfers.remove(messageId)
@@ -1305,261 +1326,333 @@ class ChatRepository private constructor(private val context: Context) {
             }
 
             if (p2pSuccess) {
-                Log.d(TAG, "P2P transfer SUCCEEDED for $messageId ⚡")
+                Log.d(TAG, "⚡ P2P Direct transfer SUCCEEDED for $messageId (${mediaType.name})")
                 messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
                 activeTransferJobs.remove(messageId)
                 delay(3000)
                 _activeTransfers.value = _activeTransfers.value - messageId
                 return@withContext Result.success(messageEntity)
             } else {
-                Log.w(TAG, "P2P transfer FAILED or timed out — falling back to Firestore relay ☁")
+                Log.w(TAG, "P2P transfer FAILED or timed out for $messageId (${mediaType.name}) — falling back to Firestore relay ☁")
                 _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                    messageId = messageId, fileName = mediaFile.name,
-                    totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                    messageId = messageId, fileName = fileNameToSend,
+                    totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
                 ))
+            }
+
+            // ── FALLBACK TO RELAY ──
+            if (isImage && savedFile.length() <= 450 * 1024L) {
+                try {
+                    val fileBytes = savedFile.readBytes()
+                    val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+                    val json = JSONObject().apply {
+                        put("caption", text)
+                        put("bytes", base64Data)
+                    }
+                    val (ciphertext, iv) = cryptoManager.encrypt(json.toString(), recipientPublicKey)
+                    val chatDto = ChatMessageDto(
+                        messageId = messageId,
+                        senderNumber = myPhone,
+                        recipientNumber = canonicalRecipient,
+                        senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = ChatMediaType.IMAGE.name,
+                        timestamp = now
+                    )
+                    firestore.collection("inboxes")
+                        .document(canonicalRecipient)
+                        .collection("messages")
+                        .document(messageId)
+                        .set(chatDto)
+                        .await()
+                    Log.d(TAG, "Image delivered via inline relay fallback for $messageId")
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, ChatMediaType.IMAGE.name, messageId)
+                    return@withContext Result.success(messageEntity)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send inline image relay: ${e.message}", e)
+                }
+            } else if (isAudio && savedFile.length() <= 500 * 1024L) {
+                try {
+                    val fileBytes = savedFile.readBytes()
+                    val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+                    val json = JSONObject().apply {
+                        put("duration", mediaDurationMs)
+                        put("bytes", base64Data)
+                    }
+                    val (ciphertext, iv) = cryptoManager.encrypt(json.toString(), recipientPublicKey)
+                    val chatDto = ChatMessageDto(
+                        messageId = messageId,
+                        senderNumber = myPhone,
+                        recipientNumber = canonicalRecipient,
+                        senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = ChatMediaType.AUDIO.name,
+                        mediaDurationMs = mediaDurationMs,
+                        timestamp = now
+                    )
+                    firestore.collection("inboxes")
+                        .document(canonicalRecipient)
+                        .collection("messages")
+                        .document(messageId)
+                        .set(chatDto)
+                        .await()
+                    Log.d(TAG, "Voice message delivered via inline relay fallback for $messageId")
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, ChatMediaType.AUDIO.name, messageId)
+                    return@withContext Result.success(messageEntity)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send inline audio relay: ${e.message}", e)
+                }
             }
 
             var hasAttemptedP2p = true
             val wasInitiallyOnline = true
 
             // ── FALLBACK: Firestore 512KB Chunk Relay with Auto-Switch to P2P ───────────────
-                val chunkSize = 512 * 1024
-                val fileBytes = mediaFile.readBytes()
-                val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
-                val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+            val chunkSize = 512 * 1024
+            val fileBytes = savedFile.readBytes()
+            val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
+            val myPublicKey = cryptoManager.getMyPublicKeyBase64()
 
-                try {
-                    var relayUploadedBytes = 0L
-                    for (i in 0 until totalChunks) {
-                        // 1. Cancellation check BEFORE chunk upload
-                        if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
-                            Log.d(TAG, "Relay transfer cancelled by user for $messageId before chunk $i/$totalChunks")
-                            cancelledTransfers.remove(messageId)
-                            _activeTransfers.value = _activeTransfers.value - messageId
-                            activeTransferJobs.remove(messageId)
-                            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
-                            repositoryScope.launch {
-                                for (c in 0 until i) {
-                                    try {
-                                        firestore.collection("inboxes")
-                                            .document(canonicalRecipient)
-                                            .collection("messages")
-                                            .document("${messageId}_chunk_$c")
-                                            .delete()
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                            return@withContext Result.failure(CancellationException("Cancelled by user"))
-                        }
-
-                        // 2. AUTO-SWITCH: Check if peer came online during relay transmission (only if not previously attempted!)
-                        val peerUserOnline = run {
-                            val memUser = firebaseManager.lookupUserByNumber(canonicalRecipient)
-                                ?: firebaseManager.lookupUserByNumber(normRecipient)
-                            if (memUser != null) {
-                                memUser.isOnline || (System.currentTimeMillis() - memUser.lastSeen) < 60_000L
-                            } else false
-                        }
-
-                        if (!hasAttemptedP2p && !wasInitiallyOnline && peerUserOnline && i < totalChunks - 1) {
-                            hasAttemptedP2p = true
-                            Log.i(TAG, "⚡ AUTO-SWITCH: Peer $canonicalRecipient came online at chunk $i/$totalChunks! Switching to P2P Direct!")
-                            // Clean up partial chunks from Firestore inbox so recipient receives clean P2P stream
-                            repositoryScope.launch {
-                                for (c in 0 until i) {
-                                    try {
-                                        firestore.collection("inboxes")
-                                            .document(canonicalRecipient)
-                                            .collection("messages")
-                                            .document("${messageId}_chunk_$c")
-                                            .delete()
-                                    } catch (_: Exception) {}
-                                }
-                            }
-
-                            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                                messageId = messageId, fileName = mediaFile.name,
-                                totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
-                            ))
-
-                            val switchedP2p = P2pFileTransfer(context)
-                            activeP2pTransfers[messageId] = switchedP2p
-                            val switchedSuccess = switchedP2p.sendFile(
-                                sessionId = messageId,
-                                myPhone = myPhone,
-                                recipientPhone = canonicalRecipient,
-                                file = savedFile,
-                                onOfferReady = { offerSdp ->
-                                    val offerPayload = JSONObject().apply {
-                                        put("sessionId", messageId)
-                                        put("messageId", messageId)
-                                        put("fileName", text.ifBlank { mediaFile.name })
-                                        put("fileSize", mediaFile.length())
-                                        put("offerSdp", offerSdp)
-                                    }.toString()
-                                    try {
-                                        val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
-                                        val offerDto = ChatMessageDto(
-                                            messageId = "${messageId}_p2p_offer",
-                                            senderNumber = myPhone,
-                                            recipientNumber = canonicalRecipient,
-                                            senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
-                                            ciphertext = offerCiphertext,
-                                            iv = offerIv,
-                                            mediaType = ChatMediaType.P2P_OFFER.name,
-                                            timestamp = now
-                                        )
-                                        firestore.collection("inboxes")
-                                            .document(canonicalRecipient)
-                                            .collection("messages")
-                                            .document("${messageId}_p2p_offer")
-                                            .set(offerDto)
-                                            .await()
-                                        Log.d(TAG, "P2P_OFFER (auto-switched) sent to $canonicalRecipient for sessionId=$messageId")
-
-                                        // Wake up peer's device via high-priority FCM
-                                        sendFcmWakeup(
-                                            recipientPhone = canonicalRecipient,
-                                            senderPhone = myPhone,
-                                            previewText = text.ifBlank { mediaFile.name },
-                                            mediaType = ChatMediaType.P2P_OFFER.name,
-                                            messageId = messageId
-                                        )
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "Failed to send auto-switched P2P_OFFER: ${e.message}")
-                                    }
-                                },
-                                onProgress = { progress ->
-                                    if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
-                                        _activeTransfers.value = _activeTransfers.value + (messageId to progress)
-                                    }
-                                }
-                            )
-                            activeP2pTransfers.remove(messageId)
-
-                            if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
-                                Log.d(TAG, "Transfer $messageId was cancelled during auto-switched P2P")
-                                cancelledTransfers.remove(messageId)
-                                _activeTransfers.value = _activeTransfers.value - messageId
-                                activeTransferJobs.remove(messageId)
-                                messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
-                                return@withContext Result.failure(CancellationException("Cancelled by user"))
-                            }
-
-                            if (switchedSuccess) {
-                                Log.d(TAG, "⚡ AUTO-SWITCH SUCCEEDED: P2P transfer completed for $messageId")
-                                messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
-                                activeTransferJobs.remove(messageId)
-                                delay(3000)
-                                _activeTransfers.value = _activeTransfers.value - messageId
-                                return@withContext Result.success(messageEntity)
-                            } else {
-                                Log.w(TAG, "⚡ AUTO-SWITCH P2P failed — resuming Relay mode ☁")
-                                _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                                    messageId = messageId, fileName = mediaFile.name,
-                                    totalBytes = mediaFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
-                                ))
-                            }
-                        }
-
-                        val start = i * chunkSize
-                        val end = minOf(start + chunkSize, fileBytes.size)
-                        val slice = fileBytes.copyOfRange(start, end)
-                        val base64Chunk = Base64.encodeToString(slice, Base64.NO_WRAP)
-
-                        val chunkPayload = JSONObject().apply {
-                            put("type", "FILE_CHUNK")
-                            put("parentMessageId", messageId)
-                            put("fileName", text.ifBlank { mediaFile.name })
-                            put("fileSize", mediaFile.length())
-                            put("chunkIndex", i)
-                            put("totalChunks", totalChunks)
-                            put("bytes", base64Chunk)
-                        }.toString()
-
-                        val (chunkCiphertext, chunkIv) = cryptoManager.encrypt(chunkPayload, recipientPublicKey)
-                        val chunkDocId = "${messageId}_chunk_$i"
-                        val chunkDto = ChatMessageDto(
-                            messageId = chunkDocId,
-                            senderNumber = myPhone,
-                            recipientNumber = canonicalRecipient,
-                            senderPublicKey = myPublicKey,
-                            ciphertext = chunkCiphertext,
-                            iv = chunkIv,
-                            mediaType = ChatMediaType.CHUNK.name,
-                            timestamp = now + i
-                        )
-
-                        firestore.collection("inboxes")
-                            .document(canonicalRecipient)
-                            .collection("messages")
-                            .document(chunkDocId)
-                            .set(chunkDto)
-                            .await()
-
-                        // 3. Cancellation check IMMEDIATELY AFTER chunk upload await()
-                        if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
-                            Log.d(TAG, "Relay transfer cancelled by user for $messageId after chunk $i await")
-                            cancelledTransfers.remove(messageId)
-                            _activeTransfers.value = _activeTransfers.value - messageId
-                            activeTransferJobs.remove(messageId)
-                            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
-                            repositoryScope.launch {
-                                for (c in 0..i) {
-                                    try {
-                                        firestore.collection("inboxes")
-                                            .document(canonicalRecipient)
-                                            .collection("messages")
-                                            .document("${messageId}_chunk_$c")
-                                            .delete()
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                            return@withContext Result.failure(CancellationException("Cancelled by user"))
-                        }
-
-                        relayUploadedBytes += slice.size
-                        if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
-                            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
-                                messageId = messageId, fileName = mediaFile.name,
-                                totalBytes = mediaFile.length(), transferredBytes = relayUploadedBytes,
-                                mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
-                            ))
-                        }
-                    }
-                    Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $canonicalRecipient")
-                } catch (e: Exception) {
-                    if (cancelledTransfers.contains(messageId)) {
+            try {
+                var relayUploadedBytes = 0L
+                for (i in 0 until totalChunks) {
+                    // 1. Cancellation check BEFORE chunk upload
+                    if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                        Log.d(TAG, "Relay transfer cancelled by user for $messageId before chunk $i/$totalChunks")
                         cancelledTransfers.remove(messageId)
                         _activeTransfers.value = _activeTransfers.value - messageId
                         activeTransferJobs.remove(messageId)
+                        messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                        repositoryScope.launch {
+                            for (c in 0 until i) {
+                                try {
+                                    firestore.collection("inboxes")
+                                        .document(canonicalRecipient)
+                                        .collection("messages")
+                                        .document("${messageId}_chunk_$c")
+                                        .delete()
+                                } catch (_: Exception) {}
+                            }
+                        }
                         return@withContext Result.failure(CancellationException("Cancelled by user"))
                     }
-                    Log.e(TAG, "Failed to upload file chunks: ${e.message}", e)
-                    messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+
+                    // 2. AUTO-SWITCH: Check if peer came online during relay transmission (only if not previously attempted!)
+                    val peerUserOnline = run {
+                        val memUser = firebaseManager.lookupUserByNumber(canonicalRecipient)
+                            ?: firebaseManager.lookupUserByNumber(normRecipient)
+                        if (memUser != null) {
+                            memUser.isOnline || (System.currentTimeMillis() - memUser.lastSeen) < 60_000L
+                        } else false
+                    }
+
+                    if (!hasAttemptedP2p && !wasInitiallyOnline && peerUserOnline && i < totalChunks - 1) {
+                        hasAttemptedP2p = true
+                        Log.i(TAG, "⚡ AUTO-SWITCH: Peer $canonicalRecipient came online at chunk $i/$totalChunks! Switching to P2P Direct!")
+                        // Clean up partial chunks from Firestore inbox so recipient receives clean P2P stream
+                        repositoryScope.launch {
+                            for (c in 0 until i) {
+                                try {
+                                    firestore.collection("inboxes")
+                                        .document(canonicalRecipient)
+                                        .collection("messages")
+                                        .document("${messageId}_chunk_$c")
+                                        .delete()
+                                } catch (_: Exception) {}
+                            }
+                        }
+
+                        _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                            messageId = messageId, fileName = fileNameToSend,
+                            totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.P2P
+                        ))
+
+                        val switchedP2p = P2pFileTransfer(context)
+                        activeP2pTransfers[messageId] = switchedP2p
+                        val switchedSuccess = switchedP2p.sendFile(
+                            sessionId = messageId,
+                            myPhone = myPhone,
+                            recipientPhone = canonicalRecipient,
+                            file = savedFile,
+                            onOfferReady = { offerSdp ->
+                                val offerPayload = JSONObject().apply {
+                                    put("sessionId", messageId)
+                                    put("messageId", messageId)
+                                    put("fileName", fileNameToSend)
+                                    put("fileSize", savedFile.length())
+                                    put("mediaType", mediaType.name)
+                                    put("caption", text)
+                                    put("duration", mediaDurationMs)
+                                    put("offerSdp", offerSdp)
+                                }.toString()
+                                try {
+                                    val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
+                                    val offerDto = ChatMessageDto(
+                                        messageId = "${messageId}_p2p_offer",
+                                        senderNumber = myPhone,
+                                        recipientNumber = canonicalRecipient,
+                                        senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                                        ciphertext = offerCiphertext,
+                                        iv = offerIv,
+                                        mediaType = ChatMediaType.P2P_OFFER.name,
+                                        timestamp = now
+                                    )
+                                    firestore.collection("inboxes")
+                                        .document(canonicalRecipient)
+                                        .collection("messages")
+                                        .document("${messageId}_p2p_offer")
+                                        .set(offerDto)
+                                        .await()
+                                    Log.d(TAG, "P2P_OFFER (auto-switched) sent to $canonicalRecipient for sessionId=$messageId")
+
+                                    // Wake up peer's device via high-priority FCM
+                                    sendFcmWakeup(
+                                        recipientPhone = canonicalRecipient,
+                                        senderPhone = myPhone,
+                                        previewText = displaySummaryText,
+                                        mediaType = ChatMediaType.P2P_OFFER.name,
+                                        messageId = messageId
+                                    )
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed to send auto-switched P2P_OFFER: ${e.message}")
+                                }
+                            },
+                            onProgress = { progress ->
+                                if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                                    _activeTransfers.value = _activeTransfers.value + (messageId to progress)
+                                }
+                            }
+                        )
+                        activeP2pTransfers.remove(messageId)
+
+                        if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                            Log.d(TAG, "Transfer $messageId was cancelled during auto-switched P2P")
+                            cancelledTransfers.remove(messageId)
+                            _activeTransfers.value = _activeTransfers.value - messageId
+                            activeTransferJobs.remove(messageId)
+                            messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                            return@withContext Result.failure(CancellationException("Cancelled by user"))
+                        }
+
+                        if (switchedSuccess) {
+                            Log.d(TAG, "⚡ AUTO-SWITCH SUCCEEDED: P2P transfer completed for $messageId")
+                            messageDao.updateMessageStatus(messageId, MessageStatus.DELIVERED.name)
+                            activeTransferJobs.remove(messageId)
+                            delay(3000)
+                            _activeTransfers.value = _activeTransfers.value - messageId
+                            return@withContext Result.success(messageEntity)
+                        } else {
+                            Log.w(TAG, "⚡ AUTO-SWITCH P2P failed — resuming Relay mode ☁")
+                            _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                                messageId = messageId, fileName = fileNameToSend,
+                                totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                            ))
+                        }
+                    }
+
+                    val start = i * chunkSize
+                    val end = minOf(start + chunkSize, fileBytes.size)
+                    val slice = fileBytes.copyOfRange(start, end)
+                    val base64Chunk = Base64.encodeToString(slice, Base64.NO_WRAP)
+
+                    val chunkPayload = JSONObject().apply {
+                        put("type", "FILE_CHUNK")
+                        put("parentMessageId", messageId)
+                        put("fileName", fileNameToSend)
+                        put("fileSize", savedFile.length())
+                        put("chunkIndex", i)
+                        put("totalChunks", totalChunks)
+                        put("bytes", base64Chunk)
+                    }.toString()
+
+                    val (chunkCiphertext, chunkIv) = cryptoManager.encrypt(chunkPayload, recipientPublicKey)
+                    val chunkDocId = "${messageId}_chunk_$i"
+                    val chunkDto = ChatMessageDto(
+                        messageId = chunkDocId,
+                        senderNumber = myPhone,
+                        recipientNumber = canonicalRecipient,
+                        senderPublicKey = myPublicKey,
+                        ciphertext = chunkCiphertext,
+                        iv = chunkIv,
+                        mediaType = ChatMediaType.CHUNK.name,
+                        timestamp = now + i
+                    )
+
+                    firestore.collection("inboxes")
+                        .document(canonicalRecipient)
+                        .collection("messages")
+                        .document(chunkDocId)
+                        .set(chunkDto)
+                        .await()
+
+                    // 3. Cancellation check IMMEDIATELY AFTER chunk upload await()
+                    if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
+                        Log.d(TAG, "Relay transfer cancelled by user for $messageId after chunk $i await")
+                        cancelledTransfers.remove(messageId)
+                        _activeTransfers.value = _activeTransfers.value - messageId
+                        activeTransferJobs.remove(messageId)
+                        messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                        repositoryScope.launch {
+                            for (c in 0..i) {
+                                try {
+                                    firestore.collection("inboxes")
+                                        .document(canonicalRecipient)
+                                        .collection("messages")
+                                        .document("${messageId}_chunk_$c")
+                                        .delete()
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        return@withContext Result.failure(CancellationException("Cancelled by user"))
+                    }
+
+                    relayUploadedBytes += slice.size
+                    if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
+                        _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                            messageId = messageId, fileName = fileNameToSend,
+                            totalBytes = savedFile.length(), transferredBytes = relayUploadedBytes,
+                            mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
+                        ))
+                    }
+                }
+                Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $canonicalRecipient")
+            } catch (e: Exception) {
+                if (cancelledTransfers.contains(messageId)) {
+                    cancelledTransfers.remove(messageId)
                     _activeTransfers.value = _activeTransfers.value - messageId
                     activeTransferJobs.remove(messageId)
-                    return@withContext Result.failure(e)
+                    return@withContext Result.failure(CancellationException("Cancelled by user"))
                 }
-
+                Log.e(TAG, "Failed to upload file chunks: ${e.message}", e)
+                messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                _activeTransfers.value = _activeTransfers.value - messageId
                 activeTransferJobs.remove(messageId)
+                return@withContext Result.failure(e)
+            }
 
-                // Relay complete — clean up progress after short delay
-                repositoryScope.launch {
-                    delay(3000)
-                    _activeTransfers.value = _activeTransfers.value - messageId
-                }
+            activeTransferJobs.remove(messageId)
 
-                val relayPreview = if (mediaType == ChatMediaType.AUDIO) "🎤 Voice message" else "📄 ${text.ifBlank { mediaFile.name }}"
-                sendFcmWakeup(
-                    recipientPhone = canonicalRecipient,
-                    senderPhone = myPhone,
-                    previewText = relayPreview,
-                    mediaType = mediaType.name,
-                    messageId = messageId
-                )
+            // Relay complete — clean up progress after short delay
+            repositoryScope.launch {
+                delay(3000)
+                _activeTransfers.value = _activeTransfers.value - messageId
+            }
 
-                return@withContext Result.success(messageEntity)
+            sendFcmWakeup(
+                recipientPhone = canonicalRecipient,
+                senderPhone = myPhone,
+                previewText = displaySummaryText,
+                mediaType = mediaType.name,
+                messageId = messageId
+            )
+
+            return@withContext Result.success(messageEntity)
         }
 
         // 3. Encrypt via ChatCryptoManager

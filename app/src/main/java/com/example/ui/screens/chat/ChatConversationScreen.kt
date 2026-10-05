@@ -2060,75 +2060,188 @@ private fun MessageBubble(
                 }
 
                 // ── Image (Dynamic aspect ratio so image is never cut off) ──
-                if (message.mediaType == ChatMediaType.IMAGE.name && !message.mediaPath.isNullOrBlank()) {
-                    val imageRatio = remember(message.mediaPath) {
-                        try {
-                            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            BitmapFactory.decodeFile(message.mediaPath, opts)
-                            if (opts.outWidth > 0 && opts.outHeight > 0) {
-                                (opts.outWidth.toFloat() / opts.outHeight.toFloat()).coerceIn(0.55f, 1.85f)
-                            } else null
-                        } catch (_: Exception) { null }
-                    }
+                if (message.mediaType == ChatMediaType.IMAGE.name) {
+                    if (!message.mediaPath.isNullOrBlank()) {
+                        val imageRatio = remember(message.mediaPath) {
+                            try {
+                                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeFile(message.mediaPath, opts)
+                                if (opts.outWidth > 0 && opts.outHeight > 0) {
+                                    (opts.outWidth.toFloat() / opts.outHeight.toFloat()).coerceIn(0.55f, 1.85f)
+                                } else null
+                            } catch (_: Exception) { null }
+                        }
 
-                    val isTransferring = transferProgress != null && transferProgress.percent < 100
-                    val unblurPercent = transferProgress?.percent ?: 100
-                    val imgBlurRadius = remember(unblurPercent, isTransferring, isOutgoing) {
-                        if (!isOutgoing && isTransferring) {
-                            ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
-                        } else 0.dp
-                    }
+                        val isTransferring = transferProgress != null && transferProgress.percent < 100
+                        val unblurPercent = transferProgress?.percent ?: 100
+                        val imgBlurRadius = remember(unblurPercent, isTransferring, isOutgoing) {
+                            if (!isOutgoing && isTransferring) {
+                                ((1f - (unblurPercent / 100f)) * 16f).coerceIn(0f, 16f).dp
+                            } else 0.dp
+                        }
 
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(imageRatio ?: 1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .pointerInput(message.id, message.mediaPath) {
-                                detectTapGestures(
-                                    onTap = {
-                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                            onMarkMessageRead(message.id)
-                                        }
-                                        onImageClick(message.mediaPath)
-                                    },
-                                    onLongPress = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onMessageLongClick(message)
-                                    }
-                                )
-                            }
-                    ) {
-                        AsyncImage(
-                            model = message.mediaPath,
-                            contentDescription = "Photo",
+                        Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier),
-                            contentScale = ContentScale.Crop
-                        )
+                                .fillMaxWidth()
+                                .aspectRatio(imageRatio ?: 1f)
+                                .clip(RoundedCornerShape(12.dp))
+                                .pointerInput(message.id, message.mediaPath) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                                onMarkMessageRead(message.id)
+                                            }
+                                            onImageClick(message.mediaPath)
+                                        },
+                                        onLongPress = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onMessageLongClick(message)
+                                        }
+                                    )
+                                }
+                        ) {
+                            AsyncImage(
+                                model = message.mediaPath,
+                                contentDescription = "Photo",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(if (imgBlurRadius > 0.dp) Modifier.blur(imgBlurRadius) else Modifier),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        if (transferProgress != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            FileTransferProgressCard(
+                                progress = transferProgress,
+                                onCancel = onCancelTransfer
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                    } else {
+                        // Receiving incoming image via P2P placeholder
+                        Surface(
+                            color = if (isOutgoing) TealPrimary.copy(alpha = 0.15f) else GreenCall.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(
+                                        color = Color(0xFF9C27B0),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                Icons.Default.Image,
+                                                contentDescription = "Photo",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (displayText.isNotBlank()) displayText else "Photo",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (transferProgress != null) "Receiving photo..." else "Photo",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (transferProgress != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    FileTransferProgressCard(
+                                        progress = transferProgress,
+                                        onCancel = onCancelTransfer
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
                 }
 
                 // ── Audio Note ────────────────────────────────────────────────
-                if (message.mediaType == ChatMediaType.AUDIO.name && !message.mediaPath.isNullOrBlank()) {
-                    val finalDuration = if (playbackDurationMs > 0L) playbackDurationMs else message.mediaDurationMs
-                    AudioWaveformPlayer(
-                        isPlaying = isPlaying,
-                        progress = playbackProgress,
-                        durationMs = finalDuration,
-                        playbackSpeed = playbackSpeed,
-                        isOutgoing = isOutgoing,
-                        onTogglePlay = {
-                            onPlayAudio(message.mediaPath)
-                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                onMarkMessageRead(message.id)
+                if (message.mediaType == ChatMediaType.AUDIO.name) {
+                    if (!message.mediaPath.isNullOrBlank()) {
+                        val finalDuration = if (playbackDurationMs > 0L) playbackDurationMs else message.mediaDurationMs
+                        AudioWaveformPlayer(
+                            isPlaying = isPlaying,
+                            progress = playbackProgress,
+                            durationMs = finalDuration,
+                            playbackSpeed = playbackSpeed,
+                            isOutgoing = isOutgoing,
+                            onTogglePlay = {
+                                onPlayAudio(message.mediaPath)
+                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                    onMarkMessageRead(message.id)
+                                }
+                            },
+                            onSeek = onSeekAudio,
+                            onCycleSpeed = onCycleSpeed
+                        )
+                        if (transferProgress != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            FileTransferProgressCard(
+                                progress = transferProgress,
+                                onCancel = onCancelTransfer
+                            )
+                        }
+                    } else {
+                        // Receiving incoming audio via P2P placeholder
+                        Surface(
+                            color = if (isOutgoing) TealPrimary.copy(alpha = 0.15f) else GreenCall.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(
+                                        color = Color(0xFFE91E63),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                Icons.Default.Mic,
+                                                contentDescription = "Voice message",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Voice message",
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (transferProgress != null) "Receiving voice note..." else "Voice note",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (transferProgress != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    FileTransferProgressCard(
+                                        progress = transferProgress,
+                                        onCancel = onCancelTransfer
+                                    )
+                                }
                             }
-                        },
-                        onSeek = onSeekAudio,
-                        onCycleSpeed = onCycleSpeed
-                    )
+                        }
+                    }
                 }
 
                 // ── Document Card ─────────────────────────────────────────────

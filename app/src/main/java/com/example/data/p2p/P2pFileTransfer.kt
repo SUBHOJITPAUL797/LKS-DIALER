@@ -488,6 +488,7 @@ class P2pFileTransfer(private val context: Context) {
         initialOfferSdp: String? = null,
         initialFileName: String? = null,
         initialFileSize: Long = 0L,
+        filePrefix: String? = null,
         outputDir: File,
         onProgress: (FileTransferProgress) -> Unit,
         onComplete: (assembledFile: File?, messageId: String) -> Unit
@@ -643,7 +644,12 @@ class P2pFileTransfer(private val context: Context) {
                                                 fileOutputStream.close()
 
                                                 val ext = fileName.substringAfterLast('.', "bin")
-                                                val finalOutFile = File(outputDir, "doc_${sessionId}.$ext")
+                                                val prefix = filePrefix ?: when {
+                                                    fileName.startsWith("img_") -> "img_"
+                                                    fileName.startsWith("voice_") -> "voice_"
+                                                    else -> "doc_"
+                                                }
+                                                val finalOutFile = File(outputDir, "${prefix}${sessionId}.$ext")
                                                 if (finalOutFile.exists()) finalOutFile.delete()
                                                 val renamed = tempOutputFile.renameTo(finalOutFile)
                                                 val resultFile = if (renamed) finalOutFile else tempOutputFile
