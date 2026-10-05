@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ExternalLink, Smile, Sparkles
+  ChevronDown, ExternalLink, Smile
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
