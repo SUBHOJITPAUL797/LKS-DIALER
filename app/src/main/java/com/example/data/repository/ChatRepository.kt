@@ -2894,4 +2894,32 @@ class ChatRepository private constructor(private val context: Context) {
             }
         }
     }
+
+    // ── Starred Messages ─────────────────────────────────────────────────────
+
+    suspend fun starMessage(messageId: String) = withContext(Dispatchers.IO) {
+        messageDao.starMessage(messageId)
+    }
+
+    suspend fun unstarMessage(messageId: String) = withContext(Dispatchers.IO) {
+        messageDao.unstarMessage(messageId)
+    }
+
+    fun getStarredMessagesFlow(): kotlinx.coroutines.flow.Flow<List<MessageEntity>> =
+        messageDao.getStarredMessagesFlow()
+
+    suspend fun getStarredMessages(): List<MessageEntity> = withContext(Dispatchers.IO) {
+        messageDao.getStarredMessages()
+    }
+
+    // ── Pinned Conversations ──────────────────────────────────────────────────
+
+    suspend fun pinConversation(phoneNumber: String, isPinned: Boolean) = withContext(Dispatchers.IO) {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        conversationDao.setPinned(norm, isPinned)
+    }
+
+    suspend fun deleteConversation(phoneNumber: String): Long = withContext(Dispatchers.IO) {
+        clearConversationStorage(phoneNumber, ClearChatMode.BOTH)
+    }
 }

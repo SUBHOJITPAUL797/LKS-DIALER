@@ -44,7 +44,8 @@ data class MessageEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val status: String = MessageStatus.PENDING.name,
     val isOutgoing: Boolean = false,
-    val isEdited: Boolean = false
+    val isEdited: Boolean = false,
+    val isStarred: Boolean = false  // User-starred/bookmarked messages
 )
 
 @Entity(

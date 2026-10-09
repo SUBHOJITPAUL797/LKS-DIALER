@@ -194,6 +194,7 @@ fun ChatConversationScreen(
     var showMediaGalleryDialog by remember { mutableStateOf(false) }
     var showBlockConfirmDialog by remember { mutableStateOf(false) }
     var showSpamConfirmDialog by remember { mutableStateOf(false) }
+    var showStarredMessagesSheet by remember { mutableStateOf(false) }  // Starred messages viewer
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
     val isBlocked = remember(normPeer, blockedNumbers, spamNumbers) {
@@ -662,6 +663,20 @@ fun ChatConversationScreen(
                                     onClick = {
                                         showOptionsMenu = false
                                         showMediaGalleryDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Starred messages") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Star,
+                                            contentDescription = null,
+                                            tint = Color(0xFFFFC107)
+                                        )
+                                    },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        showStarredMessagesSheet = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -1641,6 +1656,32 @@ fun ChatConversationScreen(
         )
     }
 
+    // Starred Messages Dialog
+    if (showStarredMessagesSheet) {
+        com.example.ui.components.ChatStarredMessagesDialog(
+            messages = messages,
+            peerDisplayName = peerDisplayName,
+            onDismissRequest = { showStarredMessagesSheet = false },
+            onUnstarMessage = { msgId ->
+                coroutineScope.launch {
+                    chatRepository.unstarMessage(msgId)
+                    Toast.makeText(context, "Message unstarred", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onSelectMessage = { msg ->
+                showStarredMessagesSheet = false
+                val idx = messages.indexOfFirst { it.id == msg.id }
+                if (idx != -1) {
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(idx)
+                    }
+                } else if (msg.mediaType == ChatMediaType.IMAGE.name && msg.mediaPath != null) {
+                    selectedImagePreviewPath = msg.mediaPath
+                }
+            }
+        )
+    }
+
     // Fullscreen Image Preview
     if (selectedImagePreviewPath != null) {
         Dialog(onDismissRequest = { selectedImagePreviewPath = null }) {
@@ -1806,6 +1847,31 @@ fun ChatConversationScreen(
                     .fillMaxWidth()
                     .padding(vertical = 12.dp)
             ) {
+                // ── Star / Unstar ──────────────────────────────────────────
+                ListItem(
+                    headlineContent = {
+                        Text(if (targetMsg.isStarred) "Unstar message" else "Star message")
+                    },
+                    leadingContent = {
+                        Icon(
+                            if (targetMsg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = null,
+                            tint = if (targetMsg.isStarred) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        val msgId = targetMsg.id
+                        val willStar = !targetMsg.isStarred
+                        selectedMessageForOptions = null
+                        coroutineScope.launch {
+                            if (willStar) chatRepository.starMessage(msgId)
+                            else chatRepository.unstarMessage(msgId)
+                            val label = if (willStar) "⭐ Message starred" else "Message unstarred"
+                            Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+
                 if (!isDeleted) {
                     // Reply
                     ListItem(
@@ -2661,6 +2727,15 @@ private fun MessageBubble(
                                             )
                                             Spacer(modifier = Modifier.width(3.dp))
                                         }
+                                        if (message.isStarred) {
+                                            Icon(
+                                                Icons.Default.Star,
+                                                contentDescription = "Starred",
+                                                tint = Color(0xFFFFC107),
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                        }
                                         val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
                                         Text(
                                             text = timeString,
@@ -3052,6 +3127,15 @@ private fun MessageBubble(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        if (message.isStarred) {
+                            Icon(
+                                Icons.Default.Star,
+                                contentDescription = "Starred",
+                                tint = Color(0xFFFFC107),
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
                         }
                         val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
                         Text(

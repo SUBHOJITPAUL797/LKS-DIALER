@@ -51,6 +51,9 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations")
     suspend fun getConversationsList(): List<ConversationEntity>
 
+    @Query("UPDATE conversations SET isPinned = :isPinned WHERE phoneNumber = :phoneNumber")
+    suspend fun setPinned(phoneNumber: String, isPinned: Boolean)
+
     @Query("DELETE FROM conversations")
     suspend fun deleteAllConversations()
 }

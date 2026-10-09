@@ -103,4 +103,18 @@ interface MessageDao {
 
     @Query("DELETE FROM messages")
     suspend fun deleteAllMessages()
+
+    // ── Starred Messages ──────────────────────────────────────────────────────
+
+    @Query("UPDATE messages SET isStarred = 1 WHERE id = :messageId")
+    suspend fun starMessage(messageId: String)
+
+    @Query("UPDATE messages SET isStarred = 0 WHERE id = :messageId")
+    suspend fun unstarMessage(messageId: String)
+
+    @Query("SELECT * FROM messages WHERE isStarred = 1 ORDER BY timestamp DESC")
+    fun getStarredMessagesFlow(): kotlinx.coroutines.flow.Flow<List<MessageEntity>>
+
+    @Query("SELECT * FROM messages WHERE isStarred = 1 ORDER BY timestamp DESC")
+    suspend fun getStarredMessages(): List<MessageEntity>
 }

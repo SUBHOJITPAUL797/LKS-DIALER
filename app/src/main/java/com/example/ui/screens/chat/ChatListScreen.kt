@@ -1,12 +1,16 @@
 package com.example.ui.screens.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -59,6 +63,7 @@ fun ChatListScreen(
     var showNewChatDialog by remember { mutableStateOf(false) }
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearAllConfirm by remember { mutableStateOf(false) }
+    var selectedConversationForOptions by remember { mutableStateOf<ConversationEntity?>(null) }
 
     val filteredConversations = remember(conversations, searchQuery) {
         if (searchQuery.isBlank()) conversations
@@ -263,7 +268,8 @@ fun ChatListScreen(
                             isOnline = isPeerOnline,
                             isInActiveCall = isInActiveCall,
                             activeCallType = activeCallType,
-                            onClick = { onOpenConversation(conv.phoneNumber, conv.contactName, resolvedAvatar) }
+                            onClick = { onOpenConversation(conv.phoneNumber, conv.contactName, resolvedAvatar) },
+                            onLongClick = { selectedConversationForOptions = conv }
                         )
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 76.dp, end = 16.dp),
@@ -315,8 +321,64 @@ fun ChatListScreen(
             }
         )
     }
+
+    // Conversation Options Bottom Sheet (Pin, Unpin, Delete)
+    if (selectedConversationForOptions != null) {
+        val selectedConv = selectedConversationForOptions!!
+        ModalBottomSheet(
+            onDismissRequest = { selectedConversationForOptions = null }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+            ) {
+                // Pin / Unpin
+                ListItem(
+                    headlineContent = {
+                        Text(if (selectedConv.isPinned) "Unpin chat" else "Pin chat")
+                    },
+                    leadingContent = {
+                        Icon(
+                            if (selectedConv.isPinned) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = null,
+                            tint = if (selectedConv.isPinned) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    modifier = Modifier.clickable {
+                        val willPin = !selectedConv.isPinned
+                        selectedConversationForOptions = null
+                        coroutineScope.launch {
+                            chatRepository.pinConversation(selectedConv.phoneNumber, willPin)
+                            val msg = if (willPin) "Chat pinned to top" else "Chat unpinned"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+
+                // Delete Conversation
+                ListItem(
+                    headlineContent = {
+                        Text("Delete chat", color = MaterialTheme.colorScheme.error)
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    },
+                    modifier = Modifier.clickable {
+                        val phoneToDelete = selectedConv.phoneNumber
+                        selectedConversationForOptions = null
+                        coroutineScope.launch {
+                            chatRepository.deleteConversation(phoneToDelete)
+                            Toast.makeText(context, "Chat deleted", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
+        }
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationItem(
     conversation: ConversationEntity,
@@ -324,12 +386,20 @@ private fun ConversationItem(
     isOnline: Boolean,
     isInActiveCall: Boolean = false,
     activeCallType: CallType? = null,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
+    val haptic = LocalHapticFeedback.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onLongClick()
+                }
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -382,13 +452,24 @@ private fun ConversationItem(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    text = if (isInActiveCall) "In call" else formatChatTimestamp(conversation.lastMessageTimestamp),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = if (isInActiveCall) FontWeight.SemiBold else FontWeight.Normal
-                    ),
-                    color = if (isInActiveCall || conversation.unreadCount > 0) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (conversation.isPinned) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "Pinned",
+                            tint = Color(0xFFFFC107),
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    Text(
+                        text = if (isInActiveCall) "In call" else formatChatTimestamp(conversation.lastMessageTimestamp),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = if (isInActiveCall) FontWeight.SemiBold else FontWeight.Normal
+                        ),
+                        color = if (isInActiveCall || conversation.unreadCount > 0) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(4.dp))
