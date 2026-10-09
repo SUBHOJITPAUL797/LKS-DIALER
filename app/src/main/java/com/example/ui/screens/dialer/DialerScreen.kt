@@ -31,14 +31,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 import com.example.data.model.CallType
 import com.example.data.model.CountryCode
 import com.example.data.model.UserDto
 import com.example.data.repository.FirebaseManager
 import com.example.ui.components.CountryCodePickerModal
+import com.example.ui.components.SimCallPickerModal
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.LocalThemeColor
 import com.example.util.CountryCodes
+import com.example.util.SimInfo
+import com.example.util.SimManager
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -49,12 +55,19 @@ fun DialerScreen(
     onNavigateToLinkedDevices: () -> Unit = {}
 ) {
     val themeColor = LocalThemeColor.current
+    val context = LocalContext.current
     var dialNumber by remember { mutableStateOf("") }
     var selectedCountry by remember { mutableStateOf(CountryCodes.defaultCountry) }
     var showCountryPicker by remember { mutableStateOf(false) }
+    var showSimPicker by remember { mutableStateOf(false) }
+    val activeSims = remember { SimManager.getActiveSimCards(context) }
     val clipboardManager = LocalClipboardManager.current
     val configuration = LocalConfiguration.current
     val screenHeight = configuration.screenHeightDp
+
+    val fullDialNumber = remember(selectedCountry, dialNumber) {
+        if (dialNumber.isNotBlank()) CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber) else ""
+    }
 
     var lastCallClickTime by remember { mutableStateOf(0L) }
     val safeCall = { num: String, name: String, type: CallType ->
@@ -163,6 +176,26 @@ fun DialerScreen(
             selectedCountry = selectedCountry,
             onCountrySelected = { selectedCountry = it },
             onDismissRequest = { showCountryPicker = false }
+        )
+    }
+
+    if (showSimPicker && dialNumber.isNotBlank()) {
+        val calleeName = matchedUser?.displayName ?: fullDialNumber
+        SimCallPickerModal(
+            phoneNumber = fullDialNumber,
+            displayName = calleeName,
+            isRegisteredOnLks = matchedUser != null,
+            activeSims = activeSims,
+            onDismissRequest = { showSimPicker = false },
+            onStartVoipCall = { type ->
+                safeCall(fullDialNumber, calleeName, type)
+            },
+            onStartCellularCall = { sim ->
+                SimManager.placeCellularCall(context, fullDialNumber, sim)
+                val simLabel = sim?.displayName ?: "SIM"
+                firebaseManager.recordCellularCall(fullDialNumber, calleeName, simLabel)
+                Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+            }
         )
     }
 
@@ -387,7 +420,13 @@ fun DialerScreen(
                                 dialNumber = clean
                             },
                             onCall = {
-                                safeCall(match.phoneNumber, match.name, CallType.AUDIO)
+                                if (match.isLksUser) {
+                                    safeCall(match.phoneNumber, match.name, CallType.AUDIO)
+                                } else {
+                                    val clean = match.phoneNumber.filter { it.isDigit() || it == '+' }
+                                    dialNumber = clean
+                                    showSimPicker = true
+                                }
                             }
                         )
                     }
@@ -416,7 +455,7 @@ fun DialerScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
+                    .padding(horizontal = 20.dp)
                     .padding(bottom = 12.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
@@ -429,37 +468,105 @@ fun DialerScreen(
                         }
                     },
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(46.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = "Add Contact", tint = themeColor.primary, modifier = Modifier.size(22.dp))
+                    Icon(Icons.Default.PersonAdd, contentDescription = "Add Contact", tint = themeColor.primary, modifier = Modifier.size(20.dp))
                 }
 
-                // Green Audio Call Button
-                Button(
-                    onClick = {
-                        if (dialNumber.isNotBlank()) {
-                            val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
-                            val calleeName = matchedUser?.displayName ?: fullNum
-                            safeCall(fullNum, calleeName, CallType.AUDIO)
-                        }
-                    },
-                    enabled = dialNumber.isNotBlank(),
-                    shape = CircleShape,
-                    modifier = Modifier.size(callButtonSize),
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenCall)
+                // Cellular / Dual SIM Calling Button
+                Surface(
+                    modifier = Modifier
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(23.dp))
+                        .combinedClickable(
+                            onClick = {
+                                if (dialNumber.isNotBlank()) {
+                                    if (activeSims.size > 1) {
+                                        showSimPicker = true
+                                    } else {
+                                        val calleeName = matchedUser?.displayName ?: fullDialNumber
+                                        val targetSim = activeSims.firstOrNull()
+                                        SimManager.placeCellularCall(context, fullDialNumber, targetSim)
+                                        val simLabel = targetSim?.displayName ?: "SIM"
+                                        firebaseManager.recordCellularCall(fullDialNumber, calleeName, simLabel)
+                                        Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            onLongClick = {
+                                if (dialNumber.isNotBlank()) {
+                                    showSimPicker = true
+                                }
+                            }
+                        ),
+                    shape = RoundedCornerShape(23.dp),
+                    color = Color(0xFF1E88E5).copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, Color(0xFF1E88E5).copy(alpha = 0.35f))
                 ) {
-                    Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = Color.White, modifier = Modifier.size(28.dp))
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.SimCard,
+                            contentDescription = "Cellular SIM Call",
+                            tint = Color(0xFF1E88E5),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (activeSims.size > 1) "SIM 1/2" else (activeSims.firstOrNull()?.displayName?.take(6) ?: "SIM"),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF1E88E5)
+                        )
+                    }
+                }
+
+                // Green Audio Call Button (LKS VoIP / Smart Fallback)
+                Surface(
+                    modifier = Modifier
+                        .size(callButtonSize)
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            onClick = {
+                                if (dialNumber.isNotBlank()) {
+                                    val calleeName = matchedUser?.displayName ?: fullDialNumber
+                                    if (matchedUser != null) {
+                                        safeCall(fullDialNumber, calleeName, CallType.AUDIO)
+                                    } else {
+                                        // Number is not on LKS VoIP -> automatically offer SIM picker!
+                                        showSimPicker = true
+                                    }
+                                }
+                            },
+                            onLongClick = {
+                                if (dialNumber.isNotBlank()) {
+                                    showSimPicker = true
+                                }
+                            }
+                        ),
+                    shape = CircleShape,
+                    color = if (dialNumber.isNotBlank()) GreenCall else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Call,
+                            contentDescription = "Audio Call",
+                            tint = if (dialNumber.isNotBlank()) Color.White else Color.Gray,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
                 }
 
                 // Theme Accent Video Call Button
                 Button(
                     onClick = {
                         if (dialNumber.isNotBlank()) {
-                            val fullNum = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, dialNumber)
-                            val calleeName = matchedUser?.displayName ?: fullNum
-                            safeCall(fullNum, calleeName, CallType.VIDEO)
+                            val calleeName = matchedUser?.displayName ?: fullDialNumber
+                            safeCall(fullDialNumber, calleeName, CallType.VIDEO)
                         }
                     },
                     enabled = dialNumber.isNotBlank(),

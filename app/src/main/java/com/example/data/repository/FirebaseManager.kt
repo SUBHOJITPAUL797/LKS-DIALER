@@ -884,6 +884,43 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     /**
+     * Records a cellular call placed via SIM card so it appears in recent call logs.
+     */
+    fun recordCellularCall(otherPartyNumber: String, otherPartyName: String, simDisplayName: String) {
+        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val logId = UUID.randomUUID().toString()
+        val cellularCallId = "sim_${UUID.randomUUID().toString().take(8)}"
+
+        val resolvedName = if (otherPartyName.isNotBlank() && otherPartyName != otherPartyNumber) {
+            otherPartyName
+        } else {
+            lookupUserByNumber(otherPartyNumber)?.displayName ?: otherPartyNumber
+        }
+
+        val log = CallLogDto(
+            id = logId,
+            callId = cellularCallId,
+            direction = CallDirection.OUTGOING,
+            otherPartyNumber = otherPartyNumber,
+            otherPartyName = "$resolvedName ($simDisplayName)",
+            callType = CallType.AUDIO,
+            status = CallStatus.ANSWERED,
+            startedAt = System.currentTimeMillis(),
+            durationSeconds = 0
+        )
+        _callLogs.value = listOf(log) + _callLogs.value.filter { it.id != logId }
+
+        if (_isFirebaseConfigured.value) {
+            try {
+                FirebaseFirestore.getInstance()
+                    .collection("users").document(userPhone)
+                    .collection("callLogs").document(logId)
+                    .set(log)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
      * Updates an active call log with final duration and status when the call ends,
      * or writes a new completed entry if it was ended before an active log was created.
      */
