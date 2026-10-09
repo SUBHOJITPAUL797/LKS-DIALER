@@ -269,6 +269,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.e("WebRtcEngine", "AudioTrack Runtime Error: $errorMessage")
                 }
             })
+            .setSamplesReadyCallback { audioSamples ->
+                try {
+                    com.example.util.CallAudioRecorder.getInstance(context).onPcmSamples(
+                        audioSamples.sampleRate,
+                        audioSamples.channelCount,
+                        audioSamples.data
+                    )
+                } catch (_: Exception) {}
+            }
             .createAudioDeviceModule()
 
         this.audioDeviceModule = audioDeviceModule
@@ -1965,6 +1974,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         cleanupMediaAndPeerConnection()
         val prevCall = _state.value.activeCall
 
+        // Automatically stop call recording if active and capture saved file
+        val recordingFile = try {
+            com.example.util.CallAudioRecorder.getInstance(context).stopRecording(prevCall?.callId)
+        } catch (_: Exception) { null }
+
         // Phase 3: Reliable call logs — record call ended for both caller and callee
         if (prevCall != null) {
             val userPhone = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
@@ -1988,7 +2002,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 fallbackDirection = direction,
                 fallbackOtherNumber = otherNumber,
                 fallbackOtherName = otherName,
-                fallbackCallType = prevCall.callType
+                fallbackCallType = prevCall.callType,
+                recordingPath = recordingFile?.absolutePath
             )
         }
 
@@ -2047,6 +2062,26 @@ class WebRtcEngine private constructor(private val context: Context) {
             com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
         }
         // NOTE: 30s Firestore cleanup is scheduled by endCall()/declineCall() — not duplicated here.
+    }
+
+    /**
+     * Toggles in-call audio recording for the active call.
+     * Returns true if recording started, false if stopped or failed.
+     */
+    fun toggleCallRecording(): Boolean {
+        val active = _state.value.activeCall ?: return false
+        val recorder = com.example.util.CallAudioRecorder.getInstance(context)
+        return if (recorder.isRecording.value) {
+            recorder.stopRecording(active.callId)
+            false
+        } else {
+            recorder.startRecording(
+                callId = active.callId,
+                otherPartyName = active.calleeName.ifBlank { active.callerName },
+                otherPartyNumber = active.calleeNumber.ifBlank { active.callerNumber }
+            )
+            true
+        }
     }
 
     private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {

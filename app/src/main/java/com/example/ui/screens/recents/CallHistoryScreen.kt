@@ -48,6 +48,10 @@ import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
+import android.media.MediaPlayer
+import androidx.core.content.FileProvider
+import android.content.Intent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -95,9 +99,13 @@ fun CallHistoryScreen(
     }
 
     val filteredLogs = remember(callLogs, selectedFilter) {
-        if (selectedFilter == "MISSED") {
-            callLogs.filter { it.direction == CallDirection.MISSED }
-        } else callLogs
+        when (selectedFilter) {
+            "MISSED" -> callLogs.filter { it.direction == CallDirection.MISSED }
+            "RECORDINGS" -> callLogs.filter {
+                com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
+            }
+            else -> callLogs
+        }
     }
 
     if (showClearDialog) {
@@ -299,6 +307,22 @@ fun CallHistoryScreen(
                     }
                 }
 
+                val recordingFile = remember(log.callId, log.recordingPath) {
+                    com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(log.callId, log.recordingPath)
+                }
+                var currentRecording by remember(recordingFile) { mutableStateOf(recordingFile) }
+
+                if (currentRecording != null && currentRecording!!.exists()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    CallRecordingPlayerCard(
+                        file = currentRecording!!,
+                        callId = log.callId,
+                        onDeleted = {
+                            currentRecording = null
+                        }
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Block / Unblock Action Button
@@ -443,6 +467,32 @@ fun CallHistoryScreen(
                     selectedLabelColor = MissedCallRed
                 )
             )
+            Spacer(modifier = Modifier.width(8.dp))
+            val recordedCount = remember(callLogs) {
+                callLogs.count {
+                    com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
+                }
+            }
+            FilterChip(
+                selected = selectedFilter == "RECORDINGS",
+                onClick = {
+                    selectedFilter = "RECORDINGS"
+                    lastInteractionTime = System.currentTimeMillis()
+                },
+                label = { Text("Recordings ($recordedCount)") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                },
+                shape = RoundedCornerShape(16.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = GreenCall.copy(alpha = 0.2f),
+                    selectedLabelColor = GreenCall
+                )
+            )
         }
 
         // Animated Swipe Feature Tip Banner
@@ -487,14 +537,18 @@ fun CallHistoryScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        Icons.Default.History,
+                        if (selectedFilter == "RECORDINGS") Icons.Default.Mic else Icons.Default.History,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (selectedFilter == "MISSED") "No missed calls" else "No recent call history",
+                        text = when (selectedFilter) {
+                            "MISSED" -> "No missed calls"
+                            "RECORDINGS" -> "No recorded calls yet\nTap Record during any call to save audio"
+                            else -> "No recent call history"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -698,6 +752,7 @@ private fun CallLogItemContent(
     onItemClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
+    val context = LocalContext.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -754,6 +809,35 @@ private fun CallLogItemContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                val recFile = remember(log.callId, log.recordingPath) {
+                    com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(log.callId, log.recordingPath)
+                }
+                if (recFile != null && recFile.exists()) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = GreenCall.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Recorded",
+                                tint = GreenCall,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                text = "Recorded",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = GreenCall
+                            )
+                        }
+                    }
+                }
 
                 if (isBlocked) {
                     Spacer(modifier = Modifier.width(6.dp))
@@ -839,4 +923,256 @@ private fun formatDuration(seconds: Int): String {
     val mins = seconds / 60
     val secs = seconds % 60
     return if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
+}
+
+@Composable
+fun CallRecordingPlayerCard(
+    file: File,
+    callId: String,
+    onDeleted: () -> Unit
+) {
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentPositionMs by remember { mutableStateOf(0) }
+    var totalDurationMs by remember { mutableStateOf(0) }
+    var playbackSpeed by remember { mutableStateOf(1.0f) }
+    var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    DisposableEffect(file) {
+        val player = MediaPlayer().apply {
+            try {
+                setDataSource(file.absolutePath)
+                prepare()
+                totalDurationMs = duration
+            } catch (e: Exception) {
+                android.util.Log.w("CallRecPlayer", "Failed to prepare MediaPlayer: ${e.message}")
+            }
+            setOnCompletionListener {
+                isPlaying = false
+                currentPositionMs = 0
+            }
+        }
+        mediaPlayer = player
+
+        onDispose {
+            try {
+                if (player.isPlaying) player.stop()
+                player.release()
+            } catch (_: Exception) {}
+            mediaPlayer = null
+        }
+    }
+
+    // Position tracking loop while playing
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) {
+                    currentPositionMs = player.currentPosition
+                }
+            }
+            delay(200)
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Call Recording?") },
+            text = { Text("This will permanently remove the recorded audio file (${file.name}).") },
+            confirmButton = {
+                TextButton(onClick = {
+                    com.example.util.CallAudioRecorder.getInstance(context).deleteRecording(file)
+                    showDeleteConfirm = false
+                    onDeleted()
+                    Toast.makeText(context, "Recording deleted", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Delete", color = RedEndCall, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = GreenCall,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Call Recording",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Playback Speed Button (1.0x -> 1.5x -> 2.0x)
+                    Surface(
+                        onClick = {
+                            val newSpeed = when (playbackSpeed) {
+                                1.0f -> 1.5f
+                                1.5f -> 2.0f
+                                else -> 1.0f
+                            }
+                            playbackSpeed = newSpeed
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                mediaPlayer?.let { player ->
+                                    try {
+                                        val params = player.playbackParams
+                                        params.speed = newSpeed
+                                        player.playbackParams = params
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = "${playbackSpeed}x",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Share Button
+                    IconButton(
+                        onClick = {
+                            try {
+                                val uri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    file
+                                )
+                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "audio/m4a"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(Intent.createChooser(shareIntent, "Share Call Recording"))
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Could not share: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Share",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    // Delete Button
+                    IconButton(
+                        onClick = { showDeleteConfirm = true },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.DeleteOutline,
+                            contentDescription = "Delete",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Player controls row: Play/Pause button + Slider
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        mediaPlayer?.let { player ->
+                            if (isPlaying) {
+                                player.pause()
+                                isPlaying = false
+                            } else {
+                                player.start()
+                                isPlaying = true
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(GreenCall)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Slider(
+                        value = if (totalDurationMs > 0) (currentPositionMs.toFloat() / totalDurationMs).coerceIn(0f, 1f) else 0f,
+                        onValueChange = { fraction ->
+                            val target = (fraction * totalDurationMs).toInt()
+                            currentPositionMs = target
+                            mediaPlayer?.seekTo(target)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = GreenCall,
+                            activeTrackColor = GreenCall
+                        )
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = formatMs(currentPositionMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = formatMs(totalDurationMs),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatMs(ms: Int): String {
+    val totalSec = ms / 1000
+    val min = totalSec / 60
+    val sec = totalSec % 60
+    return String.format("%02d:%02d", min, sec)
 }

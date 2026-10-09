@@ -79,7 +79,8 @@ data class CallLogDto(
     val callType: CallType = CallType.AUDIO,
     val status: CallStatus = CallStatus.ANSWERED,
     val startedAt: Long = 0L,
-    val durationSeconds: Int = 0
+    val durationSeconds: Int = 0,
+    val recordingPath: String? = null
 )
 
 data class ContactDto(

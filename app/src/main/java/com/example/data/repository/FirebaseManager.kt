@@ -931,7 +931,8 @@ class FirebaseManager private constructor(private val context: Context) {
         fallbackDirection: CallDirection? = null,
         fallbackOtherNumber: String? = null,
         fallbackOtherName: String? = null,
-        fallbackCallType: CallType = CallType.AUDIO
+        fallbackCallType: CallType = CallType.AUDIO,
+        recordingPath: String? = null
     ) {
         val userPhone = _currentUser.value?.phoneNumber ?: return
         val logId = activeCallLogIds.remove(callId)
@@ -939,18 +940,26 @@ class FirebaseManager private constructor(private val context: Context) {
         if (logId != null) {
             _callLogs.value = _callLogs.value.map { log ->
                 if (log.id == logId || log.callId == callId) {
-                    log.copy(status = status, durationSeconds = durationSeconds)
+                    log.copy(
+                        status = status,
+                        durationSeconds = durationSeconds,
+                        recordingPath = recordingPath ?: log.recordingPath
+                    )
                 } else log
             }
 
             if (_isFirebaseConfigured.value) {
+                val updates = mutableMapOf<String, Any>(
+                    "status" to status.name,
+                    "durationSeconds" to durationSeconds
+                )
+                if (!recordingPath.isNullOrBlank()) {
+                    updates["recordingPath"] = recordingPath
+                }
                 FirebaseFirestore.getInstance()
                     .collection("users").document(userPhone)
                     .collection("callLogs").document(logId)
-                    .update(
-                        "status", status.name,
-                        "durationSeconds", durationSeconds
-                    )
+                    .update(updates)
                     .addOnSuccessListener {
                         Log.d(TAG, "Call ended log updated in Firestore: callId=$callId")
                     }
@@ -965,7 +974,8 @@ class FirebaseManager private constructor(private val context: Context) {
                     callType = fallbackCallType,
                     status = status,
                     durationSeconds = durationSeconds,
-                    callId = callId
+                    callId = callId,
+                    recordingPath = recordingPath
                 )
             }
         }
@@ -978,14 +988,15 @@ class FirebaseManager private constructor(private val context: Context) {
         callType: CallType,
         status: CallStatus,
         durationSeconds: Int,
-        callId: String? = null
+        callId: String? = null,
+        recordingPath: String? = null
     ) {
         val userPhone = _currentUser.value?.phoneNumber ?: return
         val resolvedCallId = callId ?: "${userPhone}_${System.currentTimeMillis()}"
 
         // Deduplication: if already tracked in activeCallLogIds, update instead
         if (activeCallLogIds.containsKey(resolvedCallId)) {
-            recordCallEnded(resolvedCallId, status, durationSeconds)
+            recordCallEnded(resolvedCallId, status, durationSeconds, recordingPath = recordingPath)
             return
         }
 
@@ -993,15 +1004,26 @@ class FirebaseManager private constructor(private val context: Context) {
         val existingIndex = _callLogs.value.indexOfFirst { it.callId == resolvedCallId }
         if (existingIndex >= 0) {
             val existingLog = _callLogs.value[existingIndex]
-            val updated = existingLog.copy(status = status, durationSeconds = durationSeconds)
+            val updated = existingLog.copy(
+                status = status,
+                durationSeconds = durationSeconds,
+                recordingPath = recordingPath ?: existingLog.recordingPath
+            )
             val mutable = _callLogs.value.toMutableList()
             mutable[existingIndex] = updated
             _callLogs.value = mutable
             if (_isFirebaseConfigured.value) {
+                val updates = mutableMapOf<String, Any>(
+                    "status" to status.name,
+                    "durationSeconds" to durationSeconds
+                )
+                if (!recordingPath.isNullOrBlank()) {
+                    updates["recordingPath"] = recordingPath
+                }
                 FirebaseFirestore.getInstance()
                     .collection("users").document(userPhone)
                     .collection("callLogs").document(existingLog.id)
-                    .update("status", status.name, "durationSeconds", durationSeconds)
+                    .update(updates)
             }
             return
         }
@@ -1016,7 +1038,8 @@ class FirebaseManager private constructor(private val context: Context) {
             callType = callType,
             status = status,
             startedAt = System.currentTimeMillis(),
-            durationSeconds = durationSeconds
+            durationSeconds = durationSeconds,
+            recordingPath = recordingPath
         )
         _callLogs.value = listOf(newLog) + _callLogs.value
 
@@ -1031,6 +1054,32 @@ class FirebaseManager private constructor(private val context: Context) {
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Error saving call log to Firestore: ${e.message}")
                 }
+        }
+    }
+
+    /**
+     * Attaches or updates a local audio recording path to an existing call log.
+     */
+    fun attachRecordingToCallLog(callId: String, recordingPath: String) {
+        if (recordingPath.isBlank()) return
+        val current = _callLogs.value
+        val index = current.indexOfFirst { it.callId == callId }
+        if (index != -1) {
+            val updated = current[index].copy(recordingPath = recordingPath)
+            val mutable = current.toMutableList()
+            mutable[index] = updated
+            _callLogs.value = mutable
+
+            val userPhone = _currentUser.value?.phoneNumber ?: return
+            if (_isFirebaseConfigured.value) {
+                FirebaseFirestore.getInstance()
+                    .collection("users").document(userPhone)
+                    .collection("callLogs").document(updated.id)
+                    .update("recordingPath", recordingPath)
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Recording path updated in Firestore for callId: $callId")
+                    }
+            }
         }
     }
 

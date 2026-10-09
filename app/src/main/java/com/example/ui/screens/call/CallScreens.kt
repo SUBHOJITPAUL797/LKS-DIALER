@@ -412,6 +412,8 @@ fun ActiveAudioCallScreen(
     }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+    val isCallRecording by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
+    val recordingDuration by com.example.util.CallAudioRecorder.getInstance(context).recordingDurationSeconds.collectAsState()
     
     // Proximity Sensor Logic for Screen Blackout (only active when using Phone Earpiece)
     DisposableEffect(state.callStatus, state.callType, state.selectedAudioDevice) {
@@ -610,6 +612,48 @@ fun ActiveAudioCallScreen(
                         }
                     }
                 }
+
+                // In-Call Audio Recording Indicator Badge
+                AnimatedVisibility(
+                    visible = isCallRecording,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
+                    val pulseAlpha by infiniteTransition.animateFloat(
+                        initialValue = 0.35f,
+                        targetValue = 1.0f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(800, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "pulseAlpha"
+                    )
+                    Surface(
+                        color = Color(0xFFEF4444).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(9.dp)
+                                    .graphicsLayer { alpha = pulseAlpha }
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFEF4444))
+                            )
+                            Spacer(modifier = Modifier.width(7.dp))
+                            Text(
+                                text = "REC  ${com.example.util.CallAudioRecorder.formatDuration(recordingDuration)}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color(0xFFEF4444)
+                            )
+                        }
+                    }
+                }
             }
 
             // Center Contact Avatar
@@ -639,11 +683,12 @@ fun ActiveAudioCallScreen(
                 )
             }
 
-            // Bottom In-Call Controls Grid
+            // Bottom In-Call Controls Grid (Organized in 2 clean, spacious rows)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.padding(bottom = 24.dp)
             ) {
+                // Row 1: Core Audio / Video Communication Controls
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
@@ -654,22 +699,6 @@ fun ActiveAudioCallScreen(
                         label = if (state.isMuted) "Muted" else "Mute",
                         isActive = state.isMuted,
                         onClick = { webRtcEngine.toggleMute() }
-                    )
-
-                    // Hold Call Toggle
-                    InCallControlButton(
-                        icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
-                        label = if (state.isOnHold) "Resume" else "Hold",
-                        isActive = state.isOnHold,
-                        onClick = { webRtcEngine.toggleHold() }
-                    )
-
-                    // Switch to Video Button
-                    InCallControlButton(
-                        icon = Icons.Default.Videocam,
-                        label = "Video",
-                        isActive = false,
-                        onClick = { webRtcEngine.requestVideoUpgrade() }
                     )
 
                     // Audio Output Switcher / Speakerphone Toggle
@@ -699,9 +728,51 @@ fun ActiveAudioCallScreen(
                             }
                         }
                     )
+
+                    // Switch to Video Button
+                    InCallControlButton(
+                        icon = Icons.Default.Videocam,
+                        label = "Video",
+                        isActive = false,
+                        onClick = { webRtcEngine.requestVideoUpgrade() }
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Row 2: Secondary Call Tools (Record Call & Hold Call)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    // Record Call Button
+                    InCallControlButton(
+                        icon = if (isCallRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                        label = if (isCallRecording) "Stop Rec" else "Record",
+                        isActive = isCallRecording,
+                        activeColor = Color(0xFFEF4444),
+                        onClick = {
+                            val started = webRtcEngine.toggleCallRecording()
+                            android.widget.Toast.makeText(
+                                context,
+                                if (started) "Call recording started" else "Call recording saved to Call History",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.width(42.dp))
+
+                    // Hold Call Toggle
+                    InCallControlButton(
+                        icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
+                        label = if (state.isOnHold) "Resume" else "Hold",
+                        isActive = state.isOnHold,
+                        onClick = { webRtcEngine.toggleHold() }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(26.dp))
 
                 // End Call Button
                 Button(
@@ -1271,6 +1342,24 @@ fun ActiveVideoCallScreen(
                     }
                 )
 
+                // Record Call Toggle
+                val isVideoRec by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
+                InCallControlButton(
+                    icon = if (isVideoRec) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                    label = if (isVideoRec) "Stop Rec" else "Record",
+                    isActive = isVideoRec,
+                    activeColor = Color(0xFFEF4444),
+                    size = 48.dp,
+                    onClick = {
+                        val started = webRtcEngine.toggleCallRecording()
+                        android.widget.Toast.makeText(
+                            context,
+                            if (started) "Call recording started" else "Call recording saved to Call History",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
+
                 // Red End Call
                 Button(
                     onClick = onEndCall,
@@ -1384,6 +1473,7 @@ private fun InCallControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     isActive: Boolean,
+    activeColor: Color = GreenCall,
     size: androidx.compose.ui.unit.Dp = 60.dp,
     onClick: () -> Unit
 ) {
@@ -1393,12 +1483,12 @@ private fun InCallControlButton(
             modifier = Modifier
                 .size(size)
                 .clip(CircleShape)
-                .background(if (isActive) GreenCall else Color.White.copy(alpha = 0.2f))
+                .background(if (isActive) activeColor else Color.White.copy(alpha = 0.2f))
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = label,
-                tint = if (isActive) Color.Black else Color.White,
+                tint = if (isActive && activeColor == GreenCall) Color.Black else Color.White,
                 modifier = Modifier.size((size.value * 0.46f).dp)
             )
         }
