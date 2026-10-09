@@ -192,6 +192,13 @@ fun ChatConversationScreen(
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearChatDialog by remember { mutableStateOf(false) }
     var showMediaGalleryDialog by remember { mutableStateOf(false) }
+    var showBlockConfirmDialog by remember { mutableStateOf(false) }
+    var showSpamConfirmDialog by remember { mutableStateOf(false) }
+    val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
+    val spamNumbers by firebaseManager.spamNumbers.collectAsState()
+    val isBlocked = remember(normPeer, blockedNumbers, spamNumbers) {
+        firebaseManager.isNumberBlocked(normPeer)
+    }
     val wallpaperManager = remember { ChatWallpaperManager.getInstance(context) }
     val wallpaperConfig by wallpaperManager.config.collectAsState()
 
@@ -610,22 +617,30 @@ fun ChatConversationScreen(
                         }
                         var lastCallClickTime by remember { mutableStateOf(0L) }
                         IconButton(onClick = {
+                            if (isBlocked) {
+                                Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
+                                return@IconButton
+                            }
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
                                 onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
                             }
                         }) {
-                            Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = GreenCall)
+                            Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = if (isBlocked) Color.Gray else GreenCall)
                         }
                         IconButton(onClick = {
+                            if (isBlocked) {
+                                Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
+                                return@IconButton
+                            }
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
                                 onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
                             }
                         }) {
-                            Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = TealPrimary)
+                            Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = if (isBlocked) Color.Gray else TealPrimary)
                         }
                         Box {
                             IconButton(onClick = { showOptionsMenu = true }) {
@@ -656,14 +671,35 @@ fun ChatConversationScreen(
                                         showClearChatDialog = true
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Block contact") },
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        firebaseManager.blockNumber(normPeer)
-                                        Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
-                                    }
-                                )
+                                if (isBlocked) {
+                                    DropdownMenuItem(
+                                        text = { Text("Unblock contact") },
+                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = TealPrimary) },
+                                        onClick = {
+                                            showOptionsMenu = false
+                                            firebaseManager.unblockNumber(normPeer)
+                                            firebaseManager.unmarkSpam(normPeer)
+                                            Toast.makeText(context, "Contact unblocked", Toast.LENGTH_SHORT).show()
+                                        }
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = { Text("Block contact") },
+                                        leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                        onClick = {
+                                            showOptionsMenu = false
+                                            showBlockConfirmDialog = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Report spam") },
+                                        leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, tint = Color(0xFFFF9800)) },
+                                        onClick = {
+                                            showOptionsMenu = false
+                                            showSpamConfirmDialog = true
+                                        }
+                                    )
+                                }
                             }
                         }
                     },
@@ -1160,203 +1196,137 @@ fun ChatConversationScreen(
                 tonalElevation = 4.dp
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                    if (isRecording) {
-                        // Voice Recording UI
-                        IconButton(
-                            onClick = { voiceHelper.cancelRecording() },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.error)
-                        }
-
-                        Row(
+                    if (isBlocked) {
+                        Surface(
                             modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            // Pulsing recording indicator dot
-                            val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
-                            val pulseAlpha by infiniteTransition.animateFloat(
-                                initialValue = 0.35f,
-                                targetValue = 1f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(550, easing = LinearEasing),
-                                    repeatMode = RepeatMode.Reverse
-                                ),
-                                label = "pulse"
-                            )
-                            Box(
+                            Row(
                                 modifier = Modifier
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Red.copy(alpha = pulseAlpha))
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val seconds = (recordingDurationMs / 1000) % 60
-                            val minutes = (recordingDurationMs / 1000) / 60
-                            Text(
-                                text = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds),
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                color = Color.Red
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-
-                            // Animated live audio waveform spikes
-                            Canvas(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(28.dp)
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val barWidth = 3.dp.toPx()
-                                val barGap = 2.dp.toPx()
-                                val totalBarWidth = barWidth + barGap
-                                val maxBars = (size.width / totalBarWidth).toInt().coerceAtLeast(1)
-                                val samples = amplitudeSamples.takeLast(maxBars)
-                                val centerY = size.height / 2f
-
-                                samples.forEachIndexed { index, amp ->
-                                    val x = size.width - (samples.size - index) * totalBarWidth
-                                    val barHeight = (size.height * amp.coerceIn(0.12f, 1f)).coerceAtLeast(4.dp.toPx())
-                                    drawRoundRect(
-                                        color = GreenCall,
-                                        topLeft = androidx.compose.ui.geometry.Offset(x, centerY - barHeight / 2f),
-                                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
-                                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Block,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "You blocked this contact.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
-                            }
-                        }
-
-                        IconButton(
-                            onClick = {
-                                val result = voiceHelper.stopRecording()
-                                if (result != null) {
-                                    val (audioFile, duration) = result
-                                    coroutineScope.launch {
-                                        chatRepository.sendMessage(
-                                            recipientNumber = normPeer,
-                                            recipientName = peerDisplayName,
-                                            text = "",
-                                            mediaType = ChatMediaType.AUDIO,
-                                            mediaFile = audioFile,
-                                            mediaDurationMs = duration
-                                        )
-                                        listState.animateScrollToItem(0)
+                                TextButton(
+                                    onClick = {
+                                        firebaseManager.unblockNumber(normPeer)
+                                        firebaseManager.unmarkSpam(normPeer)
+                                        Toast.makeText(context, "Contact unblocked", Toast.LENGTH_SHORT).show()
                                     }
+                                ) {
+                                    Text("Unblock", color = TealPrimary, fontWeight = FontWeight.Bold)
                                 }
-                            },
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(GreenCall)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
+                            }
                         }
                     } else {
-                        // Emoji / Sticker / GIF Keyboard Toggle
-                        IconButton(
-                            onClick = {
-                                if (showMediaPicker) {
-                                    showMediaPicker = false
-                                    keyboardController?.show()
-                                } else {
-                                    keyboardController?.hide()
-                                    showMediaPicker = true
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                        if (isRecording) {
+                            // Voice Recording UI
+                            IconButton(
+                                onClick = { voiceHelper.cancelRecording() },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.error)
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Pulsing recording indicator dot
+                                val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
+                                val pulseAlpha by infiniteTransition.animateFloat(
+                                    initialValue = 0.35f,
+                                    targetValue = 1f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(550, easing = LinearEasing),
+                                        repeatMode = RepeatMode.Reverse
+                                    ),
+                                    label = "pulse"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Red.copy(alpha = pulseAlpha))
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                val seconds = (recordingDurationMs / 1000) % 60
+                                val minutes = (recordingDurationMs / 1000) / 60
+                                Text(
+                                    text = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds),
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = Color.Red
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+
+                                // Animated live audio waveform spikes
+                                Canvas(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(28.dp)
+                                ) {
+                                    val barWidth = 3.dp.toPx()
+                                    val barGap = 2.dp.toPx()
+                                    val totalBarWidth = barWidth + barGap
+                                    val maxBars = (size.width / totalBarWidth).toInt().coerceAtLeast(1)
+                                    val samples = amplitudeSamples.takeLast(maxBars)
+                                    val centerY = size.height / 2f
+
+                                    samples.forEachIndexed { index, amp ->
+                                        val x = size.width - (samples.size - index) * totalBarWidth
+                                        val barHeight = (size.height * amp.coerceIn(0.12f, 1f)).coerceAtLeast(4.dp.toPx())
+                                        drawRoundRect(
+                                            color = GreenCall,
+                                            topLeft = androidx.compose.ui.geometry.Offset(x, centerY - barHeight / 2f),
+                                            size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                                        )
+                                    }
                                 }
                             }
-                        ) {
-                            Text(
-                                text = if (showMediaPicker) "⌨️" else "😊",
-                                fontSize = 22.sp
-                            )
-                        }
 
-                        // Standard Input UI: Attachment button opens options (Camera, Gallery, Document)
-                        IconButton(onClick = { showAttachmentMenu = true }) {
-                            Icon(Icons.Default.AttachFile, contentDescription = "Attach", tint = TealPrimary)
-                        }
-
-                        OutlinedTextField(
-                            value = inputText,
-                            onValueChange = { text ->
-                                inputText = text
-                                chatRepository.setTyping(normPeer, text.isNotBlank())
-                                if (showMediaPicker) showMediaPicker = false
-                            },
-                            placeholder = {
-                                Text(
-                                    if (replyingTo != null) "Reply to ${replyingTo!!.senderLabel}…"
-                                    else "Message…"
-                                )
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 4.dp),
-                            shape = RoundedCornerShape(24.dp),
-                            maxLines = 4,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                unfocusedBorderColor = Color.Transparent,
-                                focusedBorderColor = TealPrimary
-                            )
-                        )
-
-                        if (editingMessage != null) {
                             IconButton(
                                 onClick = {
-                                    val textToEdit = inputText.trim()
-                                    if (textToEdit.isNotEmpty()) {
-                                        val targetId = editingMessage!!.id
-                                        editingMessage = null
-                                        inputText = ""
-                                        chatRepository.setTyping(normPeer, false)
+                                    val result = voiceHelper.stopRecording()
+                                    if (result != null) {
+                                        val (audioFile, duration) = result
                                         coroutineScope.launch {
-                                            val res = chatRepository.editMessage(targetId, textToEdit, normPeer)
-                                            if (res.isFailure) {
-                                                Toast.makeText(context, res.exceptionOrNull()?.message ?: "Failed to edit message", Toast.LENGTH_SHORT).show()
-                                            }
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(GreenCall)
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = "Save edit", tint = Color.White)
-                            }
-                        } else if (inputText.isNotBlank()) {
-                            IconButton(
-                                onClick = {
-                                    val textToSend = inputText.trim()
-                                    val currentReply = replyingTo
-                                    if (textToSend.isNotEmpty()) {
-                                        inputText = ""
-                                        replyingTo = null
-                                        showMediaPicker = false
-                                        dismissedTypingUrl = null
-                                        chatRepository.setTyping(normPeer, false)
-                                        coroutineScope.launch {
-                                            // Embed reply metadata in message text as JSON if replying
-                                            val payload = if (currentReply != null) {
-                                                """{"text":${escapeJson(textToSend)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
-                                            } else {
-                                                textToSend
-                                            }
-                                            chatRepository.markConversationAsRead(normPeer)
                                             chatRepository.sendMessage(
                                                 recipientNumber = normPeer,
                                                 recipientName = peerDisplayName,
-                                                text = payload,
-                                                mediaType = ChatMediaType.TEXT
+                                                text = "",
+                                                mediaType = ChatMediaType.AUDIO,
+                                                mediaFile = audioFile,
+                                                mediaDurationMs = duration
                                             )
                                             listState.animateScrollToItem(0)
                                         }
@@ -1367,28 +1337,138 @@ fun ChatConversationScreen(
                                     .clip(CircleShape)
                                     .background(GreenCall)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
                             }
                         } else {
+                            // Emoji / Sticker / GIF Keyboard Toggle
                             IconButton(
                                 onClick = {
-                                    val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                                        context,
-                                        android.Manifest.permission.RECORD_AUDIO
-                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-                                    if (hasMicPermission) {
-                                        voiceHelper.startRecording()
+                                    if (showMediaPicker) {
+                                        showMediaPicker = false
+                                        keyboardController?.show()
                                     } else {
-                                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                        keyboardController?.hide()
+                                        showMediaPicker = true
                                     }
+                                }
+                            ) {
+                                Text(
+                                    text = if (showMediaPicker) "⌨️" else "😊",
+                                    fontSize = 22.sp
+                                )
+                            }
+
+                            // Standard Input UI: Attachment button opens options (Camera, Gallery, Document)
+                            IconButton(onClick = { showAttachmentMenu = true }) {
+                                Icon(Icons.Default.AttachFile, contentDescription = "Attach", tint = TealPrimary)
+                            }
+
+                            OutlinedTextField(
+                                value = inputText,
+                                onValueChange = { text ->
+                                    inputText = text
+                                    chatRepository.setTyping(normPeer, text.isNotBlank())
+                                    if (showMediaPicker) showMediaPicker = false
+                                },
+                                placeholder = {
+                                    Text(
+                                        if (replyingTo != null) "Reply to ${replyingTo!!.senderLabel}…"
+                                        else "Message…"
+                                    )
                                 },
                                 modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(TealPrimary)
-                            ) {
-                                Icon(Icons.Default.Mic, contentDescription = "Record Voice Note", tint = Color.White)
+                                    .weight(1f)
+                                    .padding(horizontal = 4.dp),
+                                shape = RoundedCornerShape(24.dp),
+                                maxLines = 4,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedBorderColor = TealPrimary
+                                )
+                            )
+
+                            if (editingMessage != null) {
+                                IconButton(
+                                    onClick = {
+                                        val textToEdit = inputText.trim()
+                                        if (textToEdit.isNotEmpty()) {
+                                            val targetId = editingMessage!!.id
+                                            editingMessage = null
+                                            inputText = ""
+                                            chatRepository.setTyping(normPeer, false)
+                                            coroutineScope.launch {
+                                                val res = chatRepository.editMessage(targetId, textToEdit, normPeer)
+                                                if (res.isFailure) {
+                                                    Toast.makeText(context, res.exceptionOrNull()?.message ?: "Failed to edit message", Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(GreenCall)
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = "Save edit", tint = Color.White)
+                                }
+                            } else if (inputText.isNotBlank()) {
+                                IconButton(
+                                    onClick = {
+                                        val textToSend = inputText.trim()
+                                        val currentReply = replyingTo
+                                        if (textToSend.isNotEmpty()) {
+                                            inputText = ""
+                                            replyingTo = null
+                                            showMediaPicker = false
+                                            dismissedTypingUrl = null
+                                            chatRepository.setTyping(normPeer, false)
+                                            coroutineScope.launch {
+                                                val payload = if (currentReply != null) {
+                                                    """{"text":${escapeJson(textToSend)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                                                } else {
+                                                    textToSend
+                                                }
+                                                chatRepository.markConversationAsRead(normPeer)
+                                                chatRepository.sendMessage(
+                                                    recipientNumber = normPeer,
+                                                    recipientName = peerDisplayName,
+                                                    text = payload,
+                                                    mediaType = ChatMediaType.TEXT
+                                                )
+                                                listState.animateScrollToItem(0)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(GreenCall)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = {
+                                        val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                            context,
+                                            android.Manifest.permission.RECORD_AUDIO
+                                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                                        if (hasMicPermission) {
+                                            voiceHelper.startRecording()
+                                        } else {
+                                            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(TealPrimary)
+                                ) {
+                                    Icon(Icons.Default.Mic, contentDescription = "Record Voice Note", tint = Color.White)
+                                }
                             }
                         }
                     }
@@ -1467,6 +1547,78 @@ fun ChatConversationScreen(
                         ClearChatMode.TEXT_ONLY -> Toast.makeText(context, "Text messages cleared", Toast.LENGTH_SHORT).show()
                         ClearChatMode.BOTH -> Toast.makeText(context, "Chat and media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
                     }
+                }
+            }
+        )
+    }
+
+    // Block Contact Confirmation Dialog
+    if (showBlockConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showBlockConfirmDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.Block,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = { Text("Block $peerDisplayName?") },
+            text = {
+                Text("Blocked contacts will no longer be able to call you or send you messages.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        firebaseManager.blockNumber(normPeer)
+                        Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
+                        showBlockConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Block", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBlockConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Report Spam Confirmation Dialog
+    if (showSpamConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showSpamConfirmDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.Report,
+                    contentDescription = null,
+                    tint = Color(0xFFFF9800),
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = { Text("Report Spam & Block?") },
+            text = {
+                Text("Report $peerDisplayName ($normPeer) as spam and block them from calling or messaging you.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        firebaseManager.reportSpam(normPeer)
+                        Toast.makeText(context, "Reported as spam and blocked", Toast.LENGTH_SHORT).show()
+                        showSpamConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                ) {
+                    Text("Report Spam", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSpamConfirmDialog = false }) {
+                    Text("Cancel")
                 }
             }
         )

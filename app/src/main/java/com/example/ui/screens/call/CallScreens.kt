@@ -274,6 +274,7 @@ fun IncomingCallOverlay(
     callerNumber: String,
     profilePicUrl: String,
     callType: CallType,
+    isSpam: Boolean = false,
     onAnswer: () -> Unit,
     onDecline: () -> Unit
 ) {
@@ -311,15 +312,36 @@ fun IncomingCallOverlay(
                 Text(
                     text = "LKS DIALER ${callType.name} CALL",
                     style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 2.sp),
-                    color = GreenCall
+                    color = if (isSpam) Color(0xFFFF9800) else GreenCall
                 )
+
+                if (isSpam) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        color = Color(0xFFFF9800).copy(alpha = 0.25f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Report, contentDescription = null, tint = Color(0xFFFF9800), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Suspected Spam",
+                                color = Color(0xFFFF9800),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
                 Surface(
                     modifier = Modifier.size(110.dp),
                     shape = CircleShape,
-                    color = TealPrimary
+                    color = if (isSpam) Color(0xFFD32F2F) else TealPrimary
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(

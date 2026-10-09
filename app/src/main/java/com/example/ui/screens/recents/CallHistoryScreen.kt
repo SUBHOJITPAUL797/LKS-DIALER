@@ -68,10 +68,12 @@ fun CallHistoryScreen(
     val callLogs by firebaseManager.callLogs.collectAsState()
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
+    val spamNumbers by firebaseManager.spamNumbers.collectAsState()
     var selectedFilter by remember { mutableStateOf("ALL") }
     var selectedLogForDetail by remember { mutableStateOf<CallLogDto?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     var showBlockConfirmDialog by remember { mutableStateOf(false) }
+    var showSpamConfirmDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // 5-Second Inactivity Swipe Demo State
@@ -133,7 +135,7 @@ fun CallHistoryScreen(
         val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
             registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
         }
-        val isBlocked = remember(log.otherPartyNumber, blockedNumbers) {
+        val isBlocked = remember(log.otherPartyNumber, blockedNumbers, spamNumbers) {
             firebaseManager.isNumberBlocked(log.otherPartyNumber)
         }
 
@@ -325,11 +327,12 @@ fun CallHistoryScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Block / Unblock Action Button
+                // Block / Unblock / Spam Action Button
                 if (isBlocked) {
                     OutlinedButton(
                         onClick = {
                             firebaseManager.unblockNumber(log.otherPartyNumber)
+                            firebaseManager.unmarkSpam(log.otherPartyNumber)
                             Toast.makeText(context, "Unblocked ${matchedUser?.displayName ?: log.otherPartyName}", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -341,17 +344,35 @@ fun CallHistoryScreen(
                         Text("Unblock Caller", fontWeight = FontWeight.SemiBold)
                     }
                 } else {
-                    OutlinedButton(
-                        onClick = {
-                            showBlockConfirmDialog = true
-                        },
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Block Caller", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                        OutlinedButton(
+                            onClick = {
+                                showBlockConfirmDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.Block, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Block", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showSpamConfirmDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF9800))
+                        ) {
+                            Icon(Icons.Default.Report, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color(0xFFFF9800))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Report Spam", color = Color(0xFFFF9800), fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -390,6 +411,44 @@ fun CallHistoryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showBlockConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showSpamConfirmDialog && selectedLogForDetail != null) {
+        val targetLog = selectedLogForDetail!!
+        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
+        val targetName = targetUser?.displayName ?: targetLog.otherPartyName
+        AlertDialog(
+            onDismissRequest = { showSpamConfirmDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.Report,
+                    contentDescription = null,
+                    tint = Color(0xFFFF9800),
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = { Text("Report $targetName as Spam?") },
+            text = {
+                Text("This number (${targetLog.otherPartyNumber}) will be blocked, future calls will be suppressed, and a spam report will be submitted to protect the community.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        firebaseManager.reportSpam(targetLog.otherPartyNumber, "Reported from Call History")
+                        Toast.makeText(context, "Reported $targetName as spam and blocked", Toast.LENGTH_SHORT).show()
+                        showSpamConfirmDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                ) {
+                    Text("Report & Block", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSpamConfirmDialog = false }) {
                     Text("Cancel")
                 }
             }
@@ -563,8 +622,11 @@ fun CallHistoryScreen(
                     val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
                         registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
                     }
-                    val isBlocked = remember(log.otherPartyNumber, blockedNumbers) {
-                        blockedNumbers.any { it == log.otherPartyNumber || ContactsHelper.numbersMatch(it, log.otherPartyNumber) }
+                    val isBlocked = remember(log.otherPartyNumber, blockedNumbers, spamNumbers) {
+                        firebaseManager.isNumberBlocked(log.otherPartyNumber)
+                    }
+                    val isSpam = remember(log.otherPartyNumber, spamNumbers) {
+                        firebaseManager.isNumberSpam(log.otherPartyNumber)
                     }
                     val isFirstItem = index == 0
                     val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
@@ -573,6 +635,7 @@ fun CallHistoryScreen(
                         log = log,
                         profilePicBase64 = matchedUser?.profilePictureUrl ?: "",
                         isBlocked = isBlocked,
+                        isSpam = isSpam,
                         demoOffset = currentOffset,
                         onItemClick = {
                             lastInteractionTime = System.currentTimeMillis()
@@ -613,6 +676,7 @@ private fun SwipeableCallLogItem(
     log: CallLogDto,
     profilePicBase64: String,
     isBlocked: Boolean = false,
+    isSpam: Boolean = false,
     demoOffset: Float,
     onItemClick: () -> Unit,
     onAudioCall: () -> Unit,
@@ -677,6 +741,7 @@ private fun SwipeableCallLogItem(
                     log = log,
                     profilePicBase64 = profilePicBase64,
                     isBlocked = isBlocked,
+                    isSpam = isSpam,
                     onItemClick = onItemClick
                 )
             }
@@ -736,6 +801,7 @@ private fun SwipeableCallLogItem(
                         log = log,
                         profilePicBase64 = profilePicBase64,
                         isBlocked = isBlocked,
+                        isSpam = isSpam,
                         onItemClick = onItemClick
                     )
                 }
@@ -749,6 +815,7 @@ private fun CallLogItemContent(
     log: CallLogDto,
     profilePicBase64: String,
     isBlocked: Boolean = false,
+    isSpam: Boolean = false,
     onItemClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
@@ -839,7 +906,7 @@ private fun CallLogItemContent(
                     }
                 }
 
-                if (isBlocked) {
+                if (isBlocked && !isSpam) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
@@ -849,6 +916,21 @@ private fun CallLogItemContent(
                             text = "Blocked",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+
+                if (isSpam) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                        color = Color(0xFFFF9800).copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "Spam",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFFFF9800),
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                         )
                     }

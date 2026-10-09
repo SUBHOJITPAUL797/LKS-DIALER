@@ -534,6 +534,11 @@ class ChatRepository private constructor(private val context: Context) {
             // STEP 1: Decrypt message payload
             val decryptedRaw = cryptoManager.decrypt(dto.ciphertext, dto.iv, dto.senderPublicKey)
             val senderNorm = ContactsHelper.normalizePhoneNumber(dto.senderNumber)
+            if (FirebaseManager.getInstance(context).isNumberBlocked(senderNorm)) {
+                Log.d(TAG, "🚫 Suppressing incoming message from blocked/spam sender: $senderNorm")
+                try { docRef.delete().await() } catch (_: Exception) {}
+                return
+            }
             val senderLast10 = senderNorm.filter { it.isDigit() }.takeLast(10)
             val isCurrentPeer = isUserActivelyViewingPeer(senderNorm)
 
@@ -2806,6 +2811,10 @@ class ChatRepository private constructor(private val context: Context) {
         val mediaType = data["mediaType"] ?: "TEXT"
         val callerProfilePic = data["callerProfilePic"] ?: data["profilePictureUrl"] ?: ""
         val senderNorm = ContactsHelper.normalizePhoneNumber(senderNumber)
+        if (FirebaseManager.getInstance(context).isNumberBlocked(senderNorm)) {
+            Log.d(TAG, "🚫 Suppressing push message from blocked/spam sender: $senderNorm")
+            return@withContext
+        }
 
         Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
 

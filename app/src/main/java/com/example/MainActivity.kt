@@ -646,7 +646,15 @@ class MainActivity : ComponentActivity() {
                         val chatPeer = incoming.getStringExtra("chat_peer_number")
                         if (!chatPeer.isNullOrBlank()) {
                             chatPeerNumber = chatPeer
-                            chatPeerName = incoming.getStringExtra("chat_peer_name") ?: chatPeer
+                            val peerUser = firebaseManager.lookupUserByNumber(chatPeer)
+                            chatPeerName = incoming.getStringExtra("chat_peer_name")
+                                ?: peerUser?.displayName?.takeIf { it.isNotBlank() }
+                                ?: chatPeer
+                            chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
+                            val prefill = incoming.getStringExtra("prefill_text")
+                            if (!prefill.isNullOrBlank()) {
+                                pendingSharedText = prefill
+                            }
                             navState = AppNavState.CHAT_CONVERSATION
                         }
 
@@ -1107,6 +1115,7 @@ class MainActivity : ComponentActivity() {
                                             callerNumber = activeCall.callerNumber,
                                             profilePicUrl = otherPartyProfilePic,
                                             callType = activeCall.callType,
+                                            isSpam = firebaseManager.isNumberSpam(activeCall.callerNumber),
                                             onAnswer = { webRtcEngine.answerCall() },
                                             onDecline = {
                                                 firebaseManager.logCall(

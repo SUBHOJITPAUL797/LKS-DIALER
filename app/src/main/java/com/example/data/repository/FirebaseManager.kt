@@ -58,6 +58,11 @@ class FirebaseManager private constructor(private val context: Context) {
     )
     val blockedNumbers: StateFlow<List<String>> = _blockedNumbers.asStateFlow()
 
+    private val _spamNumbers = MutableStateFlow<List<String>>(
+        (prefs.getStringSet("spam_numbers", emptySet()) ?: emptySet()).toList()
+    )
+    val spamNumbers: StateFlow<List<String>> = _spamNumbers.asStateFlow()
+
     private val _linkedDevices = MutableStateFlow<List<LinkedDeviceDto>>(emptyList())
     val linkedDevices: StateFlow<List<LinkedDeviceDto>> = _linkedDevices.asStateFlow()
 
@@ -374,6 +379,22 @@ class FirebaseManager private constructor(private val context: Context) {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Message Action: directly opens chat with "Sorry, I missed your call"
+        val messageIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
+            action = "com.example.ACTION_MESSAGE_MISSED_CALL_$notifId"
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("chat_peer_number", callerNumber)
+            putExtra("chat_peer_name", resolvedName)
+            putExtra("prefill_text", "Sorry, I missed your call")
+            putExtra("notification_id", notifId)
+        }
+        val messagePendingIntent = android.app.PendingIntent.getActivity(
+            context,
+            notifId + 2,
+            messageIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
         val callTypeLabel = if (callType == CallType.VIDEO) "Video" else "Audio"
         val notification = androidx.core.app.NotificationCompat.Builder(context, "missed_call_channel")
             .setSmallIcon(android.R.drawable.sym_call_missed)
@@ -386,6 +407,11 @@ class FirebaseManager private constructor(private val context: Context) {
                 android.R.drawable.sym_action_call,
                 "Call Back",
                 callBackPendingIntent
+            )
+            .addAction(
+                android.R.drawable.sym_action_chat,
+                "Message",
+                messagePendingIntent
             )
             .build()
 
@@ -727,12 +753,62 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     /**
-     * Checks if a phone number is blocked by the user.
+     * Checks if a phone number is blocked or flagged as spam by the user.
      */
     fun isNumberBlocked(phoneNumber: String): Boolean {
         if (phoneNumber.isBlank()) return false
         val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
-        return _blockedNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
+        return _blockedNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) } ||
+               _spamNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
+    }
+
+    /**
+     * Checks if a phone number is specifically flagged as spam.
+     */
+    fun isNumberSpam(phoneNumber: String): Boolean {
+        if (phoneNumber.isBlank()) return false
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        return _spamNumbers.value.any { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
+    }
+
+    /**
+     * Marks a number as spam, blocks it from future calls/messages, and reports to community database.
+     */
+    fun reportSpam(phoneNumber: String, reason: String = "Spam / Telemarketer") {
+        if (phoneNumber.isBlank()) return
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val currentSet = prefs.getStringSet("spam_numbers", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (currentSet.add(clean)) {
+            prefs.edit().putStringSet("spam_numbers", currentSet).apply()
+            val newList = currentSet.toList()
+            _spamNumbers.value = newList
+            blockNumber(phoneNumber)
+            if (_isFirebaseConfigured.value) {
+                try {
+                    val reportData = mapOf(
+                        "reportedNumber" to clean,
+                        "reporterPhone" to (_currentUser.value?.phoneNumber ?: ""),
+                        "reason" to reason,
+                        "timestamp" to System.currentTimeMillis()
+                    )
+                    FirebaseFirestore.getInstance().collection("spam_reports").add(reportData)
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /**
+     * Removes a phone number from the spam list.
+     */
+    fun unmarkSpam(phoneNumber: String) {
+        val clean = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val currentSet = prefs.getStringSet("spam_numbers", emptySet())?.toMutableSet() ?: mutableSetOf()
+        val toRemove = currentSet.filter { it == clean || ContactsHelper.numbersMatch(it, phoneNumber) }
+        if (toRemove.isNotEmpty()) {
+            currentSet.removeAll(toRemove.toSet())
+            prefs.edit().putStringSet("spam_numbers", currentSet).apply()
+            _spamNumbers.value = currentSet.toList()
+        }
     }
 
     /**
