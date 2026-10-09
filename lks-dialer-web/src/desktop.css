@@ -187,3 +187,61 @@
     width: 270px;
   }
 }
+
+/* ==========================================================================
+   🌐 WhatsApp Web Style Onboarding Layout (Desktop Benchmark)
+   ========================================================================== */
+.app-container.onboarding-mode {
+  flex-direction: column !important;
+  width: 100vw;
+  height: 100dvh;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  background-color: #F0F2F5;
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+@media (min-width: 768px) {
+  .desktop-onboarding-wrapper {
+    width: 100%;
+    min-height: 100%;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+  }
+
+  .desktop-onboarding-top-band {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 222px;
+    background: linear-gradient(135deg, #008069 0%, #00a884 100%);
+    box-shadow: 0 4px 20px rgba(0, 128, 105, 0.18);
+    z-index: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 28px 24px 0;
+  }
+
+  .desktop-onboarding-card {
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    max-width: 1040px;
+    background: #ffffff;
+    border-radius: 20px;
+    box-shadow: 0 16px 48px -12px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+    margin: 80px auto 40px;
+    display: flex;
+    flex-direction: column;
+  }
+}
+

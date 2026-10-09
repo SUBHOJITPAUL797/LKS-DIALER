@@ -217,5 +217,15 @@ service cloud.firestore {
     match /p2p_transfers/{document=**} {
       allow read, write: if true;
     }
+
+    // 14. LKS DIALER - QR Web Login Sessions
+    match /qr_sessions/{document=**} {
+      allow read, write: if true;
+    }
+
+    // 15. LKS DIALER - E2EE Group Chats
+    match /groups/{document=**} {
+      allow read, write: if true;
+    }
   }
 }

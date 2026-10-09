@@ -117,7 +117,19 @@ data class ChatMessageDto(
     val mediaType: String = "TEXT",
     val mediaDurationMs: Long = 0L,
     val timestamp: Long = 0L,
-    val expiresAt: Long = 0L
+    val expiresAt: Long = 0L,
+    val groupId: String? = null,
+    val groupName: String? = null,
+    val senderName: String? = null
+)
+
+data class GroupDto(
+    val groupId: String = "",
+    val name: String = "",
+    val adminPhone: String = "",
+    val members: List<String> = emptyList(),
+    val createdTimestamp: Long = 0L,
+    val iconUrl: String = ""
 )
 
 data class ChatReceiptDto(

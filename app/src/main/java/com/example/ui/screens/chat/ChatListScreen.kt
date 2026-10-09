@@ -61,6 +61,7 @@ fun ChatListScreen(
 
     var searchQuery by remember { mutableStateOf("") }
     var showNewChatDialog by remember { mutableStateOf(false) }
+    var showNewGroupDialog by remember { mutableStateOf(false) }
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearAllConfirm by remember { mutableStateOf(false) }
     var selectedConversationForOptions by remember { mutableStateOf<ConversationEntity?>(null) }
@@ -108,6 +109,14 @@ fun ChatListScreen(
                             expanded = showOptionsMenu,
                             onDismissRequest = { showOptionsMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("New Group") },
+                                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    showNewGroupDialog = true
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Linked Devices") },
                                 leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = TealPrimary) },
@@ -290,7 +299,30 @@ fun ChatListScreen(
                 showNewChatDialog = false
                 onOpenConversation(phone, name, avatar)
             },
+            onOpenNewGroup = {
+                showNewChatDialog = false
+                showNewGroupDialog = true
+            },
             onDismiss = { showNewChatDialog = false }
+        )
+    }
+
+    if (showNewGroupDialog) {
+        NewGroupDialog(
+            registeredUsers = registeredUsers,
+            syncedContacts = syncedContacts,
+            onCreateGroup = { name, selectedMembers ->
+                showNewGroupDialog = false
+                coroutineScope.launch {
+                    val result = chatRepository.createGroup(name, selectedMembers)
+                    result.onSuccess { group ->
+                        onOpenConversation(group.groupId, group.name, "")
+                    }.onFailure { err ->
+                        Toast.makeText(context, "Failed to create group: ${err.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onDismiss = { showNewGroupDialog = false }
         )
     }
 
@@ -443,15 +475,29 @@ private fun ConversationItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = conversation.contactName,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = if (conversation.unreadCount > 0 || isInActiveCall) FontWeight.Bold else FontWeight.SemiBold
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (conversation.isGroup) {
+                        Icon(
+                            Icons.Default.People,
+                            contentDescription = "Group",
+                            tint = TealPrimary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .padding(end = 4.dp)
+                        )
+                    }
+                    Text(
+                        text = conversation.contactName,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = if (conversation.unreadCount > 0 || isInActiveCall) FontWeight.Bold else FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (conversation.disappearingDuration > 0L) {
                         Icon(
@@ -599,6 +645,7 @@ private fun NewChatPickerModal(
     registeredUsers: List<UserDto>,
     syncedContacts: List<ContactDto>,
     onUserSelected: (phone: String, name: String, avatarUrl: String) -> Unit,
+    onOpenNewGroup: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var manualPhone by remember { mutableStateOf("") }
@@ -673,6 +720,30 @@ private fun NewChatPickerModal(
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // New Group Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onOpenNewGroup() }
+                    .padding(vertical = 8.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    modifier = Modifier.size(40.dp),
+                    shape = CircleShape,
+                    color = TealPrimary.copy(alpha = 0.15f)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary, modifier = Modifier.size(22.dp))
+                    }
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text("New Group", fontWeight = FontWeight.Bold, color = TealPrimary, style = MaterialTheme.typography.titleMedium)
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
             Text(
                 text = "Contacts (${eligibleContacts.size})",
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
@@ -738,6 +809,157 @@ fun formatChatTimestamp(timestamp: Long): String {
         }
         else -> {
             SimpleDateFormat("dd/MM/yy", Locale.getDefault()).format(Date(timestamp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewGroupDialog(
+    registeredUsers: List<UserDto>,
+    syncedContacts: List<ContactDto>,
+    onCreateGroup: (name: String, members: List<String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var groupName by remember { mutableStateOf("") }
+    val selectedMembers = remember { mutableStateListOf<String>() }
+    var filterQuery by remember { mutableStateOf("") }
+
+    val eligibleContacts = remember(registeredUsers, syncedContacts, filterQuery) {
+        val merged = mutableMapOf<String, String>() // normalizedPhone -> Name
+        registeredUsers.forEach { user ->
+            if (user.phoneNumber.isNotBlank()) {
+                merged[user.phoneNumber] = user.displayName.ifBlank { user.phoneNumber }
+            }
+        }
+        syncedContacts.forEach { contact ->
+            if (contact.phoneNumber.isNotBlank() && !merged.containsKey(contact.phoneNumber)) {
+                merged[contact.phoneNumber] = contact.name.ifBlank { contact.phoneNumber }
+            }
+        }
+        if (filterQuery.isBlank()) merged.toList()
+        else merged.toList().filter { (phone, name) ->
+            name.contains(filterQuery, ignoreCase = true) || phone.contains(filterQuery)
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        dragHandle = { BottomSheetDefaults.DragHandle() },
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "New Group",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = TealPrimary
+                )
+                Button(
+                    onClick = {
+                        if (groupName.isNotBlank() && selectedMembers.isNotEmpty()) {
+                            onCreateGroup(groupName.trim(), selectedMembers.toList())
+                        }
+                    },
+                    enabled = groupName.isNotBlank() && selectedMembers.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenCall)
+                ) {
+                    Text("Create (${selectedMembers.size})", fontWeight = FontWeight.Bold)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            OutlinedTextField(
+                value = groupName,
+                onValueChange = { groupName = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Group subject (e.g. Family, Team)...") },
+                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = filterQuery,
+                onValueChange = { filterQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search contacts to add...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = "Add participants (${selectedMembers.size} selected)",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 300.dp)
+            ) {
+                items(eligibleContacts, key = { it.first }) { (phone, name) ->
+                    val isSelected = selectedMembers.contains(phone)
+                    val contactUser = remember(phone, registeredUsers) {
+                        registeredUsers.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, phone) }
+                    }
+                    val contactObj = remember(phone, syncedContacts) {
+                        syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, phone) }
+                    }
+                    val pic = remember(contactUser, contactObj) {
+                        contactUser?.profilePictureUrl?.ifBlank { null } ?: contactObj?.profilePictureUrl ?: ""
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (isSelected) selectedMembers.remove(phone)
+                                else selectedMembers.add(phone)
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ChatAvatar(
+                            name = name,
+                            profilePic = pic,
+                            size = 40.dp,
+                            fontSize = 16.sp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                            Text(text = phone, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Checkbox(
+                            checked = isSelected,
+                            onCheckedChange = { checked ->
+                                if (checked) selectedMembers.add(phone)
+                                else selectedMembers.remove(phone)
+                            },
+                            colors = CheckboxDefaults.colors(checkedColor = TealPrimary)
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -22,6 +22,7 @@ import com.example.data.crypto.ChatCryptoManager
 import com.example.data.local.*
 import com.example.data.model.ChatMessageDto
 import com.example.data.model.ChatReceiptDto
+import com.example.data.model.GroupDto
 import com.example.data.model.UserDto
 import com.example.data.p2p.FileTransferProgress
 import com.example.data.p2p.P2pFileTransfer
@@ -1011,8 +1012,11 @@ class ChatRepository private constructor(private val context: Context) {
                 ?: senderNorm
             val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
 
-            val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
-            val targetConvPhone = existingConv?.phoneNumber ?: senderNorm
+            val isGroupMsg = !dto.groupId.isNullOrBlank()
+            val groupTargetId = dto.groupId ?: senderNorm
+            val existingConv = if (isGroupMsg) conversationDao.getConversation(groupTargetId) else conversationDao.getConversation(senderNorm, senderLast10)
+            val targetConvPhone = existingConv?.phoneNumber ?: groupTargetId
+            val finalContactName = if (isGroupMsg) (dto.groupName ?: existingConv?.contactName ?: "Group") else resolvedName
             val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
 
             // STEP 2: Save to local Room DB
@@ -1020,7 +1024,7 @@ class ChatRepository private constructor(private val context: Context) {
                 id = dto.messageId,
                 conversationId = targetConvPhone,
                 senderNumber = dto.senderNumber,
-                recipientNumber = dto.recipientNumber,
+                recipientNumber = targetConvPhone,
                 text = displayText,
                 mediaType = dto.mediaType,
                 mediaPath = localMediaPath,
@@ -1028,7 +1032,8 @@ class ChatRepository private constructor(private val context: Context) {
                 timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                 status = if (isCurrentPeer) MessageStatus.READ.name else initialStatus,
                 isOutgoing = false,
-                expiresAt = dto.expiresAt
+                expiresAt = dto.expiresAt,
+                senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null
             )
             messageDao.insertMessage(messageEntity)
 
@@ -1041,16 +1046,17 @@ class ChatRepository private constructor(private val context: Context) {
                 } catch (_: Exception) { displayText }
             } else displayText
 
+            val previewPrefix = if (isGroupMsg) "${dto.senderName ?: resolvedName}: " else ""
             val convEntity = ConversationEntity(
                 phoneNumber = targetConvPhone,
-                contactName = resolvedName,
-                profilePicUrl = profilePic,
+                contactName = finalContactName,
+                profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic,
                 lastMessageText = when (dto.mediaType) {
-                    ChatMediaType.IMAGE.name -> if (displayText.startsWith("[gif:")) "🎬 GIF" else "📷 Photo"
-                    ChatMediaType.AUDIO.name -> "🎤 Voice message"
-                    ChatMediaType.DOCUMENT.name -> "📄 $displayText"
-                    ChatMediaType.STICKER.name -> "🦄 Sticker"
-                    else -> notificationDisplayText
+                    ChatMediaType.IMAGE.name -> "$previewPrefix${if (displayText.startsWith("[gif:")) "🎬 GIF" else "📷 Photo"}"
+                    ChatMediaType.AUDIO.name -> "$previewPrefix🎤 Voice message"
+                    ChatMediaType.DOCUMENT.name -> "$previewPrefix📄 $displayText"
+                    ChatMediaType.STICKER.name -> "$previewPrefix🦄 Sticker"
+                    else -> "$previewPrefix$notificationDisplayText"
                 },
                 lastMessageType = dto.mediaType,
                 lastMessageTimestamp = messageEntity.timestamp,
@@ -1058,7 +1064,9 @@ class ChatRepository private constructor(private val context: Context) {
                 lastMessageIsOutgoing = false,
                 unreadCount = unreadCount,
                 isPinned = existingConv?.isPinned ?: false,
-                disappearingDuration = existingConv?.disappearingDuration ?: 0L
+                disappearingDuration = existingConv?.disappearingDuration ?: 0L,
+                isGroup = isGroupMsg || (existingConv?.isGroup ?: false),
+                groupAdminPhone = existingConv?.groupAdminPhone
             )
             conversationDao.upsertConversation(convEntity)
 
@@ -1083,14 +1091,14 @@ class ChatRepository private constructor(private val context: Context) {
             } else {
                 // STEP 5: Always show notification if conversation is NOT open in foreground
                 showIncomingMessageNotification(
-                    senderNumber = senderNorm,
-                    senderName = resolvedName,
+                    senderNumber = targetConvPhone,
+                    senderName = finalContactName,
                     messageText = when (dto.mediaType) {
-                        ChatMediaType.IMAGE.name -> if (displayText.startsWith("[gif:")) "🎬 GIF" else if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"
-                        ChatMediaType.AUDIO.name -> "🎤 Voice message"
-                        ChatMediaType.DOCUMENT.name -> "📄 $displayText"
-                        ChatMediaType.STICKER.name -> "🦄 Sticker"
-                        else -> notificationDisplayText
+                        ChatMediaType.IMAGE.name -> "$previewPrefix${if (displayText.startsWith("[gif:")) "🎬 GIF" else if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"}"
+                        ChatMediaType.AUDIO.name -> "$previewPrefix🎤 Voice message"
+                        ChatMediaType.DOCUMENT.name -> "$previewPrefix📄 $displayText"
+                        ChatMediaType.STICKER.name -> "$previewPrefix🦄 Sticker"
+                        else -> "$previewPrefix$notificationDisplayText"
                     },
                     messageType = dto.mediaType
                 )
@@ -1226,11 +1234,12 @@ class ChatRepository private constructor(private val context: Context) {
             ?: prefs.getString("user_phone", null)
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
-        val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
-        val recipientLast10 = normRecipient.filter { it.isDigit() }.takeLast(10)
+        val isGroup = recipientNumber.startsWith("group_") || (conversationDao.getConversation(recipientNumber)?.isGroup == true)
+        val normRecipient = if (isGroup) recipientNumber else ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val recipientLast10 = if (isGroup) "" else normRecipient.filter { it.isDigit() }.takeLast(10)
         val firebaseManager = FirebaseManager.getInstance(context)
-        val targetUser = firebaseManager.lookupUserByNumber(recipientNumber)
-        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
+        val targetUser = if (isGroup) null else firebaseManager.lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = if (isGroup) recipientNumber else (targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient)
 
         val messageId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
@@ -1241,15 +1250,20 @@ class ChatRepository private constructor(private val context: Context) {
         } catch (_: Exception) {}
 
         // 1. Resolve Recipient's Public Key
-        val recipientPublicKey = targetUser?.publicKey?.takeIf { it.isNotBlank() }
-            ?: resolvePeerPublicKey(canonicalRecipient)
-            ?: return@withContext Result.failure(IllegalStateException("Recipient does not have E2EE key registered"))
+        val recipientPublicKey = if (!isGroup) {
+            targetUser?.publicKey?.takeIf { it.isNotBlank() }
+                ?: resolvePeerPublicKey(canonicalRecipient)
+                ?: return@withContext Result.failure(IllegalStateException("Recipient does not have E2EE key registered"))
+        } else ""
 
         // 2. Prepare Payload and Media
         var payloadToEncrypt = text
         var localSavedPath: String? = null
 
         if (mediaFile != null && mediaFile.exists()) {
+            if (isGroup) {
+                return@withContext Result.failure(IllegalStateException("Group media sharing is not supported yet"))
+            }
             val isAudio = mediaType == ChatMediaType.AUDIO
             val isImage = mediaType == ChatMediaType.IMAGE
             val isSticker = mediaType == ChatMediaType.STICKER
@@ -1756,6 +1770,101 @@ class ChatRepository private constructor(private val context: Context) {
             return@withContext Result.success(messageEntity)
         }
 
+        if (isGroup) {
+            val group = getGroup(canonicalRecipient)
+            val groupName = group?.name ?: recipientName.ifBlank { "Group" }
+            val myDisplayName = firebaseManager.currentUser.value?.displayName ?: myPhone
+            val members = (group?.members ?: emptyList()).filter { it != myPhone }
+
+            val existingConv = conversationDao.getConversation(canonicalRecipient)
+            val disappearingDuration = existingConv?.disappearingDuration ?: 0L
+            val expiresAt = if (disappearingDuration > 0L) now + disappearingDuration else 0L
+
+            val messageEntity = MessageEntity(
+                id = messageId,
+                conversationId = canonicalRecipient,
+                senderNumber = myPhone,
+                recipientNumber = canonicalRecipient,
+                text = text,
+                mediaType = mediaType.name,
+                mediaPath = localSavedPath,
+                mediaDurationMs = mediaDurationMs,
+                timestamp = now,
+                status = MessageStatus.SENT.name,
+                isOutgoing = true,
+                expiresAt = expiresAt,
+                senderName = myDisplayName
+            )
+            messageDao.insertMessage(messageEntity)
+
+            val convEntity = ConversationEntity(
+                phoneNumber = canonicalRecipient,
+                contactName = groupName,
+                profilePicUrl = group?.iconUrl ?: existingConv?.profilePicUrl ?: "",
+                lastMessageText = extractCleanText(text),
+                lastMessageType = mediaType.name,
+                lastMessageTimestamp = now,
+                lastMessageStatus = MessageStatus.SENT.name,
+                lastMessageIsOutgoing = true,
+                unreadCount = existingConv?.unreadCount ?: 0,
+                isPinned = existingConv?.isPinned ?: false,
+                disappearingDuration = disappearingDuration,
+                isGroup = true,
+                groupAdminPhone = group?.adminPhone ?: existingConv?.groupAdminPhone
+            )
+            conversationDao.upsertConversation(convEntity)
+
+            val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+
+            // Fan out pairwise to each group member
+            for (memberPhone in members) {
+                try {
+                    val memberKey = resolvePeerPublicKey(memberPhone)
+                    if (memberKey.isNullOrBlank()) {
+                        Log.w(TAG, "Group member $memberPhone has no public key registered, skipping")
+                        continue
+                    }
+                    val (ciphertext, iv) = cryptoManager.encrypt(payloadToEncrypt, memberKey)
+                    val chatDto = ChatMessageDto(
+                        messageId = messageId,
+                        senderNumber = myPhone,
+                        recipientNumber = memberPhone,
+                        senderPublicKey = myPublicKey,
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = mediaType.name,
+                        mediaDurationMs = mediaDurationMs,
+                        timestamp = now,
+                        expiresAt = expiresAt,
+                        groupId = canonicalRecipient,
+                        groupName = groupName,
+                        senderName = myDisplayName
+                    )
+
+                    firestore.collection("inboxes")
+                        .document(memberPhone)
+                        .collection("messages")
+                        .document(messageId)
+                        .set(chatDto)
+                        .addOnFailureListener { e ->
+                            Log.w(TAG, "Failed fanout message to $memberPhone: ${e.message}")
+                        }
+
+                    sendFcmWakeup(
+                        recipientPhone = memberPhone,
+                        senderPhone = myPhone,
+                        previewText = "$myDisplayName: $text",
+                        mediaType = mediaType.name,
+                        messageId = messageId
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error fanning out to member $memberPhone: ${e.message}")
+                }
+            }
+
+            return@withContext Result.success(messageEntity)
+        }
+
         // 3. Encrypt via ChatCryptoManager
         val (ciphertext, iv) = cryptoManager.encrypt(payloadToEncrypt, recipientPublicKey)
         val myPublicKey = cryptoManager.getMyPublicKeyBase64()
@@ -1947,7 +2056,8 @@ class ChatRepository private constructor(private val context: Context) {
             ?: prefs.getString("user_phone", null)
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
-        val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val isGroup = recipientNumber.startsWith("group_")
+        val normRecipient = if (isGroup) recipientNumber else ContactsHelper.normalizePhoneNumber(recipientNumber)
 
         // 1. Update Room DB locally (preserve replyTo if present)
         val textToSave = try {
@@ -1967,6 +2077,45 @@ class ChatRepository private constructor(private val context: Context) {
         val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
         if (lastMsg != null && lastMsg.id == originalMessageId) {
             conversationDao.updateLastMessageText(normRecipient, newText)
+        }
+
+        if (isGroup) {
+            val group = getGroup(recipientNumber)
+            val members = (group?.members ?: emptyList()).filter { it != myPhone }
+            val payload = JSONObject().apply {
+                put("type", "MESSAGE_EDIT")
+                put("originalMessageId", originalMessageId)
+                put("newText", newText)
+                put("editedAt", System.currentTimeMillis())
+            }.toString()
+            val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+            for (memberPhone in members) {
+                try {
+                    val memberKey = resolvePeerPublicKey(memberPhone) ?: continue
+                    val (ciphertext, iv) = cryptoManager.encrypt(payload, memberKey)
+                    val editPacketId = UUID.randomUUID().toString()
+                    val chatDto = ChatMessageDto(
+                        messageId = editPacketId,
+                        senderNumber = myPhone,
+                        recipientNumber = memberPhone,
+                        senderPublicKey = myPublicKey,
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = ChatMediaType.EDIT.name,
+                        timestamp = System.currentTimeMillis(),
+                        groupId = recipientNumber,
+                        groupName = group?.name
+                    )
+                    firestore.collection("inboxes")
+                        .document(memberPhone)
+                        .collection("messages")
+                        .document(editPacketId)
+                        .set(chatDto)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to fanout edit to $memberPhone: ${e.message}")
+                }
+            }
+            return@withContext Result.success(Unit)
         }
 
         // 3. Resolve recipient public key and encrypt edit packet
@@ -2046,9 +2195,10 @@ class ChatRepository private constructor(private val context: Context) {
         val tombstone = "🚫 You deleted this message"
         messageDao.markMessageDeletedForEveryone(messageId, tombstone)
 
-        val normRecipient = ContactsHelper.normalizePhoneNumber(recipientNumber)
-        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(recipientNumber)
-        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient
+        val isGroup = recipientNumber.startsWith("group_")
+        val normRecipient = if (isGroup) recipientNumber else ContactsHelper.normalizePhoneNumber(recipientNumber)
+        val targetUser = if (isGroup) null else FirebaseManager.getInstance(context).lookupUserByNumber(recipientNumber)
+        val canonicalRecipient = if (isGroup) recipientNumber else (targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: normRecipient)
 
         // 3. Update conversation summary if this was the last message
         val lastMsg = messageDao.getLastMessageForConversation(normRecipient)
@@ -2056,11 +2206,49 @@ class ChatRepository private constructor(private val context: Context) {
             conversationDao.updateLastMessageText(normRecipient, tombstone)
         }
 
-        // 4. Send ephemeral DELETE packet to peer
+        // 4. Send ephemeral DELETE packet to peer / group
         val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
             ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
             ?: prefs.getString("user_phone", null)
+
+        if (myPhone != null && isGroup) {
+            val group = getGroup(recipientNumber)
+            val members = (group?.members ?: emptyList()).filter { it != myPhone }
+            val payload = JSONObject().apply {
+                put("type", "MESSAGE_DELETE")
+                put("targetMessageId", messageId)
+                put("deletedAt", System.currentTimeMillis())
+            }.toString()
+            val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+            for (memberPhone in members) {
+                try {
+                    val memberKey = resolvePeerPublicKey(memberPhone) ?: continue
+                    val (ciphertext, iv) = cryptoManager.encrypt(payload, memberKey)
+                    val deletePacketId = UUID.randomUUID().toString()
+                    val chatDto = ChatMessageDto(
+                        messageId = deletePacketId,
+                        senderNumber = myPhone,
+                        recipientNumber = memberPhone,
+                        senderPublicKey = myPublicKey,
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = ChatMediaType.DELETE.name,
+                        timestamp = System.currentTimeMillis(),
+                        groupId = recipientNumber,
+                        groupName = group?.name
+                    )
+                    firestore.collection("inboxes")
+                        .document(memberPhone)
+                        .collection("messages")
+                        .document(deletePacketId)
+                        .set(chatDto)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to fanout delete to $memberPhone: ${e.message}")
+                }
+            }
+            return@withContext Result.success(Unit)
+        }
 
         if (myPhone != null) {
             val recipientPublicKey = targetUser?.publicKey?.takeIf { it.isNotBlank() } ?: resolvePeerPublicKey(canonicalRecipient)
@@ -2949,12 +3137,12 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     fun getDisappearingDurationFlow(phoneNumber: String): Flow<Long> {
-        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val norm = if (phoneNumber.startsWith("group_")) phoneNumber else ContactsHelper.normalizePhoneNumber(phoneNumber)
         return conversationDao.getDisappearingDurationFlow(norm).map { it ?: 0L }
     }
 
     suspend fun setDisappearingDuration(phoneNumber: String, duration: Long) = withContext(Dispatchers.IO) {
-        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val norm = if (phoneNumber.startsWith("group_")) phoneNumber else ContactsHelper.normalizePhoneNumber(phoneNumber)
         val existing = conversationDao.getConversation(norm)
         if (existing != null) {
             conversationDao.setDisappearingDuration(norm, duration)
@@ -2967,5 +3155,73 @@ class ChatRepository private constructor(private val context: Context) {
                 )
             )
         }
+    }
+
+    // ── Group Chat Management (E2EE Pairwise Fanout) ─────────────────────────
+
+    /**
+     * Creates a new E2EE group with pairwise fanout messaging.
+     */
+    suspend fun createGroup(name: String, members: List<String>): Result<GroupDto> = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
+
+        val groupId = "group_" + UUID.randomUUID().toString()
+        val allMembers = (members + myPhone).distinct()
+        val groupDto = GroupDto(
+            groupId = groupId,
+            name = name,
+            adminPhone = myPhone,
+            members = allMembers,
+            createdTimestamp = System.currentTimeMillis()
+        )
+
+        try {
+            firestore.collection("groups").document(groupId).set(groupDto).await()
+
+            // Save conversation locally
+            val conv = ConversationEntity(
+                phoneNumber = groupId,
+                contactName = name,
+                lastMessageText = "Group created",
+                lastMessageType = "SYSTEM",
+                lastMessageTimestamp = System.currentTimeMillis(),
+                isGroup = true,
+                groupAdminPhone = myPhone
+            )
+            conversationDao.upsertConversation(conv)
+
+            // Send initial notification message to group so all members see it in their conversation list
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: myPhone
+            sendMessage(
+                recipientNumber = groupId,
+                recipientName = name,
+                text = "$myDisplayName created group \"$name\""
+            )
+
+            Result.success(groupDto)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create group: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGroup(groupId: String): GroupDto? = withContext(Dispatchers.IO) {
+        try {
+            val snap = firestore.collection("groups").document(groupId).get().await()
+            if (snap.exists()) {
+                snap.toObject(GroupDto::class.java)
+            } else null
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get group $groupId: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun getGroupMembers(groupId: String): List<String> = withContext(Dispatchers.IO) {
+        getGroup(groupId)?.members ?: emptyList()
     }
 }

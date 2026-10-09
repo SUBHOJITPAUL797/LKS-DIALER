@@ -79,6 +79,7 @@ import com.example.data.local.ClearChatMode
 import com.example.data.local.MessageEntity
 import com.example.data.local.MessageStatus
 import com.example.data.model.CallType
+import com.example.data.model.GroupDto
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
 import com.example.ui.components.ChatMediaGalleryDialog
@@ -131,7 +132,17 @@ fun ChatConversationScreen(
     val voiceHelper = remember { VoiceRecorderHelper(context) }
     var showMediaPicker by remember { mutableStateOf(false) }
 
-    val normPeer = remember(peerPhoneNumber) { ContactsHelper.normalizePhoneNumber(peerPhoneNumber) }
+    val isGroup = remember(peerPhoneNumber) { peerPhoneNumber.startsWith("group_") }
+    val normPeer = remember(peerPhoneNumber, isGroup) {
+        if (isGroup) peerPhoneNumber else ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
+    }
+    var groupDto by remember { mutableStateOf<GroupDto?>(null) }
+    var showGroupInfoDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(normPeer, isGroup) {
+        if (isGroup) {
+            groupDto = chatRepository.getGroup(normPeer)
+        }
+    }
     var pageSize by remember { mutableIntStateOf(50) }
     val totalMessageCount by chatRepository.getMessageCountFlow(normPeer).collectAsState(initial = 0)
     val messages by remember(normPeer, pageSize) {
@@ -604,6 +615,10 @@ fun ChatConversationScreen(
                                     }
                                 }
                                 val statusSubtitle = when {
+                                    isGroup -> {
+                                        val count = groupDto?.members?.size ?: 0
+                                        if (count > 0) "Group • $count members" else "Group"
+                                    }
                                     isPeerTyping -> "typing..."
                                     isPeerOnline -> "online"
                                     peerUser != null && peerUser.lastSeen > 0L -> FirebaseManager.formatLastSeen(peerUser.lastSeen)
@@ -630,32 +645,34 @@ fun ChatConversationScreen(
                         IconButton(onClick = { isSearching = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search messages")
                         }
-                        var lastCallClickTime by remember { mutableStateOf(0L) }
-                        IconButton(onClick = {
-                            if (isBlocked) {
-                                Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
-                                return@IconButton
+                        if (!isGroup) {
+                            var lastCallClickTime by remember { mutableStateOf(0L) }
+                            IconButton(onClick = {
+                                if (isBlocked) {
+                                    Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
+                                    return@IconButton
+                                }
+                                val now = System.currentTimeMillis()
+                                if (now - lastCallClickTime > 1500L) {
+                                    lastCallClickTime = now
+                                    onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
+                                }
+                            }) {
+                                Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = if (isBlocked) Color.Gray else GreenCall)
                             }
-                            val now = System.currentTimeMillis()
-                            if (now - lastCallClickTime > 1500L) {
-                                lastCallClickTime = now
-                                onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
+                            IconButton(onClick = {
+                                if (isBlocked) {
+                                    Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
+                                    return@IconButton
+                                }
+                                val now = System.currentTimeMillis()
+                                if (now - lastCallClickTime > 1500L) {
+                                    lastCallClickTime = now
+                                    onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
+                                }
+                            }) {
+                                Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = if (isBlocked) Color.Gray else TealPrimary)
                             }
-                        }) {
-                            Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = if (isBlocked) Color.Gray else GreenCall)
-                        }
-                        IconButton(onClick = {
-                            if (isBlocked) {
-                                Toast.makeText(context, "Unblock $peerDisplayName to make a call", Toast.LENGTH_SHORT).show()
-                                return@IconButton
-                            }
-                            val now = System.currentTimeMillis()
-                            if (now - lastCallClickTime > 1500L) {
-                                lastCallClickTime = now
-                                onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
-                            }
-                        }) {
-                            Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = if (isBlocked) Color.Gray else TealPrimary)
                         }
                         Box {
                             IconButton(onClick = { showOptionsMenu = true }) {
@@ -665,6 +682,16 @@ fun ChatConversationScreen(
                                 expanded = showOptionsMenu,
                                 onDismissRequest = { showOptionsMenu = false }
                             ) {
+                                if (isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text("Group info") },
+                                        leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
+                                        onClick = {
+                                            showOptionsMenu = false
+                                            showGroupInfoDialog = true
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Search") },
                                     onClick = {
@@ -1684,6 +1711,15 @@ fun ChatConversationScreen(
         )
     }
 
+    // Group Info Dialog
+    if (showGroupInfoDialog && groupDto != null) {
+        GroupInfoDialog(
+            group = groupDto,
+            firebaseManager = firebaseManager,
+            onDismiss = { showGroupInfoDialog = false }
+        )
+    }
+
     // Starred Messages Dialog
     if (showStarredMessagesSheet) {
         com.example.ui.components.ChatStarredMessagesDialog(
@@ -2604,6 +2640,16 @@ private fun MessageBubble(
                 )
         ) {
             Column(modifier = Modifier.padding(bubblePadding)) {
+                if (!isOutgoing && !message.senderName.isNullOrBlank()) {
+                    Text(
+                        text = message.senderName,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TealPrimary
+                        ),
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
                 if (isDeleted) {
                     Row(
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
@@ -3873,4 +3919,86 @@ private fun dropLastCodePoint(text: String): String {
     val lastCodePoint = text.codePointBefore(text.length)
     val charCount = Character.charCount(lastCodePoint)
     return text.dropLast(charCount)
+}
+
+@Composable
+private fun GroupInfoDialog(
+    group: GroupDto?,
+    firebaseManager: FirebaseManager,
+    onDismiss: () -> Unit
+) {
+    if (group == null) return
+    val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+    val syncedContacts by firebaseManager.contacts.collectAsState()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(group.name, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "${group.members.size} members • E2EE Encrypted",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Members",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = TealPrimary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                    items(group.members) { memberPhone ->
+                        val matchedUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, memberPhone) }
+                        val matchedContact = syncedContacts.find { ContactsHelper.numbersMatch(it.phoneNumber, memberPhone) }
+                        val name = matchedUser?.displayName?.takeIf { it.isNotBlank() }
+                            ?: matchedContact?.name?.takeIf { it.isNotBlank() }
+                            ?: memberPhone
+                        val isAdmin = memberPhone == group.adminPhone
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ChatAvatar(name = name, profilePic = matchedUser?.profilePictureUrl ?: matchedContact?.profilePictureUrl ?: "", size = 32.dp, fontSize = 14.sp)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                if (name != memberPhone) {
+                                    Text(memberPhone, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            if (isAdmin) {
+                                Surface(
+                                    color = TealPrimary.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Admin",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = TealPrimary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = TealPrimary)
+            }
+        }
+    )
 }

@@ -292,7 +292,7 @@ function App() {
 
   if (!currentUser) {
     return (
-      <div className="app-container">
+      <div className="app-container onboarding-mode">
         <Onboarding 
           onRegister={handleRegister} 
           onOpenDownloadModal={() => setShowDownloadModal(true)} 

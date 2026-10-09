@@ -46,7 +46,8 @@ data class MessageEntity(
     val isOutgoing: Boolean = false,
     val isEdited: Boolean = false,
     val isStarred: Boolean = false,  // User-starred/bookmarked messages
-    val expiresAt: Long = 0L  // 0 = never expires, >0 = unix timestamp (ms) when message self-destructs
+    val expiresAt: Long = 0L,  // 0 = never expires, >0 = unix timestamp (ms) when message self-destructs
+    val senderName: String? = null // Display name of sender (used for group chats)
 )
 
 @Entity(
@@ -54,7 +55,7 @@ data class MessageEntity(
 )
 data class ConversationEntity(
     @PrimaryKey
-    val phoneNumber: String, // Peer's normalized phone number
+    val phoneNumber: String, // Peer's normalized phone number or groupId
     val contactName: String,
     val profilePicUrl: String = "",
     val lastMessageText: String = "",
@@ -64,7 +65,9 @@ data class ConversationEntity(
     val lastMessageIsOutgoing: Boolean = false,
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
-    val disappearingDuration: Long = 0L  // 0 = off, 86400000 = 24h, 604800000 = 7d, 7776000000 = 90d
+    val disappearingDuration: Long = 0L,  // 0 = off, 86400000 = 24h, 604800000 = 7d, 7776000000 = 90d
+    val isGroup: Boolean = false,
+    val groupAdminPhone: String? = null
 )
 
 enum class ClearChatMode {

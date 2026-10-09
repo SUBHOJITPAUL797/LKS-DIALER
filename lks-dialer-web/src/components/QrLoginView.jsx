@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { QrCode, RefreshCw, Smartphone, ShieldCheck, CheckCircle2, ArrowRight } from 'lucide-react';
 import { QrLoginManager } from '../lib/QrLoginWeb';
 
-export default function QrLoginView({ onLoginSuccess }) {
+export default function QrLoginView({ onLoginSuccess, showInstructions = true }) {
   const [status, setStatus] = useState('PENDING'); // PENDING | SCANNED | APPROVED | EXPIRED | ERROR
   const [secondsRemaining, setSecondsRemaining] = useState(60);
   const [errorMessage, setErrorMessage] = useState('');
@@ -225,7 +225,7 @@ export default function QrLoginView({ onLoginSuccess }) {
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
+              gap: '8px',
               background: '#f1f5f9',
               padding: '6px 14px',
               borderRadius: '20px',
@@ -245,48 +245,67 @@ export default function QrLoginView({ onLoginSuccess }) {
               }} 
             />
             <span>Expires in {secondsRemaining}s</span>
+            <button
+              type="button"
+              onClick={startNewSession}
+              title="Refresh QR Code"
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                color: '#64748b',
+                padding: '2px',
+                marginLeft: '2px'
+              }}
+            >
+              <RefreshCw size={13} />
+            </button>
           </div>
         )}
 
         {status === 'ERROR' && (
-          <p style={{ color: '#ef4444', fontSize: '13px', fontWeight: '700' }}>
+          <p style={{ color: '#ef4444', fontSize: '13px', fontWeight: '700', margin: 0 }}>
             {errorMessage || 'Connection error. Please try again.'}
           </p>
         )}
       </div>
 
       {/* Instructions list (WhatsApp Web style) */}
-      <div 
-        style={{ 
-          marginTop: '24px', 
-          width: '100%', 
-          maxWidth: '380px',
-          background: 'rgba(248, 250, 252, 0.85)',
-          borderRadius: '16px',
-          border: '2px solid #e2e8f0',
-          padding: '16px 20px',
-          textAlign: 'left'
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-          <ShieldCheck size={18} color="#10b981" />
-          <span style={{ fontSize: '13px', fontWeight: '800', color: '#0f172a', letterSpacing: '0.3px', textTransform: 'uppercase' }}>
-            How to log in with QR code:
-          </span>
-        </div>
+      {showInstructions && (
+        <div 
+          style={{ 
+            marginTop: '20px', 
+            width: '100%', 
+            maxWidth: '380px',
+            background: 'rgba(248, 250, 252, 0.85)',
+            borderRadius: '16px',
+            border: '2px solid #e2e8f0',
+            padding: '16px 20px',
+            textAlign: 'left'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+            <ShieldCheck size={18} color="#10b981" />
+            <span style={{ fontSize: '13px', fontWeight: '800', color: '#0f172a', letterSpacing: '0.3px', textTransform: 'uppercase' }}>
+              How to log in with QR code:
+            </span>
+          </div>
 
-        <ol style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: '#334155', lineHeight: 1.4 }}>
-          <li>
-            Open <strong>LKS Dialer</strong> on your Android phone.
-          </li>
-          <li>
-            Tap <strong>Settings ⚙️</strong> or <strong>Menu (⋮)</strong> &rarr; <strong>Linked Devices</strong>.
-          </li>
-          <li>
-            Tap <strong>"Link a Device"</strong> and point your camera here.
-          </li>
-        </ol>
-      </div>
+          <ol style={{ margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: '#334155', lineHeight: 1.4 }}>
+            <li>
+              Open <strong>LKS Dialer</strong> on your Android phone.
+            </li>
+            <li>
+              Tap <strong>Settings ⚙️</strong> or <strong>Menu (⋮)</strong> &rarr; <strong>Linked Devices</strong>.
+            </li>
+            <li>
+              Tap <strong>"Link a Device"</strong> and point your camera here.
+            </li>
+          </ol>
+        </div>
+      )}
 
       <style>{`
         @keyframes spin {
