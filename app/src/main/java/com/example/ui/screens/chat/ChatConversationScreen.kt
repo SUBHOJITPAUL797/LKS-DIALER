@@ -195,6 +195,8 @@ fun ChatConversationScreen(
     var showBlockConfirmDialog by remember { mutableStateOf(false) }
     var showSpamConfirmDialog by remember { mutableStateOf(false) }
     var showStarredMessagesSheet by remember { mutableStateOf(false) }  // Starred messages viewer
+    var showDisappearingDialog by remember { mutableStateOf(false) }
+    val disappearingDuration by chatRepository.getDisappearingDurationFlow(normPeer).collectAsState(initial = 0L)
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
     val isBlocked = remember(normPeer, blockedNumbers, spamNumbers) {
@@ -583,12 +585,24 @@ fun ChatConversationScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = peerDisplayName,
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = peerDisplayName,
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    if (disappearingDuration > 0L) {
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Icon(
+                                            Icons.Default.Schedule,
+                                            contentDescription = "Disappearing messages active",
+                                            tint = TealPrimary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
                                 val statusSubtitle = when {
                                     isPeerTyping -> "typing..."
                                     isPeerOnline -> "online"
@@ -677,6 +691,20 @@ fun ChatConversationScreen(
                                     onClick = {
                                         showOptionsMenu = false
                                         showStarredMessagesSheet = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Disappearing messages") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Schedule,
+                                            contentDescription = null,
+                                            tint = if (disappearingDuration > 0L) TealPrimary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        showDisappearingDialog = true
                                     }
                                 )
                                 DropdownMenuItem(
@@ -1677,6 +1705,90 @@ fun ChatConversationScreen(
                     }
                 } else if (msg.mediaType == ChatMediaType.IMAGE.name && msg.mediaPath != null) {
                     selectedImagePreviewPath = msg.mediaPath
+                }
+            }
+        )
+    }
+
+    // Disappearing Messages Selection Dialog
+    if (showDisappearingDialog) {
+        val options = listOf(
+            0L to "Off",
+            24 * 60 * 60 * 1000L to "24 hours",
+            7 * 24 * 60 * 60 * 1000L to "7 days",
+            90 * 24 * 60 * 60 * 1000L to "90 days"
+        )
+        AlertDialog(
+            onDismissRequest = { showDisappearingDialog = false },
+            icon = {
+                Icon(
+                    Icons.Default.Schedule,
+                    contentDescription = null,
+                    tint = TealPrimary,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text("Disappearing Messages", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "For more privacy and storage, new messages sent in this chat will disappear after the selected duration.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    options.forEach { (duration, label) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showDisappearingDialog = false
+                                    coroutineScope.launch {
+                                        chatRepository.setDisappearingDuration(normPeer, duration)
+                                        val toastMsg = if (duration == 0L) {
+                                            "Disappearing messages turned off"
+                                        } else {
+                                            "Disappearing messages set to $label"
+                                        }
+                                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = (disappearingDuration == duration),
+                                onClick = {
+                                    showDisappearingDialog = false
+                                    coroutineScope.launch {
+                                        chatRepository.setDisappearingDuration(normPeer, duration)
+                                        val toastMsg = if (duration == 0L) {
+                                            "Disappearing messages turned off"
+                                        } else {
+                                            "Disappearing messages set to $label"
+                                        }
+                                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                colors = RadioButtonDefaults.colors(selectedColor = TealPrimary)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = if (disappearingDuration == duration) FontWeight.Bold else FontWeight.Normal
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showDisappearingDialog = false }) {
+                    Text("Close")
                 }
             }
         )
@@ -2736,6 +2848,15 @@ private fun MessageBubble(
                                             )
                                             Spacer(modifier = Modifier.width(3.dp))
                                         }
+                                        if (message.expiresAt > 0L) {
+                                            Icon(
+                                                Icons.Default.Schedule,
+                                                contentDescription = "Disappearing",
+                                                tint = Color.White.copy(alpha = 0.85f),
+                                                modifier = Modifier.size(10.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                        }
                                         val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
                                         Text(
                                             text = timeString,
@@ -3134,6 +3255,15 @@ private fun MessageBubble(
                                 contentDescription = "Starred",
                                 tint = Color(0xFFFFC107),
                                 modifier = Modifier.size(11.dp)
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                        }
+                        if (message.expiresAt > 0L) {
+                            Icon(
+                                Icons.Default.Schedule,
+                                contentDescription = "Disappearing",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.size(10.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                         }

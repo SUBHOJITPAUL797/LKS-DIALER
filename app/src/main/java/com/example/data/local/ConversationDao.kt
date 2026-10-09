@@ -54,6 +54,17 @@ interface ConversationDao {
     @Query("UPDATE conversations SET isPinned = :isPinned WHERE phoneNumber = :phoneNumber")
     suspend fun setPinned(phoneNumber: String, isPinned: Boolean)
 
+    // ── Disappearing Messages ─────────────────────────────────────────────────
+
+    @Query("UPDATE conversations SET disappearingDuration = :duration WHERE phoneNumber = :phoneNumber")
+    suspend fun setDisappearingDuration(phoneNumber: String, duration: Long)
+
+    @Query("SELECT disappearingDuration FROM conversations WHERE phoneNumber = :phoneNumber LIMIT 1")
+    suspend fun getDisappearingDuration(phoneNumber: String): Long?
+
+    @Query("SELECT disappearingDuration FROM conversations WHERE phoneNumber = :phoneNumber LIMIT 1")
+    fun getDisappearingDurationFlow(phoneNumber: String): Flow<Long?>
+
     @Query("DELETE FROM conversations")
     suspend fun deleteAllConversations()
 }

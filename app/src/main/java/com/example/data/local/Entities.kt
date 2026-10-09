@@ -45,7 +45,8 @@ data class MessageEntity(
     val status: String = MessageStatus.PENDING.name,
     val isOutgoing: Boolean = false,
     val isEdited: Boolean = false,
-    val isStarred: Boolean = false  // User-starred/bookmarked messages
+    val isStarred: Boolean = false,  // User-starred/bookmarked messages
+    val expiresAt: Long = 0L  // 0 = never expires, >0 = unix timestamp (ms) when message self-destructs
 )
 
 @Entity(
@@ -62,7 +63,8 @@ data class ConversationEntity(
     val lastMessageStatus: String = MessageStatus.SENT.name,
     val lastMessageIsOutgoing: Boolean = false,
     val unreadCount: Int = 0,
-    val isPinned: Boolean = false
+    val isPinned: Boolean = false,
+    val disappearingDuration: Long = 0L  // 0 = off, 86400000 = 24h, 604800000 = 7d, 7776000000 = 90d
 )
 
 enum class ClearChatMode {

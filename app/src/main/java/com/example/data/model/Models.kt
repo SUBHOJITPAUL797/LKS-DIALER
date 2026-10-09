@@ -116,7 +116,8 @@ data class ChatMessageDto(
     val iv: String = "",
     val mediaType: String = "TEXT",
     val mediaDurationMs: Long = 0L,
-    val timestamp: Long = 0L
+    val timestamp: Long = 0L,
+    val expiresAt: Long = 0L
 )
 
 data class ChatReceiptDto(

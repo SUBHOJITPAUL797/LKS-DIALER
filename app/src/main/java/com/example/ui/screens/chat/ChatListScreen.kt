@@ -453,6 +453,15 @@ private fun ConversationItem(
                     modifier = Modifier.weight(1f)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (conversation.disappearingDuration > 0L) {
+                        Icon(
+                            Icons.Default.Schedule,
+                            contentDescription = "Disappearing messages on",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                    }
                     if (conversation.isPinned) {
                         Icon(
                             Icons.Default.Star,

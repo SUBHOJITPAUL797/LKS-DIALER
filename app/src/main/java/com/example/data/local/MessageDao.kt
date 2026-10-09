@@ -117,4 +117,12 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE isStarred = 1 ORDER BY timestamp DESC")
     suspend fun getStarredMessages(): List<MessageEntity>
+
+    // ── Disappearing Messages ─────────────────────────────────────────────────
+
+    @Query("SELECT * FROM messages WHERE expiresAt > 0 AND expiresAt <= :currentTime")
+    suspend fun getExpiredMessages(currentTime: Long): List<MessageEntity>
+
+    @Query("DELETE FROM messages WHERE expiresAt > 0 AND expiresAt <= :currentTime")
+    suspend fun purgeExpiredMessages(currentTime: Long): Int
 }

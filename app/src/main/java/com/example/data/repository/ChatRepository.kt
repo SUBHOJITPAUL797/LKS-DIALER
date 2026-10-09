@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -1026,7 +1027,8 @@ class ChatRepository private constructor(private val context: Context) {
                 mediaDurationMs = durationMs,
                 timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                 status = if (isCurrentPeer) MessageStatus.READ.name else initialStatus,
-                isOutgoing = false
+                isOutgoing = false,
+                expiresAt = dto.expiresAt
             )
             messageDao.insertMessage(messageEntity)
 
@@ -1055,7 +1057,8 @@ class ChatRepository private constructor(private val context: Context) {
                 lastMessageStatus = messageEntity.status,
                 lastMessageIsOutgoing = false,
                 unreadCount = unreadCount,
-                isPinned = existingConv?.isPinned ?: false
+                isPinned = existingConv?.isPinned ?: false,
+                disappearingDuration = existingConv?.disappearingDuration ?: 0L
             )
             conversationDao.upsertConversation(convEntity)
 
@@ -1759,6 +1762,8 @@ class ChatRepository private constructor(private val context: Context) {
 
         val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
         val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+        val disappearingDuration = existingConv?.disappearingDuration ?: 0L
+        val expiresAt = if (disappearingDuration > 0L) now + disappearingDuration else 0L
 
         // 4. Save to local Room DB immediately as SENT
         val messageEntity = MessageEntity(
@@ -1772,7 +1777,8 @@ class ChatRepository private constructor(private val context: Context) {
             mediaDurationMs = mediaDurationMs,
             timestamp = now,
             status = MessageStatus.SENT.name,
-            isOutgoing = true
+            isOutgoing = true,
+            expiresAt = expiresAt
         )
         messageDao.insertMessage(messageEntity)
 
@@ -1793,7 +1799,8 @@ class ChatRepository private constructor(private val context: Context) {
             lastMessageStatus = MessageStatus.SENT.name,
             lastMessageIsOutgoing = true,
             unreadCount = existingConv?.unreadCount ?: 0,
-            isPinned = existingConv?.isPinned ?: false
+            isPinned = existingConv?.isPinned ?: false,
+            disappearingDuration = disappearingDuration
         )
         conversationDao.upsertConversation(convEntity)
 
@@ -1807,7 +1814,8 @@ class ChatRepository private constructor(private val context: Context) {
             iv = iv,
             mediaType = mediaType.name,
             mediaDurationMs = mediaDurationMs,
-            timestamp = now
+            timestamp = now,
+            expiresAt = expiresAt
         )
 
         firestore.collection("inboxes")
@@ -2491,6 +2499,7 @@ class ChatRepository private constructor(private val context: Context) {
     fun getMessagesPagedFlow(phoneNumber: String, limit: Int): Flow<List<MessageEntity>> {
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        repositoryScope.launch { purgeExpiredMessages() }
         return messageDao.getMessagesPagedFlow(norm, last10, limit)
     }
     fun getMessageCountFlow(phoneNumber: String): Flow<Int> {
@@ -2921,5 +2930,42 @@ class ChatRepository private constructor(private val context: Context) {
 
     suspend fun deleteConversation(phoneNumber: String): Long = withContext(Dispatchers.IO) {
         clearConversationStorage(phoneNumber, ClearChatMode.BOTH)
+    }
+
+    // ── Disappearing Messages ─────────────────────────────────────────────────
+
+    suspend fun purgeExpiredMessages(): Int = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val expired = messageDao.getExpiredMessages(now)
+        expired.forEach { msg ->
+            if (!msg.mediaPath.isNullOrBlank()) {
+                try {
+                    val f = File(msg.mediaPath)
+                    if (f.exists()) f.delete()
+                } catch (_: Exception) {}
+            }
+        }
+        messageDao.purgeExpiredMessages(now)
+    }
+
+    fun getDisappearingDurationFlow(phoneNumber: String): Flow<Long> {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        return conversationDao.getDisappearingDurationFlow(norm).map { it ?: 0L }
+    }
+
+    suspend fun setDisappearingDuration(phoneNumber: String, duration: Long) = withContext(Dispatchers.IO) {
+        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val existing = conversationDao.getConversation(norm)
+        if (existing != null) {
+            conversationDao.setDisappearingDuration(norm, duration)
+        } else {
+            conversationDao.upsertConversation(
+                ConversationEntity(
+                    phoneNumber = norm,
+                    contactName = norm,
+                    disappearingDuration = duration
+                )
+            )
+        }
     }
 }
