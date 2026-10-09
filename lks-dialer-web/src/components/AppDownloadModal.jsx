@@ -5,8 +5,8 @@ import {
 } from 'lucide-react';
 import appLogo from '../assets/app_logo.png';
 
-export const LATEST_APP_VERSION = 'v2.9.10';
-export const DIRECT_APK_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/download/v2.9.10/app-release.apk';
+export const LATEST_APP_VERSION = 'v2.9.11';
+export const DIRECT_APK_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/download/v2.9.11/app-release.apk';
 export const GITHUB_RELEASES_URL = 'https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/latest';
 
 export default function AppDownloadModal({ isOpen, onClose }) {

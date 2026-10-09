@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ExternalLink, Smile
+  ChevronDown, ChevronUp, ExternalLink, Smile, Search
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
@@ -11,6 +11,7 @@ import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine'
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { mediaStorageWeb } from '../lib/MediaStorageWeb';
 import ChatMediaPickerWeb from './ChatMediaPickerWeb';
+import ChatMediaGalleryModal from './ChatMediaGalleryModal';
 
 // ─── Pure Emoji Message Detector (1-3 pure emojis) ───────────────────────────
 function isPureEmojiWeb(text) {
@@ -901,6 +902,39 @@ export default function ChatConversation({
   const [selectedImageModal, setSelectedImageModal] = useState(null);
   const [sending, setSending] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
+  const [showMediaGalleryModal, setShowMediaGalleryModal] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [currentSearchIdx, setCurrentSearchIdx] = useState(0);
+
+  const searchMatches = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase().trim();
+    return messages.filter(m => m.text && String(m.text).toLowerCase().includes(q));
+  }, [messages, searchQuery]);
+
+  const scrollToMatch = useCallback((idx) => {
+    if (searchMatches.length === 0) return;
+    const target = searchMatches[idx];
+    if (target) {
+      const el = document.getElementById(`msg-${target.id}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [searchMatches]);
+
+  const handleNextMatch = () => {
+    if (searchMatches.length === 0) return;
+    const nextIdx = (currentSearchIdx + 1) % searchMatches.length;
+    setCurrentSearchIdx(nextIdx);
+    scrollToMatch(nextIdx);
+  };
+
+  const handlePrevMatch = () => {
+    if (searchMatches.length === 0) return;
+    const prevIdx = (currentSearchIdx - 1 + searchMatches.length) % searchMatches.length;
+    setCurrentSearchIdx(prevIdx);
+    scrollToMatch(prevIdx);
+  };
 
   // ── Dynamic tick to periodically re-evaluate online staleness and last seen ──
   useEffect(() => {
@@ -1649,93 +1683,207 @@ export default function ChatConversation({
       minWidth: 0,
       backgroundColor: 'var(--bg-color)', position: 'relative', overflow: 'hidden'
     }}>
-      {/* ── TOP BAR ── */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 20px', backgroundColor: '#fff',
-        borderBottom: '4px solid #000', zIndex: 10, flexShrink: 0,
-        width: '100%'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
-          <button 
-            onClick={onBack} 
-            className="neo-box" 
-            title={isDesktop ? "Close chat" : "Back"}
+      {/* ── TOP BAR (Search or Normal) ── */}
+      {isSearching ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 16px', backgroundColor: '#fff',
+          borderBottom: '4px solid #000', zIndex: 10, flexShrink: 0,
+          width: '100%', gap: '10px'
+        }}>
+          <button
+            onClick={() => {
+              setIsSearching(false);
+              setSearchQuery('');
+              setCurrentSearchIdx(0);
+            }}
+            className="neo-box"
+            title="Close search"
             style={{
               width: 38, height: 38, padding: 0, display: 'flex',
               alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer', backgroundColor: 'var(--accent)', flexShrink: 0
+              cursor: 'pointer', backgroundColor: '#f0f0f0', flexShrink: 0
             }}
           >
-            <ArrowLeft size={20} color="#000" strokeWidth={3} />
+            <ArrowLeft size={18} color="#000" strokeWidth={2.5} />
           </button>
-          <div style={{ position: 'relative', flexShrink: 0 }}>
-            <div style={{
-              width: 42, height: 42, borderRadius: '50%',
-              backgroundColor: 'var(--secondary)', border: '2px solid #000',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: 900, fontSize: 18, overflow: 'hidden'
-            }}>
-              {displayAvatar ? (
-                <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : initial}
-            </div>
-            {isPeerOnlineStatus && (
-              <span style={{
-                position: 'absolute', bottom: -1, right: -1,
-                width: 12, height: 12, borderRadius: '50%',
-                backgroundColor: '#00e676', border: '2px solid #fff',
-                boxShadow: '0 0 4px rgba(0,0,0,0.3)',
-                zIndex: 2
-              }} />
+
+          <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <Search size={16} style={{ position: 'absolute', left: 10, color: '#888' }} />
+            <input
+              type="text"
+              autoFocus
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentSearchIdx(0);
+              }}
+              placeholder="Search in chat..."
+              style={{
+                width: '100%',
+                padding: '8px 30px 8px 34px',
+                fontSize: '14px',
+                fontWeight: '700',
+                border: '2px solid #000',
+                borderRadius: '8px',
+                outline: 'none',
+                boxShadow: '2px 2px 0px #000'
+              }}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setCurrentSearchIdx(0);
+                }}
+                style={{
+                  position: 'absolute', right: 8, background: 'none',
+                  border: 'none', cursor: 'pointer', padding: 0, display: 'flex'
+                }}
+              >
+                <X size={16} color="#666" />
+              </button>
             )}
           </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 16, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {peerDisplayName}
-            </div>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>
-              {isTypingPeer ? (
-                <span style={{ color: '#00838f', fontStyle: 'italic' }}>typing...</span>
-              ) : isPeerOnlineStatus ? (
-                <span style={{ color: '#00a884', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 5 }}>
-                  <span style={{
-                    width: 7, height: 7, borderRadius: '50%',
-                    backgroundColor: '#00e676', display: 'inline-block',
-                    boxShadow: '0 0 6px #00e676'
-                  }}></span>
-                  online
-                </span>
-              ) : lastSeenText ? (
-                <span style={{ color: '#666' }}>{lastSeenText}</span>
-              ) : (
-                <span style={{ color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Shield size={11} color="#00b4d8" /> E2E Encrypted
-                </span>
-              )}
-            </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+            {searchQuery.trim() && (
+              <span style={{ fontSize: '12px', fontWeight: '800', color: searchMatches.length > 0 ? '#00838f' : '#d32f2f', marginRight: 4, whiteSpace: 'nowrap' }}>
+                {searchMatches.length > 0 ? `${currentSearchIdx + 1} of ${searchMatches.length}` : '0 found'}
+              </span>
+            )}
+            <button
+              onClick={handlePrevMatch}
+              disabled={searchMatches.length === 0}
+              className="neo-box"
+              title="Previous match"
+              style={{
+                width: 32, height: 32, padding: 0, display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                cursor: searchMatches.length > 0 ? 'pointer' : 'default',
+                opacity: searchMatches.length > 0 ? 1 : 0.4,
+                backgroundColor: '#fff'
+              }}
+            >
+              <ChevronUp size={16} />
+            </button>
+            <button
+              onClick={handleNextMatch}
+              disabled={searchMatches.length === 0}
+              className="neo-box"
+              title="Next match"
+              style={{
+                width: 32, height: 32, padding: 0, display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                cursor: searchMatches.length > 0 ? 'pointer' : 'default',
+                opacity: searchMatches.length > 0 ? 1 : 0.4,
+                backgroundColor: '#fff'
+              }}
+            >
+              <ChevronDown size={16} />
+            </button>
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <button onClick={() => onStartCall?.(normPeer, 'AUDIO')} className="neo-box"
-            style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer' }}>
-            <Phone size={18} color="#000" />
-          </button>
-          <button onClick={() => onStartCall?.(normPeer, 'VIDEO')} className="neo-box"
-            style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--primary)', cursor: 'pointer' }}>
-            <Video size={18} color="#fff" />
-          </button>
-          <div style={{ position: 'relative' }}>
-            <button onClick={() => setMenuOpen(!menuOpen)} className="neo-box"
-              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer' }}>
-              <MoreVertical size={18} />
+      ) : (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 20px', backgroundColor: '#fff',
+          borderBottom: '4px solid #000', zIndex: 10, flexShrink: 0,
+          width: '100%'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+            <button 
+              onClick={onBack} 
+              className="neo-box" 
+              title={isDesktop ? "Close chat" : "Back"}
+              style={{
+                width: 38, height: 38, padding: 0, display: 'flex',
+                alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', backgroundColor: 'var(--accent)', flexShrink: 0
+              }}
+            >
+              <ArrowLeft size={20} color="#000" strokeWidth={3} />
             </button>
+            <div style={{ position: 'relative', flexShrink: 0 }}>
+              <div style={{
+                width: 42, height: 42, borderRadius: '50%',
+                backgroundColor: 'var(--secondary)', border: '2px solid #000',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 900, fontSize: 18, overflow: 'hidden'
+              }}>
+                {displayAvatar ? (
+                  <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : initial}
+              </div>
+              {isPeerOnlineStatus && (
+                <span style={{
+                  position: 'absolute', bottom: -1, right: -1,
+                  width: 12, height: 12, borderRadius: '50%',
+                  backgroundColor: '#00e676', border: '2px solid #fff',
+                  boxShadow: '0 0 4px rgba(0,0,0,0.3)',
+                  zIndex: 2
+                }} />
+              )}
+            </div>
+            <div
+              onClick={() => setShowMediaGalleryModal(true)}
+              style={{ minWidth: 0, flex: 1, cursor: 'pointer' }}
+              title="View media, links & docs"
+            >
+              <div style={{ fontSize: 16, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {peerDisplayName}
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>
+                {isTypingPeer ? (
+                  <span style={{ color: '#00838f', fontStyle: 'italic' }}>typing...</span>
+                ) : isPeerOnlineStatus ? (
+                  <span style={{ color: '#00a884', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{
+                      width: 7, height: 7, borderRadius: '50%',
+                      backgroundColor: '#00e676', display: 'inline-block',
+                      boxShadow: '0 0 6px #00e676'
+                    }}></span>
+                    online
+                  </span>
+                ) : lastSeenText ? (
+                  <span style={{ color: '#666' }}>{lastSeenText}</span>
+                ) : (
+                  <span style={{ color: '#666', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Shield size={11} color="#00b4d8" /> E2E Encrypted
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            <button onClick={() => setIsSearching(true)} className="neo-box" title="Search messages"
+              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer' }}>
+              <Search size={18} color="#000" />
+            </button>
+            <button onClick={() => onStartCall?.(normPeer, 'AUDIO')} className="neo-box"
+              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer' }}>
+              <Phone size={18} color="#000" />
+            </button>
+            <button onClick={() => onStartCall?.(normPeer, 'VIDEO')} className="neo-box"
+              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--primary)', cursor: 'pointer' }}>
+              <Video size={18} color="#fff" />
+            </button>
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => setMenuOpen(!menuOpen)} className="neo-box"
+                style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer' }}>
+                <MoreVertical size={18} />
+              </button>
             {menuOpen && (
               <div className="neo-box" style={{
-                position: 'absolute', right: 0, top: 44, width: 160,
+                position: 'absolute', right: 0, top: 44, width: 175,
                 backgroundColor: '#fff', padding: 6, zIndex: 50,
                 display: 'flex', flexDirection: 'column', gap: 4
               }}>
+                <button onClick={() => { setMenuOpen(false); setShowMediaGalleryModal(true); }}
+                  style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ImageIcon size={16} color="#0284c7" /> Media & Docs
+                </button>
                 <button onClick={() => { setMenuOpen(false); setShowClearModal(true); }}
                   style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Trash2 size={16} /> Clear Chat
@@ -1752,6 +1900,7 @@ export default function ChatConversation({
           </div>
         </div>
       </div>
+      )}
 
       {/* ── SWIPE HINT BANNER ── */}
       {showSwipeHint && (
@@ -1965,16 +2114,21 @@ export default function ChatConversation({
 
             return (
               <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start' }}>
+                <div id={`msg-${msg.id}`} style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start', scrollMarginTop: '80px', scrollMarginBottom: '80px' }}>
                   <div style={{
                     backgroundColor: isOut ? '#D9FDD3' : '#FFFFFF',
-                    border: '1px solid rgba(0, 0, 0, 0.06)',
+                    border: (isSearching && searchQuery.trim() && msg.text && String(msg.text).toLowerCase().includes(searchQuery.toLowerCase().trim()))
+                      ? (searchMatches[currentSearchIdx]?.id === msg.id ? '2.5px solid #FF3366' : '2px solid #00b4d8')
+                      : '1px solid rgba(0, 0, 0, 0.06)',
                     padding: '8px 12px',
                     borderRadius: isOut ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-                    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.03)',
+                    boxShadow: (isSearching && searchQuery.trim() && msg.text && String(msg.text).toLowerCase().includes(searchQuery.toLowerCase().trim()))
+                      ? (searchMatches[currentSearchIdx]?.id === msg.id ? '0 0 12px rgba(255, 51, 102, 0.5)' : '0 0 8px rgba(0, 180, 216, 0.4)')
+                      : '0 1px 3px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.03)',
                     display: 'flex', flexDirection: 'column', gap: 4,
                     maxWidth: '100%',
-                    position: 'relative'
+                    position: 'relative',
+                    transition: 'border 0.2s ease, box-shadow 0.2s ease'
                   }}>
                     {isDeleted ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontStyle: 'italic', color: '#777', fontSize: 13, padding: '2px 4px' }}>
@@ -2889,6 +3043,25 @@ export default function ChatConversation({
           </div>
         </div>
       )}
+
+      {/* Media, Links & Docs Gallery Modal */}
+      <ChatMediaGalleryModal
+        isOpen={showMediaGalleryModal}
+        onClose={() => setShowMediaGalleryModal(false)}
+        messages={messages}
+        peerName={peerDisplayName}
+        onSelectImage={(src) => {
+          setShowMediaGalleryModal(false);
+          setSelectedImageModal(src);
+        }}
+        onOpenVideo={(e, msg) => {
+          setShowMediaGalleryModal(false);
+          handleOpenVideo(e, msg);
+        }}
+        onDownloadDocument={(e, msg) => {
+          handleDownloadDocument(e, msg);
+        }}
+      />
 
       {/* Slide-down animation keyframes */}
       <style>{`

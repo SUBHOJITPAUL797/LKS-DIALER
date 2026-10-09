@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
@@ -30,7 +31,10 @@ import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -77,6 +81,7 @@ import com.example.data.local.MessageStatus
 import com.example.data.model.CallType
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
+import com.example.ui.components.ChatMediaGalleryDialog
 import com.example.ui.components.ClearChatDialog
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
@@ -186,6 +191,7 @@ fun ChatConversationScreen(
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearChatDialog by remember { mutableStateOf(false) }
+    var showMediaGalleryDialog by remember { mutableStateOf(false) }
     val wallpaperManager = remember { ChatWallpaperManager.getInstance(context) }
     val wallpaperConfig by wallpaperManager.config.collectAsState()
 
@@ -215,6 +221,58 @@ fun ChatConversationScreen(
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
 
     val listState = rememberLazyListState()
+
+    // ── In-Chat Message Search state ──────────────────────────────────────────
+    var isSearching by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var currentSearchIdx by remember { mutableIntStateOf(0) }
+    val searchFocusRequester = remember { FocusRequester() }
+
+    BackHandler(enabled = isSearching) {
+        isSearching = false
+        searchQuery = ""
+        currentSearchIdx = 0
+    }
+
+    val matchingIndices = remember(messages, searchQuery) {
+        if (searchQuery.isBlank()) emptyList<Int>()
+        else {
+            val q = searchQuery.trim().lowercase()
+            messages.mapIndexedNotNull { index, msg ->
+                val textToSearch = when {
+                    msg.mediaType == ChatMediaType.TEXT.name -> {
+                        try {
+                            val obj = org.json.JSONObject(msg.text)
+                            obj.optString("text", msg.text)
+                        } catch (_: Exception) { msg.text }
+                    }
+                    msg.mediaType == ChatMediaType.DOCUMENT.name -> msg.text
+                    msg.mediaType == ChatMediaType.IMAGE.name -> {
+                        if (msg.text.startsWith("[gif:") || msg.text.startsWith("http")) "" else msg.text
+                    }
+                    else -> msg.text
+                }
+                if (textToSearch.lowercase().contains(q)) index else null
+            }
+        }
+    }
+
+    // Auto-scroll to active search match
+    LaunchedEffect(currentSearchIdx, matchingIndices) {
+        if (matchingIndices.isNotEmpty() && currentSearchIdx in matchingIndices.indices) {
+            val targetIdx = matchingIndices[currentSearchIdx]
+            listState.animateScrollToItem(targetIdx)
+        }
+    }
+
+    LaunchedEffect(isSearching) {
+        if (isSearching) {
+            delay(150)
+            try {
+                searchFocusRequester.requestFocus()
+            } catch (_: Exception) {}
+        }
+    }
 
     // Handle shared text/link consumption (when not attached to photos)
     LaunchedEffect(initialSharedText, initialSharedPhotos) {
@@ -421,99 +479,199 @@ fun ChatConversationScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        ChatAvatar(
-                            name = peerDisplayName,
-                            profilePic = peerProfilePic,
-                            size = 40.dp,
-                            fontSize = 16.sp
+            if (isSearching) {
+                TopAppBar(
+                    title = {
+                        TextField(
+                            value = searchQuery,
+                            onValueChange = {
+                                searchQuery = it
+                                currentSearchIdx = 0
+                            },
+                            placeholder = {
+                                Text(
+                                    text = "Search messages...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(searchFocusRequester)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            isSearching = false
+                            searchQuery = ""
+                            currentSearchIdx = 0
+                        }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
+                        }
+                    },
+                    actions = {
+                        if (searchQuery.isNotBlank()) {
                             Text(
-                                text = peerDisplayName,
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                text = if (matchingIndices.isNotEmpty()) "${currentSearchIdx + 1}/${matchingIndices.size}" else "0/0",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp)
                             )
-                            val statusSubtitle = when {
-                                isPeerTyping -> "typing..."
-                                isPeerOnline -> "online"
-                                peerUser != null && peerUser.lastSeen > 0L -> FirebaseManager.formatLastSeen(peerUser.lastSeen)
-                                else -> normPeer
-                            }
-                            Text(
-                                text = statusSubtitle,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = when {
-                                    isPeerTyping || isPeerOnline -> GreenCall
-                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            IconButton(
+                                onClick = {
+                                    if (matchingIndices.isNotEmpty()) {
+                                        currentSearchIdx = (currentSearchIdx + 1) % matchingIndices.size
+                                    }
                                 },
-                                maxLines = 1
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    var lastCallClickTime by remember { mutableStateOf(0L) }
-                    IconButton(onClick = {
-                        val now = System.currentTimeMillis()
-                        if (now - lastCallClickTime > 1500L) {
-                            lastCallClickTime = now
-                            onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
-                        }
-                    }) {
-                        Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = GreenCall)
-                    }
-                    IconButton(onClick = {
-                        val now = System.currentTimeMillis()
-                        if (now - lastCallClickTime > 1500L) {
-                            lastCallClickTime = now
-                            onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
-                        }
-                    }) {
-                        Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = TealPrimary)
-                    }
-                    Box {
-                        IconButton(onClick = { showOptionsMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Options")
-                        }
-                        DropdownMenu(
-                            expanded = showOptionsMenu,
-                            onDismissRequest = { showOptionsMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Clear chat") },
+                                enabled = matchingIndices.isNotEmpty()
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Previous match (older)")
+                            }
+                            IconButton(
                                 onClick = {
-                                    showOptionsMenu = false
-                                    showClearChatDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Block contact") },
-                                onClick = {
-                                    showOptionsMenu = false
-                                    firebaseManager.blockNumber(normPeer)
-                                    Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
-                                }
-                            )
+                                    if (matchingIndices.isNotEmpty()) {
+                                        currentSearchIdx = if (currentSearchIdx - 1 < 0) matchingIndices.size - 1 else currentSearchIdx - 1
+                                    }
+                                },
+                                enabled = matchingIndices.isNotEmpty()
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match (newer)")
+                            }
+                            IconButton(onClick = {
+                                searchQuery = ""
+                                currentSearchIdx = 0
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear search")
+                            }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
                 )
-            )
+            } else {
+                TopAppBar(
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showMediaGalleryDialog = true }
+                        ) {
+                            ChatAvatar(
+                                name = peerDisplayName,
+                                profilePic = peerProfilePic,
+                                size = 40.dp,
+                                fontSize = 16.sp
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = peerDisplayName,
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val statusSubtitle = when {
+                                    isPeerTyping -> "typing..."
+                                    isPeerOnline -> "online"
+                                    peerUser != null && peerUser.lastSeen > 0L -> FirebaseManager.formatLastSeen(peerUser.lastSeen)
+                                    else -> normPeer
+                                }
+                                Text(
+                                    text = statusSubtitle,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = when {
+                                        isPeerTyping || isPeerOnline -> GreenCall
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBackClick) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { isSearching = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search messages")
+                        }
+                        var lastCallClickTime by remember { mutableStateOf(0L) }
+                        IconButton(onClick = {
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                onStartCall(normPeer, peerDisplayName, CallType.AUDIO)
+                            }
+                        }) {
+                            Icon(Icons.Default.Call, contentDescription = "Audio Call", tint = GreenCall)
+                        }
+                        IconButton(onClick = {
+                            val now = System.currentTimeMillis()
+                            if (now - lastCallClickTime > 1500L) {
+                                lastCallClickTime = now
+                                onStartCall(normPeer, peerDisplayName, CallType.VIDEO)
+                            }
+                        }) {
+                            Icon(Icons.Default.Videocam, contentDescription = "Video Call", tint = TealPrimary)
+                        }
+                        Box {
+                            IconButton(onClick = { showOptionsMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Options")
+                            }
+                            DropdownMenu(
+                                expanded = showOptionsMenu,
+                                onDismissRequest = { showOptionsMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Search") },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        isSearching = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Media, Links & Docs") },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        showMediaGalleryDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Clear chat") },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        showClearChatDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Block contact") },
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        firebaseManager.blockNumber(normPeer)
+                                        Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                )
+            }
         }
     ) { innerPadding ->
         val customWallpaperBitmap = remember(wallpaperConfig) {
@@ -578,6 +736,10 @@ fun ChatConversationScreen(
         ) {
             // ── Messages List ────────────────────────────────────────────────
             Box(modifier = Modifier.weight(1f)) {
+                val currentMatchedMessageId = if (matchingIndices.isNotEmpty() && currentSearchIdx in matchingIndices.indices) {
+                    messages.getOrNull(matchingIndices[currentSearchIdx])?.id
+                } else null
+
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
@@ -587,8 +749,11 @@ fun ChatConversationScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     // Message items: index 0 is newest, rendered at the bottom!
-                    items(messages, key = { it.id }) { msg ->
+                    itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
                         val myDisplayName = firebaseManager.currentUser.collectAsState().value?.displayName ?: "Me"
+                        val isMsgMatched = isSearching && searchQuery.isNotBlank() && matchingIndices.contains(index)
+                        val isCurrentMsg = isMsgMatched && msg.id == currentMatchedMessageId
+
                         SwipeableMessageWrapper(
                             message = msg,
                             peerDisplayName = peerDisplayName,
@@ -613,7 +778,9 @@ fun ChatConversationScreen(
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
                                 onMessageLongClick = { selectedMessageForOptions = it },
                                 transferProgress = activeTransfers[msg.id],
-                                onCancelTransfer = { chatRepository.cancelTransfer(msg.id) }
+                                onCancelTransfer = { chatRepository.cancelTransfer(msg.id) },
+                                isSearchMatch = isMsgMatched,
+                                isCurrentSearchMatch = isCurrentMsg
                             )
                         }
                     }
@@ -1305,6 +1472,23 @@ fun ChatConversationScreen(
         )
     }
 
+    // Media, Links and Docs Gallery Dialog
+    if (showMediaGalleryDialog) {
+        ChatMediaGalleryDialog(
+            messages = messages,
+            peerDisplayName = peerDisplayName,
+            onDismissRequest = { showMediaGalleryDialog = false },
+            onSelectImage = { path ->
+                showMediaGalleryDialog = false
+                selectedImagePreviewPath = path
+            },
+            onSelectVideo = { file ->
+                showMediaGalleryDialog = false
+                selectedVideoPreviewFile = file
+            }
+        )
+    }
+
     // Fullscreen Image Preview
     if (selectedImagePreviewPath != null) {
         Dialog(onDismissRequest = { selectedImagePreviewPath = null }) {
@@ -1956,7 +2140,9 @@ private fun MessageBubble(
     onMarkMessageRead: (messageId: String) -> Unit,
     onMessageLongClick: (message: MessageEntity) -> Unit = {},
     transferProgress: com.example.data.p2p.FileTransferProgress? = null,
-    onCancelTransfer: () -> Unit = {}
+    onCancelTransfer: () -> Unit = {},
+    isSearchMatch: Boolean = false,
+    isCurrentSearchMatch: Boolean = false
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -2058,7 +2244,12 @@ private fun MessageBubble(
         Surface(
             color = bubbleColor,
             shape = bubbleShape,
-            shadowElevation = if (isFrameless) 0.dp else 1.dp,
+            border = when {
+                isCurrentSearchMatch -> BorderStroke(2.5.dp, Color(0xFFFF3366))
+                isSearchMatch -> BorderStroke(2.dp, Color(0xFF00B4D8))
+                else -> null
+            },
+            shadowElevation = if (isFrameless) 0.dp else if (isCurrentSearchMatch) 4.dp else 1.dp,
             modifier = Modifier
                 .widthIn(
                     min = when {
