@@ -44,7 +44,9 @@ import com.example.data.model.ContactDto
 import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.LocalThemeColor
+import com.example.ui.components.SimCallPickerModal
 import com.example.util.LocalContact
+import com.example.util.SimManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -88,6 +90,10 @@ fun ContactsScreen(
     var ringtoneModalContact by remember { mutableStateOf<Pair<String, String>?>(null) } // Pair(Name, PhoneNumber)
     var contactRingtoneState by remember { mutableStateOf<Pair<Uri, String>?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
+
+    // Dual SIM Picker Modal State
+    val activeSims = remember { SimManager.getActiveSimCards(context) }
+    var simPickerContact by remember { mutableStateOf<Triple<String, String, Boolean>?>(null) } // Triple(Name, PhoneNumber, isLks)
 
     LaunchedEffect(ringtoneModalContact) {
         ringtoneModalContact?.let {
@@ -483,6 +489,17 @@ fun ContactsScreen(
                             onRingtoneClick = {
                                 lastInteractionTime = System.currentTimeMillis()
                                 ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
+                            },
+                            onCellularCall = {
+                                if (activeSims.size > 1) {
+                                    simPickerContact = Triple(contact.name, contact.phoneNumber, false)
+                                } else {
+                                    val targetSim = activeSims.firstOrNull()
+                                    SimManager.placeCellularCall(context, contact.phoneNumber, targetSim)
+                                    val simLabel = targetSim?.displayName ?: "SIM"
+                                    firebaseManager.recordCellularCall(contact.phoneNumber, contact.name, simLabel)
+                                    Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
                     }
@@ -565,6 +582,35 @@ fun ContactsScreen(
                     trimmerUri = null
                 },
                 onDismiss = { trimmerUri = null }
+            )
+        }
+
+        // Dual SIM / Cellular Call Picker Modal
+        simPickerContact?.let { (name, phone, isLks) ->
+            SimCallPickerModal(
+                phoneNumber = phone,
+                displayName = name,
+                isRegisteredOnLks = isLks,
+                activeSims = activeSims,
+                onDismissRequest = { simPickerContact = null },
+                onStartVoipCall = { type ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastCallClickTime > 1500L) {
+                        lastCallClickTime = now
+                        lastInteractionTime = now
+                        coroutineScope.launch {
+                            delay(200)
+                            onStartCall(phone, name, type)
+                        }
+                    }
+                },
+                onStartCellularCall = { sim ->
+                    SimManager.placeCellularCall(context, phone, sim)
+                    val simLabel = sim?.displayName ?: "SIM"
+                    firebaseManager.recordCellularCall(phone, name, simLabel)
+                    Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                    simPickerContact = null
+                }
             )
         }
     }
@@ -867,7 +913,8 @@ private fun ContactItemRow(
 private fun InviteContactItem(
     contact: LocalContact,
     onInvite: () -> Unit,
-    onRingtoneClick: () -> Unit
+    onRingtoneClick: () -> Unit,
+    onCellularCall: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
 
@@ -913,6 +960,21 @@ private fun InviteContactItem(
                     Icons.Default.MusicNote,
                     contentDescription = "Custom Ringtone",
                     tint = themeColor.primary.copy(alpha = 0.8f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(2.dp))
+
+            // Quick Cellular Call button
+            IconButton(
+                onClick = onCellularCall,
+                modifier = Modifier.size(34.dp)
+            ) {
+                Icon(
+                    Icons.Default.Call,
+                    contentDescription = "Cellular Call",
+                    tint = GreenCall,
                     modifier = Modifier.size(18.dp)
                 )
             }

@@ -179,14 +179,23 @@ fun DialerScreen(
         )
     }
 
+    var simPickerTargetName by remember { mutableStateOf<String?>(null) }
+
     if (showSimPicker && dialNumber.isNotBlank()) {
-        val calleeName = matchedUser?.displayName ?: fullDialNumber
+        val calleeName = simPickerTargetName
+            ?: matchedUser?.displayName
+            ?: nonLksContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+            ?: syncedContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+            ?: fullDialNumber
         SimCallPickerModal(
             phoneNumber = fullDialNumber,
             displayName = calleeName,
             isRegisteredOnLks = matchedUser != null,
             activeSims = activeSims,
-            onDismissRequest = { showSimPicker = false },
+            onDismissRequest = {
+                showSimPicker = false
+                simPickerTargetName = null
+            },
             onStartVoipCall = { type ->
                 safeCall(fullDialNumber, calleeName, type)
             },
@@ -195,6 +204,7 @@ fun DialerScreen(
                 val simLabel = sim?.displayName ?: "SIM"
                 firebaseManager.recordCellularCall(fullDialNumber, calleeName, simLabel)
                 Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                simPickerTargetName = null
             }
         )
     }
@@ -425,6 +435,7 @@ fun DialerScreen(
                                 } else {
                                     val clean = match.phoneNumber.filter { it.isDigit() || it == '+' }
                                     dialNumber = clean
+                                    simPickerTargetName = match.name
                                     showSimPicker = true
                                 }
                             }
@@ -484,9 +495,13 @@ fun DialerScreen(
                             onClick = {
                                 if (dialNumber.isNotBlank()) {
                                     if (activeSims.size > 1) {
+                                        simPickerTargetName = null
                                         showSimPicker = true
                                     } else {
-                                        val calleeName = matchedUser?.displayName ?: fullDialNumber
+                                        val calleeName = matchedUser?.displayName
+                                            ?: nonLksContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+                                            ?: syncedContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+                                            ?: fullDialNumber
                                         val targetSim = activeSims.firstOrNull()
                                         SimManager.placeCellularCall(context, fullDialNumber, targetSim)
                                         val simLabel = targetSim?.displayName ?: "SIM"

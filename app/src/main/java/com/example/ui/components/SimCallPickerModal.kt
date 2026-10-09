@@ -109,35 +109,36 @@ fun SimCallPickerModal(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // ── Section 1: LKS VoIP Calling ──────────────────────────────────────────────
-            Text(
-                text = "INTERNET CALL (LKS VoIP)",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp)
-            )
-
-            // Audio VoIP Call Option
-            CallingOptionCard(
-                icon = Icons.Default.Call,
-                iconColor = Color.White,
-                iconBg = GreenCall,
-                title = "LKS HD Audio Call",
-                subtitle = "Free • End-to-end encrypted • Zero data loss",
-                badgeText = if (isRegisteredOnLks) "HD Voice" else null,
-                badgeColor = GreenCall,
-                onClick = {
-                    onStartVoipCall(CallType.AUDIO)
-                    onDismissRequest()
-                }
-            )
-
             if (isRegisteredOnLks) {
+                // ── Section 1: LKS VoIP Calling (When user is on LKS) ──────────────────────────
+                Text(
+                    text = "INTERNET CALL (LKS VoIP)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
+
+                // Audio VoIP Call Option
+                CallingOptionCard(
+                    icon = Icons.Default.Call,
+                    iconColor = Color.White,
+                    iconBg = GreenCall,
+                    title = "LKS HD Audio Call",
+                    subtitle = "Free • End-to-end encrypted • Zero data loss",
+                    badgeText = "HD Voice",
+                    badgeColor = GreenCall,
+                    onClick = {
+                        onStartVoipCall(CallType.AUDIO)
+                        onDismissRequest()
+                    }
+                )
+
                 Spacer(modifier = Modifier.height(8.dp))
+
                 // Video VoIP Call Option
                 CallingOptionCard(
                     icon = Icons.Default.Videocam,
@@ -152,53 +153,99 @@ fun SimCallPickerModal(
                         onDismissRequest()
                     }
                 )
-            }
 
-            Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(18.dp))
 
-            // ── Section 2: Cellular SIM Options ──────────────────────────────────────────
-            Text(
-                text = "CELLULAR CARRIER (NATIVE SIM)",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp)
-            )
+                // ── Section 2: Cellular SIM Options ──────────────────────────────────────────
+                Text(
+                    text = "CELLULAR CARRIER (NATIVE SIM)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
 
-            if (activeSims.isNotEmpty()) {
-                activeSims.forEach { sim ->
+                if (activeSims.isNotEmpty()) {
+                    activeSims.forEach { sim ->
+                        CallingOptionCard(
+                            icon = Icons.Default.SimCard,
+                            iconColor = Color.White,
+                            iconBg = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
+                            title = "SIM ${sim.slotIndex + 1}: ${sim.displayName}",
+                            subtitle = "Carrier phone call via ${sim.carrierName}${if (sim.countryIso.isNotBlank()) " (${sim.countryIso})" else ""}",
+                            badgeText = "SIM ${sim.slotIndex + 1}",
+                            badgeColor = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
+                            onClick = {
+                                onStartCellularCall(sim)
+                                onDismissRequest()
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                } else {
                     CallingOptionCard(
-                        icon = Icons.Default.SimCard,
+                        icon = Icons.Default.PhoneInTalk,
                         iconColor = Color.White,
-                        iconBg = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
-                        title = "SIM ${sim.slotIndex + 1}: ${sim.displayName}",
-                        subtitle = "Carrier phone call via ${sim.carrierName}${if (sim.countryIso.isNotBlank()) " (${sim.countryIso})" else ""}",
-                        badgeText = "SIM ${sim.slotIndex + 1}",
-                        badgeColor = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
+                        iconBg = Color(0xFF546E7A),
+                        title = "Cellular Call",
+                        subtitle = "Call via device native cellular network",
+                        badgeText = "SIM",
+                        badgeColor = Color(0xFF546E7A),
                         onClick = {
-                            onStartCellularCall(sim)
+                            onStartCellularCall(null)
+                            onDismissRequest()
+                        }
+                    )
+                }
+            } else {
+                // ── Non-LKS user: Show Cellular SIM Options at the top! ───────────────────────
+                Text(
+                    text = "CELLULAR CARRIER (NATIVE SIM)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
+
+                if (activeSims.isNotEmpty()) {
+                    activeSims.forEach { sim ->
+                        CallingOptionCard(
+                            icon = Icons.Default.SimCard,
+                            iconColor = Color.White,
+                            iconBg = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
+                            title = "SIM ${sim.slotIndex + 1}: ${sim.displayName}",
+                            subtitle = "Regular phone call via ${sim.carrierName}${if (sim.countryIso.isNotBlank()) " (${sim.countryIso})" else ""}",
+                            badgeText = "SIM ${sim.slotIndex + 1}",
+                            badgeColor = if (sim.slotIndex == 0) Color(0xFF1E88E5) else Color(0xFF8E24AA),
+                            onClick = {
+                                onStartCellularCall(sim)
+                                onDismissRequest()
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                } else {
+                    CallingOptionCard(
+                        icon = Icons.Default.PhoneInTalk,
+                        iconColor = Color.White,
+                        iconBg = Color(0xFF546E7A),
+                        title = "Cellular Call",
+                        subtitle = "Call via device native cellular network",
+                        badgeText = "SIM",
+                        badgeColor = Color(0xFF546E7A),
+                        onClick = {
+                            onStartCellularCall(null)
                             onDismissRequest()
                         }
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
-            } else {
-                CallingOptionCard(
-                    icon = Icons.Default.PhoneInTalk,
-                    iconColor = Color.White,
-                    iconBg = Color(0xFF546E7A),
-                    title = "Cellular Call",
-                    subtitle = "Call via device native cellular network",
-                    badgeText = "SIM",
-                    badgeColor = Color(0xFF546E7A),
-                    onClick = {
-                        onStartCellularCall(null)
-                        onDismissRequest()
-                    }
-                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))

@@ -462,7 +462,8 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.CAMERA,
                     Manifest.permission.READ_CONTACTS,
                     Manifest.permission.READ_PHONE_STATE,
-                    Manifest.permission.READ_PHONE_NUMBERS
+                    Manifest.permission.READ_PHONE_NUMBERS,
+                    Manifest.permission.CALL_PHONE
                 )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
