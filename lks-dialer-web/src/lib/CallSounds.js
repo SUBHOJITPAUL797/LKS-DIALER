@@ -93,7 +93,7 @@ class CallSoundsManager {
   }
 
   /**
-   * Plays 3 distinct telecom disconnect / hangup beeps (480Hz).
+   * Plays 1 single telecom disconnect / hangup beep (480Hz).
    */
   playCallEndedTone() {
     this.stopRingbackTone();
@@ -104,9 +104,7 @@ class CallSoundsManager {
 
     try {
       const beeps = [
-        { start: 0.0, dur: 0.18, freq: 480 },
-        { start: 0.26, dur: 0.18, freq: 480 },
-        { start: 0.52, dur: 0.28, freq: 480 },
+        { start: 0.0, dur: 0.22, freq: 480 },
       ];
 
       const now = ctx.currentTime;

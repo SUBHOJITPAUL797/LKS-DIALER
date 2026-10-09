@@ -11,7 +11,7 @@ import android.util.Log
  * CallSoundEffectsManager
  * Provides professional telecom audio progress feedback:
  * 1. Outgoing Ringback Tone: classic supervisory "tuuut... tuuut..." played to caller while recipient rings.
- * 2. Call Ended / Disconnect Tone: 3 prompt beeps played when call drops or hangs up.
+ * 2. Call Ended / Disconnect Tone: 1 single prompt beep played when call drops or hangs up.
  * 3. Call Hold Tone: soft prompt tone when call is placed on hold + periodic reminder.
  * 4. Call Resume / Unhold Tone: rising confirmation chime when call is taken off hold.
  */
@@ -75,7 +75,7 @@ object CallSoundEffectsManager {
     }
 
     /**
-     * Play the professional Call Ended / Hangup tone (3 crisp disconnect beeps).
+     * Play the professional Call Ended / Hangup tone (1 single crisp disconnect beep).
      */
     fun playCallEndedTone(context: Context) {
         stopRingbackTone()
@@ -84,12 +84,8 @@ object CallSoundEffectsManager {
         Thread {
             try {
                 val toneGen = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 90)
-                toneGen.startTone(ToneGenerator.TONE_PROP_PROMPT, 180)
-                Thread.sleep(240)
-                toneGen.startTone(ToneGenerator.TONE_PROP_PROMPT, 180)
-                Thread.sleep(240)
-                toneGen.startTone(ToneGenerator.TONE_PROP_PROMPT, 280)
-                Thread.sleep(320)
+                toneGen.startTone(ToneGenerator.TONE_PROP_PROMPT, 220)
+                Thread.sleep(260)
                 toneGen.release()
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to play call ended tone: ${e.message}")
