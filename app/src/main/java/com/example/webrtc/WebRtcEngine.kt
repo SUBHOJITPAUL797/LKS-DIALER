@@ -88,6 +88,20 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var iceCandidateListener: ListenerRegistration? = null
     
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private fun recordSeenCall(callId: String) {
+        if (callId.isNotBlank()) {
+            if (seenCallIds.size > 200) {
+                val it = seenCallIds.iterator()
+                var c = 0
+                while (it.hasNext() && c < 100) {
+                    it.next()
+                    it.remove()
+                    c++
+                }
+            }
+            seenCallIds.add(callId)
+        }
+    }
     private val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
     private var lastProcessedIceRestartTimestamp = 0L
@@ -843,7 +857,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 ) {
                     Log.i("WebRtcEngine", "Caller initiated a newer call ${incomingCall.callId} (replacing ${currentActive.callId}). Upgrading active ringing call.")
                     markCallTerminated(currentActive.callId)
-                    seenCallIds.add(incomingCall.callId)
+                    recordSeenCall(incomingCall.callId)
                     // Update new call in Firestore to RINGING
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     // Update local state to point to new call
@@ -865,7 +879,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     _state.value.activeCall == null
 
                 if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds && !isCallTerminated(incomingCall.callId)) {
-                    seenCallIds.add(incomingCall.callId)
+                    recordSeenCall(incomingCall.callId)
 
                     val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
                     if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(incomingCall.callerNumber)) {

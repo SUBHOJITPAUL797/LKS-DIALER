@@ -60,7 +60,8 @@ class ActiveCallService : Service() {
 
         // Auto-stop self if call ends in WebRtcEngine
         serviceScope.launch {
-            val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() ?: return@launch
+            val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
             engine.state.collectLatest { s ->
                 when (s.callStatus) {
                     com.example.data.model.CallStatus.ENDED,
@@ -70,6 +71,23 @@ class ActiveCallService : Service() {
                         stopSelf()
                     }
                     else -> {}
+                }
+            }
+        }
+
+        // Watchdog: heartbeat check every 10 seconds to eliminate zombie notifications
+        serviceScope.launch {
+            while (isActive) {
+                delay(10_000L)
+                val eng = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                val status = eng?.state?.value?.callStatus
+                if (status == null || status == com.example.data.model.CallStatus.IDLE ||
+                    status == com.example.data.model.CallStatus.ENDED ||
+                    status == com.example.data.model.CallStatus.DECLINED ||
+                    status == com.example.data.model.CallStatus.MISSED) {
+                    android.util.Log.i("ActiveCallService", "Watchdog: call no longer active (status=$status) -> stopping service")
+                    stopSelf()
+                    break
                 }
             }
         }
