@@ -87,8 +87,8 @@ export default function QrLoginView({ onLoginSuccess }) {
       <div 
         style={{ 
           position: 'relative', 
-          width: '280px', 
-          height: '280px',
+          width: 'min(280px, 86vw)', 
+          height: 'min(280px, 86vw)',
           background: '#ffffff',
           borderRadius: '24px',
           padding: '16px',
@@ -105,6 +105,8 @@ export default function QrLoginView({ onLoginSuccess }) {
           width={248} 
           height={248} 
           style={{ 
+            maxWidth: '100%',
+            maxHeight: '100%',
             borderRadius: '16px', 
             display: 'block',
             filter: (status === 'EXPIRED' || status === 'APPROVED') ? 'blur(4px) opacity(0.35)' : 'none',
