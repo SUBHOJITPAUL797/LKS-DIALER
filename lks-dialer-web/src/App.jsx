@@ -14,6 +14,7 @@ import AppDownloadModal, { DIRECT_APK_URL, LATEST_APP_VERSION } from './componen
 import { webRtcEngine } from './lib/WebRtcEngine';
 import { chatRepositoryWeb } from './lib/ChatRepositoryWeb';
 import { formatAvatarUrl } from './lib/ImageUtils';
+import { watchDeviceRevocation } from './lib/QrLoginWeb';
 import appLogo from './assets/app_logo.png';
 
 function App() {
@@ -43,6 +44,7 @@ function App() {
     }
 
     // Check local storage for persistent login
+    let unsubRevocation = null;
     const savedUser = localStorage.getItem('lksDialerUser');
     if (savedUser) {
       const user = JSON.parse(savedUser);
@@ -52,6 +54,13 @@ function App() {
       chatRepositoryWeb.attachChatListeners(user.phoneNumber);
       setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
       setCurrentUser(user);
+
+      if (user.linkedSessionId) {
+        unsubRevocation = watchDeviceRevocation(user.phoneNumber, user.linkedSessionId, () => {
+          console.warn('[App] Web session was logged out from phone.');
+          handleLogout();
+        });
+      }
     }
     setIsInitializing(false);
 
@@ -208,19 +217,35 @@ function App() {
       unsubChat();
       chatRepositoryWeb.detachChatListeners();
       webRtcEngine.stopPresenceHeartbeat(true);
+      if (unsubRevocation) unsubRevocation();
       if (swMsgHandler && 'serviceWorker' in navigator) {
         navigator.serviceWorker.removeEventListener('message', swMsgHandler);
       }
     };
   }, [incomingCall]);
 
-  const handleRegister = async (phone, name) => {
-    const user = await webRtcEngine.registerUser(phone, name);
+  const handleLogout = () => {
+    localStorage.removeItem('lksDialerUser');
+    webRtcEngine.stopPresenceHeartbeat(true);
+    chatRepositoryWeb.detachChatListeners();
+    webRtcEngine.setCurrentUser(null);
+    setCurrentUser(null);
+  };
+
+  const handleRegister = async (phone, name, profilePictureUrl = '', statusMessage = '', linkedSessionId = '') => {
+    const user = await webRtcEngine.registerUser(phone, name, profilePictureUrl, statusMessage, linkedSessionId);
     localStorage.setItem('lksDialerUser', JSON.stringify(user));
     webRtcEngine.initWebPush();
     chatRepositoryWeb.attachChatListeners(user.phoneNumber);
     setUnreadChatCount(chatRepositoryWeb.getTotalUnreadCount());
     setCurrentUser(user);
+
+    if (linkedSessionId) {
+      watchDeviceRevocation(user.phoneNumber, linkedSessionId, () => {
+        console.warn('[App] Web session was logged out from phone.');
+        handleLogout();
+      });
+    }
   };
 
   const handleStartCall = async (number, type) => {
@@ -588,7 +613,7 @@ function App() {
                 <Dialer onStartCall={handleStartCall} />
               )}
               {activeTab === 'profile' && (
-                <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} />
+                <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} onLogout={handleLogout} />
               )}
             </div>
           </div>
@@ -604,7 +629,7 @@ function App() {
               <Dialer onStartCall={handleStartCall} />
             )}
             {activeTab === 'profile' && (
-              <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} />
+              <Profile onOpenDownloadModal={() => setShowDownloadModal(true)} onLogout={handleLogout} />
             )}
           </div>
         )}

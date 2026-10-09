@@ -52,6 +52,7 @@ import com.example.data.repository.ChatRepository
 import com.example.ui.screens.chat.ChatListScreen
 import com.example.ui.screens.chat.ChatConversationScreen
 import com.example.ui.screens.chat.ChatStorageManagementScreen
+import com.example.ui.screens.settings.LinkedDevicesScreen
 
 enum class MainTab(val title: String, val icon: ImageVector) {
     DIALER("Dialer", Icons.Default.Dialpad),
@@ -68,7 +69,8 @@ enum class AppNavState {
     MAIN,
     SETTINGS,
     CHAT_CONVERSATION,
-    STORAGE_MANAGEMENT
+    STORAGE_MANAGEMENT,
+    LINKED_DEVICES
 }
 
 class MainActivity : ComponentActivity() {
@@ -851,7 +853,8 @@ class MainActivity : ComponentActivity() {
                                     SettingsScreen(
                                         firebaseManager = firebaseManager,
                                         onBackClick = { navState = AppNavState.MAIN },
-                                        onNavigateToStorage = { navState = AppNavState.STORAGE_MANAGEMENT }
+                                        onNavigateToStorage = { navState = AppNavState.STORAGE_MANAGEMENT },
+                                        onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES }
                                     )
                                 }
                                 AppNavState.MAIN -> {
@@ -913,7 +916,8 @@ class MainActivity : ComponentActivity() {
                                                 MainTab.DIALER -> DialerScreen(
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
-                                                    onNavigateToSettings = { navState = AppNavState.SETTINGS }
+                                                    onNavigateToSettings = { navState = AppNavState.SETTINGS },
+                                                    onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES }
                                                 )
                                                 MainTab.RECENTS -> CallHistoryScreen(
                                                     firebaseManager = firebaseManager,
@@ -939,6 +943,9 @@ class MainActivity : ComponentActivity() {
                                                     },
                                                     onNavigateToSettings = {
                                                         navState = AppNavState.SETTINGS
+                                                    },
+                                                    onNavigateToLinkedDevices = {
+                                                        navState = AppNavState.LINKED_DEVICES
                                                     }
                                                 )
                                                 MainTab.CONTACTS -> ContactsScreen(
@@ -999,6 +1006,17 @@ class MainActivity : ComponentActivity() {
                                             chatPeerName = name
                                             chatPeerAvatar = ""
                                             navState = AppNavState.CHAT_CONVERSATION
+                                        }
+                                    )
+                                }
+                                AppNavState.LINKED_DEVICES -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.MAIN
+                                    }
+                                    LinkedDevicesScreen(
+                                        firebaseManager = firebaseManager,
+                                        onBackClick = {
+                                            navState = AppNavState.MAIN
                                         }
                                     )
                                 }

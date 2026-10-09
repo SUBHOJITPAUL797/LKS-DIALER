@@ -1,10 +1,10 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Save, Ban, Smartphone, Download } from 'lucide-react';
+import { Camera, Save, Ban, Smartphone, Download, LogOut } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { DIRECT_APK_URL, LATEST_APP_VERSION } from './AppDownloadModal';
 
-export default function Profile({ onOpenDownloadModal }) {
+export default function Profile({ onOpenDownloadModal, onLogout }) {
   const [name, setName] = useState(webRtcEngine.currentUser?.displayName || "");
   const [avatar, setAvatar] = useState(webRtcEngine.currentUser?.profilePictureUrl || "");
   const [customRingtone, setCustomRingtone] = useState(localStorage.getItem('customRingtone') || "");
@@ -239,7 +239,7 @@ export default function Profile({ onOpenDownloadModal }) {
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <a
               href={DIRECT_APK_URL}
-              download="LKS-DIALER-v2.8.2.apk"
+              download={`LKS-DIALER-${LATEST_APP_VERSION}.apk`}
               target="_blank"
               rel="noopener noreferrer"
               className="neo-btn"
@@ -278,15 +278,41 @@ export default function Profile({ onOpenDownloadModal }) {
         </div>
       </div>
 
-      <button 
-        className="neo-btn" 
-        onClick={handleSave} 
-        disabled={loading}
-        style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-      >
-        <Save size={20} />
-        {loading ? "SAVING..." : "SAVE PROFILE"}
-      </button>
+      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <button 
+          className="neo-btn" 
+          onClick={handleSave} 
+          disabled={loading}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+        >
+          <Save size={20} />
+          {loading ? "SAVING..." : "SAVE PROFILE"}
+        </button>
+
+        {onLogout && (
+          <button 
+            type="button"
+            className="neo-btn" 
+            onClick={() => {
+              if (window.confirm("Are you sure you want to log out of this web browser?")) {
+                onLogout();
+              }
+            }} 
+            style={{ 
+              backgroundColor: '#fee2e2', 
+              color: '#dc2626', 
+              borderColor: '#dc2626',
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              gap: '8px' 
+            }}
+          >
+            <LogOut size={18} />
+            LOG OUT OF BROWSER
+          </button>
+        )}
+      </div>
 
     </div>
   );

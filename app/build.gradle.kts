@@ -18,8 +18,8 @@ android {
     applicationId = "com.subhojit.lksdialer.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 170
-    versionName = "2.9.12"
+    versionCode = 171
+    versionName = "2.9.13"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -86,6 +86,7 @@ dependencies {
   implementation(libs.androidx.camera.core)
   implementation(libs.androidx.camera.lifecycle)
   implementation(libs.androidx.camera.view)
+  implementation("com.google.mlkit:barcode-scanning:17.3.0")
   implementation("com.google.guava:guava:31.1-android")
   implementation("androidx.concurrent:concurrent-futures:1.2.0")
   implementation(libs.androidx.compose.material.icons.core)

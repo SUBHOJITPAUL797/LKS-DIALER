@@ -45,7 +45,8 @@ import com.example.util.CountryCodes
 fun DialerScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    onNavigateToLinkedDevices: () -> Unit = {}
 ) {
     val themeColor = LocalThemeColor.current
     var dialNumber by remember { mutableStateOf("") }
@@ -215,6 +216,9 @@ fun DialerScreen(
                     }
                 }) {
                     Icon(Icons.Default.ContentPaste, contentDescription = "Paste number", tint = themeColor.primary)
+                }
+                IconButton(onClick = onNavigateToLinkedDevices) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = "Linked Devices", tint = themeColor.primary)
                 }
                 IconButton(onClick = onNavigateToSettings) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings", tint = themeColor.primary)

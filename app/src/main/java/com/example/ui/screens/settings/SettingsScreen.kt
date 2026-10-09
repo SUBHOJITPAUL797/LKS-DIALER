@@ -63,7 +63,8 @@ import com.example.ui.components.UpdateDialog
 fun SettingsScreen(
     firebaseManager: FirebaseManager,
     onBackClick: (() -> Unit)? = null,
-    onNavigateToStorage: () -> Unit = {}
+    onNavigateToStorage: () -> Unit = {},
+    onNavigateToLinkedDevices: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -245,6 +246,59 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
+            // Linked Devices & Web Login Section
+            SettingsSectionHeader("Linked Devices & Web")
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigateToLinkedDevices() }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = currentThemeColor.primary.copy(alpha = 0.15f),
+                        modifier = Modifier.size(46.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.QrCodeScanner,
+                                contentDescription = null,
+                                tint = currentThemeColor.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Linked Devices",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Scan QR code to log into LKS Dialer Web on your computer",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
             // App Theme & Appearance Section
             SettingsSectionHeader("App Theme & Appearance")
             Surface(

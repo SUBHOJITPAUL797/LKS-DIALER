@@ -126,3 +126,13 @@ data class ChatReceiptDto(
     val status: String = "DELIVERED",
     val timestamp: Long = 0L
 )
+
+data class LinkedDeviceDto(
+    val sessionId: String = "",
+    val deviceName: String = "",
+    val userAgent: String = "",
+    val linkedAt: Long = 0L,
+    val lastActive: Long = 0L,
+    val revoked: Boolean = false
+)
+

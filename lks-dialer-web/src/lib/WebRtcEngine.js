@@ -434,7 +434,7 @@ class WebRtcEngine {
     }
   }
 
-  async registerUser(phoneNumber, displayName) {
+  async registerUser(phoneNumber, displayName, profilePictureUrl = '', statusMessage = '', linkedSessionId = '') {
     let webToken = null;
     try {
       if (typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator && messaging) {
@@ -467,10 +467,13 @@ class WebRtcEngine {
     const userData = {
       phoneNumber,
       displayName,
-      registeredDeviceId: 'web-device-' + Math.random().toString(36).substring(7),
+      registeredDeviceId: linkedSessionId ? `web-session-${linkedSessionId}` : 'web-device-' + Math.random().toString(36).substring(7),
       isOnline: true,
       online: true,
       lastSeen: now,
+      ...(profilePictureUrl && { profilePictureUrl }),
+      ...(statusMessage && { statusMessage }),
+      ...(linkedSessionId && { linkedSessionId }),
       ...(webToken && { webToken }),
       ...(publicKey && { publicKey })
     };
@@ -481,6 +484,8 @@ class WebRtcEngine {
         isOnline: true,
         online: true,
         lastSeen: now,
+        ...(profilePictureUrl && { profilePictureUrl }),
+        ...(statusMessage && { statusMessage }),
         ...(webToken && { webToken }),
         ...(publicKey && { publicKey })
       });

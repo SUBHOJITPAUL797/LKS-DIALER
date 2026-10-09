@@ -58,11 +58,15 @@ class FirebaseManager private constructor(private val context: Context) {
     )
     val blockedNumbers: StateFlow<List<String>> = _blockedNumbers.asStateFlow()
 
+    private val _linkedDevices = MutableStateFlow<List<LinkedDeviceDto>>(emptyList())
+    val linkedDevices: StateFlow<List<LinkedDeviceDto>> = _linkedDevices.asStateFlow()
+
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
     private var syncJob: kotlinx.coroutines.Job? = null
 
     private var contactsListener: ListenerRegistration? = null
     private var callLogsListener: ListenerRegistration? = null
+    private var linkedDevicesListener: ListenerRegistration? = null
     // BUG-14 FIX: Store reference so it can be removed if needed
     private var usersListener: ListenerRegistration? = null
     private val activeCallLogIds = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -294,6 +298,17 @@ class FirebaseManager private constructor(private val context: Context) {
                 if (maxMissedCallAt > lastSeenMissedCallAt) {
                     prefs.edit().putLong("lastSeenMissedCallAt", maxMissedCallAt).apply()
                 }
+            }
+
+        // 3. Sync Linked Devices for Web login
+        linkedDevicesListener?.remove()
+        linkedDevicesListener = db.collection("users").document(phoneNumber)
+            .collection("linked_devices")
+            .whereEqualTo("revoked", false)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null || snapshot == null) return@addSnapshotListener
+                val devices = snapshot.toObjects(LinkedDeviceDto::class.java)
+                _linkedDevices.value = devices.sortedByDescending { it.linkedAt }
             }
     }
 
@@ -1044,6 +1059,9 @@ class FirebaseManager private constructor(private val context: Context) {
         contactsListener = null
         callLogsListener?.remove()
         callLogsListener = null
+        linkedDevicesListener?.remove()
+        linkedDevicesListener = null
+        _linkedDevices.value = emptyList()
         syncJob?.cancel()
         _currentUser.value = null
         _registeredUsers.value = emptyList()
@@ -1051,6 +1069,149 @@ class FirebaseManager private constructor(private val context: Context) {
         _callLogs.value = emptyList()
         _contacts.value = emptyList()
         prefs.edit().clear().apply()
+    }
+
+    /**
+     * Unlinks a device remotely from the phone, which causes the Web app to log out immediately.
+     */
+    fun unlinkDevice(sessionId: String, onComplete: ((Boolean) -> Unit)? = null) {
+        val phone = _currentUser.value?.phoneNumber ?: run {
+            onComplete?.invoke(false)
+            return
+        }
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users").document(phone)
+            .collection("linked_devices").document(sessionId)
+            .update("revoked", true)
+            .addOnSuccessListener {
+                _linkedDevices.value = _linkedDevices.value.filter { it.sessionId != sessionId }
+                onComplete?.invoke(true)
+            }
+            .addOnFailureListener {
+                // Try deleting if update fails
+                db.collection("users").document(phone)
+                    .collection("linked_devices").document(sessionId)
+                    .delete()
+                    .addOnCompleteListener { task ->
+                        _linkedDevices.value = _linkedDevices.value.filter { it.sessionId != sessionId }
+                        onComplete?.invoke(task.isSuccessful)
+                    }
+            }
+    }
+
+    /**
+     * Verifies the scanned QR code payload and returns session details for user confirmation.
+     */
+    fun verifyScannedQrCode(
+        rawQrContent: String,
+        onValidSession: (sessionId: String, nonce: String, deviceName: String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        try {
+            val json = org.json.JSONObject(rawQrContent)
+            val type = json.optString("type")
+            if (type != "LKS_QR_LOGIN") {
+                onError("Invalid QR code. Please scan the QR code displayed on LKS Dialer Web.")
+                return
+            }
+            val sessionId = json.optString("sessionId")
+            val nonce = json.optString("nonce")
+            if (sessionId.isBlank() || nonce.isBlank()) {
+                onError("Invalid QR code format.")
+                return
+            }
+
+            val db = FirebaseFirestore.getInstance()
+            db.collection("qr_sessions").document(sessionId).get()
+                .addOnSuccessListener { snap ->
+                    if (!snap.exists()) {
+                        onError("Session not found or expired. Please refresh the QR code on your computer.")
+                        return@addOnSuccessListener
+                    }
+                    val status = snap.getString("status") ?: ""
+                    val expectedNonce = snap.getString("nonce") ?: ""
+                    val expiresAt = snap.getLong("expiresAt") ?: 0L
+                    val deviceName = snap.getString("deviceName") ?: "Web Browser"
+
+                    if (status != "PENDING" && status != "SCANNED") {
+                        onError("This QR code has already been used or expired.")
+                        return@addOnSuccessListener
+                    }
+                    if (expectedNonce != nonce) {
+                        onError("Security validation failed (nonce mismatch).")
+                        return@addOnSuccessListener
+                    }
+                    if (System.currentTimeMillis() > expiresAt) {
+                        onError("QR code has expired. Please refresh it on your screen.")
+                        return@addOnSuccessListener
+                    }
+
+                    // Mark as SCANNED so the web client shows visual feedback
+                    snap.reference.update("status", "SCANNED")
+
+                    onValidSession(sessionId, nonce, deviceName)
+                }
+                .addOnFailureListener { e ->
+                    onError("Failed to check QR session: ${e.message}")
+                }
+        } catch (e: Exception) {
+            onError("Unsupported QR code format: ${e.message}")
+        }
+    }
+
+    /**
+     * Approves the QR login session and grants access to the web client.
+     */
+    fun approveQrSession(
+        sessionId: String,
+        nonce: String,
+        deviceName: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        val user = _currentUser.value
+        if (user == null || user.phoneNumber.isBlank()) {
+            onError("You must be logged in to link a device.")
+            return
+        }
+
+        val db = FirebaseFirestore.getInstance()
+        val now = System.currentTimeMillis()
+
+        // 1. Update qr_sessions/{sessionId} to APPROVED with user credentials
+        val approvalPayload = mapOf(
+            "status" to "APPROVED",
+            "approvedAt" to now,
+            "approvedByPhone" to user.phoneNumber,
+            "userPhone" to user.phoneNumber,
+            "userName" to user.displayName,
+            "userProfilePic" to user.profilePictureUrl,
+            "userStatus" to user.statusMessage,
+            "deviceName" to deviceName
+        )
+
+        db.collection("qr_sessions").document(sessionId)
+            .update(approvalPayload)
+            .addOnSuccessListener {
+                // 2. Record linked device in users/{phone}/linked_devices/{sessionId}
+                val linkedDevice = LinkedDeviceDto(
+                    sessionId = sessionId,
+                    deviceName = deviceName,
+                    userAgent = "",
+                    linkedAt = now,
+                    lastActive = now,
+                    revoked = false
+                )
+                db.collection("users").document(user.phoneNumber)
+                    .collection("linked_devices").document(sessionId)
+                    .set(linkedDevice)
+                    .addOnCompleteListener {
+                        onSuccess()
+                    }
+            }
+            .addOnFailureListener { e ->
+                onError("Failed to approve session: ${e.message}")
+            }
     }
 
     companion object {

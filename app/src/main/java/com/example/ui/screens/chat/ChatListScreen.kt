@@ -45,7 +45,8 @@ fun ChatListScreen(
     activeCallType: CallType? = null,
     onOpenConversation: (phoneNumber: String, contactName: String, avatarUrl: String) -> Unit,
     onNavigateToStorage: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {}
+    onNavigateToSettings: () -> Unit = {},
+    onNavigateToLinkedDevices: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -102,6 +103,14 @@ fun ChatListScreen(
                             expanded = showOptionsMenu,
                             onDismissRequest = { showOptionsMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Linked Devices") },
+                                leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = TealPrimary) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    onNavigateToLinkedDevices()
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Manage Storage") },
                                 leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = TealPrimary) },
