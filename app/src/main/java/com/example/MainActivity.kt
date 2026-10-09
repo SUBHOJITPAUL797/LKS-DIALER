@@ -611,17 +611,17 @@ class MainActivity : ComponentActivity() {
                         val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
                         
                         if (!callId.isNullOrBlank()) {
-                            // If engine is already attached to this exact call, only auto-answer if requested
-                            if (rtcState.activeCall?.callId == callId) {
-                                if (autoAnswer && hasMicPermission && rtcState.callStatus != CallStatus.ANSWERED) {
-                                    webRtcEngine.answerCall()
-                                }
-                            } else {
-                                // Only auto-answer if the microphone permission is already granted
-                                val safeAutoAnswer = autoAnswer && hasMicPermission
+                            if (autoAnswer && hasMicPermission) {
+                                webRtcEngine.answerIncomingCall(
+                                    callId = callId,
+                                    callerName = callerName,
+                                    callerNumber = callerNumber,
+                                    callTypeStr = callType
+                                )
+                            } else if (rtcState.activeCall?.callId != callId) {
                                 webRtcEngine.attachToCall(
                                     callId = callId, 
-                                    autoAnswer = safeAutoAnswer,
+                                    autoAnswer = false,
                                     callerName = callerName,
                                     callerNumber = callerNumber,
                                     callTypeStr = callType

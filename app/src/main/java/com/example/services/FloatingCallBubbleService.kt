@@ -424,6 +424,12 @@ class FloatingCallBubbleService : Service() {
         if (action == ACTION_SHOW_INCOMING) {
             val ringNumber = callerNumber.ifBlank { currentCallerNumber }
             startRinging(ringNumber)
+            try {
+                val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
+                engine.attachToCall(callId, autoAnswer = false, callerName, callerNumber, callType.name)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to pre-attach WebRtcEngine: ${e.message}")
+            }
             showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
             stopRinging()
@@ -597,34 +603,17 @@ class FloatingCallBubbleService : Service() {
             setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f))
             setOnClickListener {
-                Log.i(TAG, "Answer pressed on incoming call pill")
+                Log.i(TAG, "⚡ Answer pressed on incoming call pill - answering directly via WebRtcEngine (<100ms)")
                 stopRinging()
                 val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 nm?.cancel(CallMessagingService.NOTIFICATION_ID)
                 nm?.cancel(1001)
 
-                // Instantly notify Firestore of ANSWERED so caller switches to Speak Mode immediately (<100ms)
-                if (callId.isNotBlank()) {
-                    try {
-                        FirebaseFirestore.getInstance()
-                            .collection("calls")
-                            .document(callId)
-                            .update(
-                                "status", CallStatus.ANSWERED.name,
-                                "answeredAt", System.currentTimeMillis()
-                            )
-                    } catch (_: Exception) {}
-                }
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    try { LksConnectionService.setCallActive() } catch (_: Exception) {}
-                }
-
-                // Answer directly via WebRtcEngine in background
+                // Answer directly via WebRtcEngine in background (<100ms)
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
-                engine.attachToCall(callId, autoAnswer = true, callerName, callerNumber, callType.name)
+                engine.answerIncomingCall(callId, callerName, callerNumber, callType.name)
                 if (callType == CallType.VIDEO) {
-                    openFullScreenCallActivity(callId, autoAnswer = true)
+                    openFullScreenCallActivity(callId, autoAnswer = false)
                     removeFloatingView()
                 } else {
                     // Switch pill to active in-call pill

@@ -23,28 +23,43 @@ class CallNotificationReceiver : BroadcastReceiver() {
 
         when (action) {
             ACTION_ACCEPT -> {
+                val callerName = intent.getStringExtra("caller_name") ?: "LKS User"
+                val callerNumber = intent.getStringExtra("caller_number") ?: ""
+                val callTypeStr = intent.getStringExtra("call_type") ?: "AUDIO"
+                val callType = try { com.example.data.model.CallType.valueOf(callTypeStr) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+
                 com.example.util.LksIncomingRingtonePlayer.stop()
                 FloatingCallBubbleService.silenceRingtone(context)
 
-                // Instantly mark status as ANSWERED in Firestore so caller screen switches immediately (<100ms)
-                try {
-                    FirebaseFirestore.getInstance()
-                        .collection("calls")
-                        .document(callId)
-                        .update(
-                            "status", CallStatus.ANSWERED.name,
-                            "answeredAt", System.currentTimeMillis()
-                        )
-                } catch (_: Exception) {}
+                // ⚡ ULTRA-FAST BACKGROUND ANSWER (<100ms):
+                // Do not wait for MainActivity to launch; establish WebRTC audio & peer connection immediately!
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
+                    ?: com.example.webrtc.WebRtcEngine.getInstance(context)
+                engine.answerIncomingCall(callId, callerName, callerNumber, callTypeStr)
 
-                // Open MainActivity and pass the call info to answer
-                val launchIntent = Intent(context, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    putExtra("incoming_call", true)
-                    putExtra("call_id", callId)
-                    putExtra("auto_answer", true)
+                val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+                val isLocked = keyguardManager?.isKeyguardLocked == true
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                val isInteractive = powerManager?.isInteractive == true
+
+                if (callType == com.example.data.model.CallType.VIDEO || isLocked || !isInteractive) {
+                    val launchIntent = Intent(context, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("incoming_call", true)
+                        putExtra("call_id", callId)
+                        putExtra("auto_answer", false)
+                    }
+                    context.startActivity(launchIntent)
+                } else {
+                    // Screen is unlocked & audio call: show floating active call pill directly!
+                    FloatingCallBubbleService.showActive(
+                        context = context,
+                        callId = callId,
+                        peerName = callerName,
+                        peerNumber = callerNumber,
+                        callType = callType
+                    )
                 }
-                context.startActivity(launchIntent)
             }
             ACTION_DECLINE -> {
                 // Dismiss any floating bubble notification

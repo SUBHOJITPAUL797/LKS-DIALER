@@ -230,6 +230,15 @@ class CallMessagingService : FirebaseMessagingService() {
             }
         }
 
+        // Pre-attach WebRtcEngine to incoming call so SDP offer and ICE candidates are primed in background
+        try {
+            val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
+                ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
+            engine.attachToCall(callId, autoAnswer = false, callerName, callerNumber, callType)
+        } catch (e: Exception) {
+            Log.w("FCM", "Failed to pre-attach WebRtcEngine: ${e.message}")
+        }
+
         val notificationManager =
             getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -247,17 +256,15 @@ class CallMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // 🟢 ACCEPT action - opens the app and auto-answers 🟢
-        val acceptIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("incoming_call", true)
+        // 🟢 ACCEPT action - broadcasts to CallNotificationReceiver for instant background answer (<100ms) 🟢
+        val acceptIntent = Intent(this, CallNotificationReceiver::class.java).apply {
+            action = CallNotificationReceiver.ACTION_ACCEPT
             putExtra("call_id", callId)
-            putExtra("auto_answer", true)
             putExtra("caller_name", callerName)
             putExtra("caller_number", callerNumber)
             putExtra("call_type", callType)
         }
-        val acceptPendingIntent = PendingIntent.getActivity(
+        val acceptPendingIntent = PendingIntent.getBroadcast(
             this, 1, acceptIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

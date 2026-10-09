@@ -971,6 +971,108 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
     }
 
+    /**
+     * ⚡ Ultra-fast call answering entry point for Notification and Floating Bubble actions (<100ms).
+     * Connects WebRTC audio immediately in the background without waiting for Activity lifecycle.
+     */
+    fun answerIncomingCall(
+        callId: String,
+        callerName: String? = null,
+        callerNumber: String? = null,
+        callTypeStr: String? = null
+    ) {
+        if (isCallTerminated(callId)) {
+            Log.w("WebRtcEngine", "answerIncomingCall aborted: call $callId was already terminated locally")
+            return
+        }
+
+        resetIdleJob?.cancel()
+        resetIdleJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+
+        val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
+
+        // 1. Instantly mark status as ANSWERED in Firestore so the CALLER screen updates immediately (<50ms)
+        try {
+            firestore.collection("calls").document(callId).update(
+                "status", CallStatus.ANSWERED.name,
+                "answeredAt", System.currentTimeMillis()
+            )
+        } catch (_: Exception) {}
+
+        // 2. Ensure real-time active call & ICE listeners are attached immediately
+        listenToActiveCall(callId, isCaller = false)
+        listenForIceCandidates(callId, isCaller = false)
+
+        // 3. Fast-path: Check if WebRtcEngine already has this call cached with offerSdp!
+        val currentCall = _state.value.activeCall
+        if (currentCall != null && currentCall.callId == callId && !currentCall.offerSdp.isNullOrBlank()) {
+            Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp")
+            answerCall()
+            return
+        }
+
+        // 4. Immediate background answer path (offerSdp being fetched or arriving):
+        Log.i("WebRtcEngine", "⚡ Immediate answering in background for call $callId (offer pending)")
+        val optimisticCall = currentCall?.takeIf { it.callId == callId } ?: CallDto(
+            callId = callId,
+            callerName = callerName ?: "LKS User",
+            callerNumber = callerNumber ?: "",
+            calleeNumber = myPhoneNumber,
+            callType = type,
+            status = CallStatus.ANSWERED
+        )
+
+        _state.value = _state.value.copy(
+            activeCall = optimisticCall.copy(status = CallStatus.ANSWERED),
+            callStatus = CallStatus.ANSWERED,
+            callType = type,
+            connectionStatusText = "Connecting P2P..."
+        )
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+        notificationManager.cancel(1001)
+        com.example.util.LksIncomingRingtonePlayer.stop()
+        com.example.util.CallSoundEffectsManager.stopRingbackTone()
+        com.example.services.FloatingCallBubbleService.silenceRingtone(context)
+
+        com.example.services.ActiveCallService.start(context, callId, type.name)
+        headsetButtonManager.startListening()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try { com.example.services.LksConnectionService.setCallActive() } catch (_: Exception) {}
+        }
+        try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
+        configureAudio(type)
+
+        // Create PeerConnection right away so it is ready the moment offerSdp is resolved
+        createPeerConnection(isCaller = false, callId = callId)
+        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+        if (type == CallType.VIDEO) {
+            startVideoCaptureIfNeeded()
+        }
+
+        // Concurrently fetch document to acquire offerSdp as fast as possible from Firestore
+        firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
+            if (isCallTerminated(callId)) return@addOnSuccessListener
+            val docOffer = doc.getString("offerSdp")
+            val docCall = doc.toObject(CallDto::class.java)
+            if (!docOffer.isNullOrBlank()) {
+                Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via direct fetch for $callId -> processing SDP answer")
+                _state.value = _state.value.copy(
+                    activeCall = (docCall ?: _state.value.activeCall)?.copy(
+                        status = CallStatus.ANSWERED,
+                        offerSdp = docOffer
+                    )
+                )
+                if (!hasProcessedOffer) {
+                    processOfferSdpIfAvailable()
+                }
+            }
+        }
+        startCallTimer()
+    }
+
     fun attachToCall(
         callId: String, 
         autoAnswer: Boolean = false,
@@ -978,6 +1080,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         callerNumber: String? = null,
         callTypeStr: String? = null
     ) {
+        if (autoAnswer) {
+            answerIncomingCall(callId, callerName, callerNumber, callTypeStr)
+            return
+        }
+
         resetIdleJob?.cancel()
         resetIdleJob = null
         reconnectJob?.cancel()
@@ -1011,6 +1118,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             _state.value.callStatus == CallStatus.MISSED ||
             _state.value.activeCall?.callId != callId
 
+        val existingOfferSdp = if (_state.value.activeCall?.callId == callId) _state.value.activeCall?.offerSdp else null
+
         // Optimistically show the call screen if we have the data
         if (callerName != null && callerNumber != null && callTypeStr != null && isNotCurrentlyInCall) {
             val type = try { CallType.valueOf(callTypeStr) } catch(e: Exception) { CallType.AUDIO }
@@ -1021,29 +1130,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callerNumber = callerNumber,
                     calleeNumber = myPhoneNumber,
                     callType = type,
-                    status = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING
+                    status = CallStatus.RINGING,
+                    offerSdp = existingOfferSdp
                 ),
-                callStatus = if (autoAnswer) CallStatus.ANSWERED else CallStatus.RINGING,
+                callStatus = CallStatus.RINGING,
                 callType = type,
-                connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming Call"
+                connectionStatusText = "Incoming Call"
             )
             headsetButtonManager.startListening()
         }
 
-        if (autoAnswer && !isCallTerminated(callId)) {
-            // Instantly mark status as ANSWERED in Firestore so caller screen switches immediately (<100ms)
-            try {
-                firestore.collection("calls").document(callId).update(
-                    "status", CallStatus.ANSWERED.name,
-                    "answeredAt", System.currentTimeMillis()
-                )
-            } catch (_: Exception) {}
-
-            if (_state.value.activeCall != null) {
-                answerCall()
-            }
-        }
-        
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
             if (isCallTerminated(callId)) {
                 Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was terminated locally. Aborting.")
@@ -1064,10 +1160,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
 
                 if (_state.value.callStatus != CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
-                    // AttachToCall is only used by the callee, so if the status is still CALLING, it should be RINGING
-                    val resolvedStatus = if (autoAnswer) CallStatus.ANSWERED 
-                                         else if (call.status == CallStatus.CALLING) CallStatus.RINGING
-                                         else call.status
+                    val resolvedStatus = if (call.status == CallStatus.CALLING) CallStatus.RINGING else call.status
                                          
                     if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING && !isCallTerminated(callId)) {
                         firestore.collection("calls").document(callId).update("status", CallStatus.RINGING.name)
@@ -1077,20 +1170,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                         activeCall = call.copy(status = resolvedStatus),
                         callType = call.callType,
                         callStatus = resolvedStatus,
-                        connectionStatusText = if (autoAnswer) "Connecting P2P..." else "Incoming  Call"
+                        connectionStatusText = "Incoming Call"
                     )
                     headsetButtonManager.startListening()
                     listenToActiveCall(callId, isCaller = false)
-                    if (autoAnswer) {
-                        answerCall()
-                    } else if (!preWarmDone) {
-                        preWarmForIncomingCall(call)
-                    }
+                    listenForIceCandidates(callId, isCaller = false)
                 } else if (_state.value.callStatus == CallStatus.ANSWERED) {
                     _state.value = _state.value.copy(
                         activeCall = call.copy(status = CallStatus.ANSWERED)
                     )
                     listenToActiveCall(callId, isCaller = false)
+                    listenForIceCandidates(callId, isCaller = false)
                     if (call.offerSdp != null && !hasProcessedOffer) {
                         processOfferSdpIfAvailable()
                     }

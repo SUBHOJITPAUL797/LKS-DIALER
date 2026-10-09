@@ -177,7 +177,8 @@ class LksCallConnection(
     override fun onAnswer(videoState: Int) {
         Log.i("LksCallConnection", "🎯 Bluetooth Headset / System answered the call via Telecom! callId=$callId")
         setActive()
-        WebRtcEngine.getInstanceIfCreated()?.answerCall()
+        val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(context)
+        engine.answerIncomingCall(callId, peerName, peerNumber, callType.name)
     }
 
     override fun onReject() {
