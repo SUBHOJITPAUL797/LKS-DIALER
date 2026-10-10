@@ -84,26 +84,26 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
 
         {/* Top Header Bar in Natural Flow */}
         <div className="desktop-onboarding-header-bar">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <div style={{
-              width: '38px',
-              height: '38px',
-              borderRadius: '11px',
+              width: '32px',
+              height: '32px',
+              borderRadius: '9px',
               backgroundColor: '#ffffff',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              boxShadow: '0 3px 10px rgba(0,0,0,0.15)',
               overflow: 'hidden'
             }}>
-              <img src={appLogo} alt="LKS Logo" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+              <img src={appLogo} alt="LKS Logo" style={{ width: '22px', height: '22px', objectFit: 'contain' }} />
             </div>
             <div>
-              <div style={{ color: '#ffffff', fontSize: '18px', fontWeight: '900', letterSpacing: '0.5px' }}>
+              <div style={{ color: '#ffffff', fontSize: '16px', fontWeight: '900', letterSpacing: '0.4px' }}>
                 LKS DIALER WEB
               </div>
-              <div style={{ color: 'rgba(255, 255, 255, 0.9)', fontSize: '11px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#00E676' }} />
+              <div style={{ color: 'rgba(255, 255, 255, 0.9)', fontSize: '10.5px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#00E676' }} />
                 End-to-End Encrypted VoIP & Messaging
               </div>
             </div>
@@ -117,13 +117,13 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
               backdropFilter: 'blur(8px)',
               border: '1px solid rgba(255, 255, 255, 0.35)',
               color: '#ffffff',
-              padding: '7px 13px',
-              borderRadius: '11px',
+              padding: '5px 11px',
+              borderRadius: '9px',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              fontSize: '12px',
+              gap: '6px',
+              fontSize: '11px',
               fontWeight: '800',
               transition: 'all 0.2s ease'
             }}
@@ -131,7 +131,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
             onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.18)'}
           >
             <span>📱 Android App ({LATEST_APP_VERSION})</span>
-            <Download size={14} />
+            <Download size={13} />
           </button>
         </div>
 
@@ -142,7 +142,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '16px 36px',
+            padding: '8px 24px',
             borderBottom: '1px solid #f1f5f9',
             backgroundColor: '#ffffff'
           }}>
@@ -151,26 +151,26 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                 type="button"
                 onClick={() => selectMethod('qr')}
                 style={{
-                  padding: '9px 18px',
-                  borderRadius: '12px',
+                  padding: '6px 14px',
+                  borderRadius: '10px',
                   border: authMethod === 'qr' ? '2px solid #008069' : '1px solid #e2e8f0',
                   backgroundColor: authMethod === 'qr' ? '#E8FAF6' : '#ffffff',
                   color: authMethod === 'qr' ? '#008069' : '#64748b',
                   fontWeight: authMethod === 'qr' ? '800' : '600',
-                  fontSize: '13px',
+                  fontSize: '12px',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  gap: '6px',
                   cursor: 'pointer',
                   transition: 'all 0.18s ease'
                 }}
               >
-                <QrCode size={16} color={authMethod === 'qr' ? '#008069' : '#64748b'} />
+                <QrCode size={14} color={authMethod === 'qr' ? '#008069' : '#64748b'} />
                 <span>Scan QR Code</span>
                 <span style={{
-                  fontSize: '10px',
-                  padding: '1px 6px',
-                  borderRadius: '6px',
+                  fontSize: '9.5px',
+                  padding: '1px 5px',
+                  borderRadius: '5px',
                   backgroundColor: authMethod === 'qr' ? '#008069' : '#f1f5f9',
                   color: authMethod === 'qr' ? '#ffffff' : '#64748b',
                   fontWeight: '800'
@@ -183,27 +183,27 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                 type="button"
                 onClick={() => selectMethod('phone')}
                 style={{
-                  padding: '9px 18px',
-                  borderRadius: '12px',
+                  padding: '6px 14px',
+                  borderRadius: '10px',
                   border: authMethod === 'phone' ? '2px solid #008069' : '1px solid #e2e8f0',
                   backgroundColor: authMethod === 'phone' ? '#E8FAF6' : '#ffffff',
                   color: authMethod === 'phone' ? '#008069' : '#64748b',
                   fontWeight: authMethod === 'phone' ? '800' : '600',
-                  fontSize: '13px',
+                  fontSize: '12px',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  gap: '6px',
                   cursor: 'pointer',
                   transition: 'all 0.18s ease'
                 }}
               >
-                <Phone size={16} color={authMethod === 'phone' ? '#008069' : '#64748b'} />
+                <Phone size={14} color={authMethod === 'phone' ? '#008069' : '#64748b'} />
                 <span>Phone Number</span>
               </button>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#64748b', fontWeight: '600' }}>
-              <Lock size={13} color="#008069" />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: '#64748b', fontWeight: '600' }}>
+              <Lock size={12} color="#008069" />
               <span>Zero-Knowledge Peer Encryption</span>
             </div>
           </div>
@@ -212,127 +212,127 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
           <div style={{
             display: 'grid',
             gridTemplateColumns: '1.18fr 0.82fr',
-            gap: '40px',
-            padding: '36px 44px',
+            gap: '24px',
+            padding: '16px 28px',
             alignItems: 'center'
           }}>
             {/* LEFT COLUMN: Instructions, Explanations & Quick Actions */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {authMethod === 'qr' ? (
                 <>
                   <div>
-                    <h2 style={{ fontSize: '26px', fontWeight: '900', color: '#111b21', margin: '0 0 6px 0', letterSpacing: '-0.3px' }}>
+                    <h2 style={{ fontSize: '20px', fontWeight: '900', color: '#111b21', margin: '0 0 2px 0', letterSpacing: '-0.3px' }}>
                       To use LKS Dialer on your computer:
                     </h2>
-                    <p style={{ fontSize: '14px', color: '#54656f', margin: 0, lineHeight: 1.45 }}>
+                    <p style={{ fontSize: '12.5px', color: '#54656f', margin: 0, lineHeight: 1.35 }}>
                       Link your Android app to seamlessly sync conversations, contacts, and VoIP calls directly in your browser.
                     </p>
                   </div>
 
                   {/* 4 Step Numbered Instructions */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '28px',
-                        height: '28px',
+                        width: '22px',
+                        height: '22px',
                         borderRadius: '50%',
                         backgroundColor: '#008069',
                         color: '#ffffff',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '13px',
+                        fontSize: '11px',
                         fontWeight: '900',
                         flexShrink: 0
                       }}>
                         1
                       </div>
-                      <div style={{ fontSize: '14px', color: '#111b21', lineHeight: '28px' }}>
+                      <div style={{ fontSize: '12.5px', color: '#111b21', lineHeight: '22px' }}>
                         Open <strong>LKS Dialer</strong> on your Android phone
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '28px',
-                        height: '28px',
+                        width: '22px',
+                        height: '22px',
                         borderRadius: '50%',
                         backgroundColor: '#008069',
                         color: '#ffffff',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '13px',
+                        fontSize: '11px',
                         fontWeight: '900',
                         flexShrink: 0
                       }}>
                         2
                       </div>
-                      <div style={{ fontSize: '14px', color: '#111b21', lineHeight: '28px' }}>
+                      <div style={{ fontSize: '12.5px', color: '#111b21', lineHeight: '22px' }}>
                         Tap <strong>Settings ⚙️</strong> or <strong>Menu (⋮)</strong> in the top bar
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '28px',
-                        height: '28px',
+                        width: '22px',
+                        height: '22px',
                         borderRadius: '50%',
                         backgroundColor: '#008069',
                         color: '#ffffff',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '13px',
+                        fontSize: '11px',
                         fontWeight: '900',
                         flexShrink: 0
                       }}>
                         3
                       </div>
-                      <div style={{ fontSize: '14px', color: '#111b21', lineHeight: '28px' }}>
+                      <div style={{ fontSize: '12.5px', color: '#111b21', lineHeight: '22px' }}>
                         Select <strong>Linked Devices</strong> &rarr; tap <strong>"Link a Device"</strong>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '28px',
-                        height: '28px',
+                        width: '22px',
+                        height: '22px',
                         borderRadius: '50%',
                         backgroundColor: '#008069',
                         color: '#ffffff',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontSize: '13px',
+                        fontSize: '11px',
                         fontWeight: '900',
                         flexShrink: 0
                       }}>
                         4
                       </div>
-                      <div style={{ fontSize: '14px', color: '#111b21', lineHeight: '28px' }}>
+                      <div style={{ fontSize: '12.5px', color: '#111b21', lineHeight: '22px' }}>
                         Point your camera at this screen to capture the QR code
                       </div>
                     </div>
                   </div>
 
                   <div style={{
-                    padding: '12px 16px',
-                    borderRadius: '12px',
+                    padding: '8px 12px',
+                    borderRadius: '10px',
                     backgroundColor: '#F0FDF4',
                     border: '1px solid #BBF7D0',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '10px'
+                    gap: '8px'
                   }}>
-                    <ShieldCheck size={18} color="#166534" />
-                    <span style={{ fontSize: '12px', color: '#166534', fontWeight: '700' }}>
+                    <ShieldCheck size={15} color="#166534" />
+                    <span style={{ fontSize: '11px', color: '#166534', fontWeight: '700' }}>
                       Pairwise E2EE Keys are generated locally and stored securely in this browser.
                     </span>
                   </div>
 
                   {/* Switch Option & APK download */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '8px', borderTop: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '6px', borderTop: '1px solid #f1f5f9' }}>
                     <button
                       type="button"
                       onClick={() => selectMethod('phone')}
@@ -340,7 +340,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                         background: 'none',
                         border: 'none',
                         color: '#008069',
-                        fontSize: '13px',
+                        fontSize: '12px',
                         fontWeight: '800',
                         cursor: 'pointer',
                         padding: 0,
@@ -350,7 +350,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                       }}
                     >
                       <span>Log in with phone number instead</span>
-                      <ArrowRight size={14} />
+                      <ArrowRight size={13} />
                     </button>
 
                     <button
@@ -359,15 +359,15 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                       style={{
                         background: '#FFF9C4',
                         border: '1px solid #FBC02D',
-                        borderRadius: '8px',
-                        padding: '6px 12px',
+                        borderRadius: '7px',
+                        padding: '4px 10px',
                         color: '#000000',
-                        fontSize: '12px',
+                        fontSize: '11px',
                         fontWeight: '800',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '6px'
+                        gap: '5px'
                       }}
                     >
                       <span>📱 Download Android APK</span>
@@ -377,21 +377,21 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
               ) : (
                 <>
                   <div>
-                    <h2 style={{ fontSize: '26px', fontWeight: '900', color: '#111b21', margin: '0 0 6px 0', letterSpacing: '-0.3px' }}>
+                    <h2 style={{ fontSize: '20px', fontWeight: '900', color: '#111b21', margin: '0 0 2px 0', letterSpacing: '-0.3px' }}>
                       Sign in with Phone Number
                     </h2>
-                    <p style={{ fontSize: '14px', color: '#54656f', margin: 0, lineHeight: 1.45 }}>
+                    <p style={{ fontSize: '12.5px', color: '#54656f', margin: 0, lineHeight: 1.35 }}>
                       Access your LKS Dialer account directly in any web browser without needing your phone nearby.
                     </p>
                   </div>
 
                   {/* Feature Highlights */}
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '10px',
+                        width: '26px',
+                        height: '26px',
+                        borderRadius: '8px',
                         backgroundColor: '#E8FAF6',
                         color: '#008069',
                         display: 'flex',
@@ -399,23 +399,23 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                         justifyContent: 'center',
                         flexShrink: 0
                       }}>
-                        <Zap size={18} />
+                        <Zap size={15} />
                       </div>
                       <div>
-                        <div style={{ fontSize: '14px', fontWeight: '800', color: '#111b21' }}>
+                        <div style={{ fontSize: '12.5px', fontWeight: '800', color: '#111b21' }}>
                           Instant Web VoIP Calling
                         </div>
-                        <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
                           Crystal-clear WebRTC audio & video calling right from your desktop.
                         </div>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '10px',
+                        width: '26px',
+                        height: '26px',
+                        borderRadius: '8px',
                         backgroundColor: '#E8FAF6',
                         color: '#008069',
                         display: 'flex',
@@ -423,23 +423,23 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                         justifyContent: 'center',
                         flexShrink: 0
                       }}>
-                        <Lock size={18} />
+                        <Lock size={15} />
                       </div>
                       <div>
-                        <div style={{ fontSize: '14px', fontWeight: '800', color: '#111b21' }}>
+                        <div style={{ fontSize: '12.5px', fontWeight: '800', color: '#111b21' }}>
                           End-to-End Encrypted Chats
                         </div>
-                        <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
                           Pairwise AES-GCM & ECDH security keeps your messages 100% private.
                         </div>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <div style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '10px',
+                        width: '26px',
+                        height: '26px',
+                        borderRadius: '8px',
                         backgroundColor: '#E8FAF6',
                         color: '#008069',
                         display: 'flex',
@@ -447,13 +447,13 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                         justifyContent: 'center',
                         flexShrink: 0
                       }}>
-                        <Smartphone size={18} />
+                        <Smartphone size={15} />
                       </div>
                       <div>
-                        <div style={{ fontSize: '14px', fontWeight: '800', color: '#111b21' }}>
+                        <div style={{ fontSize: '12.5px', fontWeight: '800', color: '#111b21' }}>
                           Synced with Mobile
                         </div>
-                        <div style={{ fontSize: '12px', color: '#64748b' }}>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
                           Your contacts and chat histories sync effortlessly with the Android app.
                         </div>
                       </div>
@@ -461,7 +461,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                   </div>
 
                   {/* Switch Option */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '8px', borderTop: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '6px', borderTop: '1px solid #f1f5f9' }}>
                     <button
                       type="button"
                       onClick={() => selectMethod('qr')}
@@ -469,7 +469,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                         background: 'none',
                         border: 'none',
                         color: '#008069',
-                        fontSize: '13px',
+                        fontSize: '12px',
                         fontWeight: '800',
                         cursor: 'pointer',
                         padding: 0,
@@ -479,7 +479,7 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                       }}
                     >
                       <span>Have your phone? Scan QR Code instead</span>
-                      <ArrowRight size={14} />
+                      <ArrowRight size={13} />
                     </button>
 
                     <button
@@ -488,15 +488,15 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                       style={{
                         background: '#FFF9C4',
                         border: '1px solid #FBC02D',
-                        borderRadius: '8px',
-                        padding: '6px 12px',
+                        borderRadius: '7px',
+                        padding: '4px 10px',
                         color: '#000000',
-                        fontSize: '12px',
+                        fontSize: '11px',
                         fontWeight: '800',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '6px'
+                        gap: '5px'
                       }}
                     >
                       <span>📱 Download Android APK</span>
@@ -513,49 +513,49 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: '#fafbfc',
-              borderRadius: '20px',
+              borderRadius: '16px',
               border: '1.5px solid #e2e8f0',
-              padding: '28px 24px',
-              minHeight: '380px',
+              padding: '14px 16px',
+              minHeight: 'auto',
               boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.02)'
             }}>
               {authMethod === 'qr' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
                   <QrLoginView onLoginSuccess={handleQrSuccess} showInstructions={false} />
-                  <div style={{ marginTop: '16px', fontSize: '12px', color: '#64748b', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <div style={{ marginTop: '8px', fontSize: '11px', color: '#64748b', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '5px' }}>
                     <span>🔒 Code updates automatically every 60s</span>
                   </div>
                 </div>
               ) : (
-                <form onSubmit={handleSubmit} style={{ width: '100%', maxWidth: '340px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  <div style={{ textAlign: 'center', marginBottom: '4px' }}>
+                <form onSubmit={handleSubmit} style={{ width: '100%', maxWidth: '300px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ textAlign: 'center', marginBottom: '2px' }}>
                     <div style={{
-                      width: '50px',
-                      height: '50px',
+                      width: '38px',
+                      height: '38px',
                       borderRadius: '50%',
                       backgroundColor: '#E8FAF6',
                       color: '#008069',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      marginBottom: '10px'
+                      marginBottom: '6px'
                     }}>
-                      <Phone size={24} />
+                      <Phone size={18} />
                     </div>
-                    <div style={{ fontSize: '18px', fontWeight: '900', color: '#111b21' }}>
+                    <div style={{ fontSize: '15px', fontWeight: '900', color: '#111b21' }}>
                       Enter Your Details
                     </div>
-                    <div style={{ fontSize: '12px', color: '#64748b' }}>
+                    <div style={{ fontSize: '11px', color: '#64748b' }}>
                       Sign in or create your LKS Dialer account
                     </div>
                   </div>
 
                   <div style={{ position: 'relative' }}>
-                    <User size={18} style={{ position: 'absolute', left: '16px', top: '15px', color: '#64748b' }} />
+                    <User size={16} style={{ position: 'absolute', left: '12px', top: '12px', color: '#64748b' }} />
                     <input 
                       type="text" 
                       className="neo-input"
-                      style={{ paddingLeft: '46px', fontSize: '14px' }}
+                      style={{ paddingLeft: '38px', padding: '9px 12px 9px 38px', fontSize: '13px' }}
                       placeholder="Display Name" 
                       value={name} 
                       onChange={e => setName(e.target.value)}
@@ -563,32 +563,32 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                     />
                   </div>
 
-                  <div style={{ display: 'flex', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '6px' }}>
                     <button 
                       type="button"
                       className="neo-input"
                       onClick={() => setShowCountryPicker(true)}
                       style={{ 
                         width: 'auto', 
-                        padding: '12px 14px', 
+                        padding: '9px 10px', 
                         cursor: 'pointer',
                         display: 'flex', 
                         alignItems: 'center', 
-                        gap: '6px',
+                        gap: '4px',
                         background: '#ffffff',
                         border: '1px solid var(--border-color)',
                         flexShrink: 0
                       }}
                     >
-                      <span style={{ fontSize: '16px' }}>{selectedCountry.flag}</span>
-                      <span style={{ fontWeight: '800', fontSize: '13px' }}>{selectedCountry.dialCode}</span>
-                      <ChevronDown size={14} color="#64748b" />
+                      <span style={{ fontSize: '15px' }}>{selectedCountry.flag}</span>
+                      <span style={{ fontWeight: '800', fontSize: '12px' }}>{selectedCountry.dialCode}</span>
+                      <ChevronDown size={12} color="#64748b" />
                     </button>
                     
                     <input 
                       type="tel" 
                       className="neo-input"
-                      style={{ flex: 1, fontSize: '14px', letterSpacing: '0.5px' }}
+                      style={{ flex: 1, padding: '9px 12px', fontSize: '13px', letterSpacing: '0.5px' }}
                       placeholder="Phone Number" 
                       value={phone} 
                       onChange={e => setPhone(e.target.value)}
@@ -600,28 +600,28 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
                     type="submit" 
                     className="neo-btn" 
                     style={{ 
-                      marginTop: '6px', 
+                      marginTop: '4px', 
                       width: '100%',
-                      padding: '13px',
-                      fontSize: '14px',
+                      padding: '10px',
+                      fontSize: '13px',
                       fontWeight: '800',
                       letterSpacing: '0.5px',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      gap: '8px'
+                      gap: '6px'
                     }}
                     disabled={loading}
                   >
                     {loading ? (
                       <>
-                        <div style={{ width: '16px', height: '16px', border: '2px solid #ffffff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                        <div style={{ width: '14px', height: '14px', border: '2px solid #ffffff', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
                         <span>CONNECTING...</span>
                       </>
                     ) : (
                       <>
-                        <Phone size={16} />
-                        <span>SIGN IN TO LKS DIALER</span>
+                        <span>CONTINUE</span>
+                        <ArrowRight size={14} />
                       </>
                     )}
                   </button>

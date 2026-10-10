@@ -99,7 +99,7 @@ export class QrLoginManager {
         await QRCode.toCanvas(canvas, qrPayload, {
           errorCorrectionLevel: 'M',
           margin: 2,
-          width: 280,
+          width: 200,
           color: {
             dark: '#0f172a',
             light: '#ffffff'

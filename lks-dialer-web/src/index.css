@@ -47,11 +47,39 @@ body {
   overflow: hidden; /* App container handles scrolling */
 }
 
-/* Ensure onboarding page never pushes content above screen top */
-body:has(.onboarding-mode) {
-  align-items: flex-start !important;
-  justify-content: flex-start !important;
-  overflow-y: auto !important;
+/* Mobile only: Allow scrolling if small screen */
+@media (max-width: 767px) {
+  body:has(.onboarding-mode) {
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+    overflow-y: auto !important;
+  }
+
+  #root:has(.onboarding-mode) {
+    height: auto !important;
+    min-height: 100dvh !important;
+    align-items: flex-start !important;
+    justify-content: flex-start !important;
+  }
+}
+
+/* Desktop: Strict zero-scrollbar viewport lock */
+@media (min-width: 768px) {
+  html:has(.onboarding-mode),
+  body:has(.onboarding-mode) {
+    overflow: hidden !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  #root:has(.onboarding-mode) {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+    scrollbar-width: none !important;
+  }
 }
 
 #root {
@@ -59,13 +87,6 @@ body:has(.onboarding-mode) {
   height: 100dvh;
   display: flex;
   justify-content: center;
-}
-
-#root:has(.onboarding-mode) {
-  height: auto !important;
-  min-height: 100dvh !important;
-  align-items: flex-start !important;
-  justify-content: flex-start !important;
 }
 
 /* 📱 Full Screen Responsive Container */

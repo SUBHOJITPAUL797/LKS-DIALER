@@ -87,13 +87,13 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
       <div 
         style={{ 
           position: 'relative', 
-          width: 'min(280px, 86vw)', 
-          height: 'min(280px, 86vw)',
+          width: 'min(205px, 72vw)', 
+          height: 'min(205px, 72vw)',
           background: '#ffffff',
-          borderRadius: '24px',
-          padding: '16px',
-          boxShadow: '0 12px 36px rgba(0,0,0,0.12)',
-          border: '3px solid #0f172a',
+          borderRadius: '16px',
+          padding: '8px',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+          border: '2.5px solid #0f172a',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -102,12 +102,12 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
       >
         <canvas 
           ref={canvasRef} 
-          width={248} 
-          height={248} 
+          width={188} 
+          height={188} 
           style={{ 
             maxWidth: '100%',
             maxHeight: '100%',
-            borderRadius: '16px', 
+            borderRadius: '10px', 
             display: 'block',
             filter: (status === 'EXPIRED' || status === 'APPROVED') ? 'blur(4px) opacity(0.35)' : 'none',
             transition: 'filter 0.3s ease'
@@ -125,17 +125,17 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
               alignItems: 'center', 
               justifyContent: 'center', 
               background: 'rgba(255,255,255,0.92)',
-              borderRadius: '24px',
-              padding: '20px',
+              borderRadius: '16px',
+              padding: '12px',
               textAlign: 'center',
               backdropFilter: 'blur(3px)'
             }}
           >
-            <p style={{ fontWeight: '800', fontSize: '15px', color: '#dc2626', marginBottom: '8px' }}>
+            <p style={{ fontWeight: '800', fontSize: '13px', color: '#dc2626', marginBottom: '4px' }}>
               QR code expired
             </p>
-            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '16px', lineHeight: 1.4 }}>
-              For your security, login codes expire every 60 seconds.
+            <p style={{ fontSize: '11px', color: '#64748b', marginBottom: '10px', lineHeight: 1.3 }}>
+              Login codes expire every 60s.
             </p>
             <button
               type="button"
@@ -144,14 +144,14 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: '8px',
-                padding: '10px 18px',
-                fontSize: '13px',
+                gap: '6px',
+                padding: '7px 12px',
+                fontSize: '11px',
                 backgroundColor: '#10b981',
                 color: '#ffffff'
               }}
             >
-              <RefreshCw size={16} />
+              <RefreshCw size={13} />
               Reload QR Code
             </button>
           </div>
@@ -168,25 +168,25 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
               alignItems: 'center', 
               justifyContent: 'center', 
               background: 'rgba(255,255,255,0.95)',
-              borderRadius: '24px',
-              padding: '20px',
+              borderRadius: '16px',
+              padding: '12px',
               textAlign: 'center'
             }}
           >
             <div style={{
-              width: '48px',
-              height: '48px',
+              width: '36px',
+              height: '36px',
               borderRadius: '50%',
-              border: '3px solid #10b981',
+              border: '2.5px solid #10b981',
               borderTopColor: 'transparent',
               animation: 'spin 1s linear infinite',
-              marginBottom: '14px'
+              marginBottom: '10px'
             }} />
-            <p style={{ fontWeight: '800', fontSize: '15px', color: '#0f172a', marginBottom: '4px' }}>
+            <p style={{ fontWeight: '800', fontSize: '13px', color: '#0f172a', marginBottom: '2px' }}>
               QR Code Scanned!
             </p>
-            <p style={{ fontSize: '12px', color: '#64748b' }}>
-              Tap <strong>"Link Device"</strong> on your phone to complete login.
+            <p style={{ fontSize: '11px', color: '#64748b' }}>
+              Tap <strong>"Link Device"</strong> on your phone.
             </p>
           </div>
         )}
@@ -202,34 +202,34 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
               alignItems: 'center', 
               justifyContent: 'center', 
               background: 'rgba(255,255,255,0.95)',
-              borderRadius: '24px',
-              padding: '20px',
+              borderRadius: '16px',
+              padding: '12px',
               textAlign: 'center'
             }}
           >
-            <CheckCircle2 size={54} color="#10b981" style={{ marginBottom: '10px' }} />
-            <p style={{ fontWeight: '900', fontSize: '17px', color: '#0f172a', marginBottom: '4px' }}>
+            <CheckCircle2 size={42} color="#10b981" style={{ marginBottom: '6px' }} />
+            <p style={{ fontWeight: '900', fontSize: '15px', color: '#0f172a', marginBottom: '2px' }}>
               Logged In!
             </p>
-            <p style={{ fontSize: '12px', color: '#64748b' }}>
-              Opening your conversations...
+            <p style={{ fontSize: '11px', color: '#64748b' }}>
+              Opening conversations...
             </p>
           </div>
         )}
       </div>
 
       {/* Countdown and Status Pill */}
-      <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
         {status === 'PENDING' && (
           <div 
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
+              gap: '6px',
               background: '#f1f5f9',
-              padding: '6px 14px',
-              borderRadius: '20px',
-              fontSize: '13px',
+              padding: '3px 10px',
+              borderRadius: '16px',
+              fontSize: '11px',
               fontWeight: '700',
               color: '#334155',
               border: '1px solid #cbd5e1'
@@ -237,11 +237,11 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
           >
             <span 
               style={{ 
-                width: '8px', 
-                height: '8px', 
+                width: '6px', 
+                height: '6px', 
                 borderRadius: '50%', 
                 backgroundColor: '#10b981',
-                boxShadow: '0 0 8px #10b981'
+                boxShadow: '0 0 6px #10b981'
               }} 
             />
             <span>Expires in {secondsRemaining}s</span>
@@ -260,7 +260,7 @@ export default function QrLoginView({ onLoginSuccess, showInstructions = true })
                 marginLeft: '2px'
               }}
             >
-              <RefreshCw size={13} />
+              <RefreshCw size={11} />
             </button>
           </div>
         )}

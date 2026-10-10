@@ -191,6 +191,7 @@
 /* ==========================================================================
    🌐 WhatsApp Web Style Onboarding Layout (Desktop Benchmark)
    ========================================================================== */
+/* Mobile onboarding mode container */
 .app-container.onboarding-mode {
   flex-direction: column !important;
   width: 100vw !important;
@@ -205,42 +206,65 @@
   padding: 0 !important;
 }
 
+/* Desktop: Strict zero-scrollbar WhatsApp-style desktop layout */
 @media (min-width: 768px) {
+  .app-container.onboarding-mode {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    overflow: hidden !important;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+    justify-content: center !important;
+  }
+
   .desktop-onboarding-wrapper {
     width: 100%;
-    min-height: 100dvh;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
-    padding: 24px 20px 48px;
-    background: linear-gradient(to bottom, #008069 0px, #008069 160px, #F0F2F5 160px, #F0F2F5 100%);
+    justify-content: center;
+    padding: 12px 20px;
+    background: linear-gradient(to bottom, #008069 0px, #008069 135px, #F0F2F5 135px, #F0F2F5 100%);
+    overflow: hidden !important;
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+  }
+
+  .desktop-onboarding-wrapper::-webkit-scrollbar,
+  .app-container.onboarding-mode::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
   }
 
   .desktop-onboarding-header-bar {
     width: 100%;
-    max-width: 1020px;
+    max-width: 960px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 20px;
+    margin-bottom: 10px;
     padding: 0 4px;
     box-sizing: border-box;
+    flex-shrink: 0;
   }
 
   .desktop-onboarding-card {
     width: 100%;
-    max-width: 1020px;
+    max-width: 960px;
     background: #ffffff;
-    border-radius: 20px;
-    box-shadow: 0 16px 48px -12px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.04);
+    border-radius: 18px;
+    box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.04);
     border: 1px solid rgba(0, 0, 0, 0.08);
     overflow: hidden;
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
     margin: 0 auto;
+    flex-shrink: 0;
   }
 }
 
