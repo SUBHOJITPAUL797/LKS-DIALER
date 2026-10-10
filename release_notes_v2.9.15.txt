@@ -1,0 +1,6 @@
+LKS Dialer v2.9.15 Update:
+- Single Call Disconnect Beep: Cleaned up the call hangup audio to play exactly 1 crisp prompt beep instead of 3 successive beeps on disconnect.
+- WhatsApp Web Desktop Layout: Completely revamped web onboarding to display a wide 2-column layout (Left: numbered guide & security highlights, Right: live QR canvas & countdown pill) perfectly fitted for desktop viewports without vertical scrolling.
+- Mobile Web Optimization: Compact, mobile-first phone layout prioritizing Direct Phone sign-in and intuitive QR device linking.
+- End-to-End Encrypted Group Chats: Pairwise E2EE multi-recipient fan-out for group messages with instant delivery, group info dialogs, member counts, and sender names.
+- Firestore Security Rules: Verified and deployed live security rules for instant, permission-safe QR web session linking and group management.
