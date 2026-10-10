@@ -82,59 +82,57 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
           />
         )}
 
-        {/* Top Emerald Header Band */}
-        <div className="desktop-onboarding-top-band">
-          <div style={{ width: '100%', maxWidth: '1040px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-              <div style={{
-                width: '42px',
-                height: '42px',
-                borderRadius: '12px',
-                backgroundColor: '#ffffff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                overflow: 'hidden'
-              }}>
-                <img src={appLogo} alt="LKS Logo" style={{ width: '32px', height: '32px', objectFit: 'contain' }} />
+        {/* Top Header Bar in Natural Flow */}
+        <div className="desktop-onboarding-header-bar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{
+              width: '38px',
+              height: '38px',
+              borderRadius: '11px',
+              backgroundColor: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              overflow: 'hidden'
+            }}>
+              <img src={appLogo} alt="LKS Logo" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+            </div>
+            <div>
+              <div style={{ color: '#ffffff', fontSize: '18px', fontWeight: '900', letterSpacing: '0.5px' }}>
+                LKS DIALER WEB
               </div>
-              <div>
-                <div style={{ color: '#ffffff', fontSize: '18px', fontWeight: '900', letterSpacing: '0.5px' }}>
-                  LKS DIALER WEB
-                </div>
-                <div style={{ color: 'rgba(255, 255, 255, 0.85)', fontSize: '11px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#00E676' }} />
-                  End-to-End Encrypted VoIP & Messaging
-                </div>
+              <div style={{ color: 'rgba(255, 255, 255, 0.9)', fontSize: '11px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', backgroundColor: '#00E676' }} />
+                End-to-End Encrypted VoIP & Messaging
               </div>
             </div>
-
-            <button
-              type="button"
-              onClick={onOpenDownloadModal}
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.18)',
-                backdropFilter: 'blur(8px)',
-                border: '1px solid rgba(255, 255, 255, 0.35)',
-                color: '#ffffff',
-                padding: '8px 14px',
-                borderRadius: '12px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: '12px',
-                fontWeight: '800',
-                transition: 'all 0.2s ease'
-              }}
-              onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.28)'}
-              onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.18)'}
-            >
-              <span>📱 Android App ({LATEST_APP_VERSION})</span>
-              <Download size={14} />
-            </button>
           </div>
+
+          <button
+            type="button"
+            onClick={onOpenDownloadModal}
+            style={{
+              backgroundColor: 'rgba(255, 255, 255, 0.18)',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255, 255, 255, 0.35)',
+              color: '#ffffff',
+              padding: '7px 13px',
+              borderRadius: '11px',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '12px',
+              fontWeight: '800',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseEnter={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.28)'}
+            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.18)'}
+          >
+            <span>📱 Android App ({LATEST_APP_VERSION})</span>
+            <Download size={14} />
+          </button>
         </div>
 
         {/* Floating Spread Desktop Card */}
@@ -653,9 +651,10 @@ export default function Onboarding({ onRegister, onOpenDownloadModal }) {
       minHeight: '100%', 
       width: '100%', 
       alignItems: 'center', 
-      justifyContent: 'center', 
-      padding: '28px 16px', 
-      position: 'relative' 
+      justifyContent: 'flex-start', 
+      padding: '24px 16px 40px', 
+      position: 'relative',
+      boxSizing: 'border-box'
     }}>
       {showCountryPicker && (
         <CountryCodePickerModal 

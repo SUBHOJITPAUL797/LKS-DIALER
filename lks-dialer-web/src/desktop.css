@@ -193,55 +193,55 @@
    ========================================================================== */
 .app-container.onboarding-mode {
   flex-direction: column !important;
-  width: 100vw;
-  height: 100dvh;
+  width: 100vw !important;
+  min-height: 100dvh !important;
+  height: auto !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
-  background-color: #F0F2F5;
+  background-color: #F0F2F5 !important;
   display: flex !important;
-  align-items: center;
-  justify-content: flex-start;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  padding: 0 !important;
 }
 
 @media (min-width: 768px) {
   .desktop-onboarding-wrapper {
     width: 100%;
-    min-height: 100%;
-    position: relative;
+    min-height: 100dvh;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
+    padding: 24px 20px 48px;
+    background: linear-gradient(to bottom, #008069 0px, #008069 160px, #F0F2F5 160px, #F0F2F5 100%);
   }
 
-  .desktop-onboarding-top-band {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 222px;
-    background: linear-gradient(135deg, #008069 0%, #00a884 100%);
-    box-shadow: 0 4px 20px rgba(0, 128, 105, 0.18);
-    z-index: 1;
+  .desktop-onboarding-header-bar {
+    width: 100%;
+    max-width: 1020px;
     display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding: 28px 24px 0;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding: 0 4px;
+    box-sizing: border-box;
   }
 
   .desktop-onboarding-card {
-    position: relative;
-    z-index: 10;
     width: 100%;
-    max-width: 1040px;
+    max-width: 1020px;
     background: #ffffff;
     border-radius: 20px;
-    box-shadow: 0 16px 48px -12px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 16px 48px -12px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.04);
     border: 1px solid rgba(0, 0, 0, 0.08);
     overflow: hidden;
-    margin: 80px auto 40px;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
+    margin: 0 auto;
   }
 }
+
 

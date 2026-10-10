@@ -47,11 +47,25 @@ body {
   overflow: hidden; /* App container handles scrolling */
 }
 
+/* Ensure onboarding page never pushes content above screen top */
+body:has(.onboarding-mode) {
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  overflow-y: auto !important;
+}
+
 #root {
   width: 100%;
   height: 100dvh;
   display: flex;
   justify-content: center;
+}
+
+#root:has(.onboarding-mode) {
+  height: auto !important;
+  min-height: 100dvh !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
 }
 
 /* 📱 Full Screen Responsive Container */
@@ -63,6 +77,15 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.app-container.onboarding-mode {
+  height: auto !important;
+  min-height: 100dvh !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
 }
 
 /* 🎨 Elevated Card Utilities (Appllama Benchmark) */
