@@ -3350,4 +3350,160 @@ class ChatRepository private constructor(private val context: Context) {
             }
         }
     }
+
+    /**
+     * Leave group:
+     * - Removes current user from Firestore group members list.
+     * - If current user was admin, transfers admin rights to the next remaining member.
+     * - If no members remain, deletes the group document from Firestore.
+     * - Sends E2EE announcement to remaining members: "$displayName left the group".
+     * - Cleans up local conversation and media.
+     */
+    suspend fun leaveGroup(groupId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val myPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+            val normMyPhone = ContactsHelper.normalizePhoneNumber(myPhone)
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName?.ifBlank { normMyPhone } ?: normMyPhone
+
+            val groupDocRef = firestore.collection("groups").document(groupId)
+            val snap = groupDocRef.get().await()
+            if (!snap.exists()) {
+                clearConversationStorage(groupId, ClearChatMode.BOTH)
+                return@withContext Result.success(Unit)
+            }
+
+            val groupDto = snap.toObject(GroupDto::class.java)
+            val rawMembers = groupDto?.members ?: emptyList()
+            val remainingMembers = rawMembers.filter { !ContactsHelper.numbersMatch(it, normMyPhone) }
+
+            // Announce exit to remaining members BEFORE removing from Firestore so fanout reaches them
+            if (remainingMembers.isNotEmpty()) {
+                try {
+                    sendMessage(
+                        recipientNumber = groupId,
+                        recipientName = groupDto?.name ?: "Group",
+                        text = "$myDisplayName left the group"
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error sending group exit announcement: ${e.message}")
+                }
+            }
+
+            if (remainingMembers.isEmpty()) {
+                groupDocRef.delete().await()
+            } else {
+                val wasAdmin = ContactsHelper.numbersMatch(groupDto?.adminPhone ?: "", normMyPhone)
+                val updates = mutableMapOf<String, Any>("members" to remainingMembers)
+                if (wasAdmin) {
+                    updates["adminPhone"] = remainingMembers.first()
+                }
+                groupDocRef.update(updates).await()
+            }
+
+            clearConversationStorage(groupId, ClearChatMode.BOTH)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to leave group $groupId: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Delete group (Admin only):
+     * - Sends announcement to group.
+     * - Deletes group document from Firestore.
+     * - Clears local conversation and messages.
+     */
+    suspend fun deleteGroup(groupId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val myPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+            val normMyPhone = ContactsHelper.normalizePhoneNumber(myPhone)
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName?.ifBlank { normMyPhone } ?: normMyPhone
+
+            val groupDocRef = firestore.collection("groups").document(groupId)
+            val snap = groupDocRef.get().await()
+            val groupDto = if (snap.exists()) snap.toObject(GroupDto::class.java) else null
+
+            try {
+                sendMessage(
+                    recipientNumber = groupId,
+                    recipientName = groupDto?.name ?: "Group",
+                    text = "$myDisplayName deleted the group"
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Error announcing group deletion: ${e.message}")
+            }
+
+            groupDocRef.delete().await()
+            clearConversationStorage(groupId, ClearChatMode.BOTH)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete group $groupId: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Remove member from group (Admin only)
+     */
+    suspend fun removeMemberFromGroup(groupId: String, memberPhone: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val groupDocRef = firestore.collection("groups").document(groupId)
+            val snap = groupDocRef.get().await()
+            if (!snap.exists()) return@withContext Result.failure(Exception("Group not found"))
+
+            val groupDto = snap.toObject(GroupDto::class.java)
+            val remaining = (groupDto?.members ?: emptyList()).filter { !ContactsHelper.numbersMatch(it, memberPhone) }
+            groupDocRef.update("members", remaining).await()
+
+            val myPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName?.ifBlank { myPhone } ?: "Admin"
+            try {
+                sendMessage(
+                    recipientNumber = groupId,
+                    recipientName = groupDto?.name ?: "Group",
+                    text = "$myDisplayName removed $memberPhone"
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Error announcing member removal: ${e.message}")
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove member: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Add members to group
+     */
+    suspend fun addMembersToGroup(groupId: String, newMembers: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val groupDocRef = firestore.collection("groups").document(groupId)
+            val snap = groupDocRef.get().await()
+            if (!snap.exists()) return@withContext Result.failure(Exception("Group not found"))
+
+            val groupDto = snap.toObject(GroupDto::class.java)
+            val existing = groupDto?.members ?: emptyList()
+            val normalizedNew = newMembers.map { ContactsHelper.normalizePhoneNumber(it) }
+            val merged = (existing + normalizedNew).distinct()
+            groupDocRef.update("members", merged).await()
+
+            val myPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName?.ifBlank { myPhone } ?: "Admin"
+            try {
+                sendMessage(
+                    recipientNumber = groupId,
+                    recipientName = groupDto?.name ?: "Group",
+                    text = "$myDisplayName added new members"
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Error announcing member addition: ${e.message}")
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to add members: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
 }

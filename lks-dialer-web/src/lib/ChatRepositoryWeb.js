@@ -1,6 +1,6 @@
 import { db } from './firebase';
 import { 
-  collection, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, query, where 
+  collection, doc, setDoc, getDoc, getDocs, deleteDoc, updateDoc, onSnapshot, query, where 
 } from 'firebase/firestore';
 import { chatCryptoWeb } from './ChatCryptoWeb';
 import { formatAvatarUrl } from './ImageUtils';
@@ -1293,6 +1293,154 @@ class ChatRepositoryWeb {
     }
 
     return groupDto;
+  }
+
+  async leaveGroup(groupId) {
+    if (!this.currentListeningPhone) {
+      throw new Error('You must be logged in to leave a group');
+    }
+    const myPhone = normalizePhoneNumber(this.currentListeningPhone);
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (!groupSnap.exists()) {
+      this.clearChat(groupId, 'ALL');
+      return true;
+    }
+
+    const groupData = groupSnap.data();
+    const rawMembers = groupData.members || [];
+    const remainingMembers = rawMembers
+      .map(m => normalizePhoneNumber(m))
+      .filter(m => m && !numbersMatch(m, myPhone));
+
+    let myDisplayName = myPhone;
+    try {
+      const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.displayName) myDisplayName = u.displayName;
+      }
+    } catch {}
+
+    // Send E2EE exit announcement to remaining members BEFORE updating Firestore
+    if (remainingMembers.length > 0) {
+      try {
+        await this._sendGroupMessage(groupId, groupData.name || 'Group', `${myDisplayName} left the group`, 'TEXT');
+      } catch (err) {
+        console.warn('[ChatRepositoryWeb] Error sending exit announcement:', err);
+      }
+    }
+
+    if (remainingMembers.length === 0) {
+      try {
+        await deleteDoc(groupRef);
+      } catch (err) {
+        console.warn('[ChatRepositoryWeb] Error deleting empty group:', err);
+      }
+    } else {
+      const wasAdmin = numbersMatch(groupData.adminPhone, myPhone);
+      const updatePayload = {
+        members: remainingMembers
+      };
+      if (wasAdmin) {
+        updatePayload.adminPhone = remainingMembers[0];
+      }
+      await updateDoc(groupRef, updatePayload);
+    }
+
+    // Clean up local conversation & messages
+    this.clearChat(groupId, 'ALL');
+    return true;
+  }
+
+  async deleteGroup(groupId) {
+    if (!this.currentListeningPhone) {
+      throw new Error('You must be logged in');
+    }
+    const myPhone = normalizePhoneNumber(this.currentListeningPhone);
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (groupSnap.exists()) {
+      const groupData = groupSnap.data();
+      let myDisplayName = myPhone;
+      try {
+        const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+        if (stored) {
+          const u = JSON.parse(stored);
+          if (u.displayName) myDisplayName = u.displayName;
+        }
+      } catch {}
+
+      try {
+        await this._sendGroupMessage(groupId, groupData.name || 'Group', `${myDisplayName} deleted the group`, 'TEXT');
+      } catch (e) {
+        console.warn('Error announcing group deletion:', e);
+      }
+
+      await deleteDoc(groupRef);
+    }
+
+    this.clearChat(groupId, 'ALL');
+    return true;
+  }
+
+  async removeMember(groupId, memberPhone) {
+    if (!this.currentListeningPhone) throw new Error('You must be logged in');
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (!groupSnap.exists()) throw new Error('Group does not exist');
+    const groupData = groupSnap.data();
+    const rawMembers = groupData.members || [];
+    const remainingMembers = rawMembers
+      .map(m => normalizePhoneNumber(m))
+      .filter(m => m && !numbersMatch(m, memberPhone));
+
+    let myDisplayName = this.currentListeningPhone;
+    try {
+      const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.displayName) myDisplayName = u.displayName;
+      }
+    } catch {}
+
+    await updateDoc(groupRef, { members: remainingMembers });
+
+    try {
+      await this._sendGroupMessage(groupId, groupData.name || 'Group', `${myDisplayName} removed ${memberPhone}`, 'TEXT');
+    } catch (e) {
+      console.warn('Error sending remove announcement:', e);
+    }
+    return true;
+  }
+
+  async addMembers(groupId, newMemberPhones) {
+    if (!this.currentListeningPhone) throw new Error('You must be logged in');
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (!groupSnap.exists()) throw new Error('Group does not exist');
+    const groupData = groupSnap.data();
+    const existingMembers = groupData.members || [];
+    const normalizedNew = (newMemberPhones || []).map(p => normalizePhoneNumber(p));
+    const updatedMembers = Array.from(new Set([...existingMembers, ...normalizedNew]));
+
+    await updateDoc(groupRef, { members: updatedMembers });
+
+    let myDisplayName = this.currentListeningPhone;
+    try {
+      const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.displayName) myDisplayName = u.displayName;
+      }
+    } catch {}
+
+    try {
+      await this._sendGroupMessage(groupId, groupData.name || 'Group', `${myDisplayName} added new members`, 'TEXT');
+    } catch (e) {
+      console.warn('Error sending add announcement:', e);
+    }
+    return true;
   }
 
   async _sendGroupMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {

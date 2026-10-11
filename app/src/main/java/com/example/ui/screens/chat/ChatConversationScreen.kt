@@ -195,6 +195,10 @@ fun ChatConversationScreen(
     }
     var groupDto by remember { mutableStateOf<GroupDto?>(null) }
     var showGroupInfoDialog by remember { mutableStateOf(false) }
+    var showExitGroupDialog by remember { mutableStateOf(false) }
+    var showDeleteGroupDialog by remember { mutableStateOf(false) }
+    var showAddMembersDialog by remember { mutableStateOf(false) }
+    var memberToRemove by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(normPeer, isGroup) {
         if (isGroup) {
             groupDto = chatRepository.getGroup(normPeer)
@@ -837,34 +841,57 @@ fun ChatConversationScreen(
                                         showClearChatDialog = true
                                     }
                                 )
-                                if (isBlocked) {
+                                if (isGroup) {
                                     DropdownMenuItem(
-                                        text = { Text("Unblock contact") },
-                                        leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = TealPrimary) },
+                                        text = { Text("Exit group", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = { Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                                         onClick = {
                                             showOptionsMenu = false
-                                            firebaseManager.unblockNumber(normPeer)
-                                            firebaseManager.unmarkSpam(normPeer)
-                                            Toast.makeText(context, "Contact unblocked", Toast.LENGTH_SHORT).show()
+                                            showExitGroupDialog = true
                                         }
                                     )
+                                    val myPhone = firebaseManager.currentUser.value?.phoneNumber ?: ""
+                                    val isGroupAdmin = ContactsHelper.numbersMatch(groupDto?.adminPhone ?: "", myPhone)
+                                    if (isGroupAdmin) {
+                                        DropdownMenuItem(
+                                            text = { Text("Delete group", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                showDeleteGroupDialog = true
+                                            }
+                                        )
+                                    }
                                 } else {
-                                    DropdownMenuItem(
-                                        text = { Text("Block contact") },
-                                        leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                                        onClick = {
-                                            showOptionsMenu = false
-                                            showBlockConfirmDialog = true
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Report spam") },
-                                        leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, tint = Color(0xFFFF9800)) },
-                                        onClick = {
-                                            showOptionsMenu = false
-                                            showSpamConfirmDialog = true
-                                        }
-                                    )
+                                    if (isBlocked) {
+                                        DropdownMenuItem(
+                                            text = { Text("Unblock contact") },
+                                            leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = TealPrimary) },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                firebaseManager.unblockNumber(normPeer)
+                                                firebaseManager.unmarkSpam(normPeer)
+                                                Toast.makeText(context, "Contact unblocked", Toast.LENGTH_SHORT).show()
+                                            }
+                                        )
+                                    } else {
+                                        DropdownMenuItem(
+                                            text = { Text("Block contact") },
+                                            leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                showBlockConfirmDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Report spam") },
+                                            leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, tint = Color(0xFFFF9800)) },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                showSpamConfirmDialog = true
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1829,13 +1856,211 @@ fun ChatConversationScreen(
             GroupInfoDialog(
                 group = groupDto,
                 firebaseManager = firebaseManager,
-                onDismiss = { showGroupInfoDialog = false }
+                onDismiss = { showGroupInfoDialog = false },
+                onExitGroup = {
+                    showGroupInfoDialog = false
+                    showExitGroupDialog = true
+                },
+                onDeleteGroup = {
+                    showGroupInfoDialog = false
+                    showDeleteGroupDialog = true
+                },
+                onRemoveMember = { memberPhone ->
+                    memberToRemove = memberPhone
+                },
+                onAddMembersClick = {
+                    showAddMembersDialog = true
+                }
             )
         } else {
             LaunchedEffect(normPeer) {
                 groupDto = chatRepository.getGroup(normPeer)
             }
         }
+    }
+
+    // Exit Group Confirmation Dialog
+    if (showExitGroupDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitGroupDialog = false },
+            icon = { Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Exit group?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to exit \"${groupDto?.name ?: "this group"}\"? You will no longer receive messages from this group.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showExitGroupDialog = false
+                        coroutineScope.launch {
+                            chatRepository.leaveGroup(normPeer)
+                            Toast.makeText(context, "You left the group", Toast.LENGTH_SHORT).show()
+                            onBackClick()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Exit", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitGroupDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Delete Group Confirmation Dialog
+    if (showDeleteGroupDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteGroupDialog = false },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Delete group?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to permanently delete \"${groupDto?.name ?: "this group"}\"? The group will be deleted for all members.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteGroupDialog = false
+                        coroutineScope.launch {
+                            chatRepository.deleteGroup(normPeer)
+                            Toast.makeText(context, "Group deleted", Toast.LENGTH_SHORT).show()
+                            onBackClick()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteGroupDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Remove Member Confirmation Dialog
+    memberToRemove?.let { mPhone ->
+        AlertDialog(
+            onDismissRequest = { memberToRemove = null },
+            icon = { Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Remove member?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to remove $mPhone from the group?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val target = mPhone
+                        memberToRemove = null
+                        coroutineScope.launch {
+                            chatRepository.removeMemberFromGroup(normPeer, target)
+                            groupDto = chatRepository.getGroup(normPeer)
+                            Toast.makeText(context, "Member removed", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Remove", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { memberToRemove = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Add Participants Dialog
+    if (showAddMembersDialog) {
+        var addMemberSearch by remember { mutableStateOf("") }
+        var selectedNewMembers by remember { mutableStateOf(setOf<String>()) }
+        val currentGroupMembers = remember(groupDto) { groupDto?.members?.map { ContactsHelper.normalizePhoneNumber(it) }?.toSet() ?: emptySet() }
+        val candidates = remember(registeredUsers, currentGroupMembers, addMemberSearch) {
+            registeredUsers.filter { user ->
+                val p = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+                p.isNotBlank() && !currentGroupMembers.contains(p) &&
+                    (addMemberSearch.isBlank() || user.displayName.contains(addMemberSearch, ignoreCase = true) || user.phoneNumber.contains(addMemberSearch))
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showAddMembersDialog = false },
+            title = { Text("Add Participants", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = addMemberSearch,
+                        onValueChange = { addMemberSearch = it },
+                        placeholder = { Text("Search users...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (candidates.isEmpty()) {
+                        Text(
+                            text = "No additional users available",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 16.dp)
+                        )
+                    } else {
+                        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                            items(candidates) { user ->
+                                val p = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+                                val isSelected = selectedNewMembers.contains(p)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
+                                        }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    ChatAvatar(name = user.displayName, profilePic = user.profilePictureUrl, size = 32.dp, fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(user.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                        Text(user.phoneNumber, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = {
+                                            selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val toAdd = selectedNewMembers.toList()
+                        showAddMembersDialog = false
+                        if (toAdd.isNotEmpty()) {
+                            coroutineScope.launch {
+                                chatRepository.addMembersToGroup(normPeer, toAdd)
+                                groupDto = chatRepository.getGroup(normPeer)
+                                Toast.makeText(context, "Added ${toAdd.size} member(s)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    enabled = selectedNewMembers.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                ) {
+                    Text("Add (${selectedNewMembers.size})", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddMembersDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     // Starred Messages Dialog
@@ -4093,11 +4318,17 @@ private fun dropLastCodePoint(text: String): String {
 private fun GroupInfoDialog(
     group: GroupDto?,
     firebaseManager: FirebaseManager,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onExitGroup: () -> Unit,
+    onDeleteGroup: () -> Unit,
+    onRemoveMember: (memberPhone: String) -> Unit,
+    onAddMembersClick: () -> Unit
 ) {
     if (group == null) return
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val syncedContacts by firebaseManager.contacts.collectAsState()
+    val myPhone = firebaseManager.currentUser.value?.phoneNumber ?: ""
+    val isCurrentUserAdmin = ContactsHelper.numbersMatch(group.adminPhone, myPhone)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4116,20 +4347,36 @@ private fun GroupInfoDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "Members",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                    color = TealPrimary
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Members",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = TealPrimary
+                    )
+                    TextButton(
+                        onClick = onAddMembersClick,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp), tint = TealPrimary)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Add", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold), color = TealPrimary)
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
                     items(group.members) { memberPhone ->
+                        val isMe = ContactsHelper.numbersMatch(memberPhone, myPhone)
                         val matchedUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, memberPhone) }
                         val matchedContact = syncedContacts.find { ContactsHelper.numbersMatch(it.phoneNumber, memberPhone) }
-                        val name = matchedUser?.displayName?.takeIf { it.isNotBlank() }
+                        val rawName = matchedUser?.displayName?.takeIf { it.isNotBlank() }
                             ?: matchedContact?.name?.takeIf { it.isNotBlank() }
                             ?: memberPhone
-                        val isAdmin = memberPhone == group.adminPhone
+                        val name = if (isMe) "$rawName (You)" else rawName
+                        val isAdmin = ContactsHelper.numbersMatch(memberPhone, group.adminPhone)
 
                         Row(
                             modifier = Modifier
@@ -4141,7 +4388,7 @@ private fun GroupInfoDialog(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(name, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                                if (name != memberPhone) {
+                                if (rawName != memberPhone) {
                                     Text(memberPhone, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
@@ -4158,6 +4405,52 @@ private fun GroupInfoDialog(
                                     )
                                 }
                             }
+                            if (isCurrentUserAdmin && !isMe) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = { onRemoveMember(memberPhone) },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Remove",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Bottom Group Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onExitGroup,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
+                    ) {
+                        Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Exit", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (isCurrentUserAdmin) {
+                        Button(
+                            onClick = onDeleteGroup,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Delete", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -4165,7 +4458,7 @@ private fun GroupInfoDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close", color = TealPrimary)
+                Text("Close", color = TealPrimary, fontWeight = FontWeight.Bold)
             }
         }
     )

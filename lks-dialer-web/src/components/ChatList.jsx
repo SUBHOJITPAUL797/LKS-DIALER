@@ -159,12 +159,12 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
 
   return (
     <div className="scrollable-content" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Header with New Chat Action */}
+      {/* Header with New Chat & Group Actions */}
       <div style={{ 
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        borderBottom: '4px solid #000', paddingBottom: '8px'
+        borderBottom: '4px solid #000', paddingBottom: '10px'
       }}>
-        <h2 style={{ fontSize: '32px', fontWeight: '900', margin: 0 }}>
+        <h2 style={{ fontSize: '28px', fontWeight: '900', margin: 0, letterSpacing: '-0.5px' }}>
           CHATS
         </h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -176,39 +176,51 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
               setGroupUserSearch('');
               if (registeredUsers.length === 0) openNewChatModal();
             }}
+            title="Create New Group"
             className="neo-box"
             style={{
-              padding: '8px 14px',
-              backgroundColor: '#E0F2F1',
+              height: '36px',
+              padding: '0 12px',
+              borderRadius: '10px',
+              backgroundColor: '#F0FDF4',
               color: '#008069',
+              border: '2px solid #000',
+              boxShadow: '2px 2px 0 #000',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              fontWeight: '900',
+              fontWeight: '800',
               fontSize: '13px',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              transition: 'transform 0.1s ease, box-shadow 0.1s ease'
             }}
           >
             <Users size={16} strokeWidth={2.5} />
-            <span>NEW GROUP</span>
+            <span>Group</span>
           </button>
           <button
             onClick={openNewChatModal}
+            title="Start New Chat"
             className="neo-box"
             style={{
-              padding: '8px 14px',
+              height: '36px',
+              padding: '0 14px',
+              borderRadius: '10px',
               backgroundColor: 'var(--primary)',
               color: '#fff',
+              border: '2px solid #000',
+              boxShadow: '2px 2px 0 #000',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              fontWeight: '900',
+              fontWeight: '800',
               fontSize: '13px',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              transition: 'transform 0.1s ease, box-shadow 0.1s ease'
             }}
           >
             <Plus size={16} strokeWidth={3} />
-            <span>NEW CHAT</span>
+            <span>Chat</span>
           </button>
         </div>
       </div>

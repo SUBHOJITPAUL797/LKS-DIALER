@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ChevronUp, ExternalLink, Smile, Search, Users
+  ChevronDown, ChevronUp, ExternalLink, Smile, Search, Users, LogOut, UserMinus, UserPlus, AlertTriangle
 } from 'lucide-react';
 import { db } from '../lib/firebase';
-import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
+import { collection, doc, query, where, onSnapshot, getDoc, getDocs } from 'firebase/firestore';
 import { chatRepositoryWeb, normalizePhoneNumber, extractGifUrlWeb, numbersMatch } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
@@ -910,6 +910,92 @@ export default function ChatConversation({
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentSearchIdx, setCurrentSearchIdx] = useState(0);
+
+  const myPhoneNumber = webRtcEngine.currentUser?.phoneNumber || chatRepositoryWeb.currentListeningPhone;
+  const isGroupAdmin = Boolean(isGroup && groupData && numbersMatch(groupData.adminPhone, myPhoneNumber));
+  const [showExitGroupConfirm, setShowExitGroupConfirm] = useState(false);
+  const [showDeleteGroupConfirm, setShowDeleteGroupConfirm] = useState(false);
+  const [showAddMembersModal, setShowAddMembersModal] = useState(false);
+  const [availableUsersToAdd, setAvailableUsersToAdd] = useState([]);
+  const [selectedUsersToAdd, setSelectedUsersToAdd] = useState(new Set());
+  const [addMemberSearch, setAddMemberSearch] = useState('');
+  const [isAddingMembers, setIsAddingMembers] = useState(false);
+  const [isLeavingGroup, setIsLeavingGroup] = useState(false);
+
+  const handleExitGroup = async () => {
+    if (!isGroup) return;
+    setIsLeavingGroup(true);
+    try {
+      await chatRepositoryWeb.leaveGroup(peerNumber);
+      setShowGroupInfoModal(false);
+      setShowExitGroupConfirm(false);
+      if (onBack) onBack();
+    } catch (e) {
+      alert(`Failed to leave group: ${e.message}`);
+    } finally {
+      setIsLeavingGroup(false);
+    }
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!isGroup) return;
+    setIsLeavingGroup(true);
+    try {
+      await chatRepositoryWeb.deleteGroup(peerNumber);
+      setShowGroupInfoModal(false);
+      setShowDeleteGroupConfirm(false);
+      if (onBack) onBack();
+    } catch (e) {
+      alert(`Failed to delete group: ${e.message}`);
+    } finally {
+      setIsLeavingGroup(false);
+    }
+  };
+
+  const handleRemoveMember = async (memberPhone, memberName) => {
+    if (!isGroup || !memberPhone) return;
+    if (!confirm(`Are you sure you want to remove ${memberName || memberPhone} from the group?`)) return;
+    try {
+      await chatRepositoryWeb.removeMember(peerNumber, memberPhone);
+    } catch (e) {
+      alert(`Failed to remove member: ${e.message}`);
+    }
+  };
+
+  const openAddMembersModal = async () => {
+    setShowAddMembersModal(true);
+    setSelectedUsersToAdd(new Set());
+    setAddMemberSearch('');
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      const existing = new Set((groupData?.members || []).map(m => normalizePhoneNumber(m)));
+      const candidates = [];
+      snap.forEach(d => {
+        const u = d.data();
+        const p = normalizePhoneNumber(u.phoneNumber);
+        if (p && !existing.has(p)) {
+          candidates.push(u);
+        }
+      });
+      setAvailableUsersToAdd(candidates);
+    } catch (e) {
+      console.warn('Failed to load users to add:', e);
+    }
+  };
+
+  const handleConfirmAddMembers = async () => {
+    if (selectedUsersToAdd.size === 0) return;
+    setIsAddingMembers(true);
+    try {
+      await chatRepositoryWeb.addMembers(peerNumber, Array.from(selectedUsersToAdd));
+      setShowAddMembersModal(false);
+      setSelectedUsersToAdd(new Set());
+    } catch (e) {
+      alert(`Failed to add members: ${e.message}`);
+    } finally {
+      setIsAddingMembers(false);
+    }
+  };
 
   const searchMatches = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -1957,6 +2043,18 @@ export default function ChatConversation({
                   style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Trash2 size={16} /> Clear Chat
                 </button>
+                {isGroup && (
+                  <button onClick={() => { setMenuOpen(false); setShowExitGroupConfirm(true); }}
+                    style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: '#dc2626' }}>
+                    <LogOut size={16} color="#dc2626" /> Exit Group
+                  </button>
+                )}
+                {isGroup && isGroupAdmin && (
+                  <button onClick={() => { setMenuOpen(false); setShowDeleteGroupConfirm(true); }}
+                    style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: '#991b1b' }}>
+                    <Trash2 size={16} color="#991b1b" /> Delete Group
+                  </button>
+                )}
                 {!isGroup && (
                   <button onClick={async () => {
                     setMenuOpen(false);
@@ -3199,11 +3297,23 @@ export default function ChatConversation({
 
             {/* Member List */}
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 900, color: '#444', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                Members ({groupData.members?.length || 0})
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: '#444', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Members ({groupData.members?.length || 0})
+                </div>
+                <button
+                  onClick={openAddMembersModal}
+                  style={{
+                    border: 'none', background: '#E0F2F1', color: '#008069', borderRadius: 8,
+                    padding: '4px 10px', fontSize: 12, fontWeight: 800, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 5
+                  }}
+                >
+                  <UserPlus size={14} /> Add
+                </button>
               </div>
               <div style={{
-                display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', maxHeight: '280px', paddingRight: 4
+                display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', maxHeight: '240px', paddingRight: 4
               }}>
                 {(groupData.members || []).map((mPhone) => {
                   const mUser = groupMembersData[mPhone] || {};
@@ -3239,28 +3349,289 @@ export default function ChatConversation({
                         </div>
                       </div>
 
-                      {isAdmin && (
-                        <span style={{
-                          fontSize: 11, fontWeight: 900, backgroundColor: '#E0F2F1',
-                          color: '#008069', border: '1px solid #008069', borderRadius: 6,
-                          padding: '2px 8px', flexShrink: 0
-                        }}>
-                          Admin
-                        </span>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {isAdmin && (
+                          <span style={{
+                            fontSize: 11, fontWeight: 900, backgroundColor: '#E0F2F1',
+                            color: '#008069', border: '1px solid #008069', borderRadius: 6,
+                            padding: '2px 8px', flexShrink: 0
+                          }}>
+                            Admin
+                          </span>
+                        )}
+                        {isGroupAdmin && !isMe && (
+                          <button
+                            onClick={() => handleRemoveMember(mPhone, mName)}
+                            title={`Remove ${mName}`}
+                            style={{
+                              border: 'none', background: '#FEE2E2', color: '#EF4444',
+                              borderRadius: 6, padding: '4px 6px', cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center'
+                            }}
+                          >
+                            <UserMinus size={14} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 6 }}>
+            {/* Group Actions */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 8, borderTop: '1px solid #eee' }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => setShowExitGroupConfirm(true)}
+                  className="neo-box"
+                  style={{
+                    flex: 1, padding: '10px 12px', borderRadius: 10,
+                    backgroundColor: '#FEF2F2', color: '#DC2626', border: '2px solid #DC2626',
+                    fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', gap: 6
+                  }}
+                >
+                  <LogOut size={16} /> Exit Group
+                </button>
+                {isGroupAdmin && (
+                  <button
+                    onClick={() => setShowDeleteGroupConfirm(true)}
+                    className="neo-box"
+                    style={{
+                      flex: 1, padding: '10px 12px', borderRadius: 10,
+                      backgroundColor: '#DC2626', color: '#fff', border: '2px solid #000',
+                      fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex',
+                      alignItems: 'center', justifyContent: 'center', gap: 6
+                    }}
+                  >
+                    <Trash2 size={16} /> Delete Group
+                  </button>
+                )}
+              </div>
               <button
                 onClick={() => setShowGroupInfoModal(false)}
                 className="neo-btn"
-                style={{ padding: '8px 20px', fontSize: 14 }}
+                style={{ padding: '8px 20px', fontSize: 13, backgroundColor: '#f3f4f6' }}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── EXIT GROUP CONFIRMATION MODAL ── */}
+      {showExitGroupConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: 20
+        }}>
+          <div className="neo-box" style={{
+            backgroundColor: '#fff', borderRadius: 16, maxWidth: 380, width: '100%',
+            padding: 24, display: 'flex', flexDirection: 'column', gap: 14, textAlign: 'center'
+          }}>
+            <div style={{
+              width: 50, height: 50, borderRadius: '50%', backgroundColor: '#FEE2E2',
+              color: '#DC2626', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <LogOut size={26} />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Exit Group?</h3>
+            <p style={{ margin: 0, fontSize: 13, color: '#555', lineHeight: 1.5 }}>
+              Are you sure you want to leave <strong>{groupData?.name || 'this group'}</strong>? You will no longer receive messages from this group.
+            </p>
+            <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+              <button
+                onClick={() => setShowExitGroupConfirm(false)}
+                className="neo-btn"
+                style={{ flex: 1, padding: '10px', fontSize: 13, backgroundColor: '#f3f4f6' }}
+                disabled={isLeavingGroup}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleExitGroup}
+                className="neo-box"
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 10,
+                  backgroundColor: '#DC2626', color: '#fff', border: '2px solid #000',
+                  fontWeight: 900, fontSize: 13, cursor: 'pointer'
+                }}
+                disabled={isLeavingGroup}
+              >
+                {isLeavingGroup ? 'Exiting...' : 'Exit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DELETE GROUP CONFIRMATION MODAL ── */}
+      {showDeleteGroupConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: 20
+        }}>
+          <div className="neo-box" style={{
+            backgroundColor: '#fff', borderRadius: 16, maxWidth: 380, width: '100%',
+            padding: 24, display: 'flex', flexDirection: 'column', gap: 14, textAlign: 'center'
+          }}>
+            <div style={{
+              width: 50, height: 50, borderRadius: '50%', backgroundColor: '#FEE2E2',
+              color: '#991B1B', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <Trash2 size={26} />
+            </div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Delete Group?</h3>
+            <p style={{ margin: 0, fontSize: 13, color: '#555', lineHeight: 1.5 }}>
+              Are you sure you want to permanently delete <strong>{groupData?.name || 'this group'}</strong>? The group will be removed for all members.
+            </p>
+            <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+              <button
+                onClick={() => setShowDeleteGroupConfirm(false)}
+                className="neo-btn"
+                style={{ flex: 1, padding: '10px', fontSize: 13, backgroundColor: '#f3f4f6' }}
+                disabled={isLeavingGroup}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteGroup}
+                className="neo-box"
+                style={{
+                  flex: 1, padding: '10px', borderRadius: 10,
+                  backgroundColor: '#991B1B', color: '#fff', border: '2px solid #000',
+                  fontWeight: 900, fontSize: 13, cursor: 'pointer'
+                }}
+                disabled={isLeavingGroup}
+              >
+                {isLeavingGroup ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ADD PARTICIPANTS MODAL ── */}
+      {showAddMembersModal && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: 20
+        }}>
+          <div className="neo-box" style={{
+            backgroundColor: '#fff', borderRadius: 16, maxWidth: 420, width: '100%', maxHeight: '80vh',
+            padding: 20, display: 'flex', flexDirection: 'column', gap: 14, overflow: 'hidden'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <UserPlus size={20} color="#008069" />
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Add Participants</h3>
+              </div>
+              <button
+                onClick={() => setShowAddMembersModal(false)}
+                className="neo-box"
+                style={{ width: 32, height: 32, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backgroundColor: '#f0f0f0' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div style={{ position: 'relative' }}>
+              <Search size={16} style={{ position: 'absolute', left: 12, top: 12, color: '#888' }} />
+              <input
+                type="text"
+                className="neo-input"
+                placeholder="Search registered users..."
+                value={addMemberSearch}
+                onChange={(e) => setAddMemberSearch(e.target.value)}
+                style={{ paddingLeft: 36, paddingRight: 12, height: 40, fontSize: 13 }}
+              />
+            </div>
+
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', flex: 1, minHeight: 120, maxHeight: 280
+            }}>
+              {availableUsersToAdd
+                .filter(u => {
+                  const q = (addMemberSearch || '').trim().toLowerCase();
+                  if (!q) return true;
+                  return (u.displayName && u.displayName.toLowerCase().includes(q)) ||
+                         (u.phoneNumber && u.phoneNumber.includes(q));
+                })
+                .map(u => {
+                  const uPhone = normalizePhoneNumber(u.phoneNumber);
+                  const isSelected = selectedUsersToAdd.has(uPhone);
+                  const uAvatar = formatAvatarUrl(u.profilePictureUrl);
+                  return (
+                    <div
+                      key={uPhone}
+                      onClick={() => {
+                        const next = new Set(selectedUsersToAdd);
+                        if (isSelected) next.delete(uPhone); else next.add(uPhone);
+                        setSelectedUsersToAdd(next);
+                      }}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '8px 10px', borderRadius: 10, cursor: 'pointer',
+                        backgroundColor: isSelected ? '#E0F2F1' : '#F9FAFB',
+                        border: isSelected ? '1.5px solid #008069' : '1px solid #eee'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                        <div style={{
+                          width: 34, height: 34, borderRadius: '50%', backgroundColor: '#008069',
+                          color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontWeight: 800, fontSize: 13, overflow: 'hidden', flexShrink: 0
+                        }}>
+                          {uAvatar ? (
+                            <img src={uAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (u.displayName || '?')[0]?.toUpperCase()}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {u.displayName || uPhone}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#666' }}>{uPhone}</div>
+                        </div>
+                      </div>
+                      <div style={{
+                        width: 20, height: 20, borderRadius: 6,
+                        border: '2px solid #008069', backgroundColor: isSelected ? '#008069' : '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                      }}>
+                        {isSelected && <Check size={14} color="#fff" strokeWidth={3} />}
+                      </div>
+                    </div>
+                  );
+                })}
+              {availableUsersToAdd.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '24px 10px', color: '#888', fontSize: 13 }}>
+                  No additional users found to add.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, paddingTop: 6 }}>
+              <button
+                onClick={() => setShowAddMembersModal(false)}
+                className="neo-btn"
+                style={{ flex: 1, padding: '10px', fontSize: 13, backgroundColor: '#f3f4f6' }}
+                disabled={isAddingMembers}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAddMembers}
+                className="neo-btn"
+                style={{
+                  flex: 1, padding: '10px', fontSize: 13,
+                  backgroundColor: selectedUsersToAdd.size > 0 ? '#008069' : '#ccc',
+                  color: '#fff', cursor: selectedUsersToAdd.size > 0 ? 'pointer' : 'not-allowed'
+                }}
+                disabled={selectedUsersToAdd.size === 0 || isAddingMembers}
+              >
+                {isAddingMembers ? 'Adding...' : `Add (${selectedUsersToAdd.size})`}
               </button>
             </div>
           </div>
