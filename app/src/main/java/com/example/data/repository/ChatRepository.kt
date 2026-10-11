@@ -32,8 +32,10 @@ import com.example.util.ContactsHelper
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -3255,7 +3257,7 @@ class ChatRepository private constructor(private val context: Context) {
     /**
      * Creates a new E2EE group with pairwise fanout messaging.
      */
-    suspend fun createGroup(name: String, members: List<String>): Result<GroupDto> = withContext(Dispatchers.IO) {
+    suspend fun createGroup(name: String, members: List<String>, iconUrl: String = ""): Result<GroupDto> = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
             ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
@@ -3270,7 +3272,8 @@ class ChatRepository private constructor(private val context: Context) {
             name = name,
             adminPhone = normMyPhone,
             members = allMembers,
-            createdTimestamp = System.currentTimeMillis()
+            createdTimestamp = System.currentTimeMillis(),
+            iconUrl = iconUrl
         )
 
         try {
@@ -3280,6 +3283,7 @@ class ChatRepository private constructor(private val context: Context) {
             val conv = ConversationEntity(
                 phoneNumber = groupId,
                 contactName = name,
+                profilePicUrl = iconUrl,
                 lastMessageText = "Group created",
                 lastMessageType = "SYSTEM",
                 lastMessageTimestamp = System.currentTimeMillis(),
@@ -3315,6 +3319,63 @@ class ChatRepository private constructor(private val context: Context) {
         }
     }
 
+    fun getGroupFlow(groupId: String): Flow<GroupDto?> = kotlinx.coroutines.flow.callbackFlow {
+        if (groupId.isBlank()) {
+            trySend(null)
+            close()
+            return@callbackFlow
+        }
+        val listener = firestore.collection("groups").document(groupId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null || !snapshot.exists()) {
+                    trySend(null)
+                } else {
+                    trySend(snapshot.toObject(GroupDto::class.java))
+                }
+            }
+        awaitClose { listener.remove() }
+    }
+
+    suspend fun updateGroupIcon(groupId: String, iconUrl: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
+
+        val normMyPhone = ContactsHelper.normalizePhoneNumber(myPhone)
+
+        try {
+            val groupRef = firestore.collection("groups").document(groupId)
+            val snap = groupRef.get().await()
+            if (!snap.exists()) {
+                return@withContext Result.failure(IllegalStateException("Group not found"))
+            }
+            val groupDto = snap.toObject(GroupDto::class.java)
+
+            groupRef.update("iconUrl", iconUrl).await()
+
+            // Update local Room database
+            val existing = conversationDao.getConversation(groupId)
+            if (existing != null) {
+                conversationDao.upsertConversation(existing.copy(profilePicUrl = iconUrl))
+            }
+
+            // Send system announcement to group members
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: normMyPhone
+            sendMessage(
+                recipientNumber = groupId,
+                recipientName = groupDto?.name ?: "Group",
+                text = "$myDisplayName updated the group photo"
+            )
+
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update group icon: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun getGroupMembers(groupId: String): List<String> = withContext(Dispatchers.IO) {
         getGroup(groupId)?.members ?: emptyList()
     }
@@ -3339,10 +3400,11 @@ class ChatRepository private constructor(private val context: Context) {
             conversationDao.upsertConversation(conv)
             Log.d(TAG, "Synced new group locally: ${groupDto.name} (${groupDto.groupId})")
         } else {
-            if (existing.contactName != groupDto.name || existing.profilePicUrl != groupDto.iconUrl || !existing.isGroup) {
+            val updatedIcon = if (groupDto.iconUrl.isNotBlank()) groupDto.iconUrl else existing.profilePicUrl
+            if (existing.contactName != groupDto.name || existing.profilePicUrl != updatedIcon || !existing.isGroup) {
                 val updated = existing.copy(
                     contactName = groupDto.name.ifBlank { existing.contactName },
-                    profilePicUrl = groupDto.iconUrl.ifBlank { existing.profilePicUrl },
+                    profilePicUrl = updatedIcon,
                     isGroup = true,
                     groupAdminPhone = groupDto.adminPhone.ifBlank { existing.groupAdminPhone }
                 )

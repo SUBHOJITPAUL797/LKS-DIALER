@@ -194,6 +194,12 @@ fun ChatConversationScreen(
         if (isGroup) peerPhoneNumber else ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
     }
     var groupDto by remember { mutableStateOf<GroupDto?>(null) }
+    val liveGroupDto by remember(normPeer, isGroup) {
+        if (isGroup) chatRepository.getGroupFlow(normPeer)
+        else kotlinx.coroutines.flow.flowOf(null)
+    }.collectAsState(initial = null)
+    val effectiveGroupDto = liveGroupDto ?: groupDto
+
     var showGroupInfoDialog by remember { mutableStateOf(false) }
     var showExitGroupDialog by remember { mutableStateOf(false) }
     var showDeleteGroupDialog by remember { mutableStateOf(false) }
@@ -220,12 +226,16 @@ fun ChatConversationScreen(
     val peerContact = remember(syncedContacts, normPeer) {
         syncedContacts.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
     }
-    // ── Avatar resolution: use peerInitialAvatar immediately, then upgrade from registeredUsers/contacts ──
-    val peerProfilePic = remember(peerUser, peerContact, peerInitialAvatar) {
-        val userPic     = peerUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
-        val contactPic  = peerContact?.profilePictureUrl?.takeIf { it.isNotBlank() }
-        // Priority: live Firestore user > synced contact > avatar passed from ChatListScreen
-        userPic ?: contactPic ?: peerInitialAvatar
+    // ── Avatar resolution: use peerInitialAvatar immediately, then upgrade from registeredUsers/contacts/groupDto ──
+    val peerProfilePic = remember(peerUser, peerContact, peerInitialAvatar, effectiveGroupDto) {
+        if (isGroup) {
+            effectiveGroupDto?.iconUrl?.takeIf { it.isNotBlank() } ?: peerInitialAvatar
+        } else {
+            val userPic     = peerUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
+            val contactPic  = peerContact?.profilePictureUrl?.takeIf { it.isNotBlank() }
+            // Priority: live Firestore user > synced contact > avatar passed from ChatListScreen
+            userPic ?: contactPic ?: peerInitialAvatar
+        }
     }
     var currentTimeTick by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -692,7 +702,8 @@ fun ChatConversationScreen(
                                 name = peerDisplayName,
                                 profilePic = peerProfilePic,
                                 size = 40.dp,
-                                fontSize = 16.sp
+                                fontSize = 16.sp,
+                                isGroup = isGroup
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
@@ -1852,9 +1863,9 @@ fun ChatConversationScreen(
 
     // Group Info Dialog
     if (showGroupInfoDialog) {
-        if (groupDto != null) {
+        if (effectiveGroupDto != null) {
             GroupInfoDialog(
-                group = groupDto,
+                group = effectiveGroupDto,
                 firebaseManager = firebaseManager,
                 onDismiss = { showGroupInfoDialog = false },
                 onExitGroup = {
@@ -1870,6 +1881,17 @@ fun ChatConversationScreen(
                 },
                 onAddMembersClick = {
                     showAddMembersDialog = true
+                },
+                onUpdateGroupIcon = { base64 ->
+                    coroutineScope.launch {
+                        val res = chatRepository.updateGroupIcon(normPeer, base64)
+                        if (res.isSuccess) {
+                            groupDto = effectiveGroupDto?.copy(iconUrl = base64)
+                            Toast.makeText(context, "Group photo updated", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Failed to update group photo", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             )
         } else {
@@ -4103,7 +4125,8 @@ fun ChatAvatar(
     name: String,
     profilePic: String,
     size: androidx.compose.ui.unit.Dp = 40.dp,
-    fontSize: androidx.compose.ui.unit.TextUnit = 16.sp
+    fontSize: androidx.compose.ui.unit.TextUnit = 16.sp,
+    isGroup: Boolean = false
 ) {
     val bitmap = remember(profilePic) {
         if (profilePic.isNotBlank() && !profilePic.startsWith("http")) {
@@ -4135,6 +4158,21 @@ fun ChatAvatar(
                 .clip(CircleShape),
             contentScale = ContentScale.Crop
         )
+    } else if (isGroup) {
+        Surface(
+            modifier = Modifier.size(size),
+            shape = CircleShape,
+            color = TealPrimary.copy(alpha = 0.15f)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.People,
+                    contentDescription = name,
+                    tint = TealPrimary,
+                    modifier = Modifier.size(size * 0.55f)
+                )
+            }
+        }
     } else {
         Surface(
             modifier = Modifier.size(size),
@@ -4322,13 +4360,26 @@ private fun GroupInfoDialog(
     onExitGroup: () -> Unit,
     onDeleteGroup: () -> Unit,
     onRemoveMember: (memberPhone: String) -> Unit,
-    onAddMembersClick: () -> Unit
+    onAddMembersClick: () -> Unit,
+    onUpdateGroupIcon: (base64Icon: String) -> Unit
 ) {
     if (group == null) return
+    val context = LocalContext.current
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val syncedContacts by firebaseManager.contacts.collectAsState()
     val myPhone = firebaseManager.currentUser.value?.phoneNumber ?: ""
     val isCurrentUserAdmin = ContactsHelper.numbersMatch(group.adminPhone, myPhone)
+
+    val iconPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val base64 = com.example.util.ImageUtils.compressUriToBase64(context, uri)
+            if (base64 != null) {
+                onUpdateGroupIcon(base64)
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -4341,10 +4392,50 @@ private fun GroupInfoDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
+                // Group Avatar with Camera Edit Badge
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(CircleShape)
+                            .clickable { iconPickerLauncher.launch("image/*") }
+                    ) {
+                        ChatAvatar(
+                            name = group.name,
+                            profilePic = group.iconUrl,
+                            size = 72.dp,
+                            fontSize = 28.sp,
+                            isGroup = true
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .align(Alignment.BottomEnd)
+                            .clip(CircleShape)
+                            .background(TealPrimary)
+                            .clickable { iconPickerLauncher.launch("image/*") }
+                            .padding(4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.CameraAlt,
+                            contentDescription = "Change group photo",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
                 Text(
                     text = "${group.members.size} members • E2EE Encrypted",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(

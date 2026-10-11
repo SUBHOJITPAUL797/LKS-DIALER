@@ -1,12 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
-  MessageSquare, Plus, Search, Check, CheckCheck, X, Users 
+  MessageSquare, Plus, Search, Check, CheckCheck, X, Users, Camera 
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, query, onSnapshot } from 'firebase/firestore';
 import { chatRepositoryWeb, numbersMatch } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline } from '../lib/WebRtcEngine';
-import { formatAvatarUrl } from '../lib/ImageUtils';
+import { formatAvatarUrl, compressImageFile } from '../lib/ImageUtils';
 import { allCountries, defaultCountry, formatPhoneNumber } from '../lib/CountryCodes';
 
 export default function ChatList({ onOpenChat, activePeerNumber }) {
@@ -26,8 +26,10 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
   // New Group Modal state
   const [showNewGroupModal, setShowNewGroupModal] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupIcon, setNewGroupIcon] = useState('');
   const [selectedGroupMembers, setSelectedGroupMembers] = useState(new Set());
   const [groupUserSearch, setGroupUserSearch] = useState('');
+  const groupIconInputRef = useRef(null);
   const [creatingGroup, setCreatingGroup] = useState(false);
 
   // Periodically tick for online staleness calculations
@@ -587,20 +589,84 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
               </button>
             </div>
 
-            {/* Group Name Input */}
-            <div className="neo-box" style={{ padding: '14px', backgroundColor: '#fff' }}>
-              <label style={{ fontSize: '12px', fontWeight: '800', display: 'block', marginBottom: '8px' }}>
-                GROUP NAME:
-              </label>
-              <input
-                type="text"
-                className="neo-input"
-                placeholder="e.g. Project Team, Family..."
-                style={{ width: '100%', padding: '10px 12px', fontSize: '15px' }}
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                maxLength={35}
-              />
+            {/* Group Picture & Name Input */}
+            <div className="neo-box" style={{ padding: '14px', backgroundColor: '#fff', display: 'flex', alignItems: 'center', gap: '14px' }}>
+              <div style={{ position: 'relative', width: 60, height: 60, flexShrink: 0 }}>
+                <input
+                  type="file"
+                  ref={groupIconInputRef}
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      const base64 = await compressImageFile(file, 256, 0.72);
+                      if (base64) setNewGroupIcon(base64);
+                    } catch (err) {
+                      alert('Failed to process image: ' + (err.message || err));
+                    } finally {
+                      e.target.value = '';
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => groupIconInputRef.current?.click()}
+                  title="Choose group photo"
+                  style={{
+                    width: 60, height: 60, borderRadius: '50%',
+                    backgroundColor: '#E0F2F1', border: '2px solid #000',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', overflow: 'hidden', padding: 0, position: 'relative'
+                  }}
+                >
+                  {newGroupIcon ? (
+                    <img src={newGroupIcon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#008069' }}>
+                      <Camera size={24} />
+                    </div>
+                  )}
+                </button>
+                {newGroupIcon ? (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setNewGroupIcon(''); }}
+                    title="Remove photo"
+                    style={{
+                      position: 'absolute', top: -4, right: -4, width: 22, height: 22, borderRadius: '50%',
+                      backgroundColor: '#ff4444', color: '#fff', border: '1.5px solid #000',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 0
+                    }}
+                  >
+                    <X size={12} strokeWidth={3} />
+                  </button>
+                ) : (
+                  <div style={{
+                    position: 'absolute', bottom: -2, right: -2, width: 22, height: 22, borderRadius: '50%',
+                    backgroundColor: '#008069', color: '#fff', border: '1.5px solid #000',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
+                  }}>
+                    <Plus size={14} strokeWidth={3} />
+                  </div>
+                )}
+              </div>
+
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <label style={{ fontSize: '11px', fontWeight: '800', display: 'block', marginBottom: '6px', color: '#333' }}>
+                  GROUP SUBJECT:
+                </label>
+                <input
+                  type="text"
+                  className="neo-input"
+                  placeholder="e.g. Project Team, Family..."
+                  style={{ width: '100%', padding: '10px 12px', fontSize: '15px' }}
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  maxLength={35}
+                />
+              </div>
             </div>
 
             {/* Members Selector */}
@@ -697,7 +763,12 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
             {/* Modal Bottom Actions */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 4 }}>
               <button
-                onClick={() => setShowNewGroupModal(false)}
+                onClick={() => {
+                  setShowNewGroupModal(false);
+                  setNewGroupIcon('');
+                  setNewGroupName('');
+                  setSelectedGroupMembers(new Set());
+                }}
                 style={{ padding: '8px 16px', background: 'none', border: 'none', fontWeight: 800, cursor: 'pointer' }}
               >
                 Cancel
@@ -711,10 +782,15 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                     setCreatingGroup(true);
                     const group = await chatRepositoryWeb.createGroup(
                       newGroupName.trim(),
-                      Array.from(selectedGroupMembers)
+                      Array.from(selectedGroupMembers),
+                      newGroupIcon
                     );
                     setShowNewGroupModal(false);
-                    onOpenChat(group.groupId, group.name, '');
+                    const icon = group.iconUrl || newGroupIcon || '';
+                    setNewGroupIcon('');
+                    setNewGroupName('');
+                    setSelectedGroupMembers(new Set());
+                    onOpenChat(group.groupId, group.name, icon);
                   } catch (e) {
                     alert('Failed to create group: ' + (e.message || e));
                   } finally {

@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ChevronUp, ExternalLink, Smile, Search, Users, LogOut, UserMinus, UserPlus, AlertTriangle
+  ChevronDown, ChevronUp, ExternalLink, Smile, Search, Users, LogOut, UserMinus, UserPlus, AlertTriangle, Camera
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc, getDocs } from 'firebase/firestore';
 import { chatRepositoryWeb, normalizePhoneNumber, extractGifUrlWeb, numbersMatch } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
-import { formatAvatarUrl } from '../lib/ImageUtils';
+import { formatAvatarUrl, compressImageFile } from '../lib/ImageUtils';
 import { mediaStorageWeb } from '../lib/MediaStorageWeb';
 import ChatMediaPickerWeb from './ChatMediaPickerWeb';
 import ChatMediaGalleryModal from './ChatMediaGalleryModal';
@@ -921,6 +921,8 @@ export default function ChatConversation({
   const [addMemberSearch, setAddMemberSearch] = useState('');
   const [isAddingMembers, setIsAddingMembers] = useState(false);
   const [isLeavingGroup, setIsLeavingGroup] = useState(false);
+  const [updatingGroupPhoto, setUpdatingGroupPhoto] = useState(false);
+  const groupPhotoInputRef = useRef(null);
 
   const handleExitGroup = async () => {
     if (!isGroup) return;
@@ -3271,16 +3273,62 @@ export default function ChatConversation({
               padding: '16px', backgroundColor: '#F0FDF4', borderRadius: 12,
               border: '1.5px solid #BBF7D0', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 6
             }}>
-              <div style={{
-                width: 64, height: 64, borderRadius: '50%', backgroundColor: '#008069',
-                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontWeight: 900, fontSize: 26, boxShadow: '0 4px 12px rgba(0, 128, 105, 0.25)', overflow: 'hidden'
-              }}>
-                {displayAvatar ? (
-                  <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : (
-                  <Users size={32} color="#fff" />
-                )}
+              {/* Group Avatar with Camera Edit Badge */}
+              <div style={{ position: 'relative', width: 72, height: 72 }}>
+                <input
+                  type="file"
+                  ref={groupPhotoInputRef}
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    try {
+                      setUpdatingGroupPhoto(true);
+                      const base64 = await compressImageFile(file, 256, 0.72);
+                      if (base64) {
+                        await chatRepositoryWeb.updateGroupIcon(peerNumber, base64);
+                        setGroupData(prev => prev ? { ...prev, iconUrl: base64 } : prev);
+                      }
+                    } catch (err) {
+                      alert('Failed to update group picture: ' + (err.message || err));
+                    } finally {
+                      setUpdatingGroupPhoto(false);
+                      e.target.value = '';
+                    }
+                  }}
+                />
+                <div style={{
+                  width: 72, height: 72, borderRadius: '50%', backgroundColor: '#008069',
+                  color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontWeight: 900, fontSize: 28, boxShadow: '0 4px 12px rgba(0, 128, 105, 0.25)', overflow: 'hidden',
+                  border: '2px solid #000'
+                }}>
+                  {displayAvatar ? (
+                    <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <Users size={34} color="#fff" />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={updatingGroupPhoto}
+                  onClick={() => groupPhotoInputRef.current?.click()}
+                  title="Change group photo"
+                  className="neo-box"
+                  style={{
+                    position: 'absolute', bottom: -2, right: -2, width: 28, height: 28, borderRadius: '50%',
+                    backgroundColor: '#fff', color: '#008069', padding: 0,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    boxShadow: '0 2px 6px rgba(0,0,0,0.2)'
+                  }}
+                >
+                  {updatingGroupPhoto ? (
+                    <span style={{ fontSize: 10, fontWeight: 900 }}>...</span>
+                  ) : (
+                    <Camera size={14} color="#008069" />
+                  )}
+                </button>
               </div>
               <div style={{ fontSize: 20, fontWeight: 900, color: '#000', marginTop: 4 }}>
                 {groupData.name || 'Group'}

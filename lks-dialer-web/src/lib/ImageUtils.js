@@ -60,3 +60,52 @@ export function formatAvatarUrl(url) {
 
   return trimmed;
 }
+
+/**
+ * Compresses an image File or Blob to a compact base64 JPEG data URI (< 50KB)
+ * for storage in Firestore without document size issues.
+ *
+ * @param {File|Blob} file The image file to compress
+ * @param {number} maxSize Max width or height in pixels (default 256)
+ * @param {number} quality JPEG quality 0..1 (default 0.72)
+ * @returns {Promise<string|null>} Resolves to base64 data URI string or null
+ */
+export function compressImageFile(file, maxSize = 256, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxSize) {
+            height = Math.round((height * maxSize) / width);
+            width = maxSize;
+          }
+        } else {
+          if (height > maxSize) {
+            width = Math.round((width * maxSize) / height);
+            height = maxSize;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const base64String = canvas.toDataURL('image/jpeg', quality);
+        resolve(base64String);
+      };
+      img.onerror = (err) => reject(new Error('Failed to load image for compression'));
+      img.src = event.target.result;
+    };
+    reader.onerror = (err) => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+

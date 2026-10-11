@@ -335,7 +335,7 @@ class ChatRepositoryWeb {
     const updatedConv = {
       phoneNumber: groupId,
       contactName: groupData.name || existing?.contactName || 'Group',
-      profilePicUrl: groupData.iconUrl || existing?.profilePicUrl || '',
+      profilePicUrl: (groupData.iconUrl !== undefined ? groupData.iconUrl : (existing?.profilePicUrl || '')) || '',
       lastMessageText: existing?.lastMessageText || 'Group created',
       lastMessageType: existing?.lastMessageType || 'TEXT',
       lastMessageTimestamp: existing?.lastMessageTimestamp || groupData.createdTimestamp || Date.now(),
@@ -1246,7 +1246,7 @@ class ChatRepositoryWeb {
     }
   }
 
-  async createGroup(name, memberPhones) {
+  async createGroup(name, memberPhones, iconUrl = '') {
     if (!this.currentListeningPhone) {
       throw new Error('You must be logged in to create a group');
     }
@@ -1260,7 +1260,7 @@ class ChatRepositoryWeb {
       adminPhone: myPhone,
       members: allMembers,
       createdTimestamp: Date.now(),
-      iconUrl: ''
+      iconUrl: iconUrl || ''
     };
 
     await setDoc(doc(db, 'groups', groupId), groupDto);
@@ -1269,7 +1269,7 @@ class ChatRepositoryWeb {
     const conv = {
       phoneNumber: groupId,
       contactName: name,
-      profilePicUrl: '',
+      profilePicUrl: iconUrl || '',
       lastMessageText: 'Group created',
       lastMessageType: 'TEXT',
       lastMessageTimestamp: Date.now(),
@@ -1440,6 +1440,42 @@ class ChatRepositoryWeb {
     } catch (e) {
       console.warn('Error sending add announcement:', e);
     }
+    return true;
+  }
+
+  async updateGroupIcon(groupId, iconUrl) {
+    if (!this.currentListeningPhone) throw new Error('You must be logged in');
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (!groupSnap.exists()) throw new Error('Group does not exist');
+    const groupData = groupSnap.data();
+
+    await updateDoc(groupRef, { iconUrl: iconUrl || '' });
+
+    // Update local conversation
+    const convs = this.getConversations();
+    const conv = convs.find(c => numbersMatch(c.phoneNumber, groupId));
+    if (conv) {
+      conv.profilePicUrl = iconUrl || '';
+      this.saveConversations(convs);
+    }
+
+    let myDisplayName = this.currentListeningPhone;
+    try {
+      const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.displayName) myDisplayName = u.displayName;
+      }
+    } catch {}
+
+    try {
+      await this._sendGroupMessage(groupId, groupData.name || 'Group', `${myDisplayName} updated the group photo`, 'TEXT');
+    } catch (e) {
+      console.warn('Error sending group icon update announcement:', e);
+    }
+
+    this.notifySubscribers();
     return true;
   }
 

@@ -9,6 +9,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import androidx.compose.foundation.Image
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material.icons.Icons
@@ -311,12 +315,12 @@ fun ChatListScreen(
         NewGroupDialog(
             registeredUsers = registeredUsers,
             syncedContacts = syncedContacts,
-            onCreateGroup = { name, selectedMembers ->
+            onCreateGroup = { name, selectedMembers, iconUrl ->
                 showNewGroupDialog = false
                 coroutineScope.launch {
-                    val result = chatRepository.createGroup(name, selectedMembers)
+                    val result = chatRepository.createGroup(name, selectedMembers, iconUrl)
                     result.onSuccess { group ->
-                        onOpenConversation(group.groupId, group.name, "")
+                        onOpenConversation(group.groupId, group.name, group.iconUrl)
                     }.onFailure { err ->
                         Toast.makeText(context, "Failed to create group: ${err.message}", Toast.LENGTH_SHORT).show()
                     }
@@ -818,12 +822,25 @@ fun formatChatTimestamp(timestamp: Long): String {
 private fun NewGroupDialog(
     registeredUsers: List<UserDto>,
     syncedContacts: List<ContactDto>,
-    onCreateGroup: (name: String, members: List<String>) -> Unit,
+    onCreateGroup: (name: String, members: List<String>, iconUrl: String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var groupName by remember { mutableStateOf("") }
+    var groupIconBase64 by remember { mutableStateOf<String?>(null) }
     val selectedMembers = remember { mutableStateListOf<String>() }
     var filterQuery by remember { mutableStateOf("") }
+
+    val iconPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val base64 = com.example.util.ImageUtils.compressUriToBase64(context, uri)
+            if (base64 != null) {
+                groupIconBase64 = base64
+            }
+        }
+    }
 
     val eligibleContacts = remember(registeredUsers, syncedContacts, filterQuery) {
         val merged = mutableMapOf<String, String>() // normalizedPhone -> Name
@@ -867,7 +884,7 @@ private fun NewGroupDialog(
                 Button(
                     onClick = {
                         if (groupName.isNotBlank() && selectedMembers.isNotEmpty()) {
-                            onCreateGroup(groupName.trim(), selectedMembers.toList())
+                            onCreateGroup(groupName.trim(), selectedMembers.toList(), groupIconBase64 ?: "")
                         }
                     },
                     enabled = groupName.isNotBlank() && selectedMembers.isNotEmpty(),
@@ -879,15 +896,54 @@ private fun NewGroupDialog(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            OutlinedTextField(
-                value = groupName,
-                onValueChange = { groupName = it },
+            // Group Subject & Avatar Selector Row
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Group subject (e.g. Family, Team)...") },
-                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
-                singleLine = true,
-                shape = RoundedCornerShape(16.dp)
-            )
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(TealPrimary.copy(alpha = 0.12f))
+                        .clickable { iconPickerLauncher.launch("image/*") },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!groupIconBase64.isNullOrBlank()) {
+                        val bitmap = remember(groupIconBase64) {
+                            com.example.util.ImageUtils.decodeBase64ToImageBitmap(groupIconBase64!!)
+                        }
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "Group icon",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Icon(Icons.Default.CameraAlt, contentDescription = "Group icon", tint = TealPrimary)
+                        }
+                    } else {
+                        Icon(
+                            Icons.Default.CameraAlt,
+                            contentDescription = "Add group photo",
+                            tint = TealPrimary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                OutlinedTextField(
+                    value = groupName,
+                    onValueChange = { groupName = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Group subject (e.g. Family, Team)...") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp)
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
