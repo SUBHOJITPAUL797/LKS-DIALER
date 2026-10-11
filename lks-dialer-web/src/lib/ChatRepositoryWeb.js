@@ -98,6 +98,7 @@ class ChatRepositoryWeb {
     this.activeInboxListeners = [];
     this.activeReceiptsListeners = [];
     this.activeTypingListeners = [];
+    this.activeGroupListeners = [];
     this.processedMessageIds = new Set();
     this.processedReceiptIds = new Set();
     this.typingTimeouts = {};
@@ -324,6 +325,35 @@ class ChatRepositoryWeb {
     return convs.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
   }
 
+  // --- REAL-TIME GROUP SYNC ---
+  syncGroupLocally(groupData) {
+    if (!groupData || !groupData.groupId) return;
+    const groupId = groupData.groupId;
+    const conversations = this.getConversations();
+    const existing = conversations.find(c => c.phoneNumber === groupId);
+
+    const updatedConv = {
+      phoneNumber: groupId,
+      contactName: groupData.name || existing?.contactName || 'Group',
+      profilePicUrl: groupData.iconUrl || existing?.profilePicUrl || '',
+      lastMessageText: existing?.lastMessageText || 'Group created',
+      lastMessageType: existing?.lastMessageType || 'TEXT',
+      lastMessageTimestamp: existing?.lastMessageTimestamp || groupData.createdTimestamp || Date.now(),
+      lastMessageStatus: existing?.lastMessageStatus || 'DELIVERED',
+      lastMessageIsOutgoing: existing?.lastMessageIsOutgoing || false,
+      unreadCount: existing?.unreadCount || 0,
+      isPinned: existing?.isPinned || false,
+      disappearingDuration: existing?.disappearingDuration || 0,
+      isGroup: true,
+      groupAdminPhone: groupData.adminPhone || existing?.groupAdminPhone || ''
+    };
+
+    const remaining = conversations.filter(c => c.phoneNumber !== groupId);
+    this.saveConversations([updatedConv, ...remaining]);
+    this.notifySubscribers();
+    console.log(`[ChatRepositoryWeb] Synced group locally: ${groupId} (${groupData.name})`);
+  }
+
   // --- FIRESTORE REAL-TIME LISTENERS (MULTI-VARIANT) ---
   async attachChatListeners(myPhoneNumber) {
     if (!myPhoneNumber) return;
@@ -418,6 +448,21 @@ class ChatRepositoryWeb {
       } catch (e) {
         console.warn(`[ChatRepositoryWeb] Failed to attach typing listener for ${variant}:`, e);
       }
+
+      // 4. GROUPS LISTENER: Real-time membership & updates for groups I am in
+      try {
+        const groupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', variant));
+        const unsubGroups = onSnapshot(groupsQuery, (snapshot) => {
+          snapshot.docChanges().forEach(change => {
+            if (change.type === 'added' || change.type === 'modified') {
+              this.syncGroupLocally(change.doc.data());
+            }
+          });
+        }, (err) => console.warn(`[ChatRepositoryWeb] Groups listener warning for ${variant}:`, err));
+        this.activeGroupListeners.push(unsubGroups);
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Failed to attach groups listener for ${variant}:`, e);
+      }
     }
 
     // Proactively drain pending messages across all variations immediately
@@ -431,9 +476,11 @@ class ChatRepositoryWeb {
     this.activeReceiptsListeners = [];
     this.activeTypingListeners.forEach(unsub => { try { unsub(); } catch {} });
     this.activeTypingListeners = [];
+    this.activeGroupListeners.forEach(unsub => { try { unsub(); } catch {} });
+    this.activeGroupListeners = [];
   }
 
-  // --- PROACTIVE FETCH (DRAIN PENDING MESSAGES & RECEIPTS) ---
+  // --- PROACTIVE FETCH (DRAIN PENDING MESSAGES, RECEIPTS & GROUPS) ---
   async fetchPendingMessagesAndReceipts() {
     if (!this.currentListeningPhone) return;
     const variations = generateNumberVariations(this.currentListeningPhone);
@@ -465,6 +512,17 @@ class ChatRepositoryWeb {
         }
       } catch (e) {
         console.warn(`[ChatRepositoryWeb] Error draining receipts for ${variant}:`, e);
+      }
+
+      // 3. Sync existing groups
+      try {
+        const groupsQuery = query(collection(db, 'groups'), where('members', 'array-contains', variant));
+        const groupSnap = await getDocs(groupsQuery);
+        groupSnap.forEach(docSnap => {
+          this.syncGroupLocally(docSnap.data());
+        });
+      } catch (e) {
+        console.warn(`[ChatRepositoryWeb] Error draining groups for ${variant}:`, e);
       }
     }
   }
@@ -526,7 +584,7 @@ class ChatRepositoryWeb {
           const originalId = parsed.originalMessageId;
           const newText = parsed.newText;
           if (originalId && newText) {
-            const messages = this.getMessages(senderNorm);
+            const messages = this.getMessages(targetConvId);
             const targetMsg = messages.find(m => m.id === originalId);
             if (targetMsg) {
               try {
@@ -541,11 +599,11 @@ class ChatRepositoryWeb {
                 targetMsg.text = newText;
               }
               targetMsg.isEdited = true;
-              this.saveMessages(senderNorm, messages);
+              this.saveMessages(targetConvId, messages);
             }
             // Update conversation lastMessageText if it was this message
             const conversations = this.getConversations();
-            const conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+            const conv = conversations.find(c => isGroupMsg ? c.phoneNumber === targetConvId : numbersMatch(c.phoneNumber, senderNorm));
             if (conv) {
               conv.lastMessageText = newText;
               this.saveConversations(conversations);
@@ -566,7 +624,7 @@ class ChatRepositoryWeb {
           const parsed = JSON.parse(decryptedRaw);
           const targetMessageId = parsed.targetMessageId;
           if (targetMessageId) {
-            const messages = this.getMessages(senderNorm);
+            const messages = this.getMessages(targetConvId);
             const targetMsg = messages.find(m => m.id === targetMessageId);
             if (targetMsg) {
               const tombstone = '🚫 This message was deleted';
@@ -574,10 +632,10 @@ class ChatRepositoryWeb {
               targetMsg.mediaData = null;
               targetMsg.mediaPath = null;
               targetMsg.isEdited = false;
-              this.saveMessages(senderNorm, messages);
+              this.saveMessages(targetConvId, messages);
 
               const conversations = this.getConversations();
-              const conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+              const conv = conversations.find(c => isGroupMsg ? c.phoneNumber === targetConvId : numbersMatch(c.phoneNumber, senderNorm));
               if (conv && conv.lastMessageTimestamp <= (targetMsg.timestamp || 0)) {
                 conv.lastMessageText = tombstone;
                 this.saveConversations(conversations);
@@ -646,9 +704,9 @@ class ChatRepositoryWeb {
             const finalStatus = isCurrentPeer ? 'READ' : 'DELIVERED';
             const messageEntity = {
               id: parentMessageId,
-              conversationId: senderNorm,
+              conversationId: targetConvId,
               senderNumber: dto.senderNumber,
-              recipientNumber: dto.recipientNumber,
+              recipientNumber: targetConvId,
               text: fileName,
               mediaType: 'DOCUMENT',
               mediaData: `idb:${parentMessageId}`,
@@ -658,34 +716,38 @@ class ChatRepositoryWeb {
               mediaDurationMs: 0,
               timestamp: dto.timestamp || Date.now(),
               status: finalStatus,
-              isOutgoing: false
+              isOutgoing: false,
+              senderName: isGroupMsg ? (dto.senderName || senderNorm) : null
             };
 
-            const messages = this.getMessages(senderNorm);
+            const messages = this.getMessages(targetConvId);
             if (!messages.some(m => m.id === parentMessageId)) {
               messages.push(messageEntity);
-              this.saveMessages(senderNorm, messages);
+              this.saveMessages(targetConvId, messages);
             }
 
             const conversations = this.getConversations();
-            let conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+            let conv = conversations.find(c => isGroupMsg ? c.phoneNumber === targetConvId : numbersMatch(c.phoneNumber, senderNorm));
             const unreadCount = isCurrentPeer ? 0 : ((conv ? conv.unreadCount : 0) + 1);
+            const previewPrefix = isGroupMsg ? `${dto.senderName || senderNorm}: ` : '';
+            const summaryText = `${previewPrefix}📄 ${fileName}`;
             if (!conv) {
               conv = {
-                phoneNumber: senderNorm,
-                contactName: senderNorm,
+                phoneNumber: targetConvId,
+                contactName: isGroupMsg ? (dto.groupName || 'Group') : senderNorm,
                 profilePicUrl: '',
-                lastMessageText: `📄 ${fileName}`,
+                lastMessageText: summaryText,
                 lastMessageType: 'DOCUMENT',
                 lastMessageTimestamp: messageEntity.timestamp,
                 lastMessageStatus: finalStatus,
                 lastMessageIsOutgoing: false,
                 unreadCount: unreadCount,
-                isPinned: false
+                isPinned: false,
+                isGroup: isGroupMsg
               };
               conversations.unshift(conv);
             } else {
-              conv.lastMessageText = `📄 ${fileName}`;
+              conv.lastMessageText = summaryText;
               conv.lastMessageType = 'DOCUMENT';
               conv.lastMessageTimestamp = messageEntity.timestamp;
               conv.lastMessageStatus = finalStatus;
@@ -699,7 +761,8 @@ class ChatRepositoryWeb {
 
             // Browser Notification if not actively in this conversation
             if (!isWatching) {
-              this.showBrowserNotification(senderNorm, `📄 ${fileName}`, '', senderNorm);
+              const notifTitle = isGroupMsg ? (dto.groupName || 'Group') : (conv?.contactName || senderNorm);
+              this.showBrowserNotification(notifTitle, summaryText, '', targetConvId);
             }
 
             console.log(`[ChatRepositoryWeb] Reassembled and saved large document ${parentMessageId} (${fileName})`);
@@ -726,9 +789,9 @@ class ChatRepositoryWeb {
           const now = dto.timestamp || Date.now();
           const placeholder = {
             id: parentMessageId || sessionId,
-            conversationId: senderNorm,
+            conversationId: targetConvId,
             senderNumber: dto.senderNumber,
-            recipientNumber: dto.recipientNumber,
+            recipientNumber: targetConvId,
             text: resolvedText,
             mediaType: resolvedType,
             mediaData: null,
@@ -739,12 +802,13 @@ class ChatRepositoryWeb {
             timestamp: now,
             status: isCurrentPeer ? 'READ' : 'DELIVERED',
             isOutgoing: false,
-            p2pReceiving: true
+            p2pReceiving: true,
+            senderName: isGroupMsg ? (dto.senderName || senderNorm) : null
           };
-          const msgs = this.getMessages(senderNorm);
+          const msgs = this.getMessages(targetConvId);
           if (!msgs.some(m => m.id === placeholder.id)) {
             msgs.push(placeholder);
-            this.saveMessages(senderNorm, msgs);
+            this.saveMessages(targetConvId, msgs);
           }
 
           // Emit initial progress
@@ -774,16 +838,17 @@ class ChatRepositoryWeb {
                 // Save to IndexedDB and update message
                 mediaStorageWeb.saveMedia(placeholder.id, blob, fName, blob.type).then(() => {
                   const blobUrl = URL.createObjectURL(blob);
-                  const allMsgs = this.getMessages(senderNorm);
+                  const allMsgs = this.getMessages(targetConvId);
                   const idx = allMsgs.findIndex(m => m.id === placeholder.id);
                   if (idx >= 0) {
                     allMsgs[idx] = { ...allMsgs[idx], mediaData: `idb:${placeholder.id}`, mediaUrl: blobUrl, p2pReceiving: false };
-                    this.saveMessages(senderNorm, allMsgs);
+                    this.saveMessages(targetConvId, allMsgs);
                   }
                   // Update conversation summary
                   const conversations = this.getConversations();
-                  let conv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
-                  const summaryText = resolvedType === 'IMAGE' ? (caption ? `📷 ${caption}` : '📷 Photo') : (resolvedType === 'AUDIO' ? '🎤 Voice message' : `📄 ${fileName}`);
+                  let conv = conversations.find(c => isGroupMsg ? c.phoneNumber === targetConvId : numbersMatch(c.phoneNumber, senderNorm));
+                  const previewPrefix = isGroupMsg ? `${dto.senderName || senderNorm}: ` : '';
+                  const summaryText = previewPrefix + (resolvedType === 'IMAGE' ? (caption ? `📷 ${caption}` : '📷 Photo') : (resolvedType === 'AUDIO' ? '🎤 Voice message' : `📄 ${fileName}`));
                   if (conv) {
                     conv.lastMessageText = summaryText;
                     conv.lastMessageType = resolvedType;
@@ -804,12 +869,12 @@ class ChatRepositoryWeb {
                 });
               } else {
                 this.activeTransfers.delete(placeholder.id);
-                const allMsgs = this.getMessages(senderNorm);
+                const allMsgs = this.getMessages(targetConvId);
                 const idx = allMsgs.findIndex(m => m.id === placeholder.id);
                 if (idx >= 0 && !allMsgs[idx].mediaData) {
                   allMsgs[idx].status = 'FAILED';
                   allMsgs[idx].p2pReceiving = false;
-                  this.saveMessages(senderNorm, allMsgs);
+                  this.saveMessages(targetConvId, allMsgs);
                 }
                 this.notifySubscribers();
                 console.warn('[ChatRepositoryWeb] P2P receive failed for', placeholder.id);
@@ -1220,6 +1285,13 @@ class ChatRepositoryWeb {
     this.saveConversations([conv, ...conversations.filter(c => c.phoneNumber !== groupId)]);
     this.notifySubscribers();
 
+    // Fan out initial announcement message so members see the group immediately
+    try {
+      await this.sendMessage(groupId, name, `Created group "${name}"`);
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] Error sending initial group announcement:', e);
+    }
+
     return groupDto;
   }
 
@@ -1349,7 +1421,7 @@ class ChatRepositoryWeb {
         };
 
         await setDoc(doc(db, 'inboxes', memberPhone, 'messages', messageId), chatDto);
-        this.sendFcmWakeup(memberPhone, this.currentListeningPhone, `${myDisplayName}: ${text || 'New message'}`, mediaType, messageId);
+        this.sendFcmWakeup(memberPhone, this.currentListeningPhone, `${myDisplayName}: ${text || 'New message'}`, mediaType, messageId, recipientNumber, groupName);
       } catch (err) {
         console.warn(`[ChatRepositoryWeb] Failed fanout to ${memberPhone}:`, err);
       }
@@ -2123,7 +2195,7 @@ class ChatRepositoryWeb {
   }
 
   // --- CLOUDFLARE WORKER FCM WAKEUP ---
-  async sendFcmWakeup(recipientPhone, senderPhone, previewText, mediaType = 'TEXT', messageId = '') {
+  async sendFcmWakeup(recipientPhone, senderPhone, previewText, mediaType = 'TEXT', messageId = '', groupId = null, groupName = null) {
     const url = "https://lks-dialer-call-notifier.subhojit.workers.dev/call";
     try {
       const callee = await this.resolvePeerUser(recipientPhone);
@@ -2157,7 +2229,9 @@ class ChatRepositoryWeb {
           messageText: previewText,
           messagePreview: previewText,
           mediaType: mediaType,
-          messageId: messageId
+          messageId: messageId,
+          groupId: groupId || null,
+          groupName: groupName || null
         })
       });
       console.log(`[ChatRepositoryWeb] FCM chat wakeup triggered for ${callee.phoneNumber || recipientPhone}`);

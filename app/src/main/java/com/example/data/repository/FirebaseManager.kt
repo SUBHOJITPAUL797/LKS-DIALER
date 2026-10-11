@@ -315,7 +315,21 @@ class FirebaseManager private constructor(private val context: Context) {
                     return@addSnapshotListener
                 }
                 if (snapshot == null) return@addSnapshotListener
-                val devices = snapshot.toObjects(LinkedDeviceDto::class.java).filter { !it.revoked }
+                val devices = snapshot.documents.mapNotNull { doc ->
+                    try {
+                        val sessionId = doc.getString("sessionId") ?: doc.id
+                        val deviceName = doc.getString("deviceName") ?: "Web Browser"
+                        val userAgent = doc.getString("userAgent") ?: ""
+                        val linkedAt = doc.getLong("linkedAt") ?: (doc.get("linkedAt") as? Number)?.toLong() ?: 0L
+                        val lastActive = doc.getLong("lastActive") ?: (doc.get("lastActive") as? Number)?.toLong() ?: 0L
+                        val revoked = doc.getBoolean("revoked") ?: false
+                        if (!revoked && sessionId.isNotBlank()) {
+                            LinkedDeviceDto(sessionId, deviceName, userAgent, linkedAt, lastActive, revoked)
+                        } else null
+                    } catch (ex: Exception) {
+                        null
+                    }
+                }
                 _linkedDevices.value = devices.sortedByDescending { it.linkedAt }
             }
     }
@@ -1246,7 +1260,21 @@ class FirebaseManager private constructor(private val context: Context) {
             .collection("linked_devices")
             .get()
             .addOnSuccessListener { snapshot ->
-                val devices = snapshot.toObjects(LinkedDeviceDto::class.java).filter { !it.revoked }
+                val devices = snapshot.documents.mapNotNull { doc ->
+                    try {
+                        val sessionId = doc.getString("sessionId") ?: doc.id
+                        val deviceName = doc.getString("deviceName") ?: "Web Browser"
+                        val userAgent = doc.getString("userAgent") ?: ""
+                        val linkedAt = doc.getLong("linkedAt") ?: (doc.get("linkedAt") as? Number)?.toLong() ?: 0L
+                        val lastActive = doc.getLong("lastActive") ?: (doc.get("lastActive") as? Number)?.toLong() ?: 0L
+                        val revoked = doc.getBoolean("revoked") ?: false
+                        if (!revoked && sessionId.isNotBlank()) {
+                            LinkedDeviceDto(sessionId, deviceName, userAgent, linkedAt, lastActive, revoked)
+                        } else null
+                    } catch (ex: Exception) {
+                        null
+                    }
+                }
                 _linkedDevices.value = devices.sortedByDescending { it.linkedAt }
                 Log.d(TAG, "Refreshed linked devices: ${devices.size} active")
             }

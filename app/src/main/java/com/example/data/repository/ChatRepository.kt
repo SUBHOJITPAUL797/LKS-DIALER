@@ -244,6 +244,7 @@ class ChatRepository private constructor(private val context: Context) {
     private val activeInboxListeners = mutableListOf<ListenerRegistration>()
     private val activeReceiptsListeners = mutableListOf<ListenerRegistration>()
     private val activeTypingListeners = mutableListOf<ListenerRegistration>()
+    private val activeGroupListeners = mutableListOf<ListenerRegistration>()
     private var currentListeningPhone: String? = null
 
     init {
@@ -433,10 +434,28 @@ class ChatRepository private constructor(private val context: Context) {
             activeTypingListeners.add(typL)
         }
 
-        // 4. Proactively direct-fetch pending messages in case snapshot listener missed anything while backgrounded
+        // 4. Groups Listener: Real-time listener on Firestore groups where current user is a member
+        activeGroupListeners.forEach { try { it.remove() } catch (_: Exception) {} }
+        activeGroupListeners.clear()
+        for (variant in variations) {
+            val grpL = firestore.collection("groups")
+                .whereArrayContains("members", variant)
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null || snapshot == null) return@addSnapshotListener
+                    repositoryScope.launch(Dispatchers.IO) {
+                        for (doc in snapshot.documents) {
+                            val groupDto = doc.toObject(GroupDto::class.java) ?: continue
+                            syncGroupLocally(groupDto)
+                        }
+                    }
+                }
+            activeGroupListeners.add(grpL)
+        }
+
+        // 5. Proactively direct-fetch pending messages in case snapshot listener missed anything while backgrounded
         fetchPendingMessagesAndReceipts()
 
-        // 5. Reconcile any existing conversation statuses
+        // 6. Reconcile any existing conversation statuses
         repositoryScope.launch {
             syncOutdatedConversationStatuses()
         }
@@ -450,6 +469,8 @@ class ChatRepository private constructor(private val context: Context) {
         activeReceiptsListeners.clear()
         activeTypingListeners.forEach { try { it.remove() } catch (_: Exception) {} }
         activeTypingListeners.clear()
+        activeGroupListeners.forEach { try { it.remove() } catch (_: Exception) {} }
+        activeGroupListeners.clear()
     }
 
     /**
@@ -542,7 +563,23 @@ class ChatRepository private constructor(private val context: Context) {
                 return
             }
             val senderLast10 = senderNorm.filter { it.isDigit() }.takeLast(10)
-            val isCurrentPeer = isUserActivelyViewingPeer(senderNorm)
+            val isGroupMsg = !dto.groupId.isNullOrBlank()
+            val groupTargetId = dto.groupId ?: senderNorm
+            val targetConvId = if (isGroupMsg) groupTargetId else senderNorm
+            val isCurrentPeer = isUserActivelyViewingPeer(targetConvId)
+
+            val firebaseManager = FirebaseManager.getInstance(context)
+            val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
+            val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
+            val resolvedName = registeredUser?.displayName?.ifBlank { null }
+                ?: contactInfo?.name?.ifBlank { null }
+                ?: senderNorm
+            val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
+
+            val existingConv = if (isGroupMsg) conversationDao.getConversation(groupTargetId) else conversationDao.getConversation(senderNorm, senderLast10)
+            val targetConvPhone = existingConv?.phoneNumber ?: groupTargetId
+            val finalContactName = if (isGroupMsg) (dto.groupName ?: existingConv?.contactName ?: "Group") else resolvedName
+            val previewPrefix = if (isGroupMsg) "${dto.senderName ?: resolvedName}: " else ""
 
             // When peer sends a message to us, all our prior outgoing messages sent up to this message are marked as READ
             val msgTimestamp = maxOf(dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(), System.currentTimeMillis() + 60_000L)
@@ -571,11 +608,11 @@ class ChatRepository private constructor(private val context: Context) {
                         } else newText
 
                         messageDao.updateMessageText(originalMessageId, textToUpdate)
-                        val lastMsg = messageDao.getLastMessageForConversation(senderNorm)
+                        val lastMsg = messageDao.getLastMessageForConversation(targetConvPhone)
                         if (lastMsg != null && lastMsg.id == originalMessageId) {
-                            conversationDao.updateLastMessageText(senderNorm, newText)
+                            conversationDao.updateLastMessageText(targetConvPhone, newText)
                         }
-                        Log.d(TAG, "Message $originalMessageId updated via edit packet from $senderNorm")
+                        Log.d(TAG, "Message $originalMessageId updated via edit packet from $senderNorm in $targetConvPhone")
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to parse message edit packet: ${e.message}")
@@ -596,11 +633,11 @@ class ChatRepository private constructor(private val context: Context) {
                             existing.mediaPath?.let { p -> try { File(p).delete() } catch (_: Exception) {} }
                             val tombstone = "🚫 This message was deleted"
                             messageDao.markMessageDeletedForEveryone(targetMessageId, tombstone)
-                            val lastMsg = messageDao.getLastMessageForConversation(senderNorm)
+                            val lastMsg = messageDao.getLastMessageForConversation(targetConvPhone)
                             if (lastMsg != null && lastMsg.id == targetMessageId) {
-                                conversationDao.updateLastMessageText(senderNorm, tombstone)
+                                conversationDao.updateLastMessageText(targetConvPhone, tombstone)
                             }
-                            Log.d(TAG, "Message $targetMessageId marked deleted for everyone from $senderNorm")
+                            Log.d(TAG, "Message $targetMessageId marked deleted for everyone from $senderNorm in $targetConvPhone")
                         }
                     }
                 } catch (e: Exception) {
@@ -631,16 +668,17 @@ class ChatRepository private constructor(private val context: Context) {
                     if (existingMsg == null) {
                         val placeholder = MessageEntity(
                             id = parentId,
-                            conversationId = senderNorm,
+                            conversationId = targetConvPhone,
                             senderNumber = dto.senderNumber,
-                            recipientNumber = dto.recipientNumber,
+                            recipientNumber = if (isGroupMsg) targetConvPhone else dto.recipientNumber,
                             text = placeholderText,
                             mediaType = inferredType,
                             mediaPath = null,
                             mediaDurationMs = 0L,
                             timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                             status = MessageStatus.DELIVERED.name,
-                            isOutgoing = false
+                            isOutgoing = false,
+                            senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null
                         )
                         messageDao.insertMessage(placeholder)
                     }
@@ -696,16 +734,17 @@ class ChatRepository private constructor(private val context: Context) {
                         messageDao.updateMessageMedia(parentId, finalFile.absolutePath)
                         val messageEntity = messageDao.getMessageById(parentId) ?: MessageEntity(
                             id = parentId,
-                            conversationId = senderNorm,
+                            conversationId = targetConvPhone,
                             senderNumber = dto.senderNumber,
-                            recipientNumber = dto.recipientNumber,
+                            recipientNumber = if (isGroupMsg) targetConvPhone else dto.recipientNumber,
                             text = resolvedText,
                             mediaType = resolvedType,
                             mediaPath = finalFile.absolutePath,
                             mediaDurationMs = 0L,
                             timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                             status = MessageStatus.DELIVERED.name,
-                            isOutgoing = false
+                            isOutgoing = false,
+                            senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null
                         )
                         repositoryScope.launch {
                             delay(3000)
@@ -713,27 +752,21 @@ class ChatRepository private constructor(private val context: Context) {
                         }
 
                         // Update conversation summary
-                        val firebaseManager = FirebaseManager.getInstance(context)
-                        val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
-                        val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
-                        val resolvedName = registeredUser?.displayName?.ifBlank { null }
-                            ?: contactInfo?.name?.ifBlank { null }
-                            ?: senderNorm
-                        val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
-
-                        val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
                         val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
                         val convEntity = ConversationEntity(
-                            phoneNumber = existingConv?.phoneNumber ?: senderNorm,
-                            contactName = resolvedName,
-                            profilePicUrl = profilePic,
-                            lastMessageText = summaryText,
+                            phoneNumber = targetConvPhone,
+                            contactName = finalContactName,
+                            profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic,
+                            lastMessageText = "$previewPrefix$summaryText",
                             lastMessageType = resolvedType,
                             lastMessageTimestamp = messageEntity.timestamp,
                             lastMessageStatus = messageEntity.status,
                             lastMessageIsOutgoing = false,
                             unreadCount = unreadCount,
-                            isPinned = existingConv?.isPinned ?: false
+                            isPinned = existingConv?.isPinned ?: false,
+                            disappearingDuration = existingConv?.disappearingDuration ?: 0L,
+                            isGroup = isGroupMsg || (existingConv?.isGroup ?: false),
+                            groupAdminPhone = existingConv?.groupAdminPhone
                         )
                         conversationDao.upsertConversation(convEntity)
 
@@ -746,10 +779,11 @@ class ChatRepository private constructor(private val context: Context) {
                         // Show notification if in background
                         if (!isCurrentPeer) {
                             showIncomingMessageNotification(
-                                senderNumber = senderNorm,
-                                senderName = resolvedName,
-                                messageText = summaryText,
-                                messageType = resolvedType
+                                senderNumber = targetConvPhone,
+                                senderName = finalContactName,
+                                messageText = "$previewPrefix$summaryText",
+                                messageType = resolvedType,
+                                profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic
                             )
                         }
                     }
@@ -799,16 +833,17 @@ class ChatRepository private constructor(private val context: Context) {
                     val existing = messageDao.getMessageById(parentMessageId)
                     val receivingPlaceholder = existing ?: MessageEntity(
                         id = parentMessageId,
-                        conversationId = senderNorm,
+                        conversationId = targetConvPhone,
                         senderNumber = dto.senderNumber,
-                        recipientNumber = dto.recipientNumber,
+                        recipientNumber = if (isGroupMsg) targetConvPhone else dto.recipientNumber,
                         text = displayMsgText,
                         mediaType = offerMediaType,
                         mediaPath = null,
                         mediaDurationMs = duration,
                         timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
                         status = MessageStatus.DELIVERED.name,
-                        isOutgoing = false
+                        isOutgoing = false,
+                        senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null
                     )
                     if (existing == null || existing.mediaPath.isNullOrBlank()) {
                         messageDao.insertMessage(receivingPlaceholder)
@@ -850,37 +885,31 @@ class ChatRepository private constructor(private val context: Context) {
                                     }
 
                                     // Update conversation summary in Room DB
-                                    val firebaseManager = FirebaseManager.getInstance(context)
-                                    val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
-                                    val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
-                                    val resolvedName = registeredUser?.displayName?.ifBlank { null }
-                                        ?: contactInfo?.name?.ifBlank { null }
-                                        ?: senderNorm
-                                    val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
-
-                                    val existingConv = conversationDao.getConversation(senderNorm, senderLast10)
                                     val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
                                     val convEntity = ConversationEntity(
-                                        phoneNumber = existingConv?.phoneNumber ?: senderNorm,
-                                        contactName = resolvedName,
-                                        profilePicUrl = profilePic,
-                                        lastMessageText = summaryText,
+                                        phoneNumber = targetConvPhone,
+                                        contactName = finalContactName,
+                                        profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic,
+                                        lastMessageText = "$previewPrefix$summaryText",
                                         lastMessageType = offerMediaType,
                                         lastMessageTimestamp = receivingPlaceholder.timestamp,
                                         lastMessageStatus = MessageStatus.DELIVERED.name,
                                         lastMessageIsOutgoing = false,
                                         unreadCount = unreadCount,
-                                        isPinned = existingConv?.isPinned ?: false
+                                        isPinned = existingConv?.isPinned ?: false,
+                                        disappearingDuration = existingConv?.disappearingDuration ?: 0L,
+                                        isGroup = isGroupMsg || (existingConv?.isGroup ?: false),
+                                        groupAdminPhone = existingConv?.groupAdminPhone
                                     )
                                     conversationDao.upsertConversation(convEntity)
 
                                     if (!isCurrentPeer) {
                                         showIncomingMessageNotification(
-                                            senderNumber = senderNorm,
-                                            senderName = resolvedName,
-                                            messageText = summaryText,
+                                            senderNumber = targetConvPhone,
+                                            senderName = finalContactName,
+                                            messageText = "$previewPrefix$summaryText",
                                             messageType = offerMediaType,
-                                            profilePicUrl = profilePic
+                                            profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic
                                         )
                                     }
 
@@ -1002,21 +1031,6 @@ class ChatRepository private constructor(private val context: Context) {
             // Only if user is actively watching this conversation right now in the foreground,
             // we upgrade TEXT messages to READ.
             val initialStatus = MessageStatus.DELIVERED.name
-
-            // Resolve contact info and existing conversation for consistent conversationId
-            val firebaseManager = FirebaseManager.getInstance(context)
-            val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
-            val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
-            val resolvedName = registeredUser?.displayName?.ifBlank { null }
-                ?: contactInfo?.name?.ifBlank { null }
-                ?: senderNorm
-            val profilePic = registeredUser?.profilePictureUrl ?: contactInfo?.profilePictureUrl ?: ""
-
-            val isGroupMsg = !dto.groupId.isNullOrBlank()
-            val groupTargetId = dto.groupId ?: senderNorm
-            val existingConv = if (isGroupMsg) conversationDao.getConversation(groupTargetId) else conversationDao.getConversation(senderNorm, senderLast10)
-            val targetConvPhone = existingConv?.phoneNumber ?: groupTargetId
-            val finalContactName = if (isGroupMsg) (dto.groupName ?: existingConv?.contactName ?: "Group") else resolvedName
             val unreadCount = if (isCurrentPeer) 0 else ((existingConv?.unreadCount ?: 0) + 1)
 
             // STEP 2: Save to local Room DB
@@ -1046,7 +1060,6 @@ class ChatRepository private constructor(private val context: Context) {
                 } catch (_: Exception) { displayText }
             } else displayText
 
-            val previewPrefix = if (isGroupMsg) "${dto.senderName ?: resolvedName}: " else ""
             val convEntity = ConversationEntity(
                 phoneNumber = targetConvPhone,
                 contactName = finalContactName,
@@ -1261,9 +1274,6 @@ class ChatRepository private constructor(private val context: Context) {
         var localSavedPath: String? = null
 
         if (mediaFile != null && mediaFile.exists()) {
-            if (isGroup) {
-                return@withContext Result.failure(IllegalStateException("Group media sharing is not supported yet"))
-            }
             val isAudio = mediaType == ChatMediaType.AUDIO
             val isImage = mediaType == ChatMediaType.IMAGE
             val isSticker = mediaType == ChatMediaType.STICKER
@@ -1309,6 +1319,31 @@ class ChatRepository private constructor(private val context: Context) {
             }
             localSavedPath = savedFile.absolutePath
 
+            if (isGroup) {
+                val bytes = savedFile.readBytes()
+                val base64Data = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                payloadToEncrypt = when {
+                    isImage -> JSONObject().apply {
+                        put("caption", text)
+                        put("bytes", base64Data)
+                        put("ext", savedFile.extension.ifBlank { "jpg" })
+                    }.toString()
+                    isSticker -> JSONObject().apply {
+                        put("caption", text.ifBlank { "Sticker" })
+                        put("bytes", base64Data)
+                        put("ext", savedFile.extension.ifBlank { "png" })
+                    }.toString()
+                    isAudio -> JSONObject().apply {
+                        put("duration", mediaDurationMs)
+                        put("bytes", base64Data)
+                    }.toString()
+                    else -> JSONObject().apply {
+                        put("fileName", text.ifBlank { mediaFile.name })
+                        put("bytes", base64Data)
+                    }.toString()
+                }
+            }
+
             val displayNameText = when {
                 isAudio -> "Voice message"
                 isSticker -> "Sticker"
@@ -1328,9 +1363,10 @@ class ChatRepository private constructor(private val context: Context) {
                 else -> text.ifBlank { mediaFile.name }
             }
 
-            // Save message entity for display immediately (Sending state)
-            val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
-            val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
+            if (!isGroup) {
+                // Save message entity for display immediately (Sending state)
+                val existingConv = conversationDao.getConversation(normRecipient, recipientLast10)
+                val targetConvPhone = existingConv?.phoneNumber ?: normRecipient
 
             val messageEntity = MessageEntity(
                 id = messageId,
@@ -1768,24 +1804,51 @@ class ChatRepository private constructor(private val context: Context) {
             )
 
             return@withContext Result.success(messageEntity)
+            }
         }
 
         if (isGroup) {
             val group = getGroup(canonicalRecipient)
             val groupName = group?.name ?: recipientName.ifBlank { "Group" }
             val myDisplayName = firebaseManager.currentUser.value?.displayName ?: myPhone
-            val members = (group?.members ?: emptyList()).filter { it != myPhone }
+            val members = (group?.members ?: emptyList())
+                .map { ContactsHelper.normalizePhoneNumber(it) }
+                .filter { it.isNotBlank() && !ContactsHelper.numbersMatch(it, myPhone) }
 
             val existingConv = conversationDao.getConversation(canonicalRecipient)
             val disappearingDuration = existingConv?.disappearingDuration ?: 0L
             val expiresAt = if (disappearingDuration > 0L) now + disappearingDuration else 0L
+
+            val isAudio = mediaType == ChatMediaType.AUDIO
+            val isImage = mediaType == ChatMediaType.IMAGE
+            val isSticker = mediaType == ChatMediaType.STICKER
+
+            val displayText = when {
+                mediaFile != null -> when {
+                    isAudio -> "Voice message"
+                    isSticker -> "Sticker"
+                    isImage -> text.ifBlank { "Photo" }
+                    else -> text.ifBlank { mediaFile.name }
+                }
+                else -> text
+            }
+
+            val displaySummaryText = when {
+                mediaFile != null -> when {
+                    isAudio -> "🎤 Voice message"
+                    isSticker -> "🦄 Sticker"
+                    isImage -> if (mediaFile.extension.equals("gif", ignoreCase = true)) "🎬 GIF" else if (text.isNotBlank()) "📷 $text" else "📷 Photo"
+                    else -> "📄 ${text.ifBlank { mediaFile.name }}"
+                }
+                else -> extractCleanText(text)
+            }
 
             val messageEntity = MessageEntity(
                 id = messageId,
                 conversationId = canonicalRecipient,
                 senderNumber = myPhone,
                 recipientNumber = canonicalRecipient,
-                text = text,
+                text = displayText,
                 mediaType = mediaType.name,
                 mediaPath = localSavedPath,
                 mediaDurationMs = mediaDurationMs,
@@ -1801,7 +1864,7 @@ class ChatRepository private constructor(private val context: Context) {
                 phoneNumber = canonicalRecipient,
                 contactName = groupName,
                 profilePicUrl = group?.iconUrl ?: existingConv?.profilePicUrl ?: "",
-                lastMessageText = extractCleanText(text),
+                lastMessageText = "$myDisplayName: $displaySummaryText",
                 lastMessageType = mediaType.name,
                 lastMessageTimestamp = now,
                 lastMessageStatus = MessageStatus.SENT.name,
@@ -1853,9 +1916,11 @@ class ChatRepository private constructor(private val context: Context) {
                     sendFcmWakeup(
                         recipientPhone = memberPhone,
                         senderPhone = myPhone,
-                        previewText = "$myDisplayName: $text",
+                        previewText = "$myDisplayName: $displaySummaryText",
                         mediaType = mediaType.name,
-                        messageId = messageId
+                        messageId = messageId,
+                        groupId = canonicalRecipient,
+                        groupName = groupName
                     )
                 } catch (e: Exception) {
                     Log.w(TAG, "Error fanning out to member $memberPhone: ${e.message}")
@@ -2327,7 +2392,9 @@ class ChatRepository private constructor(private val context: Context) {
         senderPhone: String,
         previewText: String,
         mediaType: String = "TEXT",
-        messageId: String = ""
+        messageId: String = "",
+        groupId: String? = null,
+        groupName: String? = null
     ) {
         val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
         val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
@@ -2355,12 +2422,17 @@ class ChatRepository private constructor(private val context: Context) {
                     val json = JSONObject().apply {
                         if (token.isNotBlank()) put("token", token)
                         if (webToken.isNotBlank()) put("webToken", webToken)
-                        put("callerName", myName)
+                        put("callerName", if (!groupName.isNullOrBlank()) groupName else myName)
                         put("callerNumber", senderPhone)
                         put("type", "chat_message")
                         put("messageText", extractCleanText(previewText))
                         put("mediaType", mediaType)
                         put("messageId", messageId)
+                        if (!groupId.isNullOrBlank()) {
+                            put("groupId", groupId)
+                            put("groupName", groupName ?: "Group")
+                            put("senderName", myName)
+                        }
                         if (myPic.isNotBlank()) put("callerProfilePic", myPic)
                     }.toString()
 
@@ -3027,9 +3099,14 @@ class ChatRepository private constructor(private val context: Context) {
             return@withContext
         }
 
-        Log.d(TAG, "⚡ handlePushMessageReceived: sender=$senderNorm, text=$messageText, media=$mediaType")
+        val groupId = data["groupId"]?.takeIf { it.startsWith("group_") }
+        val groupName = data["groupName"]
+        val isGroupPush = groupId != null
+        val targetConvId = groupId ?: senderNorm
 
-        val isWatchingConversation = isUserInConversation(senderNorm)
+        Log.d(TAG, "⚡ handlePushMessageReceived: targetConvId=$targetConvId, sender=$senderNorm, text=$messageText, media=$mediaType, isGroup=$isGroupPush")
+
+        val isWatchingConversation = isUserInConversation(targetConvId)
         if (!isWatchingConversation && senderNorm.isNotBlank() &&
             mediaType != ChatMediaType.EDIT.name &&
             mediaType != ChatMediaType.DELETE.name &&
@@ -3038,10 +3115,11 @@ class ChatRepository private constructor(private val context: Context) {
             val firebaseManager = FirebaseManager.getInstance(context)
             val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
             val contactInfo = firebaseManager.contacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, senderNorm) }
-            val resolvedName = registeredUser?.displayName?.ifBlank { null }
+            val resolvedSenderName = registeredUser?.displayName?.ifBlank { null }
                 ?: contactInfo?.name?.ifBlank { null }
-                ?: senderName.ifBlank { senderNorm }
+                ?: (data["senderName"] ?: senderName).ifBlank { senderNorm }
 
+            val notifTitle = if (isGroupPush) (groupName?.ifBlank { null } ?: "Group") else resolvedSenderName
             val displayPreview = when (mediaType) {
                 ChatMediaType.IMAGE.name -> if (messageText.isNotBlank()) "📷 $messageText" else "📷 Photo"
                 ChatMediaType.AUDIO.name -> "🎤 Voice message"
@@ -3049,12 +3127,13 @@ class ChatRepository private constructor(private val context: Context) {
                 ChatMediaType.STICKER.name -> if (messageText.isNotBlank()) "🦄 $messageText" else "🦄 Sticker"
                 else -> messageText.ifBlank { "New message" }
             }
+            val prefix = if (isGroupPush) "$resolvedSenderName: " else ""
             showIncomingMessageNotification(
-                senderNumber = senderNorm,
-                senderName = resolvedName,
-                messageText = displayPreview,
+                senderNumber = targetConvId,
+                senderName = notifTitle,
+                messageText = prefix + displayPreview,
                 messageType = mediaType,
-                profilePicUrl = callerProfilePic
+                profilePicUrl = if (isGroupPush) null else callerProfilePic
             )
         }
 
@@ -3184,11 +3263,12 @@ class ChatRepository private constructor(private val context: Context) {
             ?: return@withContext Result.failure(IllegalStateException("Current user not logged in"))
 
         val groupId = "group_" + UUID.randomUUID().toString()
-        val allMembers = (members + myPhone).distinct()
+        val normMyPhone = ContactsHelper.normalizePhoneNumber(myPhone)
+        val allMembers = (members.map { ContactsHelper.normalizePhoneNumber(it) } + normMyPhone).filter { it.isNotBlank() }.distinct()
         val groupDto = GroupDto(
             groupId = groupId,
             name = name,
-            adminPhone = myPhone,
+            adminPhone = normMyPhone,
             members = allMembers,
             createdTimestamp = System.currentTimeMillis()
         )
@@ -3204,12 +3284,12 @@ class ChatRepository private constructor(private val context: Context) {
                 lastMessageType = "SYSTEM",
                 lastMessageTimestamp = System.currentTimeMillis(),
                 isGroup = true,
-                groupAdminPhone = myPhone
+                groupAdminPhone = normMyPhone
             )
             conversationDao.upsertConversation(conv)
 
             // Send initial notification message to group so all members see it in their conversation list
-            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: myPhone
+            val myDisplayName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: normMyPhone
             sendMessage(
                 recipientNumber = groupId,
                 recipientName = name,
@@ -3237,5 +3317,37 @@ class ChatRepository private constructor(private val context: Context) {
 
     suspend fun getGroupMembers(groupId: String): List<String> = withContext(Dispatchers.IO) {
         getGroup(groupId)?.members ?: emptyList()
+    }
+
+    suspend fun syncGroupLocally(groupDto: GroupDto) = withContext(Dispatchers.IO) {
+        if (groupDto.groupId.isBlank()) return@withContext
+        val existing = conversationDao.getConversation(groupDto.groupId)
+        if (existing == null) {
+            val conv = ConversationEntity(
+                phoneNumber = groupDto.groupId,
+                contactName = groupDto.name.ifBlank { "Group" },
+                profilePicUrl = groupDto.iconUrl,
+                lastMessageText = "Group created",
+                lastMessageType = "SYSTEM",
+                lastMessageTimestamp = if (groupDto.createdTimestamp > 0) groupDto.createdTimestamp else System.currentTimeMillis(),
+                lastMessageStatus = MessageStatus.READ.name,
+                lastMessageIsOutgoing = false,
+                unreadCount = 0,
+                isGroup = true,
+                groupAdminPhone = groupDto.adminPhone
+            )
+            conversationDao.upsertConversation(conv)
+            Log.d(TAG, "Synced new group locally: ${groupDto.name} (${groupDto.groupId})")
+        } else {
+            if (existing.contactName != groupDto.name || existing.profilePicUrl != groupDto.iconUrl || !existing.isGroup) {
+                val updated = existing.copy(
+                    contactName = groupDto.name.ifBlank { existing.contactName },
+                    profilePicUrl = groupDto.iconUrl.ifBlank { existing.profilePicUrl },
+                    isGroup = true,
+                    groupAdminPhone = groupDto.adminPhone.ifBlank { existing.groupAdminPhone }
+                )
+                conversationDao.upsertConversation(updated)
+            }
+        }
     }
 }

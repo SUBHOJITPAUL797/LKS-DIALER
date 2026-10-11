@@ -646,10 +646,11 @@ class MainActivity : ComponentActivity() {
                         val chatPeer = incoming.getStringExtra("chat_peer_number")
                         if (!chatPeer.isNullOrBlank()) {
                             chatPeerNumber = chatPeer
-                            val peerUser = firebaseManager.lookupUserByNumber(chatPeer)
+                            val isGroupPeer = chatPeer.startsWith("group_")
+                            val peerUser = if (isGroupPeer) null else firebaseManager.lookupUserByNumber(chatPeer)
                             chatPeerName = incoming.getStringExtra("chat_peer_name")
                                 ?: peerUser?.displayName?.takeIf { it.isNotBlank() }
-                                ?: chatPeer
+                                ?: if (isGroupPeer) "Group" else chatPeer
                             chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
                             val prefill = incoming.getStringExtra("prefill_text")
                             if (!prefill.isNullOrBlank()) {

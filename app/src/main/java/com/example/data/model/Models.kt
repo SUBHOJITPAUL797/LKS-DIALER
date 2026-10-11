@@ -142,11 +142,20 @@ data class ChatReceiptDto(
 )
 
 data class LinkedDeviceDto(
-    val sessionId: String = "",
-    val deviceName: String = "",
-    val userAgent: String = "",
-    val linkedAt: Long = 0L,
-    val lastActive: Long = 0L,
-    val revoked: Boolean = false
-)
+    @get:PropertyName("sessionId") @set:PropertyName("sessionId")
+    var sessionId: String = "",
+    @get:PropertyName("deviceName") @set:PropertyName("deviceName")
+    var deviceName: String = "",
+    @get:PropertyName("userAgent") @set:PropertyName("userAgent")
+    var userAgent: String = "",
+    @get:PropertyName("linkedAt") @set:PropertyName("linkedAt")
+    var linkedAt: Long = 0L,
+    @get:PropertyName("lastActive") @set:PropertyName("lastActive")
+    var lastActive: Long = 0L,
+    @get:PropertyName("revoked") @set:PropertyName("revoked")
+    var revoked: Boolean = false
+) {
+    // Explicit no-argument constructor for Firebase Firestore deserialization
+    constructor() : this("", "", "", 0L, 0L, false)
+}
 

@@ -98,12 +98,17 @@ export default {
               messageText: body.messageText || body.messagePreview || "",
               mediaType: body.mediaType || "TEXT",
               messageId: body.messageId || "",
+              groupId: body.groupId || "",
+              groupName: body.groupName || "",
+              senderName: body.senderName || callerName || "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { 
               headers: { TTL: webTtl, Urgency: "high" },
               fcm_options: {
-                link: "https://lksdialerweb.pages.dev/"
+                link: body.groupId 
+                  ? `https://lksdialerweb.pages.dev/?chat=${encodeURIComponent(body.groupId)}`
+                  : "https://lksdialerweb.pages.dev/"
               }
             },
           },

@@ -53,6 +53,7 @@ object ContactsHelper {
      * This makes it easy to compare local contacts with Firebase registered phone numbers.
      */
     fun normalizePhoneNumber(number: String): String {
+        if (number.startsWith("group_")) return number
         return number.replace(Regex("[^0-9+]"), "")
     }
 
@@ -60,6 +61,9 @@ object ContactsHelper {
      * Checks if two phone numbers match, handling differing country code prefixes or formatting.
      */
     fun numbersMatch(num1: String, num2: String): Boolean {
+        if (num1.startsWith("group_") || num2.startsWith("group_")) {
+            return num1 == num2
+        }
         val clean1 = num1.replace(Regex("[^0-9]"), "")
         val clean2 = num2.replace(Regex("[^0-9]"), "")
         if (clean1.isBlank() || clean2.isBlank()) return false
@@ -75,6 +79,7 @@ object ContactsHelper {
      * for robust Firestore matching across different user inputs.
      */
     fun generateNumberVariations(number: String): List<String> {
+        if (number.startsWith("group_")) return listOf(number)
         val variations = mutableListOf<String>()
         if (number.isNotBlank()) {
             variations.add(number)
