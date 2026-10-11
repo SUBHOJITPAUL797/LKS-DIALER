@@ -309,10 +309,13 @@ class FirebaseManager private constructor(private val context: Context) {
         linkedDevicesListener?.remove()
         linkedDevicesListener = db.collection("users").document(phoneNumber)
             .collection("linked_devices")
-            .whereEqualTo("revoked", false)
             .addSnapshotListener { snapshot, e ->
-                if (e != null || snapshot == null) return@addSnapshotListener
-                val devices = snapshot.toObjects(LinkedDeviceDto::class.java)
+                if (e != null) {
+                    Log.e(TAG, "Linked devices snapshot error: ${e.message}")
+                    return@addSnapshotListener
+                }
+                if (snapshot == null) return@addSnapshotListener
+                val devices = snapshot.toObjects(LinkedDeviceDto::class.java).filter { !it.revoked }
                 _linkedDevices.value = devices.sortedByDescending { it.linkedAt }
             }
     }
@@ -1234,6 +1237,25 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     /**
+     * Manually fetches the current list of non-revoked linked devices from Firestore.
+     */
+    fun refreshLinkedDevices() {
+        val phone = _currentUser.value?.phoneNumber ?: return
+        val db = FirebaseFirestore.getInstance()
+        db.collection("users").document(phone)
+            .collection("linked_devices")
+            .get()
+            .addOnSuccessListener { snapshot ->
+                val devices = snapshot.toObjects(LinkedDeviceDto::class.java).filter { !it.revoked }
+                _linkedDevices.value = devices.sortedByDescending { it.linkedAt }
+                Log.d(TAG, "Refreshed linked devices: ${devices.size} active")
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Failed to refresh linked devices: ${e.message}")
+            }
+    }
+
+    /**
      * Unlinks a device remotely from the phone, which causes the Web app to log out immediately.
      */
     fun unlinkDevice(sessionId: String, onComplete: ((Boolean) -> Unit)? = null) {
@@ -1368,6 +1390,7 @@ class FirebaseManager private constructor(private val context: Context) {
                     .collection("linked_devices").document(sessionId)
                     .set(linkedDevice)
                     .addOnCompleteListener {
+                        _linkedDevices.value = (listOf(linkedDevice) + _linkedDevices.value.filter { it.sessionId != sessionId }).sortedByDescending { it.linkedAt }
                         onSuccess()
                     }
             }

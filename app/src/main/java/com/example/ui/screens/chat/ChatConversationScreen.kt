@@ -676,7 +676,13 @@ fun ChatConversationScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { showMediaGalleryDialog = true }
+                                .clickable {
+                                    if (isGroup) {
+                                        showGroupInfoDialog = true
+                                    } else {
+                                        showMediaGalleryDialog = true
+                                    }
+                                }
                         ) {
                             ChatAvatar(
                                 name = peerDisplayName,
@@ -1818,12 +1824,18 @@ fun ChatConversationScreen(
     }
 
     // Group Info Dialog
-    if (showGroupInfoDialog && groupDto != null) {
-        GroupInfoDialog(
-            group = groupDto,
-            firebaseManager = firebaseManager,
-            onDismiss = { showGroupInfoDialog = false }
-        )
+    if (showGroupInfoDialog) {
+        if (groupDto != null) {
+            GroupInfoDialog(
+                group = groupDto,
+                firebaseManager = firebaseManager,
+                onDismiss = { showGroupInfoDialog = false }
+            )
+        } else {
+            LaunchedEffect(normPeer) {
+                groupDto = chatRepository.getGroup(normPeer)
+            }
+        }
     }
 
     // Starred Messages Dialog

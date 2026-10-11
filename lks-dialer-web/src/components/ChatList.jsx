@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  MessageSquare, Plus, Search, Check, CheckCheck, X 
+  MessageSquare, Plus, Search, Check, CheckCheck, X, Users 
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, query, onSnapshot } from 'firebase/firestore';
@@ -22,6 +22,13 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
   const [selectedCountry, setSelectedCountry] = useState(defaultCountry);
   const [manualPhone, setManualPhone] = useState('');
   const [userSearch, setUserSearch] = useState('');
+
+  // New Group Modal state
+  const [showNewGroupModal, setShowNewGroupModal] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState(new Set());
+  const [groupUserSearch, setGroupUserSearch] = useState('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
 
   // Periodically tick for online staleness calculations
   useEffect(() => {
@@ -160,24 +167,50 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
         <h2 style={{ fontSize: '32px', fontWeight: '900', margin: 0 }}>
           CHATS
         </h2>
-        <button
-          onClick={openNewChatModal}
-          className="neo-box"
-          style={{
-            padding: '8px 16px',
-            backgroundColor: 'var(--primary)',
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontWeight: '900',
-            fontSize: '14px',
-            cursor: 'pointer'
-          }}
-        >
-          <Plus size={18} strokeWidth={3} />
-          <span>NEW CHAT</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            onClick={() => {
+              setShowNewGroupModal(true);
+              setNewGroupName('');
+              setSelectedGroupMembers(new Set());
+              setGroupUserSearch('');
+              if (registeredUsers.length === 0) openNewChatModal();
+            }}
+            className="neo-box"
+            style={{
+              padding: '8px 14px',
+              backgroundColor: '#E0F2F1',
+              color: '#008069',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontWeight: '900',
+              fontSize: '13px',
+              cursor: 'pointer'
+            }}
+          >
+            <Users size={16} strokeWidth={2.5} />
+            <span>NEW GROUP</span>
+          </button>
+          <button
+            onClick={openNewChatModal}
+            className="neo-box"
+            style={{
+              padding: '8px 14px',
+              backgroundColor: 'var(--primary)',
+              color: '#fff',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              fontWeight: '900',
+              fontSize: '13px',
+              cursor: 'pointer'
+            }}
+          >
+            <Plus size={16} strokeWidth={3} />
+            <span>NEW CHAT</span>
+          </button>
+        </div>
       </div>
 
       {/* Search Input */}
@@ -220,13 +253,14 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
         </div>
       ) : (
         filteredConversations.map(conv => {
+          const isGroup = Boolean(conv.isGroup || (conv.phoneNumber && conv.phoneNumber.startsWith('group_')));
           const cleanPeer = String(conv.phoneNumber || '').replace(/[^0-9]/g, '');
-          const peerUserData = usersMap[conv.phoneNumber] || usersMap[cleanPeer] || (cleanPeer.length >= 10 ? usersMap[cleanPeer.slice(-10)] : null);
-          const isOnline = isUserOnline(peerUserData, nowTick);
+          const peerUserData = !isGroup ? (usersMap[conv.phoneNumber] || usersMap[cleanPeer] || (cleanPeer.length >= 10 ? usersMap[cleanPeer.slice(-10)] : null)) : null;
+          const isOnline = !isGroup && isUserOnline(peerUserData, nowTick);
           const avatarUrl = formatAvatarUrl(peerUserData?.profilePictureUrl) || formatAvatarUrl(conv.profilePicUrl);
           const contactDisplayName = conv.contactName || peerUserData?.displayName || conv.phoneNumber;
           const initial = (contactDisplayName || '?')[0]?.toUpperCase() || '?';
-          const isSelected = activePeerNumber && numbersMatch(conv.phoneNumber, activePeerNumber);
+          const isSelected = activePeerNumber && (isGroup ? conv.phoneNumber === activePeerNumber : numbersMatch(conv.phoneNumber, activePeerNumber));
 
           return (
             <div
@@ -261,7 +295,7 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                     fontWeight: '800', fontSize: '18px', overflow: 'hidden',
                     boxShadow: '0 2px 6px rgba(0,0,0,0.06)'
                   }}>
-                    {avatarUrl && (
+                    {avatarUrl ? (
                       <img 
                         src={avatarUrl} 
                         alt={contactDisplayName} 
@@ -271,12 +305,15 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                           if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
                         }}
                       />
+                    ) : isGroup ? (
+                      <Users size={22} color="var(--primary)" />
+                    ) : (
+                      <span style={{ display: 'block' }}>
+                        {initial}
+                      </span>
                     )}
-                    <span style={{ display: avatarUrl ? 'none' : 'block' }}>
-                      {initial}
-                    </span>
                   </div>
-                  {isOnline && (
+                  {!isGroup && isOnline && (
                     <span style={{
                       position: 'absolute', bottom: 1, right: 1,
                       width: 14, height: 14, borderRadius: '50%',
@@ -290,12 +327,23 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                 {/* Title & Preview */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <h4 style={{
-                      margin: 0, fontSize: '17px', fontWeight: '800',
-                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-                    }}>
-                      {contactDisplayName}
-                    </h4>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+                      <h4 style={{
+                        margin: 0, fontSize: '17px', fontWeight: '800',
+                        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                      }}>
+                        {contactDisplayName}
+                      </h4>
+                      {isGroup && (
+                        <span style={{
+                          fontSize: '10px', fontWeight: '900', backgroundColor: '#E0F2F1',
+                          color: '#008069', padding: '1px 6px', borderRadius: '4px',
+                          border: '1px solid #008069', flexShrink: 0
+                        }}>
+                          GROUP
+                        </span>
+                      )}
+                    </div>
                     <span style={{ fontSize: '12px', fontWeight: '700', color: '#666', flexShrink: 0, marginLeft: '8px' }}>
                       {formatTime(conv.lastMessageTimestamp)}
                     </span>
@@ -486,6 +534,190 @@ export default function ChatList({ onOpenChat, activePeerNumber }) {
                   })
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NEW GROUP MODAL */}
+      {showNewGroupModal && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '20px', zIndex: 100
+        }}>
+          <div className="neo-box" style={{
+            width: '100%', maxWidth: '440px', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column',
+            backgroundColor: 'var(--bg-color)', padding: '20px', gap: '16px'
+          }}>
+            {/* Modal Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%', backgroundColor: '#E0F2F1',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}>
+                  <Users size={20} color="#008069" />
+                </div>
+                <h3 style={{ fontSize: '20px', fontWeight: '900', margin: 0 }}>NEW GROUP CHAT</h3>
+              </div>
+              <button
+                onClick={() => setShowNewGroupModal(false)}
+                className="neo-box"
+                style={{
+                  width: '36px', height: '36px', padding: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  backgroundColor: '#fff', cursor: 'pointer'
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Group Name Input */}
+            <div className="neo-box" style={{ padding: '14px', backgroundColor: '#fff' }}>
+              <label style={{ fontSize: '12px', fontWeight: '800', display: 'block', marginBottom: '8px' }}>
+                GROUP NAME:
+              </label>
+              <input
+                type="text"
+                className="neo-input"
+                placeholder="e.g. Project Team, Family..."
+                style={{ width: '100%', padding: '10px 12px', fontSize: '15px' }}
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                maxLength={35}
+              />
+            </div>
+
+            {/* Members Selector */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minHeight: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '13px', fontWeight: '900' }}>SELECT MEMBERS:</span>
+                <span style={{ fontSize: '12px', fontWeight: '800', color: '#008069' }}>
+                  {selectedGroupMembers.size} selected
+                </span>
+              </div>
+
+              <div style={{ position: 'relative' }}>
+                <Search size={16} style={{ position: 'absolute', left: '12px', top: '12px', color: '#000' }} />
+                <input
+                  type="text"
+                  className="neo-input"
+                  placeholder="Search contacts..."
+                  style={{ padding: '8px 12px 8px 36px', fontSize: '14px' }}
+                  value={groupUserSearch}
+                  onChange={(e) => setGroupUserSearch(e.target.value)}
+                />
+              </div>
+
+              <div style={{
+                flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column',
+                gap: '8px', maxHeight: '220px', paddingRight: '4px'
+              }}>
+                {registeredUsers.length === 0 ? (
+                  <p style={{ textAlign: 'center', padding: '16px', fontWeight: '700', color: '#666' }}>
+                    No other contacts available.
+                  </p>
+                ) : (
+                  registeredUsers
+                    .filter(u => {
+                      const q = (groupUserSearch || '').trim().toLowerCase();
+                      if (!q) return true;
+                      return (u.displayName && u.displayName.toLowerCase().includes(q)) ||
+                             (u.phoneNumber && u.phoneNumber.includes(q));
+                    })
+                    .map(u => {
+                      const isSelected = selectedGroupMembers.has(u.phoneNumber);
+                      const uAvatar = formatAvatarUrl(u.profilePictureUrl);
+                      const initial = (u.displayName || u.phoneNumber || '?')[0]?.toUpperCase() || '?';
+
+                      return (
+                        <div
+                          key={u.phoneNumber}
+                          onClick={() => {
+                            const next = new Set(selectedGroupMembers);
+                            if (isSelected) next.delete(u.phoneNumber);
+                            else next.add(u.phoneNumber);
+                            setSelectedGroupMembers(next);
+                          }}
+                          className="neo-box"
+                          style={{
+                            padding: '10px 12px', display: 'flex', alignItems: 'center',
+                            justifyContent: 'space-between', cursor: 'pointer',
+                            backgroundColor: isSelected ? '#E0F2F1' : '#fff',
+                            border: isSelected ? '2px solid #008069' : '1px solid rgba(0,0,0,0.1)'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                            <div style={{
+                              width: '36px', height: '36px', borderRadius: '50%',
+                              backgroundColor: 'var(--primary)', border: '2px solid #000',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              fontWeight: '900', fontSize: '15px', color: '#fff', overflow: 'hidden'
+                            }}>
+                              {uAvatar ? (
+                                <img src={uAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              ) : initial}
+                            </div>
+                            <div>
+                              <div style={{ fontSize: '14px', fontWeight: '800' }}>{u.displayName || u.phoneNumber}</div>
+                              <div style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>{u.phoneNumber}</div>
+                            </div>
+                          </div>
+
+                          <div style={{
+                            width: 22, height: 22, borderRadius: 6,
+                            border: '2px solid #000',
+                            backgroundColor: isSelected ? '#008069' : '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center'
+                          }}>
+                            {isSelected && <Check size={16} color="#fff" strokeWidth={3} />}
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+
+            {/* Modal Bottom Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 4 }}>
+              <button
+                onClick={() => setShowNewGroupModal(false)}
+                style={{ padding: '8px 16px', background: 'none', border: 'none', fontWeight: 800, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={creatingGroup || !newGroupName.trim() || selectedGroupMembers.size === 0}
+                onClick={async () => {
+                  if (!newGroupName.trim()) return;
+                  if (selectedGroupMembers.size === 0) return;
+                  try {
+                    setCreatingGroup(true);
+                    const group = await chatRepositoryWeb.createGroup(
+                      newGroupName.trim(),
+                      Array.from(selectedGroupMembers)
+                    );
+                    setShowNewGroupModal(false);
+                    onOpenChat(group.groupId, group.name, '');
+                  } catch (e) {
+                    alert('Failed to create group: ' + (e.message || e));
+                  } finally {
+                    setCreatingGroup(false);
+                  }
+                }}
+                className="neo-btn"
+                style={{
+                  padding: '10px 20px', fontSize: '14px',
+                  backgroundColor: '#008069', color: '#fff',
+                  opacity: (!newGroupName.trim() || selectedGroupMembers.size === 0) ? 0.5 : 1
+                }}
+              >
+                {creatingGroup ? 'Creating...' : `Create Group (${selectedGroupMembers.size})`}
+              </button>
             </div>
           </div>
         </div>

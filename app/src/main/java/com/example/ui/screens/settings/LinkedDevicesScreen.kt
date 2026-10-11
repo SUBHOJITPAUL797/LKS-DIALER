@@ -41,6 +41,10 @@ fun LinkedDevicesScreen(
     val currentUser by firebaseManager.currentUser.collectAsState()
     val linkedDevices by firebaseManager.linkedDevices.collectAsState()
 
+    LaunchedEffect(Unit) {
+        firebaseManager.refreshLinkedDevices()
+    }
+
     var isScanning by remember { mutableStateOf(false) }
     var verifyingSession by remember { mutableStateOf(false) }
 

@@ -12,6 +12,7 @@ import { P2pFileTransferWeb } from './P2pFileTransferWeb';
  */
 export function normalizePhoneNumber(number) {
   if (!number) return '';
+  if (typeof number === 'string' && number.startsWith('group_')) return number;
   return String(number).replace(/[^0-9+]/g, '');
 }
 
@@ -22,6 +23,7 @@ export function normalizePhoneNumber(number) {
 export function generateNumberVariations(number) {
   if (!number) return [];
   const raw = String(number).trim();
+  if (raw.startsWith('group_')) return [raw];
   const variations = [raw];
   const cleanDigits = raw.replace(/[^0-9]/g, '');
   if (cleanDigits) {
@@ -43,6 +45,11 @@ export function generateNumberVariations(number) {
  * Checks if two phone numbers match (exact or last 10 digits).
  */
 export function numbersMatch(num1, num2) {
+  if (!num1 || !num2) return false;
+  if (num1 === num2) return true;
+  if (String(num1).startsWith('group_') || String(num2).startsWith('group_')) {
+    return num1 === num2;
+  }
   const clean1 = String(num1 || '').replace(/[^0-9]/g, '');
   const clean2 = String(num2 || '').replace(/[^0-9]/g, '');
   if (!clean1 || !clean2) return false;
@@ -148,7 +155,12 @@ class ChatRepositoryWeb {
 
   isUserInConversation(peerNumber) {
     if (!this.activeChatPeerNumber || !peerNumber) return false;
-    if (!numbersMatch(this.activeChatPeerNumber, peerNumber)) return false;
+    const isGroup = this.activeChatPeerNumber.startsWith('group_') || peerNumber.startsWith('group_');
+    if (isGroup) {
+      if (this.activeChatPeerNumber !== peerNumber) return false;
+    } else {
+      if (!numbersMatch(this.activeChatPeerNumber, peerNumber)) return false;
+    }
     if (typeof document !== 'undefined' && (document.hidden || !document.hasFocus())) {
       return false;
     }
@@ -160,7 +172,8 @@ class ChatRepositoryWeb {
   }
 
   setActiveChatPeer(phoneNumber) {
-    const normalized = phoneNumber ? normalizePhoneNumber(phoneNumber) : null;
+    const isGroup = phoneNumber && phoneNumber.startsWith('group_');
+    const normalized = isGroup ? phoneNumber : (phoneNumber ? normalizePhoneNumber(phoneNumber) : null);
     this.activeChatPeerNumber = normalized;
     if (normalized && this.isUserActivelyViewingPeer(normalized)) {
       this.markConversationAsRead(normalized);
@@ -187,6 +200,10 @@ class ChatRepositoryWeb {
   }
 
   _resolveMessagesKey(peerPhoneNumber) {
+    if (!peerPhoneNumber) return null;
+    if (typeof peerPhoneNumber === 'string' && peerPhoneNumber.startsWith('group_')) {
+      return `lks_web_chat_messages_${peerPhoneNumber}`;
+    }
     const norm = normalizePhoneNumber(peerPhoneNumber);
     if (!norm) return null;
     const matchingKeys = [];
@@ -469,10 +486,12 @@ class ChatRepositoryWeb {
       return;
     }
 
+    const isGroupMsg = Boolean(dto.groupId);
+    const targetConvId = isGroupMsg ? dto.groupId : normalizePhoneNumber(dto.senderNumber);
     const senderNorm = normalizePhoneNumber(dto.senderNumber);
 
     // Deduplication check: ignore if already present in local conversation store
-    const existingMessages = this.getMessages(senderNorm);
+    const existingMessages = this.getMessages(targetConvId);
     if (existingMessages.some(m => m.id === dto.messageId)) {
       this.processedMessageIds.add(dto.messageId);
       if (docRef) {
@@ -497,8 +516,8 @@ class ChatRepositoryWeb {
         decryptedRaw = '🔒 [Unable to decrypt message - End-to-End Encryption key mismatch]';
       }
 
-      const isWatching = this.isUserInConversation(senderNorm);
-      const isCurrentPeer = this.isUserActivelyViewingPeer(senderNorm);
+      const isWatching = this.isUserInConversation(targetConvId);
+      const isCurrentPeer = this.isUserActivelyViewingPeer(targetConvId);
 
       // Handle EDIT message packet
       if (dto.mediaType === 'EDIT' && !decryptedRaw.startsWith('🔒')) {
@@ -856,8 +875,8 @@ class ChatRepositoryWeb {
 
       const finalStatus = isCurrentPeer ? 'READ' : 'DELIVERED';
 
-      // 2. Persist locally to this peer's message store
-      const messages = this.getMessages(senderNorm);
+      // 2. Persist locally to this target conversation's message store
+      const messages = this.getMessages(targetConvId);
 
       // Implicit Read Sync: If peer sent a message, all earlier DELIVERED outgoing messages to them were seen/read!
       const msgTimestamp = Number(dto.timestamp) || Date.now();
@@ -873,9 +892,9 @@ class ChatRepositoryWeb {
       if (!messages.some(m => m.id === dto.messageId)) {
         const newMessage = {
           id: dto.messageId,
-          conversationId: senderNorm,
+          conversationId: targetConvId,
           senderNumber: dto.senderNumber,
-          recipientNumber: dto.recipientNumber,
+          recipientNumber: targetConvId,
           text: displayText,
           mediaType: dto.mediaType || 'TEXT',
           mediaData,
@@ -883,23 +902,24 @@ class ChatRepositoryWeb {
           mediaDurationMs: durationMs,
           timestamp: dto.timestamp || Date.now(),
           status: finalStatus,
-          isOutgoing: false
+          isOutgoing: false,
+          senderName: isGroupMsg ? (dto.senderName || senderNorm) : null
         };
         messages.push(newMessage);
-        this.saveMessages(senderNorm, messages);
+        this.saveMessages(targetConvId, messages);
       } else if (msgsUpgraded) {
-        this.saveMessages(senderNorm, messages);
+        this.saveMessages(targetConvId, messages);
       }
 
-      // 3. Resolve sender info from registered users / existing conversations
+      // 3. Resolve sender / group info from registered users or existing conversations
       const conversations = this.getConversations();
-      const existingConv = conversations.find(c => numbersMatch(c.phoneNumber, senderNorm));
+      const existingConv = conversations.find(c => isGroupMsg ? c.phoneNumber === targetConvId : numbersMatch(c.phoneNumber, senderNorm));
       
-      let resolvedName = existingConv?.contactName || senderNorm;
-      let profilePic = existingConv?.profilePicUrl || '';
+      let resolvedName = existingConv?.contactName || (isGroupMsg ? (dto.groupName || 'Group') : senderNorm);
+      let profilePic = isGroupMsg ? '' : (existingConv?.profilePicUrl || '');
 
       // Try fetching sender profile from users collection if unknown
-      if (!existingConv || !existingConv.profilePicUrl) {
+      if (!isGroupMsg && (!existingConv || !existingConv.profilePicUrl)) {
         try {
           const userSnap = await getDoc(doc(db, 'users', senderNorm));
           if (userSnap.exists()) {
@@ -912,24 +932,28 @@ class ChatRepositoryWeb {
 
       const unreadCount = isCurrentPeer ? 0 : ((existingConv?.unreadCount || 0) + 1);
 
+      const basePreview = dto.mediaType === 'STICKER' ? '✨ Sticker'
+                        : dto.mediaType === 'IMAGE' ? (displayText && (displayText.includes('.gif') || displayText.startsWith('http')) ? '👾 GIF' : '📷 Photo') 
+                        : dto.mediaType === 'AUDIO' ? '🎤 Voice message' 
+                        : dto.mediaType === 'DOCUMENT' ? `📄 ${displayText}`
+                        : displayText;
+      const previewPrefix = isGroupMsg ? `${dto.senderName || senderNorm}: ` : '';
+
       const updatedConv = {
-        phoneNumber: senderNorm,
-        contactName: resolvedName,
+        phoneNumber: targetConvId,
+        contactName: isGroupMsg ? (dto.groupName || existingConv?.contactName || 'Group') : resolvedName,
         profilePicUrl: profilePic,
-        lastMessageText: dto.mediaType === 'STICKER' ? '✨ Sticker'
-                       : dto.mediaType === 'IMAGE' ? (displayText && (displayText.includes('.gif') || displayText.startsWith('http')) ? '👾 GIF' : '📷 Photo') 
-                       : dto.mediaType === 'AUDIO' ? '🎤 Voice message' 
-                       : dto.mediaType === 'DOCUMENT' ? `📄 ${displayText}`
-                       : displayText,
+        lastMessageText: previewPrefix + basePreview,
         lastMessageType: dto.mediaType || 'TEXT',
         lastMessageTimestamp: dto.timestamp || Date.now(),
         lastMessageStatus: finalStatus,
         lastMessageIsOutgoing: false,
         unreadCount,
-        isPinned: existingConv?.isPinned || false
+        isPinned: existingConv?.isPinned || false,
+        isGroup: isGroupMsg
       };
 
-      const remainingConvs = conversations.filter(c => !numbersMatch(c.phoneNumber, senderNorm));
+      const remainingConvs = conversations.filter(c => isGroupMsg ? c.phoneNumber !== targetConvId : !numbersMatch(c.phoneNumber, senderNorm));
       this.saveConversations([updatedConv, ...remainingConvs]);
 
       // 4. CRITICAL ZERO-RETENTION: IMMEDIATELY delete from Firestore!
@@ -945,7 +969,9 @@ class ChatRepositoryWeb {
 
       // 6. Browser Notification if not actively in this conversation
       if (!isWatching) {
-        this.showBrowserNotification(resolvedName, displayText, profilePic, senderNorm);
+        const notifTitle = isGroupMsg ? (dto.groupName || 'Group') : resolvedName;
+        const notifBody = previewPrefix + basePreview;
+        this.showBrowserNotification(notifTitle, notifBody, profilePic, targetConvId);
       }
 
       this.notifySubscribers();
@@ -1143,6 +1169,195 @@ class ChatRepositoryWeb {
     }
   }
 
+  // --- GROUP CHAT SUPPORT ---
+  async getGroup(groupId) {
+    if (!groupId || !groupId.startsWith('group_')) return null;
+    try {
+      const snap = await getDoc(doc(db, 'groups', groupId));
+      return snap.exists() ? snap.data() : null;
+    } catch (e) {
+      console.warn('Failed to get group from Firestore:', e);
+      return null;
+    }
+  }
+
+  async createGroup(name, memberPhones) {
+    if (!this.currentListeningPhone) {
+      throw new Error('You must be logged in to create a group');
+    }
+    const groupId = 'group_' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : ('grp_' + Date.now()));
+    const myPhone = this.currentListeningPhone;
+    const allMembers = Array.from(new Set([myPhone, ...(memberPhones || []).map(p => normalizePhoneNumber(p))]));
+
+    const groupDto = {
+      groupId,
+      name,
+      adminPhone: myPhone,
+      members: allMembers,
+      createdTimestamp: Date.now(),
+      iconUrl: ''
+    };
+
+    await setDoc(doc(db, 'groups', groupId), groupDto);
+
+    // Save locally
+    const conv = {
+      phoneNumber: groupId,
+      contactName: name,
+      profilePicUrl: '',
+      lastMessageText: 'Group created',
+      lastMessageType: 'TEXT',
+      lastMessageTimestamp: Date.now(),
+      lastMessageStatus: 'SENT',
+      lastMessageIsOutgoing: true,
+      unreadCount: 0,
+      isPinned: false,
+      isGroup: true,
+      groupAdminPhone: myPhone
+    };
+
+    const conversations = this.getConversations();
+    this.saveConversations([conv, ...conversations.filter(c => c.phoneNumber !== groupId)]);
+    this.notifySubscribers();
+
+    return groupDto;
+  }
+
+  async _sendGroupMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {
+    const groupSnap = await getDoc(doc(db, 'groups', recipientNumber));
+    if (!groupSnap.exists()) {
+      throw new Error('Group does not exist or has been deleted');
+    }
+    const groupData = groupSnap.data();
+    const groupName = groupData.name || recipientName || 'Group';
+    const rawMembers = groupData.members || [];
+    const members = rawMembers.map(m => normalizePhoneNumber(m)).filter(m => m && !numbersMatch(m, this.currentListeningPhone));
+
+    const messageId = generateUuid();
+    const now = Date.now();
+    let myDisplayName = this.currentListeningPhone;
+    try {
+      const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.displayName) myDisplayName = u.displayName;
+      }
+    } catch {}
+
+    // Prepare payloadToEncrypt
+    let payloadToEncrypt = text || '';
+    let savedMediaData = mediaData;
+    let localMediaUrl = null;
+
+    if (mediaType === 'IMAGE') {
+      payloadToEncrypt = JSON.stringify({
+        caption: text || '',
+        bytes: mediaData || ''
+      });
+    } else if (mediaType === 'STICKER') {
+      payloadToEncrypt = text || '';
+    } else if (mediaType === 'AUDIO') {
+      payloadToEncrypt = JSON.stringify({
+        duration: mediaDurationMs || 0,
+        bytes: mediaData || ''
+      });
+    } else if (mediaType === 'DOCUMENT') {
+      payloadToEncrypt = JSON.stringify({
+        fileName: text || 'document',
+        bytes: mediaData || ''
+      });
+      if (mediaData) {
+        const ext = (text.split('.').pop() || '').toLowerCase();
+        const mimeType = ext === 'mp3' ? 'audio/mpeg' : ext === 'pdf' ? 'application/pdf' : 'application/octet-stream';
+        const blob = await mediaStorageWeb.saveMedia(messageId, mediaData, text, mimeType);
+        savedMediaData = `idb:${messageId}`;
+        localMediaUrl = URL.createObjectURL(blob);
+      }
+    }
+
+    // Save to local message store as SENT (✓)
+    const localMsg = {
+      id: messageId,
+      conversationId: recipientNumber,
+      senderNumber: this.currentListeningPhone,
+      recipientNumber: recipientNumber,
+      text: text || '',
+      mediaType,
+      mediaData: savedMediaData,
+      mediaUrl: localMediaUrl,
+      mediaDurationMs,
+      timestamp: now,
+      status: 'SENT',
+      isOutgoing: true,
+      senderName: myDisplayName
+    };
+
+    const messages = this.getMessages(recipientNumber);
+    messages.push(localMsg);
+    this.saveMessages(recipientNumber, messages);
+
+    // Upsert conversation summary
+    const conversations = this.getConversations();
+    const existingConv = conversations.find(c => c.phoneNumber === recipientNumber);
+    const updatedConv = {
+      phoneNumber: recipientNumber,
+      contactName: groupName,
+      profilePicUrl: groupData.iconUrl || '',
+      lastMessageText: mediaType === 'STICKER' ? '✨ Sticker'
+                     : mediaType === 'IMAGE' ? (text && (text.includes('.gif') || text.startsWith('http')) ? '👾 GIF' : '📷 Photo')
+                     : mediaType === 'AUDIO' ? '🎤 Voice message'
+                     : mediaType === 'DOCUMENT' ? `📄 ${text || 'Document'}`
+                     : text,
+      lastMessageType: mediaType,
+      lastMessageTimestamp: now,
+      lastMessageStatus: 'SENT',
+      lastMessageIsOutgoing: true,
+      unreadCount: 0,
+      isPinned: existingConv?.isPinned || false,
+      isGroup: true,
+      groupAdminPhone: groupData.adminPhone
+    };
+
+    const remainingConvs = conversations.filter(c => c.phoneNumber !== recipientNumber);
+    this.saveConversations([updatedConv, ...remainingConvs]);
+    this.notifySubscribers();
+
+    // Fan out pairwise to each group member in Firestore
+    const myPublicKey = await chatCryptoWeb.getMyPublicKeyBase64();
+    for (const memberPhone of members) {
+      try {
+        const memberKey = await this.resolvePeerPublicKey(memberPhone);
+        if (!memberKey) {
+          console.warn(`[ChatRepositoryWeb] Group member ${memberPhone} has no registered E2EE key, skipping`);
+          continue;
+        }
+        const { ciphertext, iv } = await chatCryptoWeb.encrypt(payloadToEncrypt, memberKey);
+        const chatDto = {
+          messageId,
+          senderNumber: this.currentListeningPhone,
+          recipientNumber: memberPhone,
+          senderPublicKey: myPublicKey,
+          ciphertext,
+          iv,
+          mediaType,
+          mediaDurationMs,
+          timestamp: now,
+          expiresAt: 0,
+          groupId: recipientNumber,
+          groupName: groupName,
+          senderName: myDisplayName
+        };
+
+        await setDoc(doc(db, 'inboxes', memberPhone, 'messages', messageId), chatDto);
+        this.sendFcmWakeup(memberPhone, this.currentListeningPhone, `${myDisplayName}: ${text || 'New message'}`, mediaType, messageId);
+      } catch (err) {
+        console.warn(`[ChatRepositoryWeb] Failed fanout to ${memberPhone}:`, err);
+      }
+    }
+
+    return localMsg;
+  }
+
   // --- PUBLIC API: SEND MESSAGE ---
   async sendMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {
     if (!this.currentListeningPhone) {
@@ -1156,6 +1371,10 @@ class ChatRepositoryWeb {
     }
     if (!this.currentListeningPhone) {
       throw new Error('Current user is not logged in');
+    }
+
+    if (recipientNumber && recipientNumber.startsWith('group_')) {
+      return this._sendGroupMessage(recipientNumber, recipientName, text, mediaType, mediaData, mediaDurationMs);
     }
 
     const normRecipient = normalizePhoneNumber(recipientNumber);

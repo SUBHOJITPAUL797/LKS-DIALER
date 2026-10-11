@@ -2405,13 +2405,16 @@ class ChatRepository private constructor(private val context: Context) {
      * Marks all unread messages from this peer as READ and notifies sender.
      */
     suspend fun markConversationAsRead(peerPhoneNumber: String) {
-        val norm = ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
-        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        val isGroup = peerPhoneNumber.startsWith("group_")
+        val norm = if (isGroup) peerPhoneNumber else ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
+        val last10 = if (isGroup) "" else norm.filter { it.isDigit() }.takeLast(10)
         messageDao.updateIncomingMessagesStatus(norm, last10, MessageStatus.READ.name)
         conversationDao.resetUnreadCount(norm, last10)
-        val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(peerPhoneNumber)
-        val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: norm
-        sendReceipt(recipientNumber = canonicalRecipient, messageId = "all", status = MessageStatus.READ.name)
+        if (!isGroup) {
+            val targetUser = FirebaseManager.getInstance(context).lookupUserByNumber(peerPhoneNumber)
+            val canonicalRecipient = targetUser?.phoneNumber?.takeIf { it.isNotBlank() } ?: norm
+            sendReceipt(recipientNumber = canonicalRecipient, messageId = "all", status = MessageStatus.READ.name)
+        }
     }
 
     /**
@@ -2419,7 +2422,7 @@ class ChatRepository private constructor(private val context: Context) {
      */
     fun setTyping(peerPhoneNumber: String, isTyping: Boolean) {
         val myPhone = currentListeningPhone ?: return
-        val norm = ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
+        val norm = if (peerPhoneNumber.startsWith("group_")) peerPhoneNumber else ContactsHelper.normalizePhoneNumber(peerPhoneNumber)
 
         firestore.collection("typingStatus")
             .document(norm)
@@ -2680,17 +2683,26 @@ class ChatRepository private constructor(private val context: Context) {
         return conversationDao.getConversationsFlow()
     }
     fun getMessagesFlow(phoneNumber: String): Flow<List<MessageEntity>> {
+        if (phoneNumber.startsWith("group_")) {
+            return messageDao.getMessagesFlow(phoneNumber)
+        }
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
         return messageDao.getMessagesFlow(norm, last10)
     }
     fun getMessagesPagedFlow(phoneNumber: String, limit: Int): Flow<List<MessageEntity>> {
+        repositoryScope.launch { purgeExpiredMessages() }
+        if (phoneNumber.startsWith("group_")) {
+            return messageDao.getMessagesPagedFlow(phoneNumber, limit)
+        }
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
-        repositoryScope.launch { purgeExpiredMessages() }
         return messageDao.getMessagesPagedFlow(norm, last10, limit)
     }
     fun getMessageCountFlow(phoneNumber: String): Flow<Int> {
+        if (phoneNumber.startsWith("group_")) {
+            return messageDao.getMessageCountFlow(phoneNumber)
+        }
         val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
         val last10 = norm.filter { it.isDigit() }.takeLast(10)
         return messageDao.getMessageCountFlow(norm, last10)
@@ -2853,8 +2865,9 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     suspend fun clearConversationStorage(phoneNumber: String, mode: ClearChatMode): Long = withContext(Dispatchers.IO) {
-        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
-        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        val isGroup = phoneNumber.startsWith("group_")
+        val norm = if (isGroup) phoneNumber else ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = if (isGroup) "" else norm.filter { it.isDigit() }.takeLast(10)
         val messages = messageDao.getMessagesForConversationList(norm, last10)
         var bytesFreed = 0L
 
@@ -2905,8 +2918,9 @@ class ChatRepository private constructor(private val context: Context) {
         deleteDocs: Boolean,
         deleteText: Boolean
     ): Long = withContext(Dispatchers.IO) {
-        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
-        val last10 = norm.filter { it.isDigit() }.takeLast(10)
+        val isGroup = phoneNumber.startsWith("group_")
+        val norm = if (isGroup) phoneNumber else ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val last10 = if (isGroup) "" else norm.filter { it.isDigit() }.takeLast(10)
         val messages = messageDao.getMessagesForConversationList(norm, last10)
         var bytesFreed = 0L
 
@@ -3112,7 +3126,7 @@ class ChatRepository private constructor(private val context: Context) {
     // ── Pinned Conversations ──────────────────────────────────────────────────
 
     suspend fun pinConversation(phoneNumber: String, isPinned: Boolean) = withContext(Dispatchers.IO) {
-        val norm = ContactsHelper.normalizePhoneNumber(phoneNumber)
+        val norm = if (phoneNumber.startsWith("group_")) phoneNumber else ContactsHelper.normalizePhoneNumber(phoneNumber)
         conversationDao.setPinned(norm, isPinned)
     }
 

@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { 
   ArrowLeft, Phone, Video, MoreVertical, Send, Image as ImageIcon, 
   Mic, Trash2, Check, CheckCheck, Play, Pause, X, Shield, Ban, CornerUpLeft, Reply, Edit2, Paperclip, Download,
-  ChevronDown, ChevronUp, ExternalLink, Smile, Search
+  ChevronDown, ChevronUp, ExternalLink, Smile, Search, Users
 } from 'lucide-react';
 import { db } from '../lib/firebase';
 import { collection, doc, query, where, onSnapshot, getDoc } from 'firebase/firestore';
-import { chatRepositoryWeb, normalizePhoneNumber, extractGifUrlWeb } from '../lib/ChatRepositoryWeb';
+import { chatRepositoryWeb, normalizePhoneNumber, extractGifUrlWeb, numbersMatch } from '../lib/ChatRepositoryWeb';
 import { webRtcEngine, isUserOnline, formatLastSeen } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { mediaStorageWeb } from '../lib/MediaStorageWeb';
@@ -892,11 +892,15 @@ export default function ChatConversation({
   onStartCall,
   isDesktop = false
 }) {
+  const isGroup = Boolean(peerNumber && peerNumber.startsWith('group_'));
   const normPeer = normalizePhoneNumber(peerNumber);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [isTypingPeer, setIsTypingPeer] = useState(false);
   const [peerUser, setPeerUser] = useState(null);
+  const [groupData, setGroupData] = useState(null);
+  const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
+  const [groupMembersData, setGroupMembersData] = useState({});
   const [nowTick, setNowTick] = useState(Date.now());
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedImageModal, setSelectedImageModal] = useState(null);
@@ -942,9 +946,50 @@ export default function ChatConversation({
     return () => clearInterval(timer);
   }, []);
 
+  // ── Real-time listener for group data (if group) ────────────────────────────
+  useEffect(() => {
+    if (!isGroup || !peerNumber) return;
+    let unsub = null;
+    try {
+      unsub = onSnapshot(doc(db, 'groups', peerNumber), (snap) => {
+        if (snap.exists()) {
+          setGroupData({ ...snap.data(), groupId: snap.id });
+        }
+      }, (err) => console.warn('Group doc listener error:', err));
+    } catch (e) {
+      chatRepositoryWeb.getGroup(peerNumber).then(g => { if (g) setGroupData(g); });
+    }
+    return () => { if (unsub) unsub(); };
+  }, [isGroup, peerNumber]);
+
+  // ── Preload member profiles for group info ───────────────────────────────────
+  useEffect(() => {
+    if (!isGroup || !groupData?.members || groupData.members.length === 0) return;
+    let isMounted = true;
+    (async () => {
+      const map = {};
+      for (const phone of groupData.members) {
+        try {
+          const snap = await getDoc(doc(db, 'users', phone));
+          if (snap.exists()) {
+            map[phone] = snap.data();
+          } else {
+            const clean = phone.replace(/[^0-9]/g, '');
+            if (clean && clean !== phone) {
+              const snap2 = await getDoc(doc(db, 'users', clean));
+              if (snap2.exists()) map[phone] = snap2.data();
+            }
+          }
+        } catch {}
+      }
+      if (isMounted) setGroupMembersData(map);
+    })();
+    return () => { isMounted = false; };
+  }, [isGroup, groupData?.members]);
+
   // ── Real-time presence listener for peer ─────────────────────────────────────
   useEffect(() => {
-    if (!normPeer) return;
+    if (!normPeer || isGroup) return;
     let unsubQuery = null;
     let unsubDoc = null;
     let isMounted = true;
@@ -1659,12 +1704,16 @@ export default function ChatConversation({
     return { text: msg.text, replyTo: null };
   };
 
-  const displayAvatar = formatAvatarUrl(peerUser?.profilePictureUrl) || formatAvatarUrl(peerAvatar);
-  const peerDisplayName = peerName || peerUser?.displayName || normPeer;
+  const displayAvatar = isGroup
+    ? (formatAvatarUrl(groupData?.iconUrl) || formatAvatarUrl(peerAvatar))
+    : (formatAvatarUrl(peerUser?.profilePictureUrl) || formatAvatarUrl(peerAvatar));
+  const peerDisplayName = isGroup
+    ? (groupData?.name || peerName || 'Group')
+    : (peerName || peerUser?.displayName || normPeer);
   const initial = (peerDisplayName || '?')[0]?.toUpperCase() || '?';
-  const isBlocked = webRtcEngine.isNumberBlocked ? webRtcEngine.isNumberBlocked(normPeer) : false;
-  const isPeerOnlineStatus = isUserOnline(peerUser, nowTick);
-  const lastSeenText = peerUser?.lastSeen ? formatLastSeen(peerUser.lastSeen, nowTick) : '';
+  const isBlocked = !isGroup && webRtcEngine.isNumberBlocked ? webRtcEngine.isNumberBlocked(normPeer) : false;
+  const isPeerOnlineStatus = !isGroup && isUserOnline(peerUser, nowTick);
+  const lastSeenText = (!isGroup && peerUser?.lastSeen) ? formatLastSeen(peerUser.lastSeen, nowTick) : '';
 
   // ── Key press: Enter to send ────────────────────────────────────────────────
   const handleKeyDown = (e) => {
@@ -1808,15 +1857,17 @@ export default function ChatConversation({
             <div style={{ position: 'relative', flexShrink: 0 }}>
               <div style={{
                 width: 42, height: 42, borderRadius: '50%',
-                backgroundColor: 'var(--secondary)', border: '2px solid #000',
+                backgroundColor: isGroup ? '#E0F2F1' : 'var(--secondary)', border: '2px solid #000',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontWeight: 900, fontSize: 18, overflow: 'hidden'
               }}>
                 {displayAvatar ? (
                   <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : isGroup ? (
+                  <Users size={22} color="#008069" />
                 ) : initial}
               </div>
-              {isPeerOnlineStatus && (
+              {!isGroup && isPeerOnlineStatus && (
                 <span style={{
                   position: 'absolute', bottom: -1, right: -1,
                   width: 12, height: 12, borderRadius: '50%',
@@ -1827,15 +1878,23 @@ export default function ChatConversation({
               )}
             </div>
             <div
-              onClick={() => setShowMediaGalleryModal(true)}
+              onClick={() => {
+                if (isGroup) setShowGroupInfoModal(true);
+                else setShowMediaGalleryModal(true);
+              }}
               style={{ minWidth: 0, flex: 1, cursor: 'pointer' }}
-              title="View media, links & docs"
+              title={isGroup ? "View group info" : "View media, links & docs"}
             >
               <div style={{ fontSize: 16, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {peerDisplayName}
               </div>
               <div style={{ fontSize: 12, fontWeight: 700 }}>
-                {isTypingPeer ? (
+                {isGroup ? (
+                  <span style={{ color: '#008069', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Users size={12} color="#008069" />
+                    {groupData?.members ? `${groupData.members.length} members • Tap for info` : 'Group • Tap for info'}
+                  </span>
+                ) : isTypingPeer ? (
                   <span style={{ color: '#00838f', fontStyle: 'italic' }}>typing...</span>
                 ) : isPeerOnlineStatus ? (
                   <span style={{ color: '#00a884', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1861,14 +1920,18 @@ export default function ChatConversation({
               style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer' }}>
               <Search size={18} color="#000" />
             </button>
-            <button onClick={() => onStartCall?.(normPeer, 'AUDIO')} className="neo-box"
-              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer' }}>
-              <Phone size={18} color="#000" />
-            </button>
-            <button onClick={() => onStartCall?.(normPeer, 'VIDEO')} className="neo-box"
-              style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--primary)', cursor: 'pointer' }}>
-              <Video size={18} color="#fff" />
-            </button>
+            {!isGroup && (
+              <button onClick={() => onStartCall?.(normPeer, 'AUDIO')} className="neo-box"
+                style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--accent)', cursor: 'pointer' }}>
+                <Phone size={18} color="#000" />
+              </button>
+            )}
+            {!isGroup && (
+              <button onClick={() => onStartCall?.(normPeer, 'VIDEO')} className="neo-box"
+                style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--primary)', cursor: 'pointer' }}>
+                <Video size={18} color="#fff" />
+              </button>
+            )}
             <div style={{ position: 'relative' }}>
               <button onClick={() => setMenuOpen(!menuOpen)} className="neo-box"
                 style={{ width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer' }}>
@@ -1880,6 +1943,12 @@ export default function ChatConversation({
                 backgroundColor: '#fff', padding: 6, zIndex: 50,
                 display: 'flex', flexDirection: 'column', gap: 4
               }}>
+                {isGroup && (
+                  <button onClick={() => { setMenuOpen(false); setShowGroupInfoModal(true); }}
+                    style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, color: '#008069' }}>
+                    <Users size={16} color="#008069" /> Group Info
+                  </button>
+                )}
                 <button onClick={() => { setMenuOpen(false); setShowMediaGalleryModal(true); }}
                   style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <ImageIcon size={16} color="#0284c7" /> Media & Docs
@@ -1888,13 +1957,15 @@ export default function ChatConversation({
                   style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Trash2 size={16} /> Clear Chat
                 </button>
-                <button onClick={async () => {
-                  setMenuOpen(false);
-                  if (isBlocked) { await webRtcEngine.unblockNumber(normPeer); alert(`Unblocked ${normPeer}`); }
-                  else if (confirm(`Block ${normPeer}?`)) { await webRtcEngine.blockNumber(normPeer); alert(`Blocked ${normPeer}`); }
-                }} style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', color: '#ff3366', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Ban size={16} /> {isBlocked ? 'Unblock' : 'Block'}
-                </button>
+                {!isGroup && (
+                  <button onClick={async () => {
+                    setMenuOpen(false);
+                    if (isBlocked) { await webRtcEngine.unblockNumber(normPeer); alert(`Unblocked ${normPeer}`); }
+                    else if (confirm(`Block ${normPeer}?`)) { await webRtcEngine.blockNumber(normPeer); alert(`Blocked ${normPeer}`); }
+                  }} style={{ border: 'none', background: 'none', padding: '8px 10px', textAlign: 'left', fontWeight: 800, fontSize: 13, cursor: 'pointer', color: '#ff3366', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Ban size={16} /> {isBlocked ? 'Unblock' : 'Block'}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1995,6 +2066,11 @@ export default function ChatConversation({
               return (
                 <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start', margin: '4px 0' }}>
+                    {isGroup && !isOut && (
+                      <div style={{ fontSize: 11, fontWeight: 800, color: '#008069', marginBottom: 2, paddingLeft: 4 }}>
+                        {msg.senderName || msg.senderNumber || 'Member'}
+                      </div>
+                    )}
                     <div style={{
                       position: 'relative',
                       display: 'inline-flex',
@@ -2060,6 +2136,11 @@ export default function ChatConversation({
               return (
                 <SwipeableMessage key={msg.id} msg={msg} onSwipeReply={handleSwipeReply}>
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOut ? 'flex-end' : 'flex-start', margin: '3px 0' }}>
+                    {isGroup && !isOut && (
+                      <div style={{ fontSize: 11, fontWeight: 800, color: '#008069', marginBottom: 2, paddingLeft: 6 }}>
+                        {msg.senderName || msg.senderNumber || 'Member'}
+                      </div>
+                    )}
                     <div style={{
                       position: 'relative',
                       display: 'inline-flex',
@@ -2137,6 +2218,19 @@ export default function ChatConversation({
                       </div>
                     ) : (
                       <>
+                        {/* Group Sender Name */}
+                        {isGroup && !isOut && (
+                          <div style={{
+                            fontSize: 12,
+                            fontWeight: 800,
+                            color: '#008069',
+                            marginBottom: 2,
+                            letterSpacing: '0.2px'
+                          }}>
+                            {msg.senderName || msg.senderNumber || 'Member'}
+                          </div>
+                        )}
+
                         {/* Reply Context Quote */}
                         {replyTo && (
                           <div style={{
@@ -3038,6 +3132,135 @@ export default function ChatConversation({
                 padding: '8px 16px', background: 'none', border: 'none', fontWeight: 800, cursor: 'pointer'
               }}>
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── GROUP INFO MODAL ── */}
+      {showGroupInfoModal && groupData && (
+        <div style={{
+          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.65)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 20
+        }}>
+          <div className="neo-box" style={{
+            backgroundColor: '#fff', borderRadius: 16, maxWidth: 440, width: '100%', maxHeight: '85vh',
+            display: 'flex', flexDirection: 'column', gap: 16, padding: '20px', overflow: 'hidden'
+          }}>
+            {/* Modal Top Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 38, height: 38, borderRadius: '50%', backgroundColor: '#E0F2F1',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }}>
+                  <Users size={20} color="#008069" />
+                </div>
+                <h3 style={{ margin: 0, fontSize: 19, fontWeight: 900 }}>Group Info</h3>
+              </div>
+              <button
+                onClick={() => setShowGroupInfoModal(false)}
+                className="neo-box"
+                style={{ width: 34, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', backgroundColor: '#f0f0f0' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Group Hero Card */}
+            <div style={{
+              padding: '16px', backgroundColor: '#F0FDF4', borderRadius: 12,
+              border: '1.5px solid #BBF7D0', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 6
+            }}>
+              <div style={{
+                width: 64, height: 64, borderRadius: '50%', backgroundColor: '#008069',
+                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: 900, fontSize: 26, boxShadow: '0 4px 12px rgba(0, 128, 105, 0.25)', overflow: 'hidden'
+              }}>
+                {displayAvatar ? (
+                  <img src={displayAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <Users size={32} color="#fff" />
+                )}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: '#000', marginTop: 4 }}>
+                {groupData.name || 'Group'}
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#008069' }}>
+                {groupData.members ? `${groupData.members.length} members` : ''} • E2EE Encrypted
+              </div>
+              {groupData.createdTimestamp && (
+                <div style={{ fontSize: 11, fontWeight: 600, color: '#666' }}>
+                  Created {new Date(groupData.createdTimestamp).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                </div>
+              )}
+            </div>
+
+            {/* Member List */}
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: '#444', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Members ({groupData.members?.length || 0})
+              </div>
+              <div style={{
+                display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', maxHeight: '280px', paddingRight: 4
+              }}>
+                {(groupData.members || []).map((mPhone) => {
+                  const mUser = groupMembersData[mPhone] || {};
+                  const mName = mUser.displayName || mPhone;
+                  const mAvatar = formatAvatarUrl(mUser.profilePictureUrl);
+                  const mInitial = (mName || '?')[0]?.toUpperCase() || '?';
+                  const isAdmin = numbersMatch(mPhone, groupData.adminPhone);
+                  const isMe = numbersMatch(mPhone, webRtcEngine.currentUser?.phoneNumber || chatRepositoryWeb.currentListeningPhone);
+
+                  return (
+                    <div key={mPhone} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '8px 10px', borderRadius: 10, backgroundColor: isMe ? '#E8FAF6' : '#F9FAFB',
+                      border: '1px solid rgba(0,0,0,0.06)'
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                        <div style={{
+                          width: 36, height: 36, borderRadius: '50%', backgroundColor: '#008069',
+                          color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontWeight: 800, fontSize: 14, overflow: 'hidden', flexShrink: 0
+                        }}>
+                          {mAvatar ? (
+                            <img src={mAvatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : mInitial}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {mName} {isMe ? '(You)' : ''}
+                          </div>
+                          {mName !== mPhone && (
+                            <div style={{ fontSize: 11, color: '#666', fontWeight: 600 }}>{mPhone}</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {isAdmin && (
+                        <span style={{
+                          fontSize: 11, fontWeight: 900, backgroundColor: '#E0F2F1',
+                          color: '#008069', border: '1px solid #008069', borderRadius: 6,
+                          padding: '2px 8px', flexShrink: 0
+                        }}>
+                          Admin
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 6 }}>
+              <button
+                onClick={() => setShowGroupInfoModal(false)}
+                className="neo-btn"
+                style={{ padding: '8px 20px', fontSize: 14 }}
+              >
+                Close
               </button>
             </div>
           </div>
