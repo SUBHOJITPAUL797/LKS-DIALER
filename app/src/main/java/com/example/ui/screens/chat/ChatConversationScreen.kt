@@ -108,6 +108,63 @@ data class ReplyContext(
     val isOutgoing: Boolean   // direction of the ORIGINAL message being replied to
 )
 
+data class ParsedReply(
+    val replyMessageId: String,
+    val senderLabel: String,
+    val text: String
+)
+
+/** Formats a clean, readable preview text for a message when replying to it */
+fun formatReplyPreview(message: MessageEntity): String {
+    val rawText = message.text.trim()
+    val isAudio = message.mediaType == ChatMediaType.AUDIO.name ||
+        rawText.startsWith("voice_", ignoreCase = true) ||
+        rawText.endsWith(".m4a", ignoreCase = true) ||
+        rawText.contains("voice_", ignoreCase = true) ||
+        rawText.equals("Voice message", ignoreCase = true) ||
+        rawText.startsWith("🎤") ||
+        (message.mediaPath?.let { path ->
+            val ext = path.substringAfterLast('.', "").lowercase()
+            ext in listOf("m4a", "mp3", "aac", "wav", "ogg", "opus") || path.contains("voice_")
+        } == true)
+
+    if (isAudio) return "🎤 Voice message"
+
+    val isImage = message.mediaType == ChatMediaType.IMAGE.name ||
+        rawText.startsWith("[gif:") ||
+        rawText.endsWith(".gif", ignoreCase = true) ||
+        rawText.endsWith(".jpg", ignoreCase = true) ||
+        rawText.endsWith(".png", ignoreCase = true) ||
+        rawText.endsWith(".webp", ignoreCase = true)
+
+    if (isImage) {
+        return if (rawText.startsWith("[gif:") || rawText.endsWith(".gif", ignoreCase = true)) "🎬 GIF"
+        else if (rawText.isNotBlank() && !rawText.startsWith("img_")) "📷 $rawText"
+        else "📷 Photo"
+    }
+
+    if (message.mediaType == ChatMediaType.STICKER.name || rawText.startsWith("sticker_")) {
+        return "🦄 Sticker"
+    }
+
+    if (message.mediaType == ChatMediaType.DOCUMENT.name) {
+        val docName = when {
+            rawText.isNotBlank() && !rawText.startsWith("doc_") -> rawText
+            !message.mediaPath.isNullOrBlank() -> File(message.mediaPath).name
+            else -> "Document"
+        }
+        return "📄 $docName"
+    }
+
+    // Text message — extract if it's a JSON reply wrapper
+    return try {
+        val obj = JSONObject(rawText)
+        obj.optString("text", rawText)
+    } catch (_: Exception) {
+        rawText
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Main Screen
 // ──────────────────────────────────────────────────────────────────────────────
@@ -218,6 +275,7 @@ fun ChatConversationScreen(
 
     // Swipe-to-reply state
     var replyingTo by remember { mutableStateOf<ReplyContext?>(null) }
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     // One-time swipe gesture hint — persisted via SharedPreferences
     val prefs = remember { context.getSharedPreferences("lks_chat_prefs", android.content.Context.MODE_PRIVATE) }
     val hintAlreadySeen = remember { prefs.getBoolean("swipe_hint_seen", false) }
@@ -242,6 +300,38 @@ fun ChatConversationScreen(
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
 
     val listState = rememberLazyListState()
+
+    val onReplyQuoteClick: (String) -> Unit = { targetId ->
+        if (targetId.isNotBlank()) {
+            val index = messages.indexOfFirst { it.id == targetId }
+            if (index != -1) {
+                coroutineScope.launch {
+                    listState.animateScrollToItem(index)
+                    highlightedMessageId = targetId
+                    delay(1800)
+                    if (highlightedMessageId == targetId) {
+                        highlightedMessageId = null
+                    }
+                }
+            } else {
+                if (pageSize < totalMessageCount) {
+                    pageSize = (pageSize + 50).coerceAtMost(totalMessageCount)
+                    coroutineScope.launch {
+                        delay(300)
+                        val newIndex = messages.indexOfFirst { it.id == targetId }
+                        if (newIndex != -1) {
+                            listState.animateScrollToItem(newIndex)
+                            highlightedMessageId = targetId
+                            delay(1800)
+                            if (highlightedMessageId == targetId) {
+                                highlightedMessageId = null
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ── In-Chat Message Search state ──────────────────────────────────────────
     var isSearching by remember { mutableStateOf(false) }
@@ -886,7 +976,9 @@ fun ChatConversationScreen(
                                 transferProgress = activeTransfers[msg.id],
                                 onCancelTransfer = { chatRepository.cancelTransfer(msg.id) },
                                 isSearchMatch = isMsgMatched,
-                                isCurrentSearchMatch = isCurrentMsg
+                                isCurrentSearchMatch = isCurrentMsg,
+                                isHighlighted = (msg.id == highlightedMessageId),
+                                onReplyQuoteClick = onReplyQuoteClick
                             )
                         }
                     }
@@ -1051,6 +1143,9 @@ fun ChatConversationScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clickable {
+                                    replyingTo?.messageId?.let { onReplyQuoteClick(it) }
+                                }
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1071,13 +1166,24 @@ fun ChatConversationScreen(
                                         color = if (replyingTo!!.isOutgoing) TealPrimary else GreenCall
                                     )
                                 )
-                                Text(
-                                    text = replyingTo!!.text,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    val isVoice = replyingTo!!.text.contains("Voice message", ignoreCase = true) || replyingTo!!.text.startsWith("🎤")
+                                    if (isVoice) {
+                                        Icon(
+                                            Icons.Default.Mic,
+                                            contentDescription = null,
+                                            tint = if (replyingTo!!.isOutgoing) TealPrimary else GreenCall,
+                                            modifier = Modifier.size(14.dp).padding(end = 2.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = replyingTo!!.text.removePrefix("🎤 ").trim(),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             IconButton(
                                 onClick = { replyingTo = null },
@@ -2026,10 +2132,7 @@ fun ChatConversationScreen(
                         headlineContent = { Text("Reply") },
                         leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
                         modifier = Modifier.clickable {
-                            val previewText = try {
-                                val obj = org.json.JSONObject(targetMsg.text)
-                                obj.optString("text", targetMsg.text)
-                            } catch (_: Exception) { targetMsg.text }
+                            val previewText = formatReplyPreview(targetMsg)
                             replyingTo = ReplyContext(
                                 messageId = targetMsg.id,
                                 text = previewText,
@@ -2167,17 +2270,7 @@ private fun SwipeableMessageWrapper(
                     },
                     onDragEnd = {
                         if (isTriggered) {
-                            val previewText = when {
-                                message.mediaType == ChatMediaType.IMAGE.name -> "📷 Photo"
-                                message.mediaType == ChatMediaType.AUDIO.name -> "🎤 Voice message"
-                                message.mediaType == ChatMediaType.DOCUMENT.name -> "📄 ${message.text}"
-                                else -> run {
-                                    try {
-                                        val obj = JSONObject(message.text)
-                                        obj.optString("text", message.text)
-                                    } catch (_: Exception) { message.text }
-                                }
-                            }
+                            val previewText = formatReplyPreview(message)
                             val senderLabel = if (message.isOutgoing) myDisplayName else peerDisplayName
                             onReply(
                                 ReplyContext(
@@ -2508,7 +2601,9 @@ private fun MessageBubble(
     transferProgress: com.example.data.p2p.FileTransferProgress? = null,
     onCancelTransfer: () -> Unit = {},
     isSearchMatch: Boolean = false,
-    isCurrentSearchMatch: Boolean = false
+    isCurrentSearchMatch: Boolean = false,
+    isHighlighted: Boolean = false,
+    onReplyQuoteClick: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
@@ -2577,13 +2672,17 @@ private fun MessageBubble(
     }
 
     // Try to parse reply context from message text
-    val parsedReply: Pair<String, String>? = remember(message.text) {
+    val parsedReply: ParsedReply? = remember(message.text) {
         if (message.mediaType == ChatMediaType.TEXT.name) {
             try {
                 val obj = org.json.JSONObject(message.text)
                 if (obj.has("replyTo")) {
                     val replyTo = obj.getJSONObject("replyTo")
-                    Pair(replyTo.optString("senderLabel", ""), replyTo.optString("text", ""))
+                    ParsedReply(
+                        replyMessageId = replyTo.optString("id", ""),
+                        senderLabel = replyTo.optString("senderLabel", ""),
+                        text = replyTo.optString("text", "")
+                    )
                 } else null
             } catch (_: Exception) { null }
         } else null
@@ -2608,14 +2707,17 @@ private fun MessageBubble(
         contentAlignment = if (isOutgoing) Alignment.CenterEnd else Alignment.CenterStart
     ) {
         Surface(
-            color = bubbleColor,
+            color = if (isHighlighted) {
+                if (isOutgoing) TealPrimary.copy(alpha = 0.22f) else GreenCall.copy(alpha = 0.22f)
+            } else bubbleColor,
             shape = bubbleShape,
             border = when {
+                isHighlighted -> BorderStroke(2.5.dp, if (isOutgoing) TealPrimary else GreenCall)
                 isCurrentSearchMatch -> BorderStroke(2.5.dp, Color(0xFFFF3366))
                 isSearchMatch -> BorderStroke(2.dp, Color(0xFF00B4D8))
                 else -> null
             },
-            shadowElevation = if (isFrameless) 0.dp else if (isCurrentSearchMatch) 4.dp else 1.dp,
+            shadowElevation = if (isFrameless) 0.dp else if (isHighlighted || isCurrentSearchMatch) 4.dp else 1.dp,
             modifier = Modifier
                 .widthIn(
                     min = when {
@@ -2738,16 +2840,43 @@ private fun MessageBubble(
 
                 // ── Reply Quote ──────────────────────────────────────────────
                 if (parsedReply != null) {
-                    val (senderLbl, replyText) = parsedReply
+                    val (replyMsgId, senderLbl, rawReplyText) = parsedReply
+                    val isVoiceReply = rawReplyText.contains("voice_", ignoreCase = true) ||
+                            rawReplyText.endsWith(".m4a", ignoreCase = true) ||
+                            rawReplyText.equals("Voice message", ignoreCase = true) ||
+                            rawReplyText.contains("Voice message", ignoreCase = true) ||
+                            rawReplyText.startsWith("🎤")
+                    val isImageReply = !isVoiceReply && (rawReplyText.contains("📷") ||
+                            rawReplyText.contains("img_", ignoreCase = true) ||
+                            rawReplyText.endsWith(".jpg", ignoreCase = true) ||
+                            rawReplyText.endsWith(".png", ignoreCase = true) ||
+                            rawReplyText.startsWith("🎬"))
+
+                    val displayReplyText = when {
+                        isVoiceReply -> "Voice message"
+                        rawReplyText.startsWith("📄 voice_", ignoreCase = true) -> "Voice message"
+                        rawReplyText.startsWith("🎤 ") -> rawReplyText.removePrefix("🎤 ").trim()
+                        rawReplyText.startsWith("📷 ") -> rawReplyText.removePrefix("📷 ").trim()
+                        rawReplyText.startsWith("🎬 ") -> rawReplyText.removePrefix("🎬 ").trim()
+                        else -> rawReplyText
+                    }
+
                     Surface(
                         color = if (isOutgoing)
                             TealPrimary.copy(alpha = 0.12f)
                         else
                             GreenCall.copy(alpha = 0.10f),
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = replyMsgId.isNotBlank()) {
+                                onReplyQuoteClick(replyMsgId)
+                            }
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 4.dp)
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
@@ -2756,7 +2885,9 @@ private fun MessageBubble(
                                     .background(if (isOutgoing) TealPrimary else GreenCall)
                             )
                             Column(
-                                modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 8.dp, end = 8.dp, top = 2.dp, bottom = 2.dp)
                             ) {
                                 if (senderLbl.isNotBlank()) {
                                     Text(
@@ -2764,16 +2895,41 @@ private fun MessageBubble(
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.ExtraBold,
                                             color = if (isOutgoing) TealPrimary else GreenCall
-                                        )
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Text(
-                                    replyText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isVoiceReply) {
+                                        Icon(
+                                            Icons.Default.Mic,
+                                            contentDescription = null,
+                                            tint = if (isOutgoing) TealPrimary else GreenCall,
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .padding(end = 2.dp)
+                                        )
+                                    } else if (isImageReply) {
+                                        Icon(
+                                            Icons.Default.Image,
+                                            contentDescription = null,
+                                            tint = if (isOutgoing) TealPrimary else GreenCall,
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .padding(end = 2.dp)
+                                        )
+                                    }
+                                    Text(
+                                        displayReplyText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
