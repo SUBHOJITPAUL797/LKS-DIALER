@@ -549,10 +549,15 @@ class ChatRepository private constructor(private val context: Context) {
             return
         }
 
-        // Deduplication guard: if already processed and saved in Room DB, delete ephemeral relay document and skip
-        if (messageDao.getMessageById(dto.messageId) != null) {
-            try { docRef.delete().await() } catch (_: Exception) {}
-            return
+        // Deduplication guard: if already processed and saved in Room DB with valid media on disk, delete ephemeral relay document and skip
+        val existingMsg = messageDao.getMessageById(dto.messageId)
+        if (existingMsg != null) {
+            val isMediaExpected = dto.mediaType in listOf(ChatMediaType.IMAGE.name, ChatMediaType.AUDIO.name, ChatMediaType.DOCUMENT.name, ChatMediaType.STICKER.name)
+            val hasValidMedia = !existingMsg.mediaPath.isNullOrBlank() && File(existingMsg.mediaPath).exists()
+            if (!isMediaExpected || hasValidMedia) {
+                try { docRef.delete().await() } catch (_: Exception) {}
+                return
+            }
         }
 
         try {
@@ -661,9 +666,18 @@ class ChatRepository private constructor(private val context: Context) {
                     val fileSize = json.optLong("fileSize", 0L)
 
                     val ext = fileName.substringAfterLast('.', "").lowercase()
-                    val isAudio = ext == "m4a" || ext == "mp3" || ext == "aac" || ext == "wav" || ext == "ogg"
-                    val inferredType = if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.DOCUMENT.name
-                    val placeholderText = if (isAudio) "Voice message" else fileName
+                    val isAudio = ext in listOf("m4a", "mp3", "aac", "wav", "ogg", "opus")
+                    val isImg = ext in listOf("jpg", "jpeg", "png", "webp", "gif")
+                    val inferredType = when {
+                        isAudio -> ChatMediaType.AUDIO.name
+                        isImg -> ChatMediaType.IMAGE.name
+                        else -> ChatMediaType.DOCUMENT.name
+                    }
+                    val placeholderText = when {
+                        isAudio -> "Voice message"
+                        isImg -> "Photo"
+                        else -> fileName
+                    }
 
                     // 1. Insert a placeholder message in Room DB if first chunk arrives so recipient sees card immediately
                     val existingMsg = messageDao.getMessageById(parentId)
@@ -715,7 +729,11 @@ class ChatRepository private constructor(private val context: Context) {
                     var allPresent = (receivedCount == totalChunks)
 
                     if (allPresent) {
-                        val prefix = if (isAudio) "voice_" else "doc_"
+                        val prefix = when {
+                            isAudio -> "voice_"
+                            isImg -> "img_"
+                            else -> "doc_"
+                        }
                         val finalFile = File(ensureMediaDirectory(), "${prefix}${parentId}.$ext")
                         FileOutputStream(finalFile).use { fos ->
                             for (i in 0 until totalChunks) {
@@ -728,12 +746,24 @@ class ChatRepository private constructor(private val context: Context) {
                         }
                         try { chunksDir.delete() } catch (_: Exception) {}
 
-                        val resolvedType = if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.DOCUMENT.name
-                        val resolvedText = if (isAudio) "Voice message" else fileName
-                        val summaryText = if (isAudio) "🎤 Voice message" else "📄 $fileName"
+                        val resolvedType = when {
+                            isAudio -> ChatMediaType.AUDIO.name
+                            isImg -> ChatMediaType.IMAGE.name
+                            else -> ChatMediaType.DOCUMENT.name
+                        }
+                        val resolvedText = when {
+                            isAudio -> "Voice message"
+                            isImg -> if (fileName.startsWith("img_")) "Photo" else fileName
+                            else -> fileName
+                        }
+                        val summaryText = when {
+                            isAudio -> "🎤 Voice message"
+                            isImg -> "📷 Photo"
+                            else -> "📄 $fileName"
+                        }
 
-                        // Update placeholder with assembled file path
-                        messageDao.updateMessageMedia(parentId, finalFile.absolutePath)
+                        // Update placeholder with assembled file path and resolved media type
+                        messageDao.updateMessageMediaAndType(parentId, finalFile.absolutePath, resolvedType)
                         val messageEntity = messageDao.getMessageById(parentId) ?: MessageEntity(
                             id = parentId,
                             conversationId = targetConvPhone,
@@ -1402,7 +1432,59 @@ class ChatRepository private constructor(private val context: Context) {
             // Register current coroutine Job for instant cancellation
             coroutineContext[kotlinx.coroutines.Job]?.let { activeTransferJobs[messageId] = it }
 
-            // ── ATTEMPT P2P FIRST (WebRTC DataChannel) ───────────────────────────
+            // ── DIRECT INLINE MEDIA: Images, Stickers, and Audio (< 600 KB) ──
+            val isDirectMedia = isImage || isSticker || (isAudio && savedFile.length() <= 600 * 1024L)
+            if (isDirectMedia) {
+                try {
+                    val fileBytes = savedFile.readBytes()
+                    val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+                    val json = when {
+                        isImage -> JSONObject().apply {
+                            put("caption", text)
+                            put("bytes", base64Data)
+                            put("ext", savedFile.extension.ifBlank { "jpg" })
+                        }
+                        isSticker -> JSONObject().apply {
+                            put("caption", text.ifBlank { "Sticker" })
+                            put("bytes", base64Data)
+                            put("ext", savedFile.extension.ifBlank { "png" })
+                        }
+                        else -> JSONObject().apply {
+                            put("duration", mediaDurationMs)
+                            put("bytes", base64Data)
+                        }
+                    }
+                    val (ciphertext, iv) = cryptoManager.encrypt(json.toString(), recipientPublicKey)
+                    val chatDto = ChatMessageDto(
+                        messageId = messageId,
+                        senderNumber = myPhone,
+                        recipientNumber = canonicalRecipient,
+                        senderPublicKey = cryptoManager.getMyPublicKeyBase64(),
+                        ciphertext = ciphertext,
+                        iv = iv,
+                        mediaType = if (isSticker) ChatMediaType.STICKER.name else if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.IMAGE.name,
+                        mediaDurationMs = if (isAudio) mediaDurationMs else 0L,
+                        timestamp = now
+                    )
+                    firestore.collection("inboxes")
+                        .document(canonicalRecipient)
+                        .collection("messages")
+                        .document(messageId)
+                        .set(chatDto)
+                        .await()
+
+                    Log.d(TAG, "${mediaType.name} delivered directly via encrypted relay for $messageId ⚡")
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, chatDto.mediaType, messageId)
+                    return@withContext Result.success(messageEntity)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send direct media: ${e.message}", e)
+                    // If inline direct fails unexpectedly, proceed to fallback below
+                }
+            }
+
+            // ── LARGE DOCUMENT / FILE: ATTEMPT P2P FIRST (WebRTC DataChannel) ─────
             Log.d(TAG, "Attempting P2P DataChannel transfer for $messageId (${mediaType.name}) to $canonicalRecipient ⚡")
             val p2p = P2pFileTransfer(context)
             activeP2pTransfers[messageId] = p2p

@@ -28,6 +28,10 @@ interface MessageDao {
     @Query("UPDATE messages SET mediaPath = :mediaPath WHERE id = :messageId")
     suspend fun updateMessageMedia(messageId: String, mediaPath: String)
 
+    /** Updates both mediaPath and mediaType for a message after chunk/P2P assembly completes. */
+    @Query("UPDATE messages SET mediaPath = :mediaPath, mediaType = :mediaType WHERE id = :messageId")
+    suspend fun updateMessageMediaAndType(messageId: String, mediaPath: String, mediaType: String)
+
     @Query("UPDATE messages SET status = :newStatus WHERE (conversationId = :conversationId OR (length(:last10Digits) >= 7 AND conversationId LIKE '%' || :last10Digits)) AND isOutgoing = 1 AND status != :newStatus AND (status != 'READ' OR :newStatus = 'READ')")
     suspend fun updateOutgoingMessagesStatus(conversationId: String, last10Digits: String, newStatus: String)
 

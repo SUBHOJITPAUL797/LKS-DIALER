@@ -3505,7 +3505,7 @@ private fun MessageBubble(
                             else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
                             else String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f))
                         } else if (!isOutgoing && !hasFile) {
-                            "Transferring document..."
+                            if (ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF")) "Transfer incomplete" else "Transferring document..."
                         } else ""
                     }
 
@@ -3543,7 +3543,12 @@ private fun MessageBubble(
                                                 }
                                             }
                                         } else {
-                                            Toast.makeText(context, if (isVideo) "Video is transferring..." else "Document is preparing or saved elsewhere", Toast.LENGTH_SHORT).show()
+                                            val msg = when {
+                                                isVideo -> "Video is transferring..."
+                                                ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF") -> "Photo transfer could not complete. Please resend."
+                                                else -> "Document is preparing or saved elsewhere"
+                                            }
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                         }
                                     },
                                     onLongPress = {
