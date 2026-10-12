@@ -47,6 +47,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var timerJob: Job? = null
     private var reconnectJob: Job? = null
     private var resetIdleJob: Job? = null
+    private var videoUpgradeWatchdogJob: Job? = null
 
     private var hasProcessedOffer = false
     private var hasProcessedAnswer = false
@@ -507,7 +508,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                         _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
                     }
                     if (track is VideoTrack) {
-                        _state.value = _state.value.copy(remoteVideoTrack = track)
+                        videoUpgradeWatchdogJob?.cancel()
+                        videoUpgradeWatchdogJob = null
+                        _state.value = _state.value.copy(
+                            remoteVideoTrack = track,
+                            callType = CallType.VIDEO,
+                            connectionStatusText = "Connected • WebRTC"
+                        )
                     } else if (track is AudioTrack) {
                         try {
                             track.setEnabled(shouldEnable)
@@ -1404,19 +1411,33 @@ class WebRtcEngine private constructor(private val context: Context) {
                             executeVideoUpgrade(isCaller)
                         }
 
-                        if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.DECLINED && _state.value.callType == CallType.AUDIO) {
+                        if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.DECLINED) {
+                            if (_state.value.callType == CallType.VIDEO) {
+                                revertToAudioCall("Video Declined • Switched to Audio")
+                            }
                             if (_state.value.didIRequestVideoUpgrade) {
                                 // Show a toast or update state so the requester knows it was declined
-                                _state.value = _state.value.copy(connectionStatusText = "Video Request Declined")
+                                _state.value = _state.value.copy(
+                                    connectionStatusText = "Video Request Declined",
+                                    didIRequestVideoUpgrade = false
+                                )
                                 scope.launch {
                                     delay(3000)
-                                    if (_state.value.callStatus == CallStatus.ANSWERED) {
+                                    if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
                                         _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
                                     }
                                 }
                                 // Reset the status so we can request again
                                 firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
                             }
+                        }
+
+                        // Fallback: If remote callType reverted to AUDIO while local is still in VIDEO
+                        if (call.callType == CallType.AUDIO && _state.value.callType == CallType.VIDEO &&
+                            call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.REQUESTED &&
+                            call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.ACCEPTED) {
+                            Log.i("WebRtcEngine", "Remote callType is AUDIO while local is VIDEO -> reverting to AUDIO")
+                            revertToAudioCall("Switched to Audio")
                         }
 
                         // ICE Restart Requested by Peer (e.g. mobile network dropped to No Service while on Wi-Fi)
@@ -1569,6 +1590,53 @@ class WebRtcEngine private constructor(private val context: Context) {
             .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
     }
 
+    fun revertToAudioCall(reason: String = "Switched to Audio") {
+        if (_state.value.callType != CallType.VIDEO) return
+        Log.i("WebRtcEngine", "reverting to audio call: reason=$reason")
+        videoUpgradeWatchdogJob?.cancel()
+        videoUpgradeWatchdogJob = null
+
+        // 1. Stop video capturer and dispose local video track
+        try {
+            videoCapturer?.stopCapture()
+        } catch (_: Exception) {}
+
+        try {
+            _state.value.localVideoTrack?.setEnabled(false)
+            _state.value.localVideoTrack?.dispose()
+        } catch (_: Exception) {}
+
+        // 2. Remove video track from peer connection senders
+        try {
+            peerConnection?.senders?.find { it.track() is VideoTrack }?.let { sender ->
+                sender.setTrack(null, false)
+            }
+        } catch (_: Exception) {}
+
+        // 3. Update state back to AUDIO
+        _state.value = _state.value.copy(
+            callType = CallType.AUDIO,
+            localVideoTrack = null,
+            remoteVideoTrack = null,
+            isCameraOn = false,
+            isVideoUpgradeRequested = false,
+            didIRequestVideoUpgrade = false,
+            connectionStatusText = reason
+        )
+
+        // 4. Reconfigure audio routing for audio call
+        configureAudio(CallType.AUDIO)
+        refreshAvailableAudioDevices(defaultCallType = CallType.AUDIO)
+
+        // 5. Restore connection status text after 3 seconds
+        scope.launch {
+            delay(3000)
+            if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
+                _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+            }
+        }
+    }
+
     private fun executeVideoUpgrade(isCaller: Boolean) {
         val currentCall = _state.value.activeCall ?: return
         
@@ -1579,12 +1647,29 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         
         // 2. Update UI state to video
-        _state.value = _state.value.copy(callType = CallType.VIDEO)
+        _state.value = _state.value.copy(callType = CallType.VIDEO, connectionStatusText = "Connecting Video...")
         if (_state.value.selectedAudioDevice != AudioDeviceType.BLUETOOTH && _state.value.selectedAudioDevice != AudioDeviceType.WIRED_HEADSET) {
             selectAudioDeviceType(AudioDeviceType.SPEAKERPHONE)
         }
         
-        // 3. Caller creates new offer for renegotiation
+        // 3. Start 10-second watchdog timer: If remote video is not received within 10s, auto-revert to audio!
+        videoUpgradeWatchdogJob?.cancel()
+        videoUpgradeWatchdogJob = scope.launch {
+            delay(10000)
+            if (_state.value.callType == CallType.VIDEO && _state.value.remoteVideoTrack == null && _state.value.callStatus == CallStatus.ANSWERED) {
+                Log.w("WebRtcEngine", "Video renegotiation watchdog timed out after 10s — safely reverting to audio")
+                revertToAudioCall("Video Timeout • Continued on Audio")
+                try {
+                    firestore.collection("calls").document(currentCall.callId)
+                        .update(
+                            "videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name,
+                            "callType", CallType.AUDIO.name
+                        )
+                } catch (_: Exception) {}
+            }
+        }
+
+        // 4. Caller creates new offer for renegotiation
         if (isCaller) {
             val constraints = MediaConstraints()
             constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
@@ -1947,6 +2032,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         timerJob = null
         reconnectJob?.cancel()
         reconnectJob = null
+        videoUpgradeWatchdogJob?.cancel()
+        videoUpgradeWatchdogJob = null
         activeCallListener?.remove()
         activeCallListener = null
         iceCandidateListener?.remove()

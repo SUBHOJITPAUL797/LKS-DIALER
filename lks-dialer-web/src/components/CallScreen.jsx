@@ -9,6 +9,7 @@ export default function CallScreen({ callData, onEndCall }) {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [videoUpgradeRequested, setVideoUpgradeRequested] = useState(false);
+  const [upgradeNotice, setUpgradeNotice] = useState("");
   const [audioOutputs, setAudioOutputs] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [showDeviceModal, setShowDeviceModal] = useState(false);
@@ -71,11 +72,19 @@ export default function CallScreen({ callData, onEndCall }) {
     }
 
     webRtcEngine.onVideoUpgradeRequested = () => setVideoUpgradeRequested(true);
-    webRtcEngine.onVideoUpgradeDeclined = () => alert("Video upgrade was declined.");
+    webRtcEngine.onVideoUpgradeDeclined = () => {
+      setUpgradeNotice("Video upgrade was declined by the other party.");
+      setTimeout(() => setUpgradeNotice(""), 4500);
+    };
+    webRtcEngine.onVideoUpgradeFailed = (errMsg) => {
+      setUpgradeNotice("📷 Camera not detected or permission denied. Continued as audio call.");
+      setTimeout(() => setUpgradeNotice(""), 5000);
+    };
 
     return () => {
       webRtcEngine.onVideoUpgradeRequested = null;
       webRtcEngine.onVideoUpgradeDeclined = null;
+      webRtcEngine.onVideoUpgradeFailed = null;
     };
   }, []);
 
@@ -143,6 +152,30 @@ export default function CallScreen({ callData, onEndCall }) {
   return (
     <div style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-color)', overflow: 'hidden' }}>
       
+      {/* Floating Notice / Upgrade Feedback Banner */}
+      {upgradeNotice && (
+        <div style={{
+          position: 'absolute', top: '24px', left: '50%', transform: 'translateX(-50%)',
+          backgroundColor: '#000', color: '#fff', padding: '10px 24px', borderRadius: '24px',
+          fontWeight: '800', fontSize: '14px', zIndex: 100, border: '2px solid var(--accent, #FFD600)',
+          boxShadow: '0 6px 16px rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', gap: '8px'
+        }}>
+          <span>{upgradeNotice}</span>
+        </div>
+      )}
+
+      {callData.videoUpgradeStatus === 'REQUESTED' && webRtcEngine.didIRequestVideoUpgrade && !upgradeNotice && (
+        <div style={{
+          position: 'absolute', top: '24px', left: '50%', transform: 'translateX(-50%)',
+          backgroundColor: '#000', color: '#fff', padding: '8px 20px', borderRadius: '24px',
+          fontWeight: '800', fontSize: '13px', zIndex: 100, border: '1px solid #444',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', gap: '10px'
+        }}>
+          <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#00E676', display: 'inline-block' }}></span>
+          <span>Requesting Video Call... Waiting for answer</span>
+        </div>
+      )}
+
       {/* Remote Video / Audio (Full Screen) */}
       {isVideoCall ? (
         <video
@@ -301,7 +334,10 @@ export default function CallScreen({ callData, onEndCall }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
               backgroundColor: 'var(--secondary)'
             }} 
-            onClick={() => webRtcEngine.requestVideoUpgrade()}
+            onClick={async () => {
+              setUpgradeNotice("Requesting video call...");
+              await webRtcEngine.requestVideoUpgrade();
+            }}
             title="Request Video Call"
           >
             <Video size={28} color="#000" />

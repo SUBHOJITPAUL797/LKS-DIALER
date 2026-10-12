@@ -947,10 +947,12 @@ class WebRtcEngine {
     this.callUnsubscribers = [];
     this.hasProcessedAnswer = false;
     this.hasProcessedOffer = false;
+    this.lastProcessedAnswerSdp = null;
     this.didIRequestVideoUpgrade = false;
     this.isVideoUpgradeRequested = false;
     this.isUpgradingVideo = false;
     this.pendingOffer = null;
+    this.onVideoUpgradeFailed = null;
     if (this.onCallStateChange) this.onCallStateChange(null);
   }
 
@@ -988,15 +990,29 @@ class WebRtcEngine {
         if (!data.videoUpgradeStatus) this.didIRequestVideoUpgrade = false;
       }
 
-      if (data.videoUpgradeStatus === 'ACCEPTED' && data.callType === 'AUDIO') {
+      if (data.videoUpgradeStatus === 'ACCEPTED' && data.callType === 'AUDIO' && !this.isUpgradingVideo) {
         this.executeVideoUpgrade(isCaller);
       }
 
-      if (data.videoUpgradeStatus === 'DECLINED' && data.callType === 'AUDIO') {
+      if (data.videoUpgradeStatus === 'DECLINED') {
         if (this.didIRequestVideoUpgrade) {
           if (this.onVideoUpgradeDeclined) this.onVideoUpgradeDeclined();
-          updateDoc(callDoc, { videoUpgradeStatus: null });
+          updateDoc(callDoc, { videoUpgradeStatus: null }).catch(() => {});
           this.didIRequestVideoUpgrade = false;
+        }
+        // If local stream had acquired video, revert cleanly to audio
+        if (data.callType === 'AUDIO' && this.localStream) {
+          const videoTracks = this.localStream.getVideoTracks();
+          videoTracks.forEach(t => {
+            t.stop();
+            this.localStream.removeTrack(t);
+          });
+          const senders = this.peerConnection?.getSenders() || [];
+          const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+          if (videoSender) {
+            try { this.peerConnection.removeTrack(videoSender); } catch (_) {}
+          }
+          if (this.onLocalStream) this.onLocalStream(this.localStream);
         }
       }
 
@@ -1004,12 +1020,18 @@ class WebRtcEngine {
 
       if (isCaller && !this.hasProcessedAnswer && answerObj) {
         this.hasProcessedAnswer = true;
+        this.lastProcessedAnswerSdp = answerObj.sdp;
         this.peerConnection.setRemoteDescription(new RTCSessionDescription(answerObj));
       }
 
-      // Handle renegotiated answer if caller
+      // Handle renegotiated answer if caller (prevent race condition with old audio answer)
       if (isCaller && this.hasProcessedAnswer && answerObj && this.peerConnection.signalingState === 'have-local-offer') {
-        this.peerConnection.setRemoteDescription(new RTCSessionDescription(answerObj));
+        if (answerObj.sdp !== this.lastProcessedAnswerSdp) {
+          this.lastProcessedAnswerSdp = answerObj.sdp;
+          console.log("[WebRtcEngine] Applying renegotiated answer SDP for video upgrade");
+          this.peerConnection.setRemoteDescription(new RTCSessionDescription(answerObj))
+            .catch(err => console.error("[WebRtcEngine] Error applying renegotiated remote answer:", err));
+        }
       }
 
       // Handle renegotiated offer if callee
@@ -1141,24 +1163,30 @@ class WebRtcEngine {
   }
 
   async executeVideoUpgrade(isCaller) {
-    if (!this.activeCallId) return;
+    if (!this.activeCallId || !this.peerConnection || this.isUpgradingVideo) return;
 
     this.isUpgradingVideo = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }, 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          googEchoCancellation: true,
-          googAutoGainControl: true,
-          googNoiseSuppression: true,
-          googHighpassFilter: true,
-          channelCount: 1
+      // 1. Acquire video track (video ONLY, never re-request audio as audio is already live)
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }
+        });
+      } catch (err1) {
+        console.warn("[WebRtcEngine] Specific facingMode failed, falling back to default camera:", err1);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        } catch (err2) {
+          console.error("[WebRtcEngine] No camera device found or permission denied:", err2);
+          throw err2;
         }
-      });
+      }
+
       const videoTrack = stream.getVideoTracks()[0];
+      if (!videoTrack) {
+        throw new Error("No video track produced by camera device");
+      }
       
       // Update local stream
       this.localStream.addTrack(videoTrack);
@@ -1181,24 +1209,46 @@ class WebRtcEngine {
 
       // If caller, we renegotiate SDP by creating a new offer
       if (isCaller) {
+        // Record current answer SDP so listener won't apply stale audio answer
+        const callSnap = await getDoc(doc(db, 'calls', this.activeCallId));
+        const callData = callSnap.data();
+        if (callData?.answerSdp) {
+          this.lastProcessedAnswerSdp = callData.answerSdp;
+        }
+
         const offerDescription = await this.peerConnection.createOffer();
         await this.peerConnection.setLocalDescription(offerDescription);
         
         await updateDoc(doc(db, 'calls', this.activeCallId), {
           offer: { type: offerDescription.type, sdp: offerDescription.sdp },
           offerSdp: offerDescription.sdp,
+          callType: 'VIDEO',
           videoUpgradeStatus: null // reset
         });
       } else {
         // If callee, wait for the new offer, setRemoteDescription, createAnswer
         // This is handled in listenToActiveCall where it checks offerSdp change
         await updateDoc(doc(db, 'calls', this.activeCallId), {
+          callType: 'VIDEO',
           videoUpgradeStatus: null
         });
       }
     } catch (e) {
-      console.error("Failed to upgrade to video:", e);
-      if (this.onCallStateChange) this.onCallStateChange("Video Error");
+      console.error("[WebRtcEngine] Failed to upgrade to video:", e);
+      // Revert Firestore status so remote Android peer is NOT stuck in "Connecting..."
+      if (this.activeCallId) {
+        try {
+          await updateDoc(doc(db, 'calls', this.activeCallId), {
+            videoUpgradeStatus: 'DECLINED',
+            callType: 'AUDIO'
+          });
+        } catch (err) {
+          console.error("[WebRtcEngine] Failed to reset videoUpgradeStatus on error:", err);
+        }
+      }
+      if (this.onVideoUpgradeFailed) {
+        this.onVideoUpgradeFailed(e?.message || "Camera not detected");
+      }
     } finally {
       this.isUpgradingVideo = false;
       if (this.pendingOffer) {
