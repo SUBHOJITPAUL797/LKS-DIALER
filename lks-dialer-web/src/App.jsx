@@ -251,8 +251,19 @@ function App() {
   const handleStartCall = async (number, type) => {
     try {
       await webRtcEngine.startCall(number, type);
+      if (webRtcEngine.hasNoMicrophone) {
+        alert("⚠️ Note: No microphone was detected on your PC.\n\nYou are connected in Listen-Only mode (you can hear the other party, but they cannot hear you until you plug in a microphone or headset).");
+      } else if (webRtcEngine.hasNoCamera && type === 'VIDEO') {
+        alert("ℹ️ Note: No webcam was detected on your PC.\n\nThe call was started as an audio call.");
+      }
     } catch (e) {
-      alert(e.message);
+      if (e.name === 'NotFoundError' || e.message?.toLowerCase().includes('device not found')) {
+        alert("🎙️ Microphone / Camera Not Found\n\nNo audio or video input device was detected on your computer.\n\nPlease plug in a microphone, headset, or webcam and try again.");
+      } else if (e.name === 'NotAllowedError' || e.message?.toLowerCase().includes('permission')) {
+        alert("🔒 Microphone Permission Blocked\n\nPlease click the lock or site settings icon in your browser address bar (next to lksdialerweb.pages.dev) and set Microphone to 'Allow'.");
+      } else {
+        alert("Could not start call: " + e.message);
+      }
     }
   };
 
@@ -260,10 +271,19 @@ function App() {
     if (incomingCall) {
       try {
         await webRtcEngine.acceptCall(incomingCall.id, incomingCall.offer, incomingCall.callType);
+        if (webRtcEngine.hasNoMicrophone) {
+          alert("⚠️ Note: No microphone was detected on your PC.\n\nYou are connected in Listen-Only mode. Please connect a headset or microphone to speak.");
+        }
         setIncomingCall(null);
       } catch (e) {
         console.error("Failed to answer call:", e);
-        alert("Failed to answer call: " + e.message + "\nPlease check your camera/microphone permissions.");
+        if (e.name === 'NotFoundError' || e.message?.toLowerCase().includes('device not found')) {
+          alert("🎙️ Microphone Not Found\n\nNo audio device was detected on your computer. Please plug in a microphone or headset to answer this call.");
+        } else if (e.name === 'NotAllowedError' || e.message?.toLowerCase().includes('permission')) {
+          alert("🔒 Permission Denied\n\nPlease allow Microphone access in your browser to answer calls.");
+        } else {
+          alert("Failed to answer call: " + e.message + "\nPlease check your camera/microphone permissions.");
+        }
       }
     }
   };

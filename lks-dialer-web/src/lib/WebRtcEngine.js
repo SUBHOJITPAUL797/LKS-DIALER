@@ -254,29 +254,124 @@ class WebRtcEngine {
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => t.stop());
     }
-    
-    try {
-      const audioConstraints = {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        googEchoCancellation: true,
-        googAutoGainControl: true,
-        googNoiseSuppression: true,
-        googHighpassFilter: true,
-        channelCount: 1
-      };
-      const constraints = {
-        audio: audioConstraints,
-        video: callType === 'VIDEO' ? { facingMode: this.isFrontCamera ? 'user' : 'environment' } : false
-      };
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      if (this.onLocalStream) this.onLocalStream(this.localStream);
-      return this.localStream;
-    } catch (e) {
-      console.error("Error accessing media devices.", e);
-      throw e;
+
+    this.hasNoMicrophone = false;
+    this.hasNoCamera = false;
+
+    // Check available input devices if enumerateDevices is supported
+    let availableDevices = [];
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+      try {
+        availableDevices = await navigator.mediaDevices.enumerateDevices();
+      } catch (err) {
+        console.warn("Could not enumerate media devices:", err);
+      }
     }
+
+    const hasAudioInput = availableDevices.some(d => d.kind === 'audioinput');
+    const hasVideoInput = availableDevices.some(d => d.kind === 'videoinput');
+
+    // If VIDEO call was requested, check if a camera is actually plugged into the PC
+    let wantVideo = callType === 'VIDEO';
+    if (wantVideo && availableDevices.length > 0 && !hasVideoInput) {
+      console.warn("User requested VIDEO call, but no videoinput camera was found on this system. Falling back to AUDIO call.");
+      wantVideo = false;
+      this.hasNoCamera = true;
+    }
+
+    const audioConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    };
+
+    let stream = null;
+
+    if (wantVideo) {
+      // Try facingMode first; if that fails (desktop webcams often don't support facingMode constraint), retry with video: true
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: audioConstraints,
+          video: { facingMode: this.isFrontCamera ? 'user' : 'environment' }
+        });
+      } catch (err1) {
+        console.warn("getUserMedia with facingMode failed, retrying with simple video: true", err1);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: true
+          });
+        } catch (err2) {
+          console.warn("getUserMedia with video: true failed, falling back to audio only", err2);
+          wantVideo = false;
+          this.hasNoCamera = true;
+        }
+      }
+    }
+
+    // Audio-only or if video failed back to audio
+    if (!stream) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      } catch (errAudio) {
+        console.warn("getUserMedia with audioConstraints failed, retrying with basic audio: true", errAudio);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (errBasicAudio) {
+          console.warn("getUserMedia with basic audio: true failed:", errBasicAudio);
+
+          const isNotFoundError = 
+            errBasicAudio.name === 'NotFoundError' || 
+            errBasicAudio.name === 'DevicesNotFoundError' ||
+            (errBasicAudio.message && errBasicAudio.message.toLowerCase().includes('device not found'));
+
+          if (isNotFoundError) {
+            // No physical microphone hardware is plugged into this computer!
+            // Create a silent audio track using Web Audio API so the user can still connect and LISTEN to the call!
+            console.warn("No physical microphone found on this device. Initializing Listen-Only silent audio track.");
+            this.hasNoMicrophone = true;
+
+            try {
+              const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+              if (AudioContextClass) {
+                const ctx = new AudioContextClass();
+                const oscillator = ctx.createOscillator();
+                const dst = ctx.createMediaStreamDestination();
+                oscillator.connect(dst);
+                oscillator.start();
+                const dummyTrack = dst.stream.getAudioTracks()[0];
+                if (dummyTrack) {
+                  dummyTrack.enabled = false;
+                  stream = new MediaStream([dummyTrack]);
+                }
+              }
+            } catch (dummyErr) {
+              console.error("Failed to create dummy audio track:", dummyErr);
+            }
+
+            if (!stream) {
+              const friendlyError = new Error(
+                "No microphone was found on your computer.\n\nPlease plug in a microphone, headset, or earphones to make calls."
+              );
+              friendlyError.name = "NotFoundError";
+              throw friendlyError;
+            }
+          } else if (errBasicAudio.name === 'NotAllowedError' || errBasicAudio.name === 'PermissionDeniedError') {
+            const friendlyError = new Error(
+              "Microphone permission is blocked in your browser.\n\nPlease click the lock or site settings icon in your browser address bar and allow Microphone access."
+            );
+            friendlyError.name = "NotAllowedError";
+            throw friendlyError;
+          } else {
+            throw errBasicAudio;
+          }
+        }
+      }
+    }
+
+    this.localStream = stream;
+    if (this.onLocalStream) this.onLocalStream(this.localStream);
+    return this.localStream;
   }
 
   createPeerConnection(isCaller = false) {
