@@ -216,29 +216,24 @@ export default function CallScreen({ callData, onEndCall }) {
           position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
         }}>
-          <div style={{
-            width: '160px', height: '160px', borderRadius: '50%',
-            backgroundColor: 'var(--accent)', border: '4px solid #000',
-            boxShadow: '8px 8px 0 #000', overflow: 'hidden',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', 
-            marginBottom: '40px'
-          }}>
-            {peerAvatar ? (
+          {peerAvatar && (
+            <div style={{
+              width: '140px', height: '140px', borderRadius: '50%',
+              backgroundColor: 'var(--accent)', border: '4px solid #000',
+              boxShadow: '8px 8px 0 #000', overflow: 'hidden',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', 
+              marginBottom: '32px'
+            }}>
               <img 
                 src={peerAvatar} 
                 alt={peerName} 
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 onError={(e) => {
-                  e.target.style.display = 'none';
-                  if (e.target.nextSibling) e.target.nextSibling.style.display = 'block';
+                  if (e.target.parentElement) e.target.parentElement.style.display = 'none';
                 }}
               />
-            ) : (
-              <span style={{ fontSize: '72px', fontWeight: '900', color: '#000' }}>
-                {peerName?.[0]?.toUpperCase() || '?'}
-              </span>
-            )}
-          </div>
+            </div>
+          )}
           <h2 style={{ fontSize: '40px', fontWeight: '900', marginBottom: '8px', textTransform: 'uppercase', textAlign: 'center' }}>
             {peerName}
           </h2>

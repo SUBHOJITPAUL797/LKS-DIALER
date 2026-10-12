@@ -12,18 +12,21 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * CallAudioRecorder
  *
- * Lightweight, crash-proof in-call audio recorder.
- * Captures real-time PCM audio from WebRTC's JavaAudioDeviceModule without opening
- * conflicting AudioRecord instances.
- * Encodes audio into high-fidelity AAC (.m4a) with streamable ADTS framing.
+ * Lightweight, crash-proof in-call 2-way audio recorder.
+ * Captures real-time PCM audio from both parties:
+ * 1. Local party: captured from WebRTC's JavaAudioDeviceModule (Microphone)
+ * 2. Remote party: captured from WebRTC's WebRtcAudioTrack playout sink
+ *
+ * Mixes both audio streams in real-time with clipping protection and encodes into
+ * high-fidelity AAC (.m4a) with streamable ADTS framing at 16,000 Hz HD Voice.
  * If call disconnects abruptly or power is lost, recorded frames up to that exact
  * millisecond remain completely intact and playable.
  */
@@ -31,9 +34,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "CallAudioRecorder"
-        private const val AAC_BITRATE = 64_000 // 64 kbps (crystal clear voice)
-        private const val DEFAULT_SAMPLE_RATE = 16_000
-        private const val DEFAULT_CHANNELS = 1
+        private const val AAC_BITRATE = 64_000 // 64 kbps (crystal clear speech)
+        private const val RECORD_SAMPLE_RATE = 16_000 // 16 kHz HD Voice Wideband
+        private const val RECORD_CHANNELS = 1 // Mono (mixed local + remote)
 
         @Volatile
         private var instance: CallAudioRecorder? = null
@@ -74,11 +77,8 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private var mediaCodec: MediaCodec? = null
     private var isCodecInitialized = false
 
-    private var currentSampleRate = DEFAULT_SAMPLE_RATE
-    private var currentChannels = DEFAULT_CHANNELS
     private var recordingStartTime = 0L
-
-    private val pcmQueue = ConcurrentLinkedQueue<ByteArray>()
+    private val mixerBuffer = AudioMixerBuffer()
     private var encodeJob: Job? = null
     private var timerRunnable: Runnable? = null
 
@@ -112,9 +112,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
             _activeRecordingCallId.value = callId
             recordingStartTime = System.currentTimeMillis()
             _recordingDurationSeconds.value = 0
-            _isRecording.value = true
-            pcmQueue.clear()
+            mixerBuffer.clear()
             isCodecInitialized = false
+            _isRecording.value = true
 
             // Start 1-second UI duration timer
             startDurationTimer()
@@ -122,7 +122,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
             // Launch background processing loop
             startEncodeLoop()
 
-            Log.i(TAG, "🎙️ Call recording STARTED: ${file.absolutePath} for callId: $callId")
+            Log.i(TAG, "🎙️ Dual-party call recording STARTED: ${file.absolutePath} for callId: $callId")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording: ${e.message}", e)
@@ -132,16 +132,28 @@ class CallAudioRecorder private constructor(private val context: Context) {
     }
 
     /**
-     * Receives raw PCM audio samples from WebRTC's JavaAudioDeviceModule.
-     * Safely enqueues the audio frames for AAC encoding without blocking the WebRTC audio thread.
+     * Receives raw PCM audio samples from local microphone (WebRTC JavaAudioDeviceModule).
+     */
+    fun onLocalPcmSamples(sampleRate: Int, channelCount: Int, pcmData: ByteArray) {
+        if (!_isRecording.value || pcmData.isEmpty()) return
+        val normalized = normalizeTo16kMono(pcmData, sampleRate, channelCount)
+        mixerBuffer.pushLocal(normalized)
+    }
+
+    /**
+     * Receives raw PCM audio samples from remote party (WebRTC WebRtcAudioTrack playout).
+     */
+    fun onRemotePcmSamples(sampleRate: Int, channelCount: Int, pcmData: ByteArray) {
+        if (!_isRecording.value || pcmData.isEmpty()) return
+        val normalized = normalizeTo16kMono(pcmData, sampleRate, channelCount)
+        mixerBuffer.pushRemote(normalized)
+    }
+
+    /**
+     * Backwards-compatible fallback: routes to onLocalPcmSamples.
      */
     fun onPcmSamples(sampleRate: Int, channelCount: Int, pcmData: ByteArray) {
-        if (!_isRecording.value || pcmData.isEmpty()) return
-
-        currentSampleRate = if (sampleRate > 0) sampleRate else DEFAULT_SAMPLE_RATE
-        currentChannels = if (channelCount in 1..2) channelCount else DEFAULT_CHANNELS
-
-        pcmQueue.offer(pcmData.clone())
+        onLocalPcmSamples(sampleRate, channelCount, pcmData)
     }
 
     /**
@@ -157,7 +169,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
             return null
         }
 
-        Log.i(TAG, "⏹️ Stopping call recording for callId: ${_activeRecordingCallId.value}")
+        Log.i(TAG, "⏹️ Stopping dual-party call recording for callId: ${_activeRecordingCallId.value}")
         val recordedFile = currentRecordingFile
 
         try {
@@ -196,6 +208,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
             _activeRecordingCallId.value = null
             _recordingDurationSeconds.value = 0
             isCodecInitialized = false
+            mixerBuffer.clear()
         }
 
         // Validate resulting file
@@ -298,10 +311,11 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private fun startEncodeLoop() {
         encodeJob?.cancel()
         encodeJob = scope.launch {
-            while (_isRecording.value || pcmQueue.isNotEmpty()) {
-                val pcmChunk = pcmQueue.poll()
-                if (pcmChunk != null) {
-                    processPcmChunk(pcmChunk)
+            while (_isRecording.value) {
+                // Poll 640 bytes = 320 samples = 20ms of 16kHz mono audio
+                val mixedChunk = mixerBuffer.pollMixed(640, _isRecording.value)
+                if (mixedChunk != null) {
+                    processPcmChunk(mixedChunk)
                 } else {
                     delay(10)
                 }
@@ -310,8 +324,8 @@ class CallAudioRecorder private constructor(private val context: Context) {
     }
 
     private fun drainRemainingPcm() {
-        while (pcmQueue.isNotEmpty()) {
-            val chunk = pcmQueue.poll() ?: break
+        val remainingChunks = mixerBuffer.drainRemaining()
+        for (chunk in remainingChunks) {
             processPcmChunk(chunk)
         }
     }
@@ -321,8 +335,8 @@ class CallAudioRecorder private constructor(private val context: Context) {
         try {
             val format = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC,
-                currentSampleRate,
-                currentChannels
+                RECORD_SAMPLE_RATE,
+                RECORD_CHANNELS
             ).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                 setInteger(MediaFormat.KEY_BIT_RATE, AAC_BITRATE)
@@ -334,7 +348,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
                 start()
             }
             isCodecInitialized = true
-            Log.i(TAG, "MediaCodec AAC encoder initialized: rate=$currentSampleRate, channels=$currentChannels")
+            Log.i(TAG, "MediaCodec AAC encoder initialized: rate=$RECORD_SAMPLE_RATE, channels=$RECORD_CHANNELS, bitrate=$AAC_BITRATE")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaCodec: ${e.message}", e)
         }
@@ -364,7 +378,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
                         // Prepend 7-byte ADTS header to AAC frame
                         val packetSize = bufferInfo.size + 7
                         val adtsPacket = ByteArray(packetSize)
-                        addAdtsHeader(adtsPacket, packetSize, currentSampleRate, currentChannels)
+                        addAdtsHeader(adtsPacket, packetSize, RECORD_SAMPLE_RATE, RECORD_CHANNELS)
 
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
@@ -413,6 +427,73 @@ class CallAudioRecorder private constructor(private val context: Context) {
         packet[6] = 0xFC.toByte()
     }
 
+    /**
+     * Normalizes arbitrary PCM input (any sample rate, mono/stereo) to 16,000 Hz 16-bit mono.
+     */
+    private fun normalizeTo16kMono(pcm: ByteArray, sampleRate: Int, channels: Int): ByteArray {
+        if (pcm.isEmpty()) return pcm
+
+        // 1. Stereo to mono conversion
+        val monoPcm: ByteArray = if (channels > 1) {
+            val numSamples = pcm.size / (2 * channels)
+            val out = ByteArray(numSamples * 2)
+            for (i in 0 until numSamples) {
+                val offset = i * 2 * channels
+                val left = ((pcm[offset].toInt() and 0xFF) or (pcm[offset + 1].toInt() shl 8)).toShort().toInt()
+                val right = ((pcm[offset + 2].toInt() and 0xFF) or (pcm[offset + 3].toInt() shl 8)).toShort().toInt()
+                val avg = ((left + right) / 2).coerceIn(-32768, 32767).toShort()
+                out[i * 2] = (avg.toInt() and 0xFF).toByte()
+                out[i * 2 + 1] = ((avg.toInt() shr 8) and 0xFF).toByte()
+            }
+            out
+        } else {
+            pcm
+        }
+
+        // 2. Sample rate conversion to 16,000 Hz
+        if (sampleRate == RECORD_SAMPLE_RATE || sampleRate <= 0) {
+            return monoPcm
+        }
+
+        val numInSamples = monoPcm.size / 2
+        if (numInSamples == 0) return monoPcm
+
+        if (sampleRate == 48000) {
+            // High-fidelity 3:1 integer decimation
+            val numOutSamples = numInSamples / 3
+            val out = ByteArray(numOutSamples * 2)
+            for (i in 0 until numOutSamples) {
+                val srcIdx = i * 3
+                val s1 = ((monoPcm[srcIdx * 2].toInt() and 0xFF) or (monoPcm[srcIdx * 2 + 1].toInt() shl 8)).toShort().toInt()
+                val s2 = ((monoPcm[(srcIdx + 1) * 2].toInt() and 0xFF) or (monoPcm[(srcIdx + 1) * 2 + 1].toInt() shl 8)).toShort().toInt()
+                val s3 = ((monoPcm[(srcIdx + 2) * 2].toInt() and 0xFF) or (monoPcm[(srcIdx + 2) * 2 + 1].toInt() shl 8)).toShort().toInt()
+                val avg = ((s1 + s2 + s3) / 3).coerceIn(-32768, 32767).toShort()
+                out[i * 2] = (avg.toInt() and 0xFF).toByte()
+                out[i * 2 + 1] = ((avg.toInt() shr 8) and 0xFF).toByte()
+            }
+            return out
+        }
+
+        // Linear interpolation resampler for other rates (e.g. 44.1kHz, 32kHz, 8kHz)
+        val ratio = sampleRate.toDouble() / RECORD_SAMPLE_RATE.toDouble()
+        val numOutSamples = (numInSamples / ratio).toInt()
+        val out = ByteArray(numOutSamples * 2)
+        for (i in 0 until numOutSamples) {
+            val srcPos = i * ratio
+            val srcIdx1 = srcPos.toInt().coerceIn(0, numInSamples - 1)
+            val srcIdx2 = (srcIdx1 + 1).coerceIn(0, numInSamples - 1)
+            val frac = srcPos - srcIdx1
+
+            val s1 = ((monoPcm[srcIdx1 * 2].toInt() and 0xFF) or (monoPcm[srcIdx1 * 2 + 1].toInt() shl 8)).toShort().toDouble()
+            val s2 = ((monoPcm[srcIdx2 * 2].toInt() and 0xFF) or (monoPcm[srcIdx2 * 2 + 1].toInt() shl 8)).toShort().toDouble()
+
+            val interpolated = (s1 * (1.0 - frac) + s2 * frac).toInt().coerceIn(-32768, 32767).toShort()
+            out[i * 2] = (interpolated.toInt() and 0xFF).toByte()
+            out[i * 2 + 1] = ((interpolated.toInt() shr 8) and 0xFF).toByte()
+        }
+        return out
+    }
+
     private fun getAudioDurationMs(file: File): Long {
         return try {
             val retriever = MediaMetadataRetriever()
@@ -444,8 +525,94 @@ class CallAudioRecorder private constructor(private val context: Context) {
         outputStream = null
         encodeJob?.cancel()
         encodeJob = null
-        pcmQueue.clear()
+        mixerBuffer.clear()
         isCodecInitialized = false
+    }
+
+    /**
+     * Thread-safe Audio Mixer Buffer
+     *
+     * Synchronously mixes local mic PCM and remote playout PCM in real-time lockstep.
+     * Prevents clock drift with adaptive thresholding.
+     */
+    private class AudioMixerBuffer {
+        private val localStream = ByteArrayOutputStream(32768)
+        private val remoteStream = ByteArrayOutputStream(32768)
+        private val lock = Any()
+
+        fun pushLocal(data: ByteArray) = synchronized(lock) {
+            localStream.write(data)
+        }
+
+        fun pushRemote(data: ByteArray) = synchronized(lock) {
+            remoteStream.write(data)
+        }
+
+        fun pollMixed(chunkSize: Int = 640, isStillRecording: Boolean = true): ByteArray? = synchronized(lock) {
+            val localSize = localStream.size()
+            val remoteSize = remoteStream.size()
+
+            val canPoll = (localSize >= chunkSize && remoteSize >= chunkSize) ||
+                          (localSize >= chunkSize * 2) ||
+                          (remoteSize >= chunkSize * 2) ||
+                          (!isStillRecording && (localSize > 0 || remoteSize > 0))
+
+            if (!canPoll) return null
+
+            val localBytes = localStream.toByteArray()
+            val remoteBytes = remoteStream.toByteArray()
+
+            val takeLocal = minOf(chunkSize, localBytes.size)
+            val takeRemote = minOf(chunkSize, remoteBytes.size)
+            val actualChunk = maxOf(takeLocal, takeRemote)
+            if (actualChunk <= 0) return null
+
+            val mixed = ByteArray(actualChunk)
+            for (i in 0 until actualChunk step 2) {
+                val s1 = if (i + 1 < takeLocal) {
+                    val low = localBytes[i].toInt() and 0xFF
+                    val high = localBytes[i + 1].toInt()
+                    ((high shl 8) or low).toShort().toInt()
+                } else 0
+
+                val s2 = if (i + 1 < takeRemote) {
+                    val low = remoteBytes[i].toInt() and 0xFF
+                    val high = remoteBytes[i + 1].toInt()
+                    ((high shl 8) or low).toShort().toInt()
+                } else 0
+
+                // 16-bit linear mixing with soft-limiting protection
+                val sum = (s1 + s2).coerceIn(-32768, 32767).toShort()
+                mixed[i] = (sum.toInt() and 0xFF).toByte()
+                mixed[i + 1] = ((sum.toInt() shr 8) and 0xFF).toByte()
+            }
+
+            localStream.reset()
+            if (localBytes.size > takeLocal) {
+                localStream.write(localBytes, takeLocal, localBytes.size - takeLocal)
+            }
+
+            remoteStream.reset()
+            if (remoteBytes.size > takeRemote) {
+                remoteStream.write(remoteBytes, takeRemote, remoteBytes.size - takeRemote)
+            }
+
+            return mixed
+        }
+
+        fun drainRemaining(): List<ByteArray> = synchronized(lock) {
+            val list = mutableListOf<ByteArray>()
+            while (true) {
+                val chunk = pollMixed(640, false) ?: break
+                list.add(chunk)
+            }
+            return list
+        }
+
+        fun clear() = synchronized(lock) {
+            localStream.reset()
+            remoteStream.reset()
+        }
     }
 }
 

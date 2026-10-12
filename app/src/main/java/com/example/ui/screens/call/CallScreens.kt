@@ -143,26 +143,9 @@ fun OutgoingCallScreen(
 
             // Profile & Call Info
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Surface(
-                    modifier = Modifier.size(120.dp),
-                    shape = CircleShape,
-                    color = TealPrimary.copy(alpha = pulseAlpha)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = calleeName.take(1).uppercase(),
-                            fontSize = 54.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
                 Text(
                     text = calleeName,
-                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                     color = Color.White
                 )
 
@@ -337,23 +320,6 @@ fun IncomingCallOverlay(
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
-
-                Surface(
-                    modifier = Modifier.size(110.dp),
-                    shape = CircleShape,
-                    color = if (isSpam) Color(0xFFD32F2F) else TealPrimary
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = callerName.take(1).uppercase(),
-                            fontSize = 48.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(20.dp))
 
                 Text(
                     text = callerName,
@@ -678,22 +644,7 @@ fun ActiveAudioCallScreen(
                 }
             }
 
-            // Center Contact Avatar
-            Surface(
-                modifier = Modifier.size(130.dp),
-                shape = CircleShape,
-                color = TealPrimary
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        // Use displayName for avatar initial too
-                        text = displayName.take(1).uppercase().ifBlank { "?" },
-                        fontSize = 56.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
-            }
+            Spacer(modifier = Modifier.weight(1f))
             
             var showAudioDialog by remember { mutableStateOf(false) }
 
@@ -1043,14 +994,14 @@ fun ActiveVideoCallScreen(
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .background(TealPrimary),
+                                                .background(TealPrimary.copy(alpha = 0.4f)),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Text(
-                                                text = displayName.take(1).uppercase().ifBlank { "?" },
-                                                fontSize = 46.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color.White
+                                            Icon(
+                                                imageVector = Icons.Default.VideocamOff,
+                                                contentDescription = "Camera Off",
+                                                tint = Color.White.copy(alpha = 0.85f),
+                                                modifier = Modifier.size(48.dp)
                                             )
                                         }
                                     }

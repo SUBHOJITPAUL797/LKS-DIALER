@@ -270,9 +270,18 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.e("WebRtcEngine", "AudioTrack Runtime Error: $errorMessage")
                 }
             })
+            .setAudioTrackStateCallback(object : JavaAudioDeviceModule.AudioTrackStateCallback {
+                override fun onWebRtcAudioTrackStart() {
+                    Log.i("WebRtcEngine", "WebRTC AudioTrack started - injecting recording tap")
+                    hookWebRtcAudioTrackPlayout()
+                }
+                override fun onWebRtcAudioTrackStop() {
+                    Log.i("WebRtcEngine", "WebRTC AudioTrack stopped")
+                }
+            })
             .setSamplesReadyCallback { audioSamples ->
                 try {
-                    com.example.util.CallAudioRecorder.getInstance(context).onPcmSamples(
+                    com.example.util.CallAudioRecorder.getInstance(context).onLocalPcmSamples(
                         audioSamples.sampleRate,
                         audioSamples.channelCount,
                         audioSamples.data
@@ -491,7 +500,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                         audioTrack.setEnabled(shouldEnable)
                         audioTrack.setVolume(if (shouldEnable) 1.0 else 0.0)
                         Log.i("WebRtcEngine", "Remote AudioTrack from stream: ${audioTrack.id()}, enabled=$shouldEnable")
-                        if (shouldEnable) audioRouteManager.reassertCurrentRoute()
+                        if (shouldEnable) {
+                            audioRouteManager.reassertCurrentRoute()
+                            hookWebRtcAudioTrackPlayout()
+                        }
                     } catch (e: Exception) {
                         Log.w("WebRtcEngine", "Failed to enable remote AudioTrack: ${e.message}")
                     }
@@ -520,7 +532,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                             track.setEnabled(shouldEnable)
                             track.setVolume(if (shouldEnable) 1.0 else 0.0)
                             Log.i("WebRtcEngine", "Remote AudioTrack enabled=$shouldEnable: ${track.id()}")
-                            if (shouldEnable) audioRouteManager.reassertCurrentRoute()
+                            if (shouldEnable) {
+                                audioRouteManager.reassertCurrentRoute()
+                                hookWebRtcAudioTrackPlayout()
+                            }
                         } catch (e: Exception) {
                             Log.w("WebRtcEngine", "Failed to configure remote AudioTrack: ${e.message}")
                         }
@@ -2152,6 +2167,34 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     /**
+     * Hooks WebRTC's internal WebRtcAudioTrack to tap remote playout PCM audio.
+     * Replaces the private audioTrack field with a transparent RecordingAudioTrackWrapper.
+     * Completely safe, zero impact on audio latency or routing.
+     */
+    fun hookWebRtcAudioTrackPlayout() {
+        try {
+            val adm = audioDeviceModule ?: return
+            val audioOutputField = JavaAudioDeviceModule::class.java.getDeclaredField("audioOutput").apply {
+                isAccessible = true
+            }
+            val webRtcAudioTrack = audioOutputField.get(adm) ?: return
+
+            val audioTrackField = webRtcAudioTrack.javaClass.getDeclaredField("audioTrack").apply {
+                isAccessible = true
+            }
+            val origTrack = audioTrackField.get(webRtcAudioTrack) as? android.media.AudioTrack ?: return
+
+            if (origTrack !is RecordingAudioTrackWrapper) {
+                val wrapper = RecordingAudioTrackWrapper(origTrack, context)
+                audioTrackField.set(webRtcAudioTrack, wrapper)
+                Log.i("WebRtcEngine", "✅ Successfully hooked WebRtcAudioTrack playout for dual-party recording!")
+            }
+        } catch (e: Throwable) {
+            Log.w("WebRtcEngine", "Could not hook WebRtcAudioTrack playout: ${e.message}")
+        }
+    }
+
+    /**
      * Toggles in-call audio recording for the active call.
      * Returns true if recording started, false if stopped or failed.
      */
@@ -2162,6 +2205,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             recorder.stopRecording(active.callId)
             false
         } else {
+            hookWebRtcAudioTrackPlayout()
             recorder.startRecording(
                 callId = active.callId,
                 otherPartyName = active.calleeName.ifBlank { active.callerName },
