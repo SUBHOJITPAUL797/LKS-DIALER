@@ -2737,13 +2737,17 @@ export default function ChatConversation({
                                 }}>
                                   ①
                                 </div>
-                                <div style={{ flex: 1 }}>
+                                <div style={{ flex: 1, minWidth: 90 }}>
                                   <div style={{ fontWeight: 800, fontSize: 14, color: isOpened ? '#374151' : '#004d40' }}>
                                     {isOpened ? 'Opened' : 'Photo'}
                                   </div>
                                   <div style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#00796b', fontWeight: 600 }}>
                                     {isOpened ? 'Opened by recipient' : 'View once sent'}
                                   </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, alignSelf: 'flex-end', marginLeft: 8 }}>
+                                  <span style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#004d40', fontWeight: 600 }}>{timeStr}</span>
+                                  {renderTicks(msg.status)}
                                 </div>
                               </div>
                             );
@@ -2783,13 +2787,16 @@ export default function ChatConversation({
                                 }}>
                                   ①
                                 </div>
-                                <div style={{ flex: 1 }}>
+                                <div style={{ flex: 1, minWidth: 90 }}>
                                   <div style={{ fontWeight: 900, fontSize: 14, color: isOpened ? '#374151' : '#004d40' }}>
                                     {isOpened ? 'Opened' : 'Photo'}
                                   </div>
                                   <div style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#00796b', fontWeight: 700 }}>
                                     {isOpened ? 'Viewed & destroyed' : 'Tap to view once'}
                                   </div>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, alignSelf: 'flex-end', marginLeft: 8 }}>
+                                  <span style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#00796b', fontWeight: 600 }}>{timeStr}</span>
                                 </div>
                               </div>
                             );
@@ -3131,8 +3138,8 @@ export default function ChatConversation({
                       </>
                     )}
 
-                    {/* Timestamp + ticks (Only if not already shown inside image/GIF overlay) */}
-                    {(!msg.mediaType || msg.mediaType !== 'IMAGE' || Boolean(text)) && (
+                    {/* Timestamp + ticks (Only if not already shown inside image/GIF overlay or View Once card) */}
+                    {(!msg.mediaType || (msg.mediaType !== 'IMAGE' && !msg.isViewOnce) || Boolean(text)) && !msg.isViewOnce && (
                       <div style={{ alignSelf: 'flex-end', display: 'flex', alignItems: 'center', fontSize: 11, fontWeight: 700, color: '#555', marginTop: 2 }}>
                         {Boolean(msg.isEdited) && !isDeleted && (
                           <span style={{ fontStyle: 'italic', opacity: 0.75, marginRight: 4, fontSize: 10, color: '#2e7d32' }}>

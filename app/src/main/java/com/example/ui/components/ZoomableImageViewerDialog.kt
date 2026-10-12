@@ -2,7 +2,6 @@ package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,9 +13,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Filter1
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,7 +28,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
@@ -42,15 +41,17 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
+import kotlinx.coroutines.launch
 
 /**
  * High-performance, butter-smooth zoomable image viewer dialog.
  * Features:
- *  - 2-finger pinch-to-zoom (scale 1.0f .. 5.0f)
+ *  - 2-finger pinch-to-zoom (scale 1.0f .. 5.0f) with zero jitter / zero feedback loops
  *  - Pan & drag when zoomed in with edge bounding clamping
- *  - Double-tap to smoothly zoom in (2.5x) or reset to 1x
+ *  - Double-tap to smoothly zoom in (2.5x) or reset to 1x via coroutine animation
+ *  - Explicit Zoom In (+) and Zoom Out (–) buttons for precision control
  *  - Single-tap to toggle top controls for true immersive viewing
- *  - View Once badge & callback support
+ *  - View Once badge & callback support with FLAG_SECURE and Coil cache bypass
  */
 @Composable
 fun ZoomableImageViewerDialog(
@@ -62,7 +63,7 @@ fun ZoomableImageViewerDialog(
 ) {
     if (imageModel == null) return
 
-    // Scale and Pan offsets
+    // Scale and Pan offsets — directly updated during gestures for 120fps fluid response
     var scale by remember { mutableFloatStateOf(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
@@ -70,23 +71,23 @@ fun ZoomableImageViewerDialog(
 
     // Toggle controls overlay visibility
     var showOverlay by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
 
-    // Smooth reset or double-tap animation
-    var targetScale by remember { mutableFloatStateOf(1f) }
-    val animatedScale by animateFloatAsState(
-        targetValue = targetScale,
-        animationSpec = tween(durationMillis = 260),
-        label = "ZoomAnimation"
-    )
-
-    // Sync targetScale with pinch scale
-    LaunchedEffect(animatedScale) {
-        if (targetScale == 1f && animatedScale == 1f) {
-            scale = 1f
-            offsetX = 0f
-            offsetY = 0f
-        } else if (targetScale > 1f) {
-            scale = animatedScale
+    // Smooth programmatic animation helper (for double-tap, zoom buttons, reset, and back press)
+    fun animateZoomTo(targetScale: Float, targetOffset: Offset = Offset.Zero) {
+        scope.launch {
+            val startScale = scale
+            val startOffsetX = offsetX
+            val startOffsetY = offsetY
+            androidx.compose.animation.core.animate(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = 220)
+            ) { progress, _ ->
+                scale = startScale + (targetScale - startScale) * progress
+                offsetX = startOffsetX + (targetOffset.x - startOffsetX) * progress
+                offsetY = startOffsetY + (targetOffset.y - startOffsetY) * progress
+            }
         }
     }
 
@@ -114,11 +115,8 @@ fun ZoomableImageViewerDialog(
     ) {
         BackHandler {
             if (scale > 1.1f) {
-                // First back press resets zoom
-                targetScale = 1f
-                scale = 1f
-                offsetX = 0f
-                offsetY = 0f
+                // First back press smoothly resets zoom to 1x
+                animateZoomTo(1f, Offset.Zero)
             } else {
                 onDismissRequest()
             }
@@ -130,38 +128,14 @@ fun ZoomableImageViewerDialog(
                 .background(Color.Black)
                 .onSizeChanged { containerSize = it }
                 .pointerInput(Unit) {
-                    detectTapGestures(
-                        onDoubleTap = { tapOffset ->
-                            if (scale > 1.2f) {
-                                targetScale = 1f
-                                scale = 1f
-                                offsetX = 0f
-                                offsetY = 0f
-                            } else {
-                                targetScale = 2.5f
-                                scale = 2.5f
-                                // Center zoom on tap position
-                                val centerX = containerSize.width / 2f
-                                val centerY = containerSize.height / 2f
-                                offsetX = (centerX - tapOffset.x) * 1.5f
-                                offsetY = (centerY - tapOffset.y) * 1.5f
-                            }
-                        },
-                        onTap = {
-                            showOverlay = !showOverlay
-                        }
-                    )
-                }
-                .pointerInput(Unit) {
-                    detectTransformGestures(panZoomLock = false) { centroid, pan, zoom, _ ->
+                    // Two-finger pinch-to-zoom and pan gesture
+                    detectTransformGestures(panZoomLock = false) { _, pan, zoom, _ ->
                         val newScale = (scale * zoom).coerceIn(1.0f, 5.0f)
                         scale = newScale
-                        targetScale = newScale
 
-                        if (scale > 1.0f) {
-                            // Calculate pan bounds based on image container dimensions
-                            val maxPanX = (containerSize.width * (scale - 1f)) / 2f
-                            val maxPanY = (containerSize.height * (scale - 1f)) / 2f
+                        if (newScale > 1.0f && containerSize.width > 0 && containerSize.height > 0) {
+                            val maxPanX = (containerSize.width * (newScale - 1f)) / 2f
+                            val maxPanY = (containerSize.height * (newScale - 1f)) / 2f
 
                             val newOffsetX = offsetX + pan.x
                             val newOffsetY = offsetY + pan.y
@@ -173,6 +147,32 @@ fun ZoomableImageViewerDialog(
                             offsetY = 0f
                         }
                     }
+                }
+                .pointerInput(Unit) {
+                    // Tap gestures: Double-tap to zoom in/out, Single-tap to toggle top controls
+                    detectTapGestures(
+                        onDoubleTap = { tapOffset ->
+                            if (scale > 1.2f) {
+                                animateZoomTo(1f, Offset.Zero)
+                            } else {
+                                val targetScale = 2.5f
+                                if (containerSize.width > 0 && containerSize.height > 0) {
+                                    val maxPanX = (containerSize.width * (targetScale - 1f)) / 2f
+                                    val maxPanY = (containerSize.height * (targetScale - 1f)) / 2f
+                                    val centerX = containerSize.width / 2f
+                                    val centerY = containerSize.height / 2f
+                                    val targetOffsetX = ((centerX - tapOffset.x) * 1.5f).coerceIn(-maxPanX, maxPanX)
+                                    val targetOffsetY = ((centerY - tapOffset.y) * 1.5f).coerceIn(-maxPanY, maxPanY)
+                                    animateZoomTo(targetScale, Offset(targetOffsetX, targetOffsetY))
+                                } else {
+                                    animateZoomTo(targetScale, Offset.Zero)
+                                }
+                            }
+                        },
+                        onTap = {
+                            showOverlay = !showOverlay
+                        }
+                    )
                 },
             contentAlignment = Alignment.Center
         ) {
@@ -207,7 +207,7 @@ fun ZoomableImageViewerDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = onDismissRequest) {
@@ -218,7 +218,7 @@ fun ZoomableImageViewerDialog(
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
 
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -267,14 +267,67 @@ fun ZoomableImageViewerDialog(
                             }
                         }
 
+                        // Zoom percentage badge
+                        Surface(
+                            color = Color.White.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "${(scale * 100).toInt()}%",
+                                color = Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
+                        // Zoom Out (–) Button
+                        IconButton(
+                            onClick = {
+                                val nextScale = (scale - 0.5f).coerceAtLeast(1.0f)
+                                if (nextScale <= 1.0f) {
+                                    animateZoomTo(1f, Offset.Zero)
+                                } else if (containerSize.width > 0 && containerSize.height > 0) {
+                                    val maxPanX = (containerSize.width * (nextScale - 1f)) / 2f
+                                    val maxPanY = (containerSize.height * (nextScale - 1f)) / 2f
+                                    animateZoomTo(nextScale, Offset(offsetX.coerceIn(-maxPanX, maxPanX), offsetY.coerceIn(-maxPanY, maxPanY)))
+                                }
+                            },
+                            enabled = scale > 1.05f
+                        ) {
+                            Icon(
+                                Icons.Default.Remove,
+                                contentDescription = "Zoom Out",
+                                tint = if (scale > 1.05f) Color.White else Color.Gray.copy(alpha = 0.4f)
+                            )
+                        }
+
+                        // Zoom In (+) Button
+                        IconButton(
+                            onClick = {
+                                val nextScale = (scale + 0.5f).coerceAtMost(5.0f)
+                                if (containerSize.width > 0 && containerSize.height > 0) {
+                                    val maxPanX = (containerSize.width * (nextScale - 1f)) / 2f
+                                    val maxPanY = (containerSize.height * (nextScale - 1f)) / 2f
+                                    animateZoomTo(nextScale, Offset(offsetX.coerceIn(-maxPanX, maxPanX), offsetY.coerceIn(-maxPanY, maxPanY)))
+                                } else {
+                                    animateZoomTo(nextScale, Offset.Zero)
+                                }
+                            },
+                            enabled = scale < 4.95f
+                        ) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Zoom In",
+                                tint = if (scale < 4.95f) Color.White else Color.Gray.copy(alpha = 0.4f)
+                            )
+                        }
+
                         // Reset Zoom button (visible when zoomed in)
                         if (scale > 1.05f) {
-                            IconButton(onClick = {
-                                targetScale = 1f
-                                scale = 1f
-                                offsetX = 0f
-                                offsetY = 0f
-                            }) {
+                            IconButton(onClick = { animateZoomTo(1f, Offset.Zero) }) {
                                 Icon(
                                     Icons.Default.Refresh,
                                     contentDescription = "Reset Zoom",

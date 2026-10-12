@@ -1113,7 +1113,7 @@ class ChatRepositoryWeb {
           const upToTs = specific.timestamp || Date.now();
           specific.status = 'READ';
           messages.forEach(m => {
-            if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
+            if (m.isOutgoing && !m.isViewOnce && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
               m.status = 'READ';
             }
           });
@@ -1162,7 +1162,7 @@ class ChatRepositoryWeb {
             } else if (receipt.status === 'READ') {
               const upToTs = found.timestamp || Date.now();
               otherMsgs.forEach(m => {
-                if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
+                if (m.isOutgoing && !m.isViewOnce && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
                   m.status = 'READ';
                 }
               });
@@ -2497,7 +2497,7 @@ class ChatRepositoryWeb {
     const messages = this.getMessages(targetPhone);
     let msgsUpdated = false;
     messages.forEach(m => {
-      if (!m.isOutgoing && m.status !== 'READ') {
+      if (!m.isOutgoing && !m.isViewOnce && m.status !== 'READ') {
         m.status = 'READ';
         msgsUpdated = true;
       }

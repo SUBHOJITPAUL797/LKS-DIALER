@@ -2995,7 +2995,7 @@ private fun MessageBubble(
     val isPureUrlMessage = firstUrl != null && displayText.trim().trimEnd(*LinkPreviewHelper.TRAILING_PUNCTUATION).equals(firstUrl.trim(), ignoreCase = true)
     val isHeroPreviewOnly = hasHeroPreview && isPureUrlMessage
 
-    val isImageOnly = !isDeleted && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
+    val isImageOnly = !isDeleted && !message.isViewOnce && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
     val bubblePadding = when {
         isFrameless -> PaddingValues(2.dp)
         isImageOnly || isHeroPreviewOnly -> PaddingValues(4.dp)
@@ -3298,7 +3298,7 @@ private fun MessageBubble(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(32.dp)
+                                    .size(34.dp)
                                     .clip(CircleShape)
                                     .background(
                                         when {
@@ -3316,7 +3316,7 @@ private fun MessageBubble(
                             ) {
                                 Text(
                                     text = "①",
-                                    fontSize = 16.sp,
+                                    fontSize = 17.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = if (isOpened) Color.Gray else GreenCall
                                 )
@@ -3324,7 +3324,7 @@ private fun MessageBubble(
 
                             Spacer(modifier = Modifier.width(10.dp))
 
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = if (isOpened) "Opened" else "Photo",
                                     fontSize = 15.sp,
@@ -3340,6 +3340,24 @@ private fun MessageBubble(
                                     fontSize = 11.sp,
                                     color = if (isOpened) Color.Gray.copy(alpha = 0.7f) else if (isDark) Color.LightGray else Color.DarkGray
                                 )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            // Timestamp and Status Ticks (Single tick, double tick, double blue tick)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val timeString = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
+                                Text(
+                                    text = timeString,
+                                    fontSize = 10.sp,
+                                    color = if (isOpened) Color.Gray else if (isDark) Color.LightGray else Color(0xFF667781)
+                                )
+                                if (isOutgoing) {
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    StatusTickIcon(status = message.status)
+                                }
                             }
                         }
                     }
