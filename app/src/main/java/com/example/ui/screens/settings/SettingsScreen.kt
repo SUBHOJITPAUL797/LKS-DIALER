@@ -195,6 +195,9 @@ fun SettingsScreen(
             onDownloadClick = {
                 gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
             },
+            onInstallClick = { uri ->
+                gitHubUpdater.installApk(uri)
+            },
             onDismissRequest = {
                 gitHubUpdater.dismissUpdate(info.latestVersion)
                 manualUpdateInfo = null

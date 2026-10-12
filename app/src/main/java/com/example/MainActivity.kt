@@ -525,8 +525,55 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     
-                    // Check for updates
-                    updateInfo = gitHubUpdater.checkForUpdates()
+                    // Resilient update check for mobile data users:
+                    // Checks immediately, and retries after 4 seconds if mobile data radio was still cold/connecting
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        try {
+                            var info = gitHubUpdater.checkForUpdates()
+                            if (info == null) {
+                                kotlinx.coroutines.delay(4000)
+                                info = gitHubUpdater.checkForUpdates()
+                            }
+                            if (info != null) {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    updateInfo = info
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.w("MainActivity", "Background update check failed: ${e.message}")
+                        }
+                    }
+                }
+
+                // Listen for network connectivity (e.g. mobile data turning on or reconnecting)
+                // to automatically display update prompts when connectivity is established
+                DisposableEffect(Unit) {
+                    val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                    val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: android.net.Network) {
+                            if (updateInfo == null) {
+                                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                    try {
+                                        kotlinx.coroutines.delay(1200) // Brief link stabilization
+                                        val info = gitHubUpdater.checkForUpdates()
+                                        if (info != null) {
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                updateInfo = info
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                        }
+                    }
+                    try {
+                        cm?.registerDefaultNetworkCallback(callback)
+                    } catch (_: Exception) {}
+                    onDispose {
+                        try {
+                            cm?.unregisterNetworkCallback(callback)
+                        } catch (_: Exception) {}
+                    }
                 }
 
                 var navState by remember {
