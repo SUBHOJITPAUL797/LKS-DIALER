@@ -70,10 +70,11 @@ data class EditablePhotoItem(
 fun WhatsAppMediaPreviewScreen(
     initialPhotos: List<File>,
     initialCaption: String = "",
-    onSendPhotos: (List<Pair<File, String>>) -> Unit,
+    onSendPhotos: (List<Pair<File, String>>, Boolean) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
+    var isViewOnceSelected by remember { mutableStateOf(false) }
 
     // List of photos currently being reviewed/edited
     val photoItems = remember {
@@ -415,6 +416,33 @@ fun WhatsAppMediaPreviewScreen(
                         )
                     )
 
+                    // WhatsApp-style circled (1) View Once toggle button
+                    Surface(
+                        onClick = {
+                            isViewOnceSelected = !isViewOnceSelected
+                            val msg = if (isViewOnceSelected) "Photo set to view once" else "View once turned off"
+                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .size(46.dp),
+                        shape = CircleShape,
+                        color = if (isViewOnceSelected) GreenCall else Color.White.copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.5.dp,
+                            color = if (isViewOnceSelected) GreenCall else Color.White.copy(alpha = 0.65f)
+                        )
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "①",
+                                color = Color.White,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+
                     // WhatsApp-style round green send button
                     FloatingActionButton(
                         onClick = {
@@ -424,7 +452,7 @@ fun WhatsAppMediaPreviewScreen(
                                 val bakedFile = bakeImageEdits(context, item)
                                 results.add(Pair(bakedFile, item.caption.trim()))
                             }
-                            onSendPhotos(results)
+                            onSendPhotos(results, isViewOnceSelected)
                         },
                         containerColor = GreenCall,
                         contentColor = Color.White,

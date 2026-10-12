@@ -47,7 +47,9 @@ data class MessageEntity(
     val isEdited: Boolean = false,
     val isStarred: Boolean = false,  // User-starred/bookmarked messages
     val expiresAt: Long = 0L,  // 0 = never expires, >0 = unix timestamp (ms) when message self-destructs
-    val senderName: String? = null // Display name of sender (used for group chats)
+    val senderName: String? = null, // Display name of sender (used for group chats)
+    val isViewOnce: Boolean = false, // Ephemeral view-once media/message
+    val isViewOnceOpened: Boolean = false // True once viewed and destroyed from disk
 )
 
 @Entity(

@@ -883,6 +883,308 @@ function ClickableMessageTextWeb({ text, isOut }) {
   );
 }
 
+// ─── Zoomable Image Lightbox with Pinch, Wheel, Drag & Double-click Zoom ─────
+function ZoomableImageViewerWeb({
+  src,
+  onClose,
+  isViewOnce = false,
+  peerName = ''
+}) {
+  const [scale, setScale] = useState(1);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const initialTouchDistance = useRef(null);
+  const initialTouchScale = useRef(1);
+  const containerRef = useRef(null);
+
+  // Reset zoom when src changes
+  useEffect(() => {
+    setScale(1);
+    setPosition({ x: 0, y: 0 });
+  }, [src]);
+
+  // Handle ESC key to exit
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  // Mouse wheel zoom (centered, scale clamped 1x..5x)
+  const handleWheel = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const delta = e.deltaY > 0 ? -0.25 : 0.25;
+    setScale((prev) => {
+      const next = Math.min(5, Math.max(1, +(prev + delta).toFixed(2)));
+      if (next === 1) setPosition({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  // Double click / Double tap toggles between 1x and 2.5x
+  const handleDoubleClick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setScale((prev) => {
+      if (prev > 1.2) {
+        setPosition({ x: 0, y: 0 });
+        return 1;
+      }
+      return 2.5;
+    });
+  };
+
+  // Drag start
+  const handleMouseDown = (e) => {
+    if (scale <= 1) return;
+    setIsDragging(true);
+    dragStart.current = { x: e.clientX - position.x, y: e.clientY - position.y };
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging || scale <= 1) return;
+    const maxPan = (scale - 1) * 320;
+    const newX = Math.max(-maxPan, Math.min(maxPan, e.clientX - dragStart.current.x));
+    const newY = Math.max(-maxPan, Math.min(maxPan, e.clientY - dragStart.current.y));
+    setPosition({ x: newX, y: newY });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Touch pinch-to-zoom and touch drag for mobile devices
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      initialTouchDistance.current = dist;
+      initialTouchScale.current = scale;
+    } else if (e.touches.length === 1 && scale > 1) {
+      setIsDragging(true);
+      dragStart.current = { x: e.touches[0].clientX - position.x, y: e.touches[0].clientY - position.y };
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (e.touches.length === 2 && initialTouchDistance.current) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const ratio = dist / initialTouchDistance.current;
+      const nextScale = Math.min(5, Math.max(1, +(initialTouchScale.current * ratio).toFixed(2)));
+      setScale(nextScale);
+      if (nextScale === 1) setPosition({ x: 0, y: 0 });
+    } else if (e.touches.length === 1 && isDragging && scale > 1) {
+      const maxPan = (scale - 1) * 320;
+      const newX = Math.max(-maxPan, Math.min(maxPan, e.touches[0].clientX - dragStart.current.x));
+      const newY = Math.max(-maxPan, Math.min(maxPan, e.touches[0].clientY - dragStart.current.y));
+      setPosition({ x: newX, y: newY });
+    }
+  };
+
+  const handleTouchEnd = () => {
+    initialTouchDistance.current = null;
+    setIsDragging(false);
+  };
+
+  const zoomIn = () => setScale(prev => Math.min(5, +(prev + 0.5).toFixed(2)));
+  const zoomOut = () => setScale(prev => {
+    const next = Math.max(1, +(prev - 0.5).toFixed(2));
+    if (next === 1) setPosition({ x: 0, y: 0 });
+    return next;
+  });
+  const resetZoom = () => {
+    setScale(1);
+    setPosition({ x: 0, y: 0 });
+  };
+
+  const resolvedSrc = src && (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:'))
+    ? src
+    : `data:image/jpeg;base64,${src}`;
+
+  return (
+    <div
+      ref={containerRef}
+      onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.95)',
+        backdropFilter: 'blur(8px)',
+        zIndex: 100000,
+        display: 'flex',
+        flexDirection: 'column',
+        userSelect: 'none',
+        touchAction: 'none'
+      }}
+    >
+      {/* Top Header Controls */}
+      <div style={{
+        padding: '14px 20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        borderBottom: '1px solid rgba(255,255,255,0.1)',
+        zIndex: 10
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {isViewOnce ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              backgroundColor: '#008069', color: '#fff',
+              padding: '4px 12px', borderRadius: 20,
+              fontSize: 13, fontWeight: 900
+            }}>
+              <span>①</span>
+              <span>View Once Photo</span>
+            </div>
+          ) : (
+            <div style={{ color: '#fff', fontWeight: 800, fontSize: 15 }}>
+              {peerName ? `Photo • ${peerName}` : 'Photo'}
+            </div>
+          )}
+          <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, fontWeight: 600 }}>
+            {Math.round(scale * 100)}%
+          </span>
+        </div>
+
+        {/* Zoom & Close Buttons */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={zoomOut}
+            disabled={scale <= 1}
+            title="Zoom Out"
+            style={{
+              width: 36, height: 36, borderRadius: '50%',
+              backgroundColor: 'rgba(255,255,255,0.15)',
+              border: 'none', color: '#fff',
+              fontSize: 18, fontWeight: 900,
+              cursor: scale <= 1 ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: scale <= 1 ? 0.4 : 1
+            }}
+          >
+            –
+          </button>
+          <button
+            onClick={resetZoom}
+            title="Reset Zoom (100%)"
+            style={{
+              padding: '4px 10px', borderRadius: 16,
+              backgroundColor: 'rgba(255,255,255,0.15)',
+              border: 'none', color: '#fff',
+              fontSize: 12, fontWeight: 800,
+              cursor: 'pointer'
+            }}
+          >
+            100%
+          </button>
+          <button
+            onClick={zoomIn}
+            disabled={scale >= 5}
+            title="Zoom In"
+            style={{
+              width: 36, height: 36, borderRadius: '50%',
+              backgroundColor: 'rgba(255,255,255,0.15)',
+              border: 'none', color: '#fff',
+              fontSize: 18, fontWeight: 900,
+              cursor: scale >= 5 ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: scale >= 5 ? 0.4 : 1
+            }}
+          >
+            +
+          </button>
+          <button
+            onClick={onClose}
+            title="Close viewer"
+            style={{
+              width: 38, height: 38, borderRadius: '50%',
+              backgroundColor: '#FF3B30',
+              border: 'none', color: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              cursor: 'pointer', marginLeft: 8
+            }}
+          >
+            <X size={20} color="#fff" />
+          </button>
+        </div>
+      </div>
+
+      {/* Main Center Image */}
+      <div
+        onMouseDown={handleMouseDown}
+        onDoubleClick={handleDoubleClick}
+        style={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          cursor: scale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default',
+          position: 'relative'
+        }}
+      >
+        <img
+          src={resolvedSrc}
+          alt="Enlarged"
+          draggable={false}
+          style={{
+            maxWidth: '92vw',
+            maxHeight: '82vh',
+            objectFit: 'contain',
+            transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+            transition: isDragging ? 'none' : 'transform 0.15s ease-out',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.8)',
+            pointerEvents: 'auto',
+            borderRadius: 6
+          }}
+        />
+      </div>
+
+      {/* Bottom Footer / View Once Notice */}
+      <div style={{
+        padding: '12px 20px',
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        borderTop: '1px solid rgba(255,255,255,0.1)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center'
+      }}>
+        {isViewOnce ? (
+          <div style={{
+            color: '#A7F3D0', fontSize: 13, fontWeight: 700,
+            display: 'flex', alignItems: 'center', gap: 6
+          }}>
+            <span>🔒</span>
+            <span>This photo will be permanently destroyed once you exit this viewer.</span>
+          </div>
+        ) : (
+          <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>
+            Pinch with 2 fingers or scroll wheel to zoom • Drag to pan • Double-tap to reset
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ChatConversation({
   peerNumber,
@@ -904,6 +1206,38 @@ export default function ChatConversation({
   const [nowTick, setNowTick] = useState(Date.now());
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedImageModal, setSelectedImageModal] = useState(null);
+  const [activeViewOnceMsg, setActiveViewOnceMsg] = useState(null);
+  const [isViewOnceSelected, setIsViewOnceSelected] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  const showToast = useCallback((msg) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(prev => prev === msg ? null : prev);
+    }, 2800);
+  }, []);
+
+  const openZoomModal = useCallback((src, viewOnceMsg = null) => {
+    setSelectedImageModal(src);
+    setActiveViewOnceMsg(viewOnceMsg);
+  }, []);
+
+  const closeZoomModal = useCallback(async () => {
+    if (activeViewOnceMsg) {
+      const msgToDestroy = activeViewOnceMsg;
+      setActiveViewOnceMsg(null);
+      setSelectedImageModal(null);
+      try {
+        await chatRepositoryWeb.markViewOnceOpened(msgToDestroy.id, normPeer);
+        showToast("Photo viewed and destroyed permanently");
+      } catch (err) {
+        console.warn('Failed to mark view once opened:', err);
+      }
+    } else {
+      setSelectedImageModal(null);
+    }
+  }, [activeViewOnceMsg, normPeer, showToast]);
+
   const [sending, setSending] = useState(false);
   const [showClearModal, setShowClearModal] = useState(false);
   const [showMediaGalleryModal, setShowMediaGalleryModal] = useState(false);
@@ -1401,10 +1735,11 @@ export default function ChatConversation({
         canvas.getContext('2d').drawImage(img, 0, 0, w, h);
         const rawBase64 = canvas.toDataURL('image/jpeg', 0.75).replace(/^data:image\/[a-z]+;base64,/, '');
         try {
-          await chatRepositoryWeb.sendMessage(normPeer, peerName || normPeer, '', 'IMAGE', rawBase64);
+          await chatRepositoryWeb.sendMessage(normPeer, peerName || normPeer, '', 'IMAGE', rawBase64, 0, isViewOnceSelected);
         } catch (err) {
           alert(err.message || 'Failed to send image');
         } finally {
+          setIsViewOnceSelected(false);
           if (fileInputRef.current) fileInputRef.current.value = '';
           setTimeout(() => scrollToBottom('smooth'), 50);
         }
@@ -2351,8 +2686,91 @@ export default function ChatConversation({
                           </div>
                         )}
 
-                        {/* Image / GIF */}
-                        {msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl || (msg.text && (msg.text.startsWith('http') || msg.text.startsWith('[gif:')))) && (() => {
+                        {/* View Once Photo Bubble */}
+                        {msg.isViewOnce && (() => {
+                          const isOpened = msg.isViewOnceOpened || (!msg.mediaData && !msg.mediaUrl);
+                          if (isOut) {
+                            return (
+                              <div
+                                onClick={() => showToast(isOpened ? "This view once photo was viewed and destroyed." : "View once photos cannot be reopened after sending.")}
+                                className="neo-box"
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+                                  backgroundColor: isOpened ? '#f3f4f6' : '#E0F2F1',
+                                  borderRadius: 12, border: isOpened ? '1.5px solid #ccc' : '2px solid #008069',
+                                  opacity: isOpened ? 0.75 : 1, cursor: 'pointer', maxWidth: 260, marginBottom: 4
+                                }}
+                                title={isOpened ? "Opened & destroyed" : "View once photo sent"}
+                              >
+                                <div style={{
+                                  width: 34, height: 34, borderRadius: '50%',
+                                  backgroundColor: isOpened ? '#9ca3af' : '#008069',
+                                  color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  fontWeight: 900, fontSize: 16
+                                }}>
+                                  ①
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 800, fontSize: 14, color: isOpened ? '#374151' : '#004d40' }}>
+                                    {isOpened ? 'Opened' : 'Photo'}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#00796b', fontWeight: 600 }}>
+                                    {isOpened ? 'Opened by recipient' : 'View once sent'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          } else {
+                            // Incoming View Once
+                            return (
+                              <div
+                                onClick={() => {
+                                  if (isOpened) {
+                                    showToast("This view-once photo has expired and was permanently destroyed.");
+                                    return;
+                                  }
+                                  let src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : null);
+                                  if (!src && msg.mediaData) src = `data:image/jpeg;base64,${msg.mediaData}`;
+                                  if (src) {
+                                    openZoomModal(src, msg);
+                                  } else {
+                                    showToast("Media is no longer available.");
+                                  }
+                                }}
+                                className="neo-box"
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+                                  backgroundColor: isOpened ? '#f3f4f6' : '#e6fffa',
+                                  borderRadius: 12, border: isOpened ? '1.5px solid #ccc' : '2px dashed #008069',
+                                  opacity: isOpened ? 0.75 : 1, cursor: 'pointer', maxWidth: 260, marginBottom: 4,
+                                  boxShadow: isOpened ? 'none' : '0 2px 8px rgba(0,128,105,0.15)'
+                                }}
+                                title={isOpened ? "Photo expired & destroyed" : "Tap to view once"}
+                              >
+                                <div style={{
+                                  width: 36, height: 36, borderRadius: '50%',
+                                  backgroundColor: isOpened ? '#9ca3af' : '#008069',
+                                  color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  fontWeight: 900, fontSize: 17,
+                                  boxShadow: isOpened ? 'none' : '0 2px 6px rgba(0,128,105,0.3)'
+                                }}>
+                                  ①
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 900, fontSize: 14, color: isOpened ? '#374151' : '#004d40' }}>
+                                    {isOpened ? 'Opened' : 'Photo'}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: isOpened ? '#6b7280' : '#00796b', fontWeight: 700 }}>
+                                    {isOpened ? 'Viewed & destroyed' : 'Tap to view once'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+                        })()}
+
+                        {/* Standard Image / GIF */}
+                        {!msg.isViewOnce && msg.mediaType === 'IMAGE' && (msg.mediaData || msg.mediaUrl || (msg.text && (msg.text.startsWith('http') || msg.text.startsWith('[gif:')))) && (() => {
                           let src = msg.mediaUrl || (msg.mediaData?.startsWith('data:') ? msg.mediaData : null);
                           if (!src && msg.text) {
                             src = extractGifUrlWeb(msg.text);
@@ -2376,7 +2794,7 @@ export default function ChatConversation({
                               <img
                                 src={src}
                                 alt={isGif ? "GIF" : "Photo"}
-                                onClick={() => setSelectedImageModal(src)}
+                                onClick={() => openZoomModal(src, null)}
                                 style={{
                                   width: '100%',
                                   maxHeight: isGif ? 280 : 260,
@@ -2946,6 +3364,37 @@ export default function ChatConversation({
                 title="Attach Photo">
                 <ImageIcon size={22} />
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !isViewOnceSelected;
+                  setIsViewOnceSelected(next);
+                  showToast(next ? "Photo set to view once (1) • Select a photo" : "View once turned off");
+                  if (next) {
+                    fileInputRef.current?.click();
+                  }
+                }}
+                className="neo-box"
+                style={{
+                  width: 44,
+                  height: 44,
+                  padding: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: isViewOnceSelected ? '#008069' : '#fff',
+                  color: isViewOnceSelected ? '#fff' : '#008069',
+                  border: isViewOnceSelected ? '2px solid #000' : '2px solid #008069',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  fontWeight: 900,
+                  fontSize: 16,
+                  transition: 'all 0.15s ease'
+                }}
+                title={isViewOnceSelected ? "View Once Active (Click to disable)" : "Send View Once Photo (1)"}
+              >
+                ①
+              </button>
               <button type="button" onClick={() => docFileInputRef.current?.click()} className="neo-box"
                 style={{ width: 44, height: 44, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#EDE7F6', cursor: 'pointer', flexShrink: 0 }}
                 title="Attach Document">
@@ -2980,24 +3429,34 @@ export default function ChatConversation({
         </div>
       </div>
 
-      {/* ── IMAGE LIGHTBOX ── */}
+      {/* ── INTERACTIVE ZOOMABLE IMAGE VIEWER LIGHTBOX ── */}
       {selectedImageModal && (
-        <div onClick={() => setSelectedImageModal(null)} style={{
-          position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.9)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: 20, zIndex: 1000
+        <ZoomableImageViewerWeb
+          src={selectedImageModal}
+          onClose={closeZoomModal}
+          isViewOnce={Boolean(activeViewOnceMsg)}
+          peerName={peerDisplayName}
+        />
+      )}
+
+      {/* ── TOAST NOTIFICATION ── */}
+      {toastMessage && (
+        <div style={{
+          position: 'fixed',
+          bottom: 80,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          backgroundColor: 'rgba(0, 0, 0, 0.88)',
+          color: '#fff',
+          padding: '8px 18px',
+          borderRadius: 20,
+          fontSize: 13,
+          fontWeight: 700,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+          zIndex: 99999,
+          pointerEvents: 'none'
         }}>
-          <div style={{ position: 'relative' }}>
-            <button onClick={() => setSelectedImageModal(null)} className="neo-box"
-              style={{ position: 'absolute', top: -16, right: -16, width: 36, height: 36, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', cursor: 'pointer', zIndex: 10 }}>
-              <X size={20} />
-            </button>
-            <img
-              src={selectedImageModal.startsWith('http') || selectedImageModal.startsWith('data:') ? selectedImageModal : `data:image/jpeg;base64,${selectedImageModal}`}
-              alt="Enlarged"
-              style={{ maxWidth: '90vw', maxHeight: '85vh', objectFit: 'contain', border: '3px solid #000' }}
-            />
-          </div>
+          {toastMessage}
         </div>
       )}
 

@@ -120,7 +120,8 @@ data class ChatMessageDto(
     val expiresAt: Long = 0L,
     val groupId: String? = null,
     val groupName: String? = null,
-    val senderName: String? = null
+    val senderName: String? = null,
+    val isViewOnce: Boolean = false
 )
 
 data class GroupDto(

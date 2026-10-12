@@ -24,6 +24,10 @@ interface MessageDao {
     @Query("UPDATE messages SET text = :tombstoneText, mediaPath = NULL, isEdited = 0 WHERE id = :messageId")
     suspend fun markMessageDeletedForEveryone(messageId: String, tombstoneText: String)
 
+    /** Marks a View Once message as opened and clears the mediaPath (purges from disk). */
+    @Query("UPDATE messages SET isViewOnceOpened = 1, mediaPath = NULL WHERE id = :messageId")
+    suspend fun markViewOnceOpened(messageId: String)
+
     /** Updates mediaPath for a message after P2P file assembly completes. */
     @Query("UPDATE messages SET mediaPath = :mediaPath WHERE id = :messageId")
     suspend fun updateMessageMedia(messageId: String, mediaPath: String)

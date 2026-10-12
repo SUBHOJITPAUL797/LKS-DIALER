@@ -574,6 +574,7 @@ class ChatRepository private constructor(private val context: Context) {
             val groupTargetId = dto.groupId ?: senderNorm
             val targetConvId = if (isGroupMsg) groupTargetId else senderNorm
             val isCurrentPeer = isUserActivelyViewingPeer(targetConvId)
+            var isViewOnce = dto.isViewOnce
 
             val firebaseManager = FirebaseManager.getInstance(context)
             val registeredUser = firebaseManager.lookupUserByNumber(senderNorm)
@@ -976,6 +977,9 @@ class ChatRepository private constructor(private val context: Context) {
             if (dto.mediaType == ChatMediaType.IMAGE.name) {
                 try {
                     val json = JSONObject(decryptedRaw)
+                    if (json.has("isViewOnce")) {
+                        isViewOnce = isViewOnce || json.optBoolean("isViewOnce", false)
+                    }
                     displayText = json.optString("caption", "Photo")
                     val ext = json.optString("ext", "jpg")
                     val base64Data = json.optString("bytes", "")
@@ -1076,10 +1080,12 @@ class ChatRepository private constructor(private val context: Context) {
                 mediaPath = localMediaPath,
                 mediaDurationMs = durationMs,
                 timestamp = dto.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                status = if (isCurrentPeer) MessageStatus.READ.name else initialStatus,
+                status = if (isCurrentPeer && !isViewOnce) MessageStatus.READ.name else initialStatus,
                 isOutgoing = false,
                 expiresAt = dto.expiresAt,
-                senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null
+                senderName = if (isGroupMsg) (dto.senderName ?: resolvedName) else null,
+                isViewOnce = isViewOnce,
+                isViewOnceOpened = false
             )
             messageDao.insertMessage(messageEntity)
 
@@ -1096,7 +1102,9 @@ class ChatRepository private constructor(private val context: Context) {
                 phoneNumber = targetConvPhone,
                 contactName = finalContactName,
                 profilePicUrl = if (isGroupMsg) existingConv?.profilePicUrl ?: "" else profilePic,
-                lastMessageText = when (dto.mediaType) {
+                lastMessageText = if (isViewOnce) {
+                    "$previewPrefix① Photo"
+                } else when (dto.mediaType) {
                     ChatMediaType.IMAGE.name -> "$previewPrefix${if (displayText.startsWith("[gif:")) "🎬 GIF" else "📷 Photo"}"
                     ChatMediaType.AUDIO.name -> "$previewPrefix🎤 Voice message"
                     ChatMediaType.DOCUMENT.name -> "$previewPrefix📄 $displayText"
@@ -1125,9 +1133,9 @@ class ChatRepository private constructor(private val context: Context) {
                 status = MessageStatus.DELIVERED.name
             )
 
-            if (isCurrentPeer) {
+            if (isCurrentPeer && !isViewOnce) {
                 // If user is actively watching this conversation right now in the foreground,
-                // auto-mark message as READ and send the READ receipt to the peer for all media types!
+                // auto-mark message as READ and send the READ receipt to the peer for standard messages
                 sendReceipt(
                     recipientNumber = dto.senderNumber,
                     messageId = dto.messageId,
@@ -1138,7 +1146,9 @@ class ChatRepository private constructor(private val context: Context) {
                 showIncomingMessageNotification(
                     senderNumber = targetConvPhone,
                     senderName = finalContactName,
-                    messageText = when (dto.mediaType) {
+                    messageText = if (isViewOnce) {
+                        "$previewPrefix① Photo"
+                    } else when (dto.mediaType) {
                         ChatMediaType.IMAGE.name -> "$previewPrefix${if (displayText.startsWith("[gif:")) "🎬 GIF" else if (displayText.isNotBlank()) "📷 $displayText" else "📷 Photo"}"
                         ChatMediaType.AUDIO.name -> "$previewPrefix🎤 Voice message"
                         ChatMediaType.DOCUMENT.name -> "$previewPrefix📄 $displayText"
@@ -1188,9 +1198,14 @@ class ChatRepository private constructor(private val context: Context) {
             val last10 = peerNorm.filter { it.isDigit() }.takeLast(10)
 
             if (receipt.messageId != "all") {
-                messageDao.updateMessageStatus(receipt.messageId, receipt.status)
+                if (receipt.status == "VIEW_ONCE_OPENED") {
+                    messageDao.markViewOnceOpened(receipt.messageId)
+                    messageDao.updateMessageStatus(receipt.messageId, MessageStatus.READ.name)
+                } else {
+                    messageDao.updateMessageStatus(receipt.messageId, receipt.status)
+                }
                 val specificMsg = messageDao.getMessageById(receipt.messageId)
-                if (specificMsg != null && receipt.status == MessageStatus.READ.name) {
+                if (specificMsg != null && (receipt.status == MessageStatus.READ.name || receipt.status == "VIEW_ONCE_OPENED")) {
                     val cId = specificMsg.conversationId
                     val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
                     // Mark messages sent up to this message's timestamp as READ (with clock skew buffer)
@@ -1271,7 +1286,8 @@ class ChatRepository private constructor(private val context: Context) {
         text: String,
         mediaType: ChatMediaType = ChatMediaType.TEXT,
         mediaFile: File? = null,
-        mediaDurationMs: Long = 0L
+        mediaDurationMs: Long = 0L,
+        isViewOnce: Boolean = false
     ): Result<MessageEntity> = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
         val myPhone = currentListeningPhone
@@ -1359,6 +1375,7 @@ class ChatRepository private constructor(private val context: Context) {
                         put("caption", text)
                         put("bytes", base64Data)
                         put("ext", savedFile.extension.ifBlank { "jpg" })
+                        put("isViewOnce", isViewOnce)
                     }.toString()
                     isSticker -> JSONObject().apply {
                         put("caption", text.ifBlank { "Sticker" })
@@ -1368,10 +1385,12 @@ class ChatRepository private constructor(private val context: Context) {
                     isAudio -> JSONObject().apply {
                         put("duration", mediaDurationMs)
                         put("bytes", base64Data)
+                        put("isViewOnce", isViewOnce)
                     }.toString()
                     else -> JSONObject().apply {
                         put("fileName", text.ifBlank { mediaFile.name })
                         put("bytes", base64Data)
+                        put("isViewOnce", isViewOnce)
                     }.toString()
                 }
             }
@@ -1382,7 +1401,7 @@ class ChatRepository private constructor(private val context: Context) {
                 isImage -> text
                 else -> text.ifBlank { mediaFile.name }
             }
-            val displaySummaryText = when {
+            val displaySummaryText = if (isViewOnce) "① Photo" else when {
                 isAudio -> "🎤 Voice message"
                 isSticker -> "🦄 Sticker"
                 isImage -> if (mediaFile.extension.equals("gif", ignoreCase = true)) "🎬 GIF" else if (text.isNotBlank()) "📷 $text" else "📷 Photo"
@@ -1411,7 +1430,9 @@ class ChatRepository private constructor(private val context: Context) {
                 mediaDurationMs = mediaDurationMs,
                 timestamp = now,
                 status = MessageStatus.SENT.name,
-                isOutgoing = true
+                isOutgoing = true,
+                isViewOnce = isViewOnce,
+                isViewOnceOpened = false
             )
             messageDao.insertMessage(messageEntity)
 
@@ -1443,6 +1464,7 @@ class ChatRepository private constructor(private val context: Context) {
                             put("caption", text)
                             put("bytes", base64Data)
                             put("ext", savedFile.extension.ifBlank { "jpg" })
+                            put("isViewOnce", isViewOnce)
                         }
                         isSticker -> JSONObject().apply {
                             put("caption", text.ifBlank { "Sticker" })
@@ -1452,6 +1474,7 @@ class ChatRepository private constructor(private val context: Context) {
                         else -> JSONObject().apply {
                             put("duration", mediaDurationMs)
                             put("bytes", base64Data)
+                            put("isViewOnce", isViewOnce)
                         }
                     }
                     val (ciphertext, iv) = cryptoManager.encrypt(json.toString(), recipientPublicKey)
@@ -1464,7 +1487,8 @@ class ChatRepository private constructor(private val context: Context) {
                         iv = iv,
                         mediaType = if (isSticker) ChatMediaType.STICKER.name else if (isAudio) ChatMediaType.AUDIO.name else ChatMediaType.IMAGE.name,
                         mediaDurationMs = if (isAudio) mediaDurationMs else 0L,
-                        timestamp = now
+                        timestamp = now,
+                        isViewOnce = isViewOnce
                     )
                     firestore.collection("inboxes")
                         .document(canonicalRecipient)
@@ -1510,6 +1534,7 @@ class ChatRepository private constructor(private val context: Context) {
                         put("caption", text)
                         put("duration", mediaDurationMs)
                         put("offerSdp", offerSdp)
+                        put("isViewOnce", isViewOnce)
                     }.toString()
                     try {
                         val (offerCiphertext, offerIv) = cryptoManager.encrypt(offerPayload, recipientPublicKey)
@@ -1521,7 +1546,8 @@ class ChatRepository private constructor(private val context: Context) {
                             ciphertext = offerCiphertext,
                             iv = offerIv,
                             mediaType = ChatMediaType.P2P_OFFER.name,
-                            timestamp = now
+                            timestamp = now,
+                            isViewOnce = isViewOnce
                         )
                         firestore.collection("inboxes")
                             .document(canonicalRecipient)
@@ -1804,6 +1830,7 @@ class ChatRepository private constructor(private val context: Context) {
                         put("chunkIndex", i)
                         put("totalChunks", totalChunks)
                         put("bytes", base64Chunk)
+                        put("isViewOnce", isViewOnce)
                     }.toString()
 
                     val (chunkCiphertext, chunkIv) = cryptoManager.encrypt(chunkPayload, recipientPublicKey)
@@ -1816,7 +1843,8 @@ class ChatRepository private constructor(private val context: Context) {
                         ciphertext = chunkCiphertext,
                         iv = chunkIv,
                         mediaType = ChatMediaType.CHUNK.name,
-                        timestamp = now + i
+                        timestamp = now + i,
+                        isViewOnce = isViewOnce
                     )
 
                     firestore.collection("inboxes")
@@ -2036,7 +2064,9 @@ class ChatRepository private constructor(private val context: Context) {
             timestamp = now,
             status = MessageStatus.SENT.name,
             isOutgoing = true,
-            expiresAt = expiresAt
+            expiresAt = expiresAt,
+            isViewOnce = isViewOnce,
+            isViewOnceOpened = false
         )
         messageDao.insertMessage(messageEntity)
 
@@ -2045,7 +2075,7 @@ class ChatRepository private constructor(private val context: Context) {
             phoneNumber = targetConvPhone,
             contactName = recipientName.ifBlank { targetUser?.displayName ?: existingConv?.contactName ?: normRecipient },
             profilePicUrl = targetUser?.profilePictureUrl ?: existingConv?.profilePicUrl ?: "",
-            lastMessageText = when (mediaType) {
+            lastMessageText = if (isViewOnce) "① Photo" else when (mediaType) {
                 ChatMediaType.IMAGE -> if (text.startsWith("[gif:")) "🎬 GIF" else if (text.isNotBlank()) "📷 $text" else "📷 Photo"
                 ChatMediaType.AUDIO -> "🎤 Voice message"
                 ChatMediaType.DOCUMENT -> "📄 ${text.ifBlank { "Document" }}"
@@ -2073,7 +2103,8 @@ class ChatRepository private constructor(private val context: Context) {
             mediaType = mediaType.name,
             mediaDurationMs = mediaDurationMs,
             timestamp = now,
-            expiresAt = expiresAt
+            expiresAt = expiresAt,
+            isViewOnce = isViewOnce
         )
 
         firestore.collection("inboxes")
@@ -2595,6 +2626,37 @@ class ChatRepository private constructor(private val context: Context) {
                 sendReceipt(peerNumber, messageId, MessageStatus.READ.name)
             } catch (e: Exception) {
                 Log.w(TAG, "markMessageRead failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Called when a View Once photo or message is opened and then closed/dismissed.
+     * Permanently deletes the local file from disk, updates Room DB to isViewOnceOpened = true,
+     * and sends a VIEW_ONCE_OPENED receipt so the sender's view also updates to "Opened".
+     */
+    fun markViewOnceOpened(messageId: String, peerNumber: String) {
+        repositoryScope.launch(Dispatchers.IO) {
+            try {
+                val msg = messageDao.getMessageById(messageId)
+                if (msg != null) {
+                    msg.mediaPath?.let { path ->
+                        try {
+                            val f = File(path)
+                            if (f.exists()) {
+                                f.delete()
+                                Log.d(TAG, "🔥 View Once media shredded & deleted from storage: $path")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to delete view once file: ${e.message}")
+                        }
+                    }
+                    messageDao.markViewOnceOpened(messageId)
+                    messageDao.updateMessageStatus(messageId, MessageStatus.READ.name)
+                    sendReceipt(peerNumber, messageId, "VIEW_ONCE_OPENED")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "markViewOnceOpened error: ${e.message}", e)
             }
         }
     }

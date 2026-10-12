@@ -270,6 +270,7 @@ fun ChatConversationScreen(
         }
     }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
+    var activeViewOnceMessageId by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearChatDialog by remember { mutableStateOf(false) }
@@ -1013,7 +1014,10 @@ fun ChatConversationScreen(
                                 onCycleSpeed = { voiceHelper.cyclePlaybackSpeed() },
                                 onSeekAudio = { ratio -> voiceHelper.seekTo(ratio) },
                                 onPlayAudio = { path -> voiceHelper.playAudio(path) },
-                                onImageClick = { path -> selectedImagePreviewPath = path },
+                                onImageClick = { path, viewOnceMsgId ->
+                                    selectedImagePreviewPath = path
+                                    activeViewOnceMessageId = viewOnceMsgId
+                                },
                                 onVideoClick = { file -> selectedVideoPreviewFile = file },
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
                                 onMessageLongClick = { selectedMessageForOptions = it },
@@ -2195,32 +2199,30 @@ fun ChatConversationScreen(
         )
     }
 
-    // Fullscreen Image Preview
+    // Fullscreen Image Preview (Interactive Pinch-To-Zoom & Pan)
     if (selectedImagePreviewPath != null) {
-        Dialog(onDismissRequest = { selectedImagePreviewPath = null }) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.95f))
-                    .clickable { selectedImagePreviewPath = null },
-                contentAlignment = Alignment.Center
-            ) {
-                AsyncImage(
-                    model = selectedImagePreviewPath,
-                    contentDescription = "Full Image Preview",
-                    modifier = Modifier.fillMaxWidth().wrapContentHeight(),
-                    contentScale = ContentScale.Fit
-                )
-                IconButton(
-                    onClick = { selectedImagePreviewPath = null },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(16.dp)
-                ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+        com.example.ui.components.ZoomableImageViewerDialog(
+            imageModel = selectedImagePreviewPath,
+            title = peerDisplayName,
+            subtitle = if (activeViewOnceMessageId != null) "View Once Photo" else null,
+            isViewOnce = activeViewOnceMessageId != null,
+            onDismissRequest = {
+                val viewOnceId = activeViewOnceMessageId
+                val pathToDelete = selectedImagePreviewPath
+                selectedImagePreviewPath = null
+                activeViewOnceMessageId = null
+                if (viewOnceId != null) {
+                    chatRepository.markViewOnceOpened(viewOnceId, normPeer)
+                    if (pathToDelete != null) {
+                        try {
+                            val f = File(pathToDelete)
+                            if (f.exists()) f.delete()
+                        } catch (_: Exception) {}
+                    }
+                    Toast.makeText(context, "View once photo viewed & destroyed", Toast.LENGTH_SHORT).show()
                 }
             }
-        }
+        )
     }
 
     // Fullscreen Video Player
@@ -2320,7 +2322,7 @@ fun ChatConversationScreen(
         WhatsAppMediaPreviewScreen(
             initialPhotos = photosToPreview!!,
             initialCaption = initialSharedText ?: "",
-            onSendPhotos = { results ->
+            onSendPhotos = { results, isViewOnce ->
                 photosToPreview = null
                 onSharedContentConsumed()
                 coroutineScope.launch {
@@ -2330,7 +2332,8 @@ fun ChatConversationScreen(
                             recipientName = peerDisplayName,
                             text = caption,
                             mediaType = ChatMediaType.IMAGE,
-                            mediaFile = file
+                            mediaFile = file,
+                            isViewOnce = isViewOnce
                         )
                     }
                     listState.animateScrollToItem(0)
@@ -2853,7 +2856,7 @@ private fun MessageBubble(
     onCycleSpeed: () -> Unit = {},
     onSeekAudio: (Float) -> Unit = {},
     onPlayAudio: (path: String) -> Unit,
-    onImageClick: (path: String) -> Unit,
+    onImageClick: (path: String, viewOnceMessageId: String?) -> Unit,
     onVideoClick: ((File) -> Unit)? = null,
     onMarkMessageRead: (messageId: String) -> Unit,
     onMessageLongClick: (message: MessageEntity) -> Unit = {},
@@ -3195,8 +3198,112 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
-                // ── Image / Animated GIF ──
-                if (message.mediaType == ChatMediaType.IMAGE.name) {
+                // ── View Once Media Pill Bubble (WhatsApp Style) ──
+                if (message.isViewOnce) {
+                    val isOpened = message.isViewOnceOpened
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = when {
+                            isOpened -> if (isDark) Color(0xFF202C33).copy(alpha = 0.65f) else Color(0xFFE9EDEF).copy(alpha = 0.65f)
+                            isOutgoing -> if (isDark) Color(0xFF005C4B) else Color(0xFFD9FDD3)
+                            else -> if (isDark) Color(0xFF202C33) else Color.White
+                        },
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.dp,
+                            color = when {
+                                isOpened -> Color.Gray.copy(alpha = 0.35f)
+                                isOutgoing -> GreenCall.copy(alpha = 0.5f)
+                                else -> TealPrimary.copy(alpha = 0.4f)
+                            }
+                        ),
+                        modifier = Modifier
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .combinedClickable(
+                                onClick = {
+                                    if (isOpened) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "This view once media has already been viewed and destroyed",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else if (isOutgoing) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "View once photos cannot be opened by sender after sending",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        val path = message.mediaPath
+                                        if (!path.isNullOrBlank() && File(path).exists()) {
+                                            onImageClick(path, message.id)
+                                        } else {
+                                            android.widget.Toast.makeText(
+                                                context,
+                                                "Media expired or unavailable",
+                                                android.widget.Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onMessageLongClick(message)
+                                }
+                            )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isOpened -> Color.Gray.copy(alpha = 0.25f)
+                                            isOutgoing -> GreenCall.copy(alpha = 0.2f)
+                                            else -> TealPrimary.copy(alpha = 0.18f)
+                                        }
+                                    )
+                                    .border(
+                                        width = 1.5.dp,
+                                        color = if (isOpened) Color.Gray.copy(alpha = 0.5f) else GreenCall,
+                                        shape = CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "①",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (isOpened) Color.Gray else GreenCall
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            Column {
+                                Text(
+                                    text = if (isOpened) "Opened" else "Photo",
+                                    fontSize = 15.sp,
+                                    fontWeight = if (isOpened) FontWeight.Normal else FontWeight.SemiBold,
+                                    color = when {
+                                        isOpened -> Color.Gray
+                                        isDark -> Color.White
+                                        else -> Color.Black
+                                    }
+                                )
+                                Text(
+                                    text = if (isOpened) "Viewed & destroyed" else "View once",
+                                    fontSize = 11.sp,
+                                    color = if (isOpened) Color.Gray.copy(alpha = 0.7f) else if (isDark) Color.LightGray else Color.DarkGray
+                                )
+                            }
+                        }
+                    }
+                } else if (message.mediaType == ChatMediaType.IMAGE.name) {
                     val rawText = message.text.trim()
                     val isGifMsg = rawText.startsWith("[gif:") ||
                                    rawText.contains(".gif", ignoreCase = true) ||
@@ -3236,7 +3343,7 @@ private fun MessageBubble(
                                             if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                                 onMarkMessageRead(message.id)
                                             }
-                                            onImageClick(effectiveImageModel)
+                                            onImageClick(effectiveImageModel, null)
                                         },
                                         onLongPress = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)

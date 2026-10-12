@@ -281,6 +281,25 @@ class MediaStorageWeb {
       };
     } catch {}
   }
+
+  /**
+   * Permanently delete media from memory cache and IndexedDB (e.g. for View Once destruction)
+   */
+  async deleteMedia(id) {
+    if (!id) return;
+    const cleanId = id.replace(/^idb:/, '');
+    if (this.blobUrlCache.has(cleanId)) {
+      try { URL.revokeObjectURL(this.blobUrlCache.get(cleanId)); } catch {}
+      this.blobUrlCache.delete(cleanId);
+    }
+    const db = await this.dbPromise;
+    if (!db) return;
+    try {
+      const tx = db.transaction(STORE_MEDIA, 'readwrite');
+      const store = tx.objectStore(STORE_MEDIA);
+      store.delete(cleanId);
+    } catch {}
+  }
 }
 
 export const mediaStorageWeb = new MediaStorageWeb();

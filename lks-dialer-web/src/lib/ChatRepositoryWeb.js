@@ -894,11 +894,13 @@ class ChatRepositoryWeb {
       let durationMs = Number(dto.mediaDurationMs) || 0;
       let mediaUrl = null;
 
+      let isViewOnce = Boolean(dto.isViewOnce);
       if (dto.mediaType === 'IMAGE') {
         try {
           const parsed = JSON.parse(decryptedRaw);
           displayText = parsed.caption || 'Photo';
           mediaData = parsed.bytes || '';
+          if (parsed.isViewOnce) isViewOnce = true;
           if (parsed.url) mediaUrl = parsed.url;
         } catch {
           if (decryptedRaw.startsWith('[gif:')) {
@@ -938,7 +940,8 @@ class ChatRepositoryWeb {
         }
       }
 
-      const finalStatus = isCurrentPeer ? 'READ' : 'DELIVERED';
+      // View Once photos should stay DELIVERED until the user explicitly taps to view them
+      const finalStatus = isViewOnce ? 'DELIVERED' : (isCurrentPeer ? 'READ' : 'DELIVERED');
 
       // 2. Persist locally to this target conversation's message store
       const messages = this.getMessages(targetConvId);
@@ -960,7 +963,7 @@ class ChatRepositoryWeb {
           conversationId: targetConvId,
           senderNumber: dto.senderNumber,
           recipientNumber: targetConvId,
-          text: displayText,
+          text: isViewOnce ? '① Photo' : displayText,
           mediaType: dto.mediaType || 'TEXT',
           mediaData,
           mediaUrl,
@@ -968,7 +971,9 @@ class ChatRepositoryWeb {
           timestamp: dto.timestamp || Date.now(),
           status: finalStatus,
           isOutgoing: false,
-          senderName: isGroupMsg ? (dto.senderName || senderNorm) : null
+          senderName: isGroupMsg ? (dto.senderName || senderNorm) : null,
+          isViewOnce,
+          isViewOnceOpened: false
         };
         messages.push(newMessage);
         this.saveMessages(targetConvId, messages);
@@ -997,7 +1002,8 @@ class ChatRepositoryWeb {
 
       const unreadCount = isCurrentPeer ? 0 : ((existingConv?.unreadCount || 0) + 1);
 
-      const basePreview = dto.mediaType === 'STICKER' ? '✨ Sticker'
+      const basePreview = isViewOnce ? '① Photo'
+                        : dto.mediaType === 'STICKER' ? '✨ Sticker'
                         : dto.mediaType === 'IMAGE' ? (displayText && (displayText.includes('.gif') || displayText.startsWith('http')) ? '👾 GIF' : '📷 Photo') 
                         : dto.mediaType === 'AUDIO' ? '🎤 Voice message' 
                         : dto.mediaType === 'DOCUMENT' ? `📄 ${displayText}`
@@ -1092,6 +1098,15 @@ class ChatRepositoryWeb {
             updated = true;
           }
         });
+      } else if (receipt.status === 'VIEW_ONCE_OPENED') {
+        const specific = messages.find(m => m.id === receipt.messageId);
+        if (specific) {
+          specific.isViewOnceOpened = true;
+          specific.mediaData = null;
+          specific.mediaUrl = null;
+          specific.status = 'READ';
+          updated = true;
+        }
       } else if (receipt.status === 'READ') {
         const specific = messages.find(m => m.id === receipt.messageId);
         if (specific) {
@@ -1139,7 +1154,12 @@ class ChatRepositoryWeb {
           const otherMsgs = this.getMessages(c.phoneNumber);
           const found = otherMsgs.find(m => m.id === receipt.messageId);
           if (found) {
-            if (receipt.status === 'READ') {
+            if (receipt.status === 'VIEW_ONCE_OPENED') {
+              found.isViewOnceOpened = true;
+              found.mediaData = null;
+              found.mediaUrl = null;
+              found.status = 'READ';
+            } else if (receipt.status === 'READ') {
               const upToTs = found.timestamp || Date.now();
               otherMsgs.forEach(m => {
                 if (m.isOutgoing && m.status === 'DELIVERED' && (m.timestamp || 0) <= upToTs) {
@@ -1231,6 +1251,37 @@ class ChatRepositoryWeb {
       await setDoc(doc(db, 'receipts', canonicalRecipient, 'acks', receiptId), receiptDto);
     } catch (e) {
       console.warn('Failed to send receipt:', e);
+    }
+  }
+
+  // --- VIEW ONCE: MARK OPENED & PERMANENTLY DESTROY MEDIA ---
+  async markViewOnceOpened(messageId, peerNumber) {
+    if (!messageId || !peerNumber) return;
+    try {
+      const normPeer = normalizePhoneNumber(peerNumber);
+      const messages = this.getMessages(normPeer);
+      const msg = messages.find(m => m.id === messageId);
+      if (msg) {
+        msg.isViewOnceOpened = true;
+        msg.mediaData = null;
+        msg.mediaUrl = null;
+        msg.status = 'READ';
+        this.saveMessages(normPeer, messages);
+        this.notifySubscribers();
+      }
+
+      // Permanently destroy from local IndexedDB and RAM URL cache
+      try {
+        await mediaStorageWeb.deleteMedia(messageId);
+      } catch (err) {
+        console.warn('[ChatRepositoryWeb] Error deleting media from IndexedDB:', err);
+      }
+
+      // Send VIEW_ONCE_OPENED receipt so sender sees opened state
+      await this.sendReceipt(peerNumber, messageId, 'VIEW_ONCE_OPENED');
+      console.log(`[ChatRepositoryWeb] View Once media ${messageId} opened and permanently destroyed`);
+    } catch (e) {
+      console.warn('[ChatRepositoryWeb] markViewOnceOpened failed:', e);
     }
   }
 
@@ -1615,7 +1666,7 @@ class ChatRepositoryWeb {
   }
 
   // --- PUBLIC API: SEND MESSAGE ---
-  async sendMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0) {
+  async sendMessage(recipientNumber, recipientName, text, mediaType = 'TEXT', mediaData = null, mediaDurationMs = 0, isViewOnce = false) {
     if (!this.currentListeningPhone) {
       try {
         const stored = localStorage.getItem('lksDialerUser') || localStorage.getItem('lks_user');
@@ -1990,7 +2041,8 @@ class ChatRepositoryWeb {
     if (mediaType === 'IMAGE') {
       payloadToEncrypt = JSON.stringify({
         caption: text || '',
-        bytes: mediaData || ''
+        bytes: mediaData || '',
+        isViewOnce: Boolean(isViewOnce)
       });
     } else if (mediaType === 'AUDIO') {
       payloadToEncrypt = JSON.stringify({
@@ -2021,14 +2073,16 @@ class ChatRepositoryWeb {
       conversationId: normRecipient,
       senderNumber: this.currentListeningPhone,
       recipientNumber: canonicalRecipient,
-      text: text || '',
+      text: isViewOnce ? '① Photo' : (text || ''),
       mediaType,
       mediaData: savedMediaData,
       mediaUrl: localMediaUrl,
       mediaDurationMs,
       timestamp: now,
       status: 'SENT',
-      isOutgoing: true
+      isOutgoing: true,
+      isViewOnce: Boolean(isViewOnce),
+      isViewOnceOpened: false
     };
 
     const messages = this.getMessages(normRecipient);
@@ -2042,7 +2096,8 @@ class ChatRepositoryWeb {
       phoneNumber: normRecipient,
       contactName: recipientName || peerUser?.displayName || existingConv?.contactName || normRecipient,
       profilePicUrl: peerUser?.profilePictureUrl || existingConv?.profilePicUrl || '',
-      lastMessageText: mediaType === 'STICKER' ? '✨ Sticker'
+      lastMessageText: isViewOnce ? '① Photo'
+                     : mediaType === 'STICKER' ? '✨ Sticker'
                      : mediaType === 'IMAGE' ? (text && (text.includes('.gif') || text.startsWith('http')) ? '👾 GIF' : '📷 Photo')
                      : mediaType === 'AUDIO' ? '🎤 Voice message'
                      : mediaType === 'DOCUMENT' ? `📄 ${text || 'Document'}`
@@ -2069,6 +2124,7 @@ class ChatRepositoryWeb {
       iv,
       mediaType,
       mediaDurationMs,
+      isViewOnce: Boolean(isViewOnce),
       timestamp: now
     };
 
@@ -2085,6 +2141,7 @@ class ChatRepositoryWeb {
 
     // 6. Send FCM wakeup push notification via Cloudflare Worker
     const displayPreview = () => {
+      if (isViewOnce) return '① Photo';
       if (mediaType === 'STICKER') return '✨ Sticker';
       if (mediaType === 'IMAGE') return (text && (text.includes('.gif') || text.startsWith('http'))) ? '👾 GIF' : (text || '📷 Photo');
       if (mediaType === 'AUDIO') return '🎤 Voice message';
