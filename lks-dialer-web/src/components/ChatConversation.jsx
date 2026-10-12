@@ -913,6 +913,18 @@ function ZoomableImageViewerWeb({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
+  // Auto-close View Once photo if user switches tabs or minimizes browser
+  useEffect(() => {
+    if (!isViewOnce) return;
+    const handleVisibility = () => {
+      if (document.hidden) {
+        onClose();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [isViewOnce, onClose]);
+
   // Mouse wheel zoom (centered, scale clamped 1x..5x)
   const handleWheel = (e) => {
     e.preventDefault();
@@ -1020,6 +1032,12 @@ function ZoomableImageViewerWeb({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      onContextMenu={(e) => {
+        if (isViewOnce) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
       style={{
         position: 'fixed',
         inset: 0,
@@ -1144,6 +1162,12 @@ function ZoomableImageViewerWeb({
           src={resolvedSrc}
           alt="Enlarged"
           draggable={false}
+          onContextMenu={(e) => {
+            if (isViewOnce) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }}
           style={{
             maxWidth: '92vw',
             maxHeight: '82vh',
@@ -1152,7 +1176,10 @@ function ZoomableImageViewerWeb({
             transition: isDragging ? 'none' : 'transform 0.15s ease-out',
             boxShadow: '0 8px 32px rgba(0,0,0,0.8)',
             pointerEvents: 'auto',
-            borderRadius: 6
+            borderRadius: 6,
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none'
           }}
         />
       </div>

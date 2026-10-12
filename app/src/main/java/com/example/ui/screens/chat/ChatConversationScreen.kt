@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.util.LinkPreviewData
 import com.example.util.LinkPreviewHelper
@@ -2197,6 +2198,45 @@ fun ChatConversationScreen(
                 }
             }
         )
+    }
+
+    // Hardened View Once Security: If user backgrounds app, locks screen, or leaves screen while viewing, auto-destroy immediately!
+    DisposableEffect(activeViewOnceMessageId, lifecycleOwner) {
+        val viewOnceId = activeViewOnceMessageId
+        val pathToDelete = selectedImagePreviewPath
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
+                val currentId = activeViewOnceMessageId
+                val currentPath = selectedImagePreviewPath
+                selectedImagePreviewPath = null
+                activeViewOnceMessageId = null
+                if (currentId != null) {
+                    chatRepository.markViewOnceOpened(currentId, normPeer)
+                    if (currentPath != null) {
+                        try {
+                            val f = File(currentPath)
+                            if (f.exists()) f.delete()
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        }
+        if (viewOnceId != null) {
+            lifecycleOwner.lifecycle.addObserver(observer)
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // If composable is disposed while actively viewing a View Once media
+            if (viewOnceId != null && activeViewOnceMessageId == viewOnceId) {
+                chatRepository.markViewOnceOpened(viewOnceId, normPeer)
+                if (pathToDelete != null) {
+                    try {
+                        val f = File(pathToDelete)
+                        if (f.exists()) f.delete()
+                    } catch (_: Exception) {}
+                }
+            }
+        }
     }
 
     // Fullscreen Image Preview (Interactive Pinch-To-Zoom & Pan)

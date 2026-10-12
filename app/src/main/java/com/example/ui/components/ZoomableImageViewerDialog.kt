@@ -29,13 +29,17 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
 
@@ -86,12 +90,26 @@ fun ZoomableImageViewerDialog(
         }
     }
 
+    val context = LocalContext.current
+    val finalImageModel = remember(imageModel, isViewOnce) {
+        if (isViewOnce) {
+            ImageRequest.Builder(context)
+                .data(imageModel)
+                .memoryCachePolicy(CachePolicy.DISABLED)
+                .diskCachePolicy(CachePolicy.DISABLED)
+                .build()
+        } else {
+            imageModel
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
-            dismissOnClickOutside = false
+            dismissOnClickOutside = false,
+            securePolicy = if (isViewOnce) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit
         )
     ) {
         BackHandler {
@@ -160,7 +178,7 @@ fun ZoomableImageViewerDialog(
         ) {
             // Main Zoomable Image
             AsyncImage(
-                model = imageModel,
+                model = finalImageModel,
                 contentDescription = "Fullscreen Photo",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
