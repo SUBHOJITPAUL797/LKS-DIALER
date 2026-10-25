@@ -22,22 +22,24 @@ service cloud.firestore {
              get(/databases/$(database)/documents/system_config/licensing).data.get('requireApprovalForPc', true) == false;
     }
 
-    // 0. SYSTEM CONFIGURATION (Licensing Modes, Registration Gate)
+    // =========================================================================
+    // 1. DASMO SUITE COLLECTIONS
+    // =========================================================================
+
+    // System Configuration
     match /system_config/{configId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // 1. DASMO PHOTO PRINT USERS (Isolated Mobile)
+    // Photo Print Users
     match /dasmo_photo_print_users/{email} {
       allow read: if isOwner(email) || isAdmin();
-
       allow create: if (isOwner(email) && 
                         (email.lower() == 'subhojitpaul26042004@gmail.com' ||
                          (request.resource.data.get('isApproved', false) == false &&
                           request.resource.data.get('role', 'user') == 'user' &&
                           request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
-
       allow update: if isAdmin() || 
                        (isOwner(email) && 
                         request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
@@ -45,20 +47,17 @@ service cloud.firestore {
                         request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
                         request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
                         request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
-
       allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
     }
 
-    // 2. DASMO SCANNER USERS (Isolated Mobile)
+    // Scanner Users
     match /dasmo_scanner_users/{email} {
       allow read: if isOwner(email) || isAdmin();
-
       allow create: if (isOwner(email) && 
                         (email.lower() == 'subhojitpaul26042004@gmail.com' ||
                          (request.resource.data.get('isApproved', false) == false &&
                           request.resource.data.get('role', 'user') == 'user' &&
                           request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
-
       allow update: if isAdmin() || 
                        (isOwner(email) && 
                         request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
@@ -66,14 +65,12 @@ service cloud.firestore {
                         request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
                         request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
                         request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
-
       allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
     }
 
-    // 3. DASMO PC USERS (Isolated Windows Desktop Suite)
+    // PC Users
     match /dasmo_pc_users/{email} {
       allow read: if isOwner(email) || isAdmin();
-
       allow create: if isAdmin() ||
                        (isOwner(email) && 
                         ((isRegistrationOpen() && 
@@ -83,7 +80,6 @@ service cloud.firestore {
                           request.resource.data.get('role', 'user') == 'user' &&
                           request.resource.data.get('isAdmin', false) == false &&
                           request.resource.data.get('status', 'pending') == 'pending')));
-
       allow update: if isAdmin() || 
                        (isOwner(email) && 
                         request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
@@ -92,20 +88,17 @@ service cloud.firestore {
                         request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
                         request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0) &&
                         (resource.data.get('deviceId', '') == '' || request.resource.data.get('deviceId', '') == resource.data.get('deviceId', '')));
-
       allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
     }
 
-    // 4. DASMO CYBER CAPTURE USERS (Isolated Mobile)
+    // Cyber Capture Users
     match /dasmo_cyber_capture_users/{email} {
       allow read: if isOwner(email) || isAdmin();
-
       allow create: if (isOwner(email) && 
                         (email.lower() == 'subhojitpaul26042004@gmail.com' ||
                          (request.resource.data.get('isApproved', false) == false &&
                           request.resource.data.get('role', 'user') == 'user' &&
                           request.resource.data.get('status', 'pending') == 'pending'))) || isAdmin();
-
       allow update: if isAdmin() || 
                        (isOwner(email) && 
                         request.resource.data.get('isApproved', false) == resource.data.get('isApproved', false) &&
@@ -113,33 +106,17 @@ service cloud.firestore {
                         request.resource.data.get('role', 'user') == resource.data.get('role', 'user') &&
                         request.resource.data.get('isAdmin', false) == resource.data.get('isAdmin', false) &&
                         request.resource.data.get('expiryTimestamp', 0) == resource.data.get('expiryTimestamp', 0));
-
       allow delete: if isAdmin() || (resource != null && resource.data.get('status', '') == 'deleted');
     }
 
-    // 5. Fallback users collection / SMS Bridge user profiles / LKS DIALER users
-    match /users/{userId} {
-      allow read, write: if true;
-
-      match /contacts/{contactId} {
-        allow read, write: if true;
-      }
-
-      match /callLogs/{logId} {
-        allow read, write: if true;
-      }
-
-      match /linked_devices/{deviceId} {
-        allow read, write: if true;
-      }
-    }
-
-    // 6. Scanner document metadata
+    // Scanner Document Metadata
     match /dasmo_doc_scanner_documents/{documentId} {
       allow read, write: if true;
     }
 
-    // 7. SMS & Call Forwarder (Dedicated & Isolated Collections)
+    // =========================================================================
+    // 2. SMS & CALL FORWARDER COLLECTIONS
+    // =========================================================================
     match /sms_forwarder_users/{userId} {
       allow read, write: if true;
     }
@@ -152,24 +129,19 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    match /sms_forwarder_messages/{hostUid} {
+    match /sms_forwarder_messages/{hostUid}/{document=**} {
       allow read, write: if true;
-      match /messages/{messageId} {
-        allow read, write: if true;
-      }
-      match /calls/{callId} {
-        allow read, write: if true;
-      }
     }
 
-    match /sms_forwarder_calls/{hostUid} {
+    match /sms_forwarder_calls/{hostUid}/{document=**} {
       allow read, write: if true;
-      match /calls/{callId} {
-        allow read, write: if true;
-      }
     }
 
-    // 8. Legacy / Fallback SMS Bridge Collections
+    match /sms_forwarder_wt_sessions/{sessionId} {
+      allow read, write: if true;
+    }
+
+    // Legacy SMS Bridge Collections
     match /pairings/{pairingCode} {
       allow read, write: if true;
     }
@@ -178,33 +150,88 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    match /sms/{hostUid} {
+    match /sms/{hostUid}/{document=**} {
       allow read, write: if true;
-      match /messages/{messageId} {
+    }
+
+    // =========================================================================
+    // 3. LKS DIALER & CHAT SYSTEM COLLECTIONS
+    // =========================================================================
+
+    // Users and subcollections (contacts, callLogs, linked_devices)
+    match /users/{userId} {
+      allow read, write: if true;
+      match /{document=**} {
         allow read, write: if true;
       }
     }
 
-    // 9. LKS DIALER - Active calls, Signaling & WebRTC
-    match /calls/{document=**} {
+    // Active calls, WebRTC signaling & ICE candidates
+    match /calls/{callId} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Ephemeral Inboxes (Chat messages & media payloads)
+    match /inboxes/{recipientPhone} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Message delivery & read receipts (Acks)
+    match /receipts/{recipientPhone} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Real-time typing indicators
+    match /typingStatus/{recipientPhone} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // E2EE Group Chats
+    match /groups/{groupId} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // P2P WebRTC DataChannel transfer sessions & ICE signaling
+    match /p2p_transfer_sessions/{sessionId} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    match /p2p_transfers/{document=**} {
       allow read, write: if true;
     }
 
-    // 10. LKS DIALER - Ephemeral Inboxes & Receipts
-    match /inboxes/{document=**} {
+    // Web QR Code Login Sessions
+    match /qr_sessions/{sessionId} {
+      allow read, write: if true;
+      match /{document=**} {
+        allow read, write: if true;
+      }
+    }
+
+    // Spam Reports & Blocked Numbers
+    match /spam_reports/{document=**} {
       allow read, write: if true;
     }
 
-    match /receipts/{document=**} {
-      allow read, write: if true;
-    }
-
-    // 11. LKS DIALER - Typing status
-    match /typingStatus/{document=**} {
-      allow read, write: if true;
-    }
-
-    // 12. LKS DIALER - Diagnostics, Crash Reporting & Shake Logs
+    // App Diagnostics, Crash Reporting & Shake Logs
     match /critical_crashes/{document=**} {
       allow read, write: if true;
     }
@@ -214,21 +241,6 @@ service cloud.firestore {
     }
 
     match /app_logs/{document=**} {
-      allow read, write: if true;
-    }
-
-    // 13. LKS DIALER - P2P WebRTC DataChannel Transfers
-    match /p2p_transfers/{document=**} {
-      allow read, write: if true;
-    }
-
-    // 14. LKS DIALER - QR Web Login Sessions
-    match /qr_sessions/{document=**} {
-      allow read, write: if true;
-    }
-
-    // 15. LKS DIALER - E2EE Group Chats
-    match /groups/{document=**} {
       allow read, write: if true;
     }
   }
