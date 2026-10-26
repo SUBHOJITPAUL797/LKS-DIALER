@@ -671,19 +671,24 @@ class WebRtcEngine {
   async updateCallerTune(tuneData) {
     if (!this.currentUser) return;
     const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+    // NOTE: We store URL only in Firestore (not Base64) to stay under Firestore 1MB doc limit.
+    // The callerTuneAudioBase64 is kept in memory for local use but NOT written to Firestore from web.
     const updates = {
       callerTuneTitle: tuneData.title || "",
       callerTuneArtist: tuneData.artist || "",
       callerTuneUrl: tuneData.audioUrl || "",
-      callerTuneAudioBase64: tuneData.audioBase64 || "",
+      callerTuneAudioBase64: "",   // never write large base64 to Firestore from web
       callerTuneSource: tuneData.source || "DEFAULT",
       callerTuneStartMs: tuneData.startMs || 0,
       callerTuneEndMs: tuneData.endMs || 30000
     };
-    await updateDoc(userRef, updates);
+    // Use setDoc+merge so it works even if the user doc was created before these fields existed
+    await setDoc(userRef, updates, { merge: true });
     this.setCurrentUser({
       ...this.currentUser,
-      ...updates
+      ...updates,
+      // Keep base64 in local state for in-app preview playback only
+      callerTuneAudioBase64: tuneData.audioBase64 || ""
     });
     return this.currentUser;
   }
@@ -700,7 +705,7 @@ class WebRtcEngine {
       callerTuneStartMs: 0,
       callerTuneEndMs: 0
     };
-    await updateDoc(userRef, updates);
+    await setDoc(userRef, updates, { merge: true });
     this.setCurrentUser({
       ...this.currentUser,
       ...updates

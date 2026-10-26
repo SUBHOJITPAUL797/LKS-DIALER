@@ -154,14 +154,23 @@ class CallMessagingService : FirebaseMessagingService() {
                     return
                 }
                 
-                // Immediately update Firestore status to RINGING so caller knows recipient device received it
+                // Immediately update Firestore status to RINGING + callee's caller tune so caller can play it
                 if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
                     try {
                         val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         val docRef = db.collection("calls").document(callId)
-                        docRef.update("status", "RINGING").addOnFailureListener {
+                        // Build update map with caller tune data (we are the callee — getMyCallerTune reads our own prefs)
+                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                        val ringUpdates = mutableMapOf<String, Any>("status" to "RINGING")
+                        if (myTune.isConfigured) {
+                            ringUpdates["callerTuneTitle"] = myTune.title
+                            if (myTune.audioBase64.isNotBlank()) ringUpdates["callerTuneAudioBase64"] = myTune.audioBase64
+                            if (myTune.audioUrl.isNotBlank()) ringUpdates["callerTuneUrl"] = myTune.audioUrl
+                            Log.i("FCM", "📻 Attaching caller tune '${myTune.title}' to RINGING update (early)")
+                        }
+                        docRef.update(ringUpdates).addOnFailureListener {
                             if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
-                                docRef.set(mapOf("status" to "RINGING"), com.google.firebase.firestore.SetOptions.merge())
+                                docRef.set(ringUpdates, com.google.firebase.firestore.SetOptions.merge())
                             }
                         }
                     } catch (e: Exception) {
@@ -438,15 +447,27 @@ class CallMessagingService : FirebaseMessagingService() {
             Log.w("FCM", "Failed to start keep alive from FCM: ${e.message}")
         }
 
-        // ─── Update Firestore status to RINGING so the CALLER sees "Ringing..." instead of "Calling..." ───
+        // ─── Update Firestore status to RINGING + caller tune so the CALLER hears the hello tune ───
         if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
             try {
-                com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    .collection("calls")
-                    .document(callId)
-                    .update("status", com.example.data.model.CallStatus.RINGING.name)
+                val db2 = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                val docRef2 = db2.collection("calls").document(callId)
+                val myTune2 = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                val ringUpdates2 = mutableMapOf<String, Any>("status" to com.example.data.model.CallStatus.RINGING.name)
+                if (myTune2.isConfigured) {
+                    ringUpdates2["callerTuneTitle"] = myTune2.title
+                    if (myTune2.audioBase64.isNotBlank()) ringUpdates2["callerTuneAudioBase64"] = myTune2.audioBase64
+                    if (myTune2.audioUrl.isNotBlank()) ringUpdates2["callerTuneUrl"] = myTune2.audioUrl
+                    Log.i("FCM", "📻 Attaching caller tune '${myTune2.title}' to RINGING update (notification)")
+                }
+                docRef2.update(ringUpdates2)
                     .addOnSuccessListener {
                         Log.i("FCM", "✅ Call status updated to RINGING in Firestore for callId=$callId")
+                    }
+                    .addOnFailureListener {
+                        if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+                            docRef2.set(ringUpdates2, com.google.firebase.firestore.SetOptions.merge())
+                        }
                     }
             } catch (e: Exception) {
                 Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
