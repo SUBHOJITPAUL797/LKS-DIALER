@@ -76,6 +76,7 @@ fun CallerTunePickerDialog(
     var activeTrimmerArtist by remember { mutableStateOf("") }
     var activeTrimmerSource by remember { mutableStateOf("LIBRARY") }
     var activeTrimmerThumb by remember { mutableStateOf<String?>(null) }
+    var activeTrimmerAudioUrl by remember { mutableStateOf("") }
 
     // Curated Tunes Preview State
     var previewingCuratedId by remember { mutableStateOf<String?>(null) }
@@ -91,6 +92,7 @@ fun CallerTunePickerDialog(
             activeTrimmerArtist = "My Audio"
             activeTrimmerSource = "LOCAL"
             activeTrimmerThumb = null
+            activeTrimmerAudioUrl = ""
         }
     }
 
@@ -109,6 +111,7 @@ fun CallerTunePickerDialog(
             artist = activeTrimmerArtist,
             source = activeTrimmerSource,
             thumbnailUrl = activeTrimmerThumb,
+            audioUrl = activeTrimmerAudioUrl,
             onTuneSaved = { savedTune ->
                 activeTrimmerUri = null
                 onTuneSelected(savedTune)
@@ -360,6 +363,7 @@ fun CallerTunePickerDialog(
                                                         activeTrimmerArtist = song.channelName
                                                         activeTrimmerSource = "LIBRARY"
                                                         activeTrimmerThumb = song.thumbnailUrl
+                                                        activeTrimmerAudioUrl = song.directAudioUrl
                                                     } else {
                                                         Toast.makeText(context, "Could not load track audio for trimming. Try another track or 'My Device'.", Toast.LENGTH_LONG).show()
                                                     }

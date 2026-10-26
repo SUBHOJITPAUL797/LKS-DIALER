@@ -55,6 +55,13 @@ object YouTubeSearchHelper {
             return@withContext saavnResults
         }
 
+        // 1.5. Secondary: Search global Apple Music catalog (100M+ songs with high-speed direct CDN streams)
+        val itunesResults = searchITunesMusic(cleanQuery)
+        if (itunesResults.isNotEmpty()) {
+            Log.i(TAG, "Found ${itunesResults.size} playable songs from global catalog for: '$cleanQuery'")
+            return@withContext itunesResults
+        }
+
         // 2. If user pasted a YouTube link, extract videoId
         val directVideoId = extractVideoId(cleanQuery)
         if (directVideoId != null) {
@@ -144,6 +151,46 @@ object YouTubeSearchHelper {
         } catch (e: Exception) {
             Log.w(TAG, "DES decryption failed: ${e.message}")
             null
+        }
+    }
+
+    private fun searchITunesMusic(query: String): List<YouTubeSongItem> {
+        return try {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val url = "https://itunes.apple.com/search?term=$encoded&media=music&limit=25"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return emptyList()
+                val bodyStr = response.body?.string() ?: return emptyList()
+                val json = JSONObject(bodyStr)
+                val resultsArray = json.optJSONArray("results") ?: return emptyList()
+                val items = mutableListOf<YouTubeSongItem>()
+                for (i in 0 until resultsArray.length()) {
+                    val obj = resultsArray.optJSONObject(i) ?: continue
+                    val previewUrl = obj.optString("previewUrl", "")
+                    if (previewUrl.isBlank()) continue
+                    val title = obj.optString("trackName", "Track")
+                    val artist = obj.optString("artistName", "Artist")
+                    val artwork = obj.optString("artworkUrl100", "").replace("100x100", "300x300")
+                    items.add(
+                        YouTubeSongItem(
+                            videoId = obj.optString("trackId", "itunes_$i"),
+                            title = cleanHtml(title),
+                            channelName = cleanHtml(artist),
+                            durationText = "0:30",
+                            thumbnailUrl = artwork,
+                            directAudioUrl = previewUrl
+                        )
+                    )
+                }
+                items
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "searchITunesMusic error: ${e.message}")
+            emptyList()
         }
     }
 

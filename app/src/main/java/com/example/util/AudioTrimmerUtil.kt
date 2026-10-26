@@ -1,4 +1,4 @@
-package com.example.util
+﻿package com.example.util
 
 import android.content.Context
 import android.media.MediaCodec
@@ -295,7 +295,7 @@ object AudioTrimmerUtil {
     // TIER 3: HIGH-SPEED NON-BLOCKING MEDIACODEC TRANSCODER (~80ms)
     // ─────────────────────────────────────────────────────────────────────────────
 
-    private fun tryTrimMediaCodecFast(context: Context, sourceFile: File, startMs: Long, endMs: Long): Uri? {
+    fun tryTrimMediaCodecFast(context: Context, sourceFile: File, startMs: Long, endMs: Long, targetBitrate: Int = 128000): Uri? {
         val ringtonesDir = File(context.filesDir, "ringtones").apply { mkdirs() }
         val outFile = File(ringtonesDir, "trimmed_${System.currentTimeMillis()}.m4a")
 
@@ -333,7 +333,7 @@ object AudioTrimmerUtil {
             decoder.start()
 
             val outputFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
-                setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                setInteger(MediaFormat.KEY_BIT_RATE, targetBitrate)
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 64 * 1024)
             }

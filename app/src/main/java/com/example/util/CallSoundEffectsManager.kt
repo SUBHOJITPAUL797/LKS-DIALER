@@ -81,18 +81,20 @@ object CallSoundEffectsManager {
             val player = MediaPlayer()
             callerTunePlayer = player
 
+            val httpHeaders = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
+
             if (!audioBase64.isNullOrBlank()) {
                 val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
                 if (tempFile != null && tempFile.exists()) {
                     player.setDataSource(tempFile.absolutePath)
                 } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                    player.setDataSource(audioUrl)
+                    player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
                 } else {
                     startRingbackTone(context)
                     return
                 }
             } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                player.setDataSource(audioUrl)
+                player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
             } else {
                 startRingbackTone(context)
                 return
@@ -124,9 +126,15 @@ object CallSoundEffectsManager {
                 }
             }
             player.setOnErrorListener { _, what, extra ->
-                Log.w(TAG, "Caller tune error ($what, $extra), reverting to standard ringback tone")
+                Log.w(TAG, "Caller tune error ($what, $extra)")
                 stopCallerTune()
-                startRingbackTone(context)
+                if (!audioUrl.isNullOrBlank() && !audioBase64.isNullOrBlank()) {
+                    // Base64 file failed to decode/play; try fallback stream URL!
+                    Log.i(TAG, "Retrying caller tune with direct URL stream: $audioUrl")
+                    startCallerTune(context, null, audioUrl, title)
+                } else {
+                    startRingbackTone(context)
+                }
                 true
             }
             player.prepareAsync()

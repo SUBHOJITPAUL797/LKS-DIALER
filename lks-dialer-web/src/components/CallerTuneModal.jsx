@@ -9,43 +9,43 @@ import { webRtcEngine } from '../lib/WebRtcEngine';
 const CURATED_TUNES = [
   {
     id: "curated_1",
-    title: "Acoustic Sunlight Guitar",
+    title: "Acoustic Guitar",
     artist: "Acoustic Melody",
     category: "Guitar & Chill",
     emoji: "🎸",
-    streamUrl: "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3"
+    streamUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/59/8e/e7/598ee705-61af-531b-0a3a-03de11613905/mzaf_17596824643264671711.plus.aac.p.m4a"
   },
   {
     id: "curated_2",
-    title: "Midnight Lo-Fi Chill Beats",
+    title: "Motivational LoFi Chill",
     artist: "Lo-Fi Beats",
     category: "Lo-Fi",
     emoji: "🎧",
-    streamUrl: "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3"
+    streamUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/37/18/65/3718655b-2dd7-1367-1374-0f0b0dff8fce/mzaf_6222293724942473305.plus.aac.p.m4a"
   },
   {
     id: "curated_3",
-    title: "Uplifting Corporate Breeze",
-    artist: "Studio Chimes",
+    title: "Corporate Uplifting",
+    artist: "Soundpower",
     category: "Professional",
     emoji: "💼",
-    streamUrl: "https://cdn.pixabay.com/download/audio/2021/08/04/audio_12b0c7443c.mp3"
+    streamUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview115/v4/5e/f5/81/5ef5810e-332e-2570-f060-d301931adbfb/mzaf_17429935323152206949.plus.aac.p.m4a"
   },
   {
     id: "curated_4",
-    title: "Peaceful Piano Horizon",
-    artist: "Classical Piano",
+    title: "Soft Piano Horizon",
+    artist: "Peaceful Piano",
     category: "Piano",
     emoji: "🎹",
-    streamUrl: "https://cdn.pixabay.com/download/audio/2022/05/16/audio_db6591201e.mp3"
+    streamUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/0e/06/c3/0e06c37e-1fc6-290d-a3dc-e25b711392ad/mzaf_1930168324025856273.plus.aac.p.m4a"
   },
   {
     id: "curated_5",
-    title: "Cinematic Ambient Strings",
-    artist: "Violin Ensemble",
+    title: "Romantic Violin",
+    artist: "Jean-Claude Bensimon",
     category: "Romantic",
     emoji: "🎻",
-    streamUrl: "https://cdn.pixabay.com/download/audio/2022/08/02/audio_884fe92c21.mp3"
+    streamUrl: "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview125/v4/e2/bb/cb/e2bbcb87-f40e-da0f-0766-3b3d67dfdfe0/mzaf_15871035304556593605.plus.aac.p.m4a"
   }
 ];
 

@@ -1,4 +1,4 @@
-package com.example.data.repository
+﻿package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
@@ -661,6 +661,22 @@ class FirebaseManager private constructor(private val context: Context) {
         )
         _currentUser.value = updated
 
+        // CRITICAL: Always persist to SharedPreferences so FCM handler can read it
+        // when the phone is in background/killed. FCM cannot access in-memory state.
+        com.example.util.LksCallerTuneManager.saveMyCallerTune(
+            context,
+            com.example.util.CallerTuneInfo(
+                title = title,
+                artist = artist,
+                audioUrl = audioUrl,
+                audioBase64 = audioBase64,
+                source = source,
+                startMs = startMs,
+                endMs = endMs
+            )
+        )
+        Log.i(TAG, "Caller Tune saved to SharedPreferences: $title")
+
         if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
             val updates = mapOf(
                 "callerTuneTitle" to title,
@@ -695,6 +711,10 @@ class FirebaseManager private constructor(private val context: Context) {
             callerTuneEndMs = 0L
         )
         _currentUser.value = updated
+
+        // CRITICAL: Clear SharedPreferences so FCM handler won't attach a stale tune
+        com.example.util.LksCallerTuneManager.removeMyCallerTune(context)
+        Log.i(TAG, "Caller Tune removed from SharedPreferences")
 
         if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
             val updates = mapOf(
