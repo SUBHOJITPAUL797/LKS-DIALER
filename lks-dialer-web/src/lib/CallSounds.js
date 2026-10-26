@@ -16,6 +16,7 @@ class CallSoundsManager {
     this.ringbackGain = null;
     this.isRingbackActive = false;
     this.holdReminderInterval = null;
+    this.callerTuneAudio = null;
   }
 
   getAudioContext() {
@@ -82,7 +83,77 @@ class CallSoundsManager {
   }
 
   /**
-   * Stops the outgoing ringback tone immediately.
+   * Starts playing a Caller Tune (Hello Tune) for outgoing ringing.
+   * If audioBase64 or audioUrl is provided, it plays via HTML5 Audio with looping.
+   * If audio fails to load or play, it automatically falls back to standard ringback tone.
+   */
+  startCallerTune(audioBase64, audioUrl) {
+    this.stopRingbackTone();
+    this.isRingbackActive = true;
+
+    try {
+      let src = "";
+      if (audioBase64 && typeof audioBase64 === 'string' && audioBase64.trim().length > 0) {
+        src = audioBase64.startsWith('data:') ? audioBase64 : `data:audio/mp3;base64,${audioBase64}`;
+      } else if (audioUrl && typeof audioUrl === 'string' && audioUrl.trim().length > 0) {
+        src = audioUrl;
+      }
+
+      if (!src) {
+        this.startRingbackTone();
+        return;
+      }
+
+      const audio = new Audio();
+      this.callerTuneAudio = audio;
+      audio.src = src;
+      audio.loop = true;
+      audio.volume = 0.5;
+
+      audio.onerror = () => {
+        console.warn("[CallSounds] Caller tune failed to load, falling back to standard ringback tone");
+        this.stopCallerTune();
+        this.startRingbackTone();
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn("[CallSounds] Autoplay blocked or error playing caller tune:", err);
+          this.stopCallerTune();
+          this.startRingbackTone();
+        });
+      }
+    } catch (e) {
+      console.warn("[CallSounds] Error setting up caller tune:", e);
+      this.startRingbackTone();
+    }
+  }
+
+  /**
+   * Automatically selects Caller Tune if available, or falls back to standard supervisory tone.
+   */
+  startRingbackOrCallerTune(audioBase64, audioUrl) {
+    if ((audioBase64 && audioBase64.trim().length > 0) || (audioUrl && audioUrl.trim().length > 0)) {
+      this.startCallerTune(audioBase64, audioUrl);
+    } else {
+      this.startRingbackTone();
+    }
+  }
+
+  stopCallerTune() {
+    if (this.callerTuneAudio) {
+      try {
+        this.callerTuneAudio.pause();
+        this.callerTuneAudio.currentTime = 0;
+        this.callerTuneAudio.src = '';
+      } catch (_) {}
+      this.callerTuneAudio = null;
+    }
+  }
+
+  /**
+   * Stops the outgoing ringback tone or caller tune immediately.
    */
   stopRingbackTone() {
     this.isRingbackActive = false;
@@ -90,6 +161,7 @@ class CallSoundsManager {
       clearTimeout(this.ringbackTimer);
       this.ringbackTimer = null;
     }
+    this.stopCallerTune();
   }
 
   /**

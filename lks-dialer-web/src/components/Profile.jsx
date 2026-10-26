@@ -1,14 +1,17 @@
 import React, { useState, useRef } from 'react';
-import { Camera, Save, Ban, Smartphone, Download, LogOut } from 'lucide-react';
+import { Camera, Save, Ban, Smartphone, Download, LogOut, Music } from 'lucide-react';
 import { webRtcEngine } from '../lib/WebRtcEngine';
 import { formatAvatarUrl } from '../lib/ImageUtils';
 import { DIRECT_APK_URL, LATEST_APP_VERSION } from './AppDownloadModal';
+import CallerTuneModal from './CallerTuneModal';
 
 export default function Profile({ onOpenDownloadModal, onLogout }) {
   const [name, setName] = useState(webRtcEngine.currentUser?.displayName || "");
   const [avatar, setAvatar] = useState(webRtcEngine.currentUser?.profilePictureUrl || "");
   const [customRingtone, setCustomRingtone] = useState(localStorage.getItem('customRingtone') || "");
   const [blockedNumbers, setBlockedNumbers] = useState(webRtcEngine.currentUser?.blockedNumbers || []);
+  const [isCallerTuneModalOpen, setIsCallerTuneModalOpen] = useState(false);
+  const [, setTuneUpdateTick] = useState(0);
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
@@ -192,6 +195,57 @@ export default function Profile({ onOpenDownloadModal, onLogout }) {
         )}
       </div>
 
+      {/* 🎵 Caller Tune (Hello Tune) Section */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <label style={{ fontWeight: '800', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Music size={16} color="#6750A4" /> CALLER TUNE (HELLO TUNE)
+          </label>
+          <span style={{ fontSize: '11px', fontWeight: '800', color: '#6750A4', backgroundColor: 'rgba(103, 80, 164, 0.12)', padding: '2px 8px', borderRadius: '6px' }}>
+            {webRtcEngine.currentUser?.callerTuneTitle ? "ACTIVE" : "DEFAULT"}
+          </span>
+        </div>
+
+        <div className="neo-box" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px', backgroundColor: '#fff' }}>
+          {webRtcEngine.currentUser?.callerTuneTitle ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: '800', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  🎵 {webRtcEngine.currentUser.callerTuneTitle}
+                </div>
+                <div style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>
+                  {webRtcEngine.currentUser.callerTuneArtist || "Artist"}
+                </div>
+              </div>
+              <button
+                className="neo-btn danger"
+                style={{ padding: '6px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}
+                onClick={async () => {
+                  if (confirm("Remove Caller Tune? Callers will hear the standard ringback tone.")) {
+                    await webRtcEngine.removeCallerTune();
+                    setTuneUpdateTick(t => t + 1);
+                  }
+                }}
+              >
+                REMOVE
+              </button>
+            </div>
+          ) : (
+            <div style={{ fontSize: '13px', color: '#666', fontWeight: '600' }}>
+              No Caller Tune set. Callers hear standard ringback tone.
+            </div>
+          )}
+
+          <button
+            className="neo-btn"
+            style={{ backgroundColor: '#6750A4', color: '#fff', padding: '10px', fontWeight: '800', fontSize: '13px' }}
+            onClick={() => setIsCallerTuneModalOpen(true)}
+          >
+            {webRtcEngine.currentUser?.callerTuneTitle ? "CHANGE CALLER TUNE" : "SET CALLER TUNE"}
+          </button>
+        </div>
+      </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <label style={{ fontWeight: '800', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -313,6 +367,12 @@ export default function Profile({ onOpenDownloadModal, onLogout }) {
           </button>
         )}
       </div>
+
+      <CallerTuneModal
+        isOpen={isCallerTuneModalOpen}
+        onClose={() => setIsCallerTuneModalOpen(false)}
+        onTuneUpdated={() => setTuneUpdateTick(t => t + 1)}
+      />
 
     </div>
   );

@@ -668,6 +668,46 @@ class WebRtcEngine {
     return this.currentUser;
   }
 
+  async updateCallerTune(tuneData) {
+    if (!this.currentUser) return;
+    const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+    const updates = {
+      callerTuneTitle: tuneData.title || "",
+      callerTuneArtist: tuneData.artist || "",
+      callerTuneUrl: tuneData.audioUrl || "",
+      callerTuneAudioBase64: tuneData.audioBase64 || "",
+      callerTuneSource: tuneData.source || "DEFAULT",
+      callerTuneStartMs: tuneData.startMs || 0,
+      callerTuneEndMs: tuneData.endMs || 30000
+    };
+    await updateDoc(userRef, updates);
+    this.setCurrentUser({
+      ...this.currentUser,
+      ...updates
+    });
+    return this.currentUser;
+  }
+
+  async removeCallerTune() {
+    if (!this.currentUser) return;
+    const userRef = doc(db, 'users', this.currentUser.phoneNumber);
+    const updates = {
+      callerTuneTitle: "",
+      callerTuneArtist: "",
+      callerTuneUrl: "",
+      callerTuneAudioBase64: "",
+      callerTuneSource: "DEFAULT",
+      callerTuneStartMs: 0,
+      callerTuneEndMs: 0
+    };
+    await updateDoc(userRef, updates);
+    this.setCurrentUser({
+      ...this.currentUser,
+      ...updates
+    });
+    return this.currentUser;
+  }
+
   isNumberBlocked(phoneNumber) {
     if (!this.currentUser || !this.currentUser.blockedNumbers) return false;
     const clean = String(phoneNumber || '').replace(/[^0-9]/g, '');
@@ -748,8 +788,8 @@ class WebRtcEngine {
 
     await setDoc(callDoc, callData);
     
-    // Play supervisory outgoing ringback tone immediately
-    callSounds.startRingbackTone();
+    // Play supervisory outgoing ringback tone or callee's caller tune immediately
+    callSounds.startRingbackOrCallerTune(callee.callerTuneAudioBase64, callee.callerTuneUrl);
 
     // Trigger Push Notification via Cloudflare Worker
     this.triggerPushNotification(callee, callType, this.activeCallId);
@@ -814,9 +854,15 @@ class WebRtcEngine {
             updateDoc(change.doc.ref, { status: 'DECLINED', endedAt: Date.now() }).catch(() => {});
             return;
           }
-          // Update status to RINGING to notify caller
+          // Update status to RINGING to notify caller, including callee's Caller Tune if configured
           if (data.status === 'CALLING') {
-            updateDoc(change.doc.ref, { status: 'RINGING' });
+            const ringUpdates = { status: 'RINGING' };
+            if (this.currentUser?.callerTuneTitle) {
+              ringUpdates.callerTuneTitle = this.currentUser.callerTuneTitle;
+              if (this.currentUser.callerTuneAudioBase64) ringUpdates.callerTuneAudioBase64 = this.currentUser.callerTuneAudioBase64;
+              if (this.currentUser.callerTuneUrl) ringUpdates.callerTuneUrl = this.currentUser.callerTuneUrl;
+            }
+            updateDoc(change.doc.ref, ringUpdates);
           }
           if (this.onCallStateChange) this.onCallStateChange({ id: change.doc.id, ...data });
         } else if (change.type === 'removed') {
@@ -1045,7 +1091,7 @@ class WebRtcEngine {
       }
 
       if (isCaller && data.status === 'RINGING') {
-        callSounds.startRingbackTone();
+        callSounds.startRingbackOrCallerTune(data.callerTuneAudioBase64, data.callerTuneUrl);
       }
       if (isCaller && data.status === 'ANSWERED') {
         callSounds.stopRingbackTone();
