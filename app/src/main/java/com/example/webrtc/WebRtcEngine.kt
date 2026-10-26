@@ -1631,22 +1631,46 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         val distinctVars = variations.distinct().take(10)
 
+        fun applyTuneFromDoc(doc: com.google.firebase.firestore.DocumentSnapshot?): Boolean {
+            val title = doc?.getString("callerTuneTitle")
+            val audio = doc?.getString("callerTuneAudioBase64")
+            val url = doc?.getString("callerTuneUrl")
+            if (!title.isNullOrBlank() && (!audio.isNullOrBlank() || !url.isNullOrBlank())) {
+                if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
+                    _state.value = _state.value.copy(activeCallerTuneTitle = title)
+                    com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title)
+                    return true
+                }
+            }
+            return false
+        }
+
+        fun tryDirectLookup(index: Int) {
+            if (index >= distinctVars.size) return
+            val docId = distinctVars[index]
+            firestore.collection("users").document(docId).get()
+                .addOnSuccessListener { doc ->
+                    if (!applyTuneFromDoc(doc)) {
+                        tryDirectLookup(index + 1)
+                    }
+                }
+                .addOnFailureListener {
+                    tryDirectLookup(index + 1)
+                }
+        }
+
         firestore.collection("users").whereIn("phoneNumber", distinctVars).get()
             .addOnSuccessListener { qs ->
-                val doc = qs.documents.firstOrNull { !it.getString("callerTuneTitle").isNullOrBlank() }
-                    ?: qs.documents.firstOrNull()
-                val title = doc?.getString("callerTuneTitle")
-                val audio = doc?.getString("callerTuneAudioBase64")
-                val url = doc?.getString("callerTuneUrl")
-                if (!title.isNullOrBlank() && (!audio.isNullOrBlank() || !url.isNullOrBlank())) {
-                    if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
-                        _state.value = _state.value.copy(activeCallerTuneTitle = title)
-                        com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title)
-                    }
+                val docWithTune = qs.documents.firstOrNull { !it.getString("callerTuneTitle").isNullOrBlank() }
+                if (docWithTune != null) {
+                    applyTuneFromDoc(docWithTune)
+                } else {
+                    tryDirectLookup(0)
                 }
             }
             .addOnFailureListener { e ->
-                Log.w("WebRtcEngine", "Failed to resolve callee tune: ${e.message}")
+                Log.w("WebRtcEngine", "whereIn query for caller tune failed: ${e.message}, falling back to direct lookup")
+                tryDirectLookup(0)
             }
     }
 

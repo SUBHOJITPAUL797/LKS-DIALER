@@ -2,6 +2,7 @@ package com.example.util
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Base64
@@ -105,7 +106,7 @@ object LksCallerTuneManager {
 
     /**
      * Reads a trimmed audio file, copies it to safe internal storage,
-     * and encodes it into Base64 (if <= 350KB) so it can sync to Firestore.
+     * and encodes it into Base64 (if <= 400KB) so it can sync to Firestore.
      */
     fun processAndCacheTune(context: Context, uri: Uri, title: String, artist: String, source: String, startMs: Long, endMs: Long, thumbnailUrl: String? = null): CallerTuneInfo {
         var base64 = ""
@@ -145,15 +146,27 @@ object LksCallerTuneManager {
 
     /**
      * Converts a Base64 string back into a playable temp file for the caller's device.
+     * Uses content hash in filename to prevent serving stale cached audio when user changes tunes.
      */
     fun base64ToTempFile(context: Context, base64Str: String, cacheKey: String): File? {
         if (base64Str.isBlank()) return null
         return try {
             val safeKey = cacheKey.replace(Regex("[^a-zA-Z0-9]"), "_")
-            val cacheFile = File(context.cacheDir, "caller_tune_${safeKey}.mp3")
+            val contentHash = base64Str.hashCode().toString().replace("-", "n")
+            val cacheFile = File(context.cacheDir, "caller_tune_${safeKey}_${contentHash}.mp3")
             if (cacheFile.exists() && cacheFile.length() > 0) {
                 return cacheFile
             }
+
+            // Cleanup older temporary tune files with same prefix
+            try {
+                context.cacheDir.listFiles()?.forEach { file ->
+                    if (file.name.startsWith("caller_tune_${safeKey}_") && file.name != cacheFile.name) {
+                        file.delete()
+                    }
+                }
+            } catch (_: Exception) {}
+
             val decoded = Base64.decode(base64Str, Base64.DEFAULT)
             FileOutputStream(cacheFile).use { it.write(decoded) }
             Log.d(TAG, "Saved Base64 tune to cache file: ${cacheFile.absolutePath} (${decoded.size} bytes)")
@@ -196,8 +209,26 @@ object LksCallerTuneManager {
                     .build()
             )
 
-            player.setOnPreparedListener {
-                it.start()
+            player.setOnPreparedListener { mp ->
+                synchronized(this) {
+                    if (previewPlayer == mp) {
+                        try {
+                            mp.start()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to start preview player: ${e.message}")
+                            stopPreview()
+                            onCompletion()
+                        }
+                    } else {
+                        try { mp.release() } catch (_: Exception) {}
+                    }
+                }
+            }
+            player.setOnErrorListener { _, what, extra ->
+                Log.w(TAG, "Preview player error: what=$what extra=$extra")
+                stopPreview()
+                onCompletion()
+                true
             }
             player.setOnCompletionListener {
                 stopPreview()

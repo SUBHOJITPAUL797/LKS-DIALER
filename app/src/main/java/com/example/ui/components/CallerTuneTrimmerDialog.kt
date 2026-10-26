@@ -445,14 +445,23 @@ fun CallerTuneTrimmerDialog(
                                             val p = MediaPlayer()
                                             try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
                                             previewPlayer = p
-                                            p.setDataSource(context, sourceUri)
-                                            p.prepare()
+                                            withContext(Dispatchers.IO) {
+                                                p.setDataSource(context, sourceUri)
+                                                p.prepare()
+                                            }
                                             p.seekTo(startMs.toInt())
                                             p.start()
                                             previewProgress = startFraction
                                             isPreviewPlaying = true
+                                            p.setOnErrorListener { _, _, _ ->
+                                                try { p.stop(); p.release() } catch (_: Exception) {}
+                                                previewPlayer = null
+                                                isPreviewPlaying = false
+                                                true
+                                            }
                                         } catch (e: Exception) {
                                             Log.w(TAG, "Preview playback error: ${e.message}")
+                                            isPreviewPlaying = false
                                         }
                                     }
                                 }

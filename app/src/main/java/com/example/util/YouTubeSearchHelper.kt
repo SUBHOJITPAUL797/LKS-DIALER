@@ -115,11 +115,13 @@ object YouTubeSearchHelper {
 
                             val thumbs = vRenderer.optJSONObject("thumbnail")
                                 ?.optJSONArray("thumbnails")
-                            val thumbUrl = if (thumbs != null && thumbs.length() > 0) {
-                                thumbs.optJSONObject(thumbs.length() - 1)?.optString("url")
-                                    ?: "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                            } else {
-                                "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                            val rawThumb = if (thumbs != null && thumbs.length() > 0) {
+                                thumbs.optJSONObject(thumbs.length() - 1)?.optString("url") ?: ""
+                            } else ""
+                            val thumbUrl = when {
+                                rawThumb.startsWith("//") -> "https:$rawThumb"
+                                rawThumb.startsWith("http://") || rawThumb.startsWith("https://") -> rawThumb
+                                else -> "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
                             }
 
                             if (title.isNotBlank()) {

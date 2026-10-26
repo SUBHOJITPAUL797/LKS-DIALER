@@ -95,19 +95,26 @@ object CallSoundEffectsManager {
 
             player.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
+                    .setLegacyStreamType(AudioManager.STREAM_VOICE_CALL)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
 
             player.isLooping = true
-            player.setOnPreparedListener {
-                try {
-                    it.start()
-                    Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"}")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
-                    startRingbackTone(context)
+            player.setOnPreparedListener { mp ->
+                synchronized(this) {
+                    if (callerTunePlayer == mp) {
+                        try {
+                            mp.start()
+                            Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"}")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
+                            startRingbackTone(context)
+                        }
+                    } else {
+                        try { mp.release() } catch (_: Exception) {}
+                    }
                 }
             }
             player.setOnErrorListener { _, what, extra ->

@@ -65,6 +65,7 @@ fun CallerTunePickerDialog(
     var isSearching by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<YouTubeSongItem>>(emptyList()) }
     var previewingVideoId by remember { mutableStateOf<String?>(null) }
+    var selectedYouTubeSongForPortion by remember { mutableStateOf<YouTubeSongItem?>(null) }
 
     // Trimmer State
     var activeTrimmerUri by remember { mutableStateOf<Uri?>(null) }
@@ -95,6 +96,42 @@ fun CallerTunePickerDialog(
         isSearching = true
         searchResults = YouTubeSearchHelper.searchSongs("Trending Songs")
         isSearching = false
+    }
+
+    // If YouTube portion dialog is active
+    if (selectedYouTubeSongForPortion != null) {
+        YouTubePortionPickerDialog(
+            song = selectedYouTubeSongForPortion!!,
+            onPortionConfirmed = { startMs, endMs ->
+                val song = selectedYouTubeSongForPortion!!
+                selectedYouTubeSongForPortion = null
+                coroutineScope.launch {
+                    val tuneInfo = CallerTuneInfo(
+                        title = song.title,
+                        artist = song.channelName,
+                        audioUrl = "https://www.youtube.com/watch?v=${song.videoId}",
+                        source = "YOUTUBE",
+                        startMs = startMs,
+                        endMs = endMs,
+                        thumbnailUrl = song.thumbnailUrl
+                    )
+                    LksCallerTuneManager.saveMyCallerTune(context, tuneInfo)
+                    com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
+                        title = tuneInfo.title,
+                        artist = tuneInfo.artist,
+                        audioUrl = tuneInfo.audioUrl,
+                        audioBase64 = tuneInfo.audioBase64,
+                        source = tuneInfo.source,
+                        startMs = tuneInfo.startMs,
+                        endMs = tuneInfo.endMs
+                    )
+                    Toast.makeText(context, "Caller Tune set: ${song.title}", Toast.LENGTH_LONG).show()
+                    onTuneSelected(tuneInfo)
+                }
+            },
+            onDismiss = { selectedYouTubeSongForPortion = null }
+        )
+        return
     }
 
     // If trimmer is active, show the CallerTuneTrimmerDialog
@@ -308,30 +345,7 @@ fun CallerTunePickerDialog(
                                         YouTubeSongCard(
                                             song = song,
                                             onSelectAndTrim = {
-                                                // Save song info as Caller Tune with 30s portion
-                                                coroutineScope.launch {
-                                                    val tuneInfo = CallerTuneInfo(
-                                                        title = song.title,
-                                                        artist = song.channelName,
-                                                        audioUrl = "https://www.youtube.com/watch?v=${song.videoId}",
-                                                        source = "YOUTUBE",
-                                                        startMs = 0L,
-                                                        endMs = 30000L,
-                                                        thumbnailUrl = song.thumbnailUrl
-                                                    )
-                                                    LksCallerTuneManager.saveMyCallerTune(context, tuneInfo)
-                                                    com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
-                                                        title = tuneInfo.title,
-                                                        artist = tuneInfo.artist,
-                                                        audioUrl = tuneInfo.audioUrl,
-                                                        audioBase64 = tuneInfo.audioBase64,
-                                                        source = tuneInfo.source,
-                                                        startMs = tuneInfo.startMs,
-                                                        endMs = tuneInfo.endMs
-                                                    )
-                                                    Toast.makeText(context, "Caller Tune set to: ${song.title}", Toast.LENGTH_LONG).show()
-                                                    onTuneSelected(tuneInfo)
-                                                }
+                                                selectedYouTubeSongForPortion = song
                                             }
                                         )
                                     }
@@ -611,6 +625,229 @@ private fun CuratedTuneCard(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text("Set", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+        }
+    }
+}
+
+/**
+ * YouTubePortionPickerDialog
+ * Clean portion selection modal letting users choose the exact 30-second portion
+ * (Chorus, Intro, Hook, or Custom Slider) for their YouTube Caller Tune.
+ */
+@Composable
+fun YouTubePortionPickerDialog(
+    song: YouTubeSongItem,
+    onPortionConfirmed: (startMs: Long, endMs: Long) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedPreset by remember { mutableStateOf("CHORUS") } // "CHORUS", "INTRO", "HOOK", "CUSTOM"
+    var customStartSec by remember { mutableFloatStateOf(30f) }
+
+    fun parseDurationSec(durText: String): Int {
+        val parts = durText.split(":")
+        return when (parts.size) {
+            2 -> (parts[0].toIntOrNull() ?: 3) * 60 + (parts[1].toIntOrNull() ?: 30)
+            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 3) * 60 + (parts[2].toIntOrNull() ?: 30)
+            else -> 210 // 3.5 min default
+        }
+    }
+
+    val totalSec = remember(song.durationText) { parseDurationSec(song.durationText) }
+    val maxStartSec = maxOf(0, totalSec - 30).toFloat()
+
+    val currentStartSec = when (selectedPreset) {
+        "INTRO" -> 0
+        "CHORUS" -> minOf(30, maxStartSec.toInt())
+        "HOOK" -> minOf(60, maxStartSec.toInt())
+        else -> customStartSec.toInt()
+    }
+    val currentEndSec = minOf(totalSec, currentStartSec + 30)
+
+    fun formatSec(sec: Int): String {
+        val m = sec / 60
+        val s = sec % 60
+        return "%d:%02d".format(m, s)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF6750A4).copy(alpha = 0.15f),
+                        modifier = Modifier.size(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.ContentCut,
+                                contentDescription = null,
+                                tint = Color(0xFF6750A4),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Select 30s Portion",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            song.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close")
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // Time window display card
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF6750A4).copy(alpha = 0.12f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("START TIME", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF6750A4))
+                            Text(formatSec(currentStartSec), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF6750A4))
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF6750A4).copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                "30 SECONDS",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF6750A4),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("END TIME", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF6750A4))
+                            Text(formatSec(currentEndSec), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF6750A4))
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // Presets
+                Text(
+                    "CHOOSE SONG SECTION",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.Start)
+                )
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedPreset == "CHORUS",
+                        onClick = { selectedPreset = "CHORUS" },
+                        label = { Text("🌟 Chorus (0:30-1:00)", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedPreset == "INTRO",
+                        onClick = { selectedPreset = "INTRO" },
+                        label = { Text("🎶 Intro (0:00-0:30)", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedPreset == "HOOK",
+                        onClick = { selectedPreset = "HOOK" },
+                        label = { Text("⚡ Hook (1:00-1:30)", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = selectedPreset == "CUSTOM",
+                        onClick = { selectedPreset = "CUSTOM" },
+                        label = { Text("🎛️ Custom Slider", fontSize = 11.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                if (selectedPreset == "CUSTOM" && maxStartSec > 0) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "Drag slider to set custom start time:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.Start)
+                    )
+                    Slider(
+                        value = customStartSec,
+                        onValueChange = { customStartSec = it },
+                        valueRange = 0f..maxStartSec,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                // Confirm button
+                Button(
+                    onClick = {
+                        onPortionConfirmed(currentStartSec * 1000L, currentEndSec * 1000L)
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4))
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("✓ Set as My Caller Tune", fontWeight = FontWeight.Bold, color = Color.White)
+                }
             }
         }
     }
