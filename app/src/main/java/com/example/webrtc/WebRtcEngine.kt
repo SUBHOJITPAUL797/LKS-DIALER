@@ -929,6 +929,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             ringUpdates["callerTuneTitle"] = myTune.title
                             if (myTune.audioBase64.isNotBlank()) ringUpdates["callerTuneAudioBase64"] = myTune.audioBase64
                             if (myTune.audioUrl.isNotBlank()) ringUpdates["callerTuneUrl"] = myTune.audioUrl
+                            ringUpdates["callerTuneStartMs"] = myTune.startMs
+                            ringUpdates["callerTuneEndMs"] = myTune.endMs
                         }
                         firestore.collection("calls").document(incomingCall.callId).update(ringUpdates)
                     }
@@ -1415,7 +1417,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                             if (!call.callerTuneTitle.isNullOrBlank() && (_state.value.activeCallerTuneTitle == null || _state.value.activeCallerTuneTitle != call.callerTuneTitle)) {
                                 _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
-                                com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle)
+                                com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
                             } else if (_state.value.activeCallerTuneTitle == null) {
                                 com.example.util.CallSoundEffectsManager.startRingbackTone(context)
                             }
@@ -1635,10 +1637,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             val title = doc?.getString("callerTuneTitle")
             val audio = doc?.getString("callerTuneAudioBase64")
             val url = doc?.getString("callerTuneUrl")
+            val startMs = doc?.getLong("callerTuneStartMs") ?: 0L
             if (!title.isNullOrBlank() && (!audio.isNullOrBlank() || !url.isNullOrBlank())) {
                 if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCallerTuneTitle == null) {
                     _state.value = _state.value.copy(activeCallerTuneTitle = title)
-                    com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title)
+                    com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title, startMs)
                     return true
                 }
             }

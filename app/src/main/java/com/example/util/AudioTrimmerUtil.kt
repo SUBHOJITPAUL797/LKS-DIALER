@@ -1,4 +1,4 @@
-﻿package com.example.util
+package com.example.util
 
 import android.content.Context
 import android.media.MediaCodec
@@ -247,6 +247,7 @@ object AudioTrimmerUtil {
 
             val buffer = ByteBuffer.allocate(bufSize)
             val bufInfo = MediaCodec.BufferInfo()
+            val startUs = startMs * 1000L
             val endUs = endMs * 1000L
             var written = false
             var firstSampleTimeUs = -1L
@@ -257,6 +258,12 @@ object AudioTrimmerUtil {
                 if (bufInfo.size < 0) break
                 val sampleTimeUs = extractor.sampleTime
                 if (sampleTimeUs > endUs) break
+
+                // CRITICAL FIX: Skip any samples before the requested start time!
+                if (sampleTimeUs < startUs) {
+                    extractor.advance()
+                    continue
+                }
 
                 if (firstSampleTimeUs == -1L) {
                     firstSampleTimeUs = sampleTimeUs

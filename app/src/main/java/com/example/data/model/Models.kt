@@ -64,7 +64,9 @@ data class CallDto(
     var heldBy: String? = null,
     val callerTuneTitle: String? = null,
     val callerTuneAudioBase64: String? = null,
-    val callerTuneUrl: String? = null
+    val callerTuneUrl: String? = null,
+    val callerTuneStartMs: Long = 0L,
+    val callerTuneEndMs: Long = 0L
 )
 
 data class IceCandidateDto(

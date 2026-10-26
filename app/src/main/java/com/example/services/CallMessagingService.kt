@@ -166,7 +166,9 @@ class CallMessagingService : FirebaseMessagingService() {
                             ringUpdates["callerTuneTitle"] = myTune.title
                             if (myTune.audioBase64.isNotBlank()) ringUpdates["callerTuneAudioBase64"] = myTune.audioBase64
                             if (myTune.audioUrl.isNotBlank()) ringUpdates["callerTuneUrl"] = myTune.audioUrl
-                            Log.i("FCM", "📻 Attaching caller tune '${myTune.title}' to RINGING update (early)")
+                            ringUpdates["callerTuneStartMs"] = myTune.startMs
+                            ringUpdates["callerTuneEndMs"] = myTune.endMs
+                            Log.i("FCM", "📻 Attaching caller tune '${myTune.title}' (start=${myTune.startMs}ms) to RINGING update (early)")
                         }
                         docRef.update(ringUpdates).addOnFailureListener {
                             if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
@@ -458,7 +460,9 @@ class CallMessagingService : FirebaseMessagingService() {
                     ringUpdates2["callerTuneTitle"] = myTune2.title
                     if (myTune2.audioBase64.isNotBlank()) ringUpdates2["callerTuneAudioBase64"] = myTune2.audioBase64
                     if (myTune2.audioUrl.isNotBlank()) ringUpdates2["callerTuneUrl"] = myTune2.audioUrl
-                    Log.i("FCM", "📻 Attaching caller tune '${myTune2.title}' to RINGING update (notification)")
+                    ringUpdates2["callerTuneStartMs"] = myTune2.startMs
+                    ringUpdates2["callerTuneEndMs"] = myTune2.endMs
+                    Log.i("FCM", "📻 Attaching caller tune '${myTune2.title}' (start=${myTune2.startMs}ms) to RINGING update (notification)")
                 }
                 docRef2.update(ringUpdates2)
                     .addOnSuccessListener {

@@ -843,8 +843,13 @@ fun SettingsScreen(
                                     } else {
                                         LksRingtoneManager.stopPreview()
                                         isPreviewPlaying = false
-                                        isCallerTunePreviewPlaying = com.example.util.LksCallerTuneManager.playPreview(context, callerTuneState) {
+                                        val activeTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context).takeIf { it.isConfigured } ?: callerTuneState
+                                        val started = com.example.util.LksCallerTuneManager.playPreview(context, activeTune) {
                                             isCallerTunePreviewPlaying = false
+                                        }
+                                        isCallerTunePreviewPlaying = started
+                                        if (!started) {
+                                            Toast.makeText(context, "Could not play caller tune preview.", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }

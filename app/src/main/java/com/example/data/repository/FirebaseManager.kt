@@ -1,4 +1,4 @@
-﻿package com.example.data.repository
+package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
@@ -663,6 +663,9 @@ class FirebaseManager private constructor(private val context: Context) {
 
         // CRITICAL: Always persist to SharedPreferences so FCM handler can read it
         // when the phone is in background/killed. FCM cannot access in-memory state.
+        val targetFile = java.io.File(context.filesDir, "my_caller_tune.mp3")
+        val localUri = if (targetFile.exists() && targetFile.length() > 0) android.net.Uri.fromFile(targetFile).toString() else null
+
         com.example.util.LksCallerTuneManager.saveMyCallerTune(
             context,
             com.example.util.CallerTuneInfo(
@@ -672,7 +675,8 @@ class FirebaseManager private constructor(private val context: Context) {
                 audioBase64 = audioBase64,
                 source = source,
                 startMs = startMs,
-                endMs = endMs
+                endMs = endMs,
+                localUri = localUri
             )
         )
         Log.i(TAG, "Caller Tune saved to SharedPreferences: $title")

@@ -1,4 +1,4 @@
-﻿package com.example.util
+package com.example.util
 
 import android.content.Context
 import android.media.AudioAttributes
@@ -9,6 +9,7 @@ import android.util.Base64
 import android.util.Log
 import com.example.data.model.UserDto
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 /**
@@ -225,32 +226,111 @@ object LksCallerTuneManager {
             val player = MediaPlayer()
             previewPlayer = player
 
-            when {
-                !info.localUri.isNullOrBlank() -> {
-                    player.setDataSource(context, Uri.parse(info.localUri))
-                }
-                info.audioBase64.isNotBlank() -> {
-                    val file = base64ToTempFile(context, info.audioBase64, "preview") ?: return false
-                    player.setDataSource(file.absolutePath)
-                }
-                info.audioUrl.isNotBlank() -> {
-                    player.setDataSource(info.audioUrl)
-                }
-                else -> return false
-            }
-
             player.setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
+            player.setVolume(1.0f, 1.0f)
+
+            // Ensure normal audio routing so it plays through the speaker
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            try {
+                if (audioManager?.mode == AudioManager.MODE_IN_COMMUNICATION) {
+                    audioManager.mode = AudioManager.MODE_NORMAL
+                }
+            } catch (_: Exception) {}
+
+            var dataSourceSet = false
+
+            // 1. Try local saved file in filesDir (my_caller_tune.mp3)
+            val localTargetFile = File(context.filesDir, "my_caller_tune.mp3")
+            if (localTargetFile.exists() && localTargetFile.length() > 0) {
+                try {
+                    val fis = FileInputStream(localTargetFile)
+                    player.setDataSource(fis.fd, 0, localTargetFile.length())
+                    fis.close()
+                    dataSourceSet = true
+                    Log.d(TAG, "playPreview using local saved file: ${localTargetFile.absolutePath} (${localTargetFile.length()} bytes)")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to setDataSource from localTargetFile: ${e.message}")
+                }
+            }
+
+            // 2. Try info.localUri if not set yet
+            if (!dataSourceSet && !info.localUri.isNullOrBlank()) {
+                try {
+                    val uri = Uri.parse(info.localUri)
+                    if (uri.scheme == "file" && uri.path != null) {
+                        val f = File(uri.path!!)
+                        if (f.exists() && f.length() > 0) {
+                            val fis = FileInputStream(f)
+                            player.setDataSource(fis.fd, 0, f.length())
+                            fis.close()
+                            dataSourceSet = true
+                        }
+                    } else if (uri.scheme == "content") {
+                        val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                        if (pfd != null) {
+                            player.setDataSource(pfd.fileDescriptor)
+                            pfd.close()
+                            dataSourceSet = true
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to setDataSource from localUri: ${e.message}")
+                }
+            }
+
+            // 3. Try Base64 temp file
+            if (!dataSourceSet && info.audioBase64.isNotBlank()) {
+                try {
+                    val file = base64ToTempFile(context, info.audioBase64, "preview")
+                    if (file != null && file.exists() && file.length() > 0) {
+                        val fis = FileInputStream(file)
+                        player.setDataSource(fis.fd, 0, file.length())
+                        fis.close()
+                        dataSourceSet = true
+                        Log.d(TAG, "playPreview using base64TempFile: ${file.absolutePath} (${file.length()} bytes)")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to setDataSource from base64TempFile: ${e.message}")
+                }
+            }
+
+            // 4. Fallback to audioUrl with User-Agent header
+            if (!dataSourceSet && info.audioUrl.isNotBlank()) {
+                try {
+                    val headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
+                    player.setDataSource(context, Uri.parse(info.audioUrl), headers)
+                    dataSourceSet = true
+                    Log.d(TAG, "playPreview using stream audioUrl: ${info.audioUrl}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to setDataSource from audioUrl: ${e.message}")
+                }
+            }
+
+            if (!dataSourceSet) {
+                Log.w(TAG, "No valid audio source found for playPreview")
+                stopPreview()
+                return false
+            }
 
             player.setOnPreparedListener { mp ->
                 synchronized(this) {
                     if (previewPlayer == mp) {
                         try {
+                            // If streaming full song via audioUrl, seek to startMs
+                            if (info.startMs > 0 && !localTargetFile.exists() && info.audioBase64.isBlank()) {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    mp.seekTo(info.startMs, MediaPlayer.SEEK_CLOSEST)
+                                } else {
+                                    mp.seekTo(info.startMs.toInt())
+                                }
+                            }
                             mp.start()
+                            Log.i(TAG, "Preview player started successfully!")
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to start preview player: ${e.message}")
                             stopPreview()
@@ -274,7 +354,7 @@ object LksCallerTuneManager {
             player.prepareAsync()
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Error playing preview: ${e.message}")
+            Log.e(TAG, "Error playing preview: ${e.message}", e)
             stopPreview()
             return false
         }

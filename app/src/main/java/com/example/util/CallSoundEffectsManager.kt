@@ -8,6 +8,7 @@ import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.io.FileInputStream
 
 /**
  * CallSoundEffectsManager
@@ -68,7 +69,13 @@ object CallSoundEffectsManager {
      * Falls back to standard ringback tone if audio fails or is unavailable.
      */
     @Synchronized
-    fun startCallerTune(context: Context, audioBase64: String?, audioUrl: String? = null, title: String? = null) {
+    fun startCallerTune(
+        context: Context,
+        audioBase64: String?,
+        audioUrl: String? = null,
+        title: String? = null,
+        startMs: Long = 0L
+    ) {
         internalStopToneGenerator()
         stopCallerTune()
 
@@ -82,11 +89,18 @@ object CallSoundEffectsManager {
             callerTunePlayer = player
 
             val httpHeaders = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
+            var isBase64Playing = false
 
             if (!audioBase64.isNullOrBlank()) {
                 val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
-                if (tempFile != null && tempFile.exists()) {
-                    player.setDataSource(tempFile.absolutePath)
+                if (tempFile != null && tempFile.exists() && tempFile.length() > 0) {
+                    val fis = FileInputStream(tempFile)
+                    try {
+                        player.setDataSource(fis.fd, 0, tempFile.length())
+                        isBase64Playing = true
+                    } finally {
+                        fis.close()
+                    }
                 } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                     player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
                 } else {
@@ -113,9 +127,17 @@ object CallSoundEffectsManager {
                 synchronized(this) {
                     if (callerTunePlayer == mp) {
                         try {
+                            // If streaming from full audioUrl and startMs is set, seek to the cropped section!
+                            if (!isBase64Playing && startMs > 0) {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    mp.seekTo(startMs, MediaPlayer.SEEK_CLOSEST)
+                                } else {
+                                    mp.seekTo(startMs.toInt())
+                                }
+                            }
                             mp.start()
                             isRingbackActive = true
-                            Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"}")
+                            Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"} (base64=$isBase64Playing, startMs=$startMs)")
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
                             startRingbackTone(context)
@@ -129,9 +151,9 @@ object CallSoundEffectsManager {
                 Log.w(TAG, "Caller tune error ($what, $extra)")
                 stopCallerTune()
                 if (!audioUrl.isNullOrBlank() && !audioBase64.isNullOrBlank()) {
-                    // Base64 file failed to decode/play; try fallback stream URL!
-                    Log.i(TAG, "Retrying caller tune with direct URL stream: $audioUrl")
-                    startCallerTune(context, null, audioUrl, title)
+                    // Base64 file failed to decode/play; try fallback stream URL with exact startMs seek!
+                    Log.i(TAG, "Retrying caller tune with direct URL stream at $startMs ms: $audioUrl")
+                    startCallerTune(context, null, audioUrl, title, startMs)
                 } else {
                     startRingbackTone(context)
                 }
