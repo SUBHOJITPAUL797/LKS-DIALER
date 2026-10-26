@@ -40,12 +40,14 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun startRingbackTone(context: Context) {
-        if (isRingbackActive) return
+        if (isRingbackActive && ringbackToneGenerator != null) return
+        stopCallerTune()
+        internalStopToneGenerator()
+
         isRingbackActive = true
         Log.i(TAG, "Starting outgoing ringback tone")
 
         try {
-            stopRingbackTone()
             ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
             ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
         } catch (e: Exception) {
@@ -67,7 +69,7 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun startCallerTune(context: Context, audioBase64: String?, audioUrl: String? = null, title: String? = null) {
-        stopRingbackTone()
+        internalStopToneGenerator()
         stopCallerTune()
 
         if (audioBase64.isNullOrBlank() && audioUrl.isNullOrBlank()) {
@@ -83,14 +85,17 @@ object CallSoundEffectsManager {
                 val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
                 if (tempFile != null && tempFile.exists()) {
                     player.setDataSource(tempFile.absolutePath)
-                } else if (!audioUrl.isNullOrBlank()) {
+                } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                     player.setDataSource(audioUrl)
                 } else {
                     startRingbackTone(context)
                     return
                 }
-            } else if (!audioUrl.isNullOrBlank()) {
+            } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                 player.setDataSource(audioUrl)
+            } else {
+                startRingbackTone(context)
+                return
             }
 
             player.setAudioAttributes(
@@ -107,6 +112,7 @@ object CallSoundEffectsManager {
                     if (callerTunePlayer == mp) {
                         try {
                             mp.start()
+                            isRingbackActive = true
                             Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"}")
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
@@ -133,10 +139,17 @@ object CallSoundEffectsManager {
     @Synchronized
     fun stopCallerTune() {
         try {
-            callerTunePlayer?.stop()
-            callerTunePlayer?.release()
-        } catch (_: Exception) {}
-        callerTunePlayer = null
+            callerTunePlayer?.let { player ->
+                if (player.isPlaying) {
+                    try { player.stop() } catch (_: Exception) {}
+                }
+                try { player.release() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing caller tune player: ${e.message}")
+        } finally {
+            callerTunePlayer = null
+        }
     }
 
     /**
@@ -145,10 +158,14 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun stopRingbackTone() {
+        stopCallerTune()
+        internalStopToneGenerator()
+    }
+
+    private fun internalStopToneGenerator() {
         if (!isRingbackActive && ringbackToneGenerator == null) return
         isRingbackActive = false
         Log.d(TAG, "Stopping outgoing ringback tone")
-        stopCallerTune()
         try {
             ringbackToneGenerator?.stopTone()
             ringbackToneGenerator?.release()

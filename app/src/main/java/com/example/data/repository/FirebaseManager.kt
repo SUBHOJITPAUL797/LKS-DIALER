@@ -89,6 +89,7 @@ class FirebaseManager private constructor(private val context: Context) {
         if (savedPhone != null) {
             val savedProfilePic = prefs.getString("user_profile_pic", "") ?: ""
             val myPublicKey = com.example.data.crypto.ChatCryptoManager.getInstance(context).getMyPublicKeyBase64()
+            val savedTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
             val user = UserDto(
                 phoneNumber = savedPhone,
                 displayName = savedName ?: "",
@@ -100,7 +101,14 @@ class FirebaseManager private constructor(private val context: Context) {
                 lastSeen = System.currentTimeMillis(),
                 blockedNumbers = _blockedNumbers.value,
                 isDndEnabled = _isDndEnabled.value,
-                publicKey = myPublicKey
+                publicKey = myPublicKey,
+                callerTuneTitle = savedTune.title,
+                callerTuneArtist = savedTune.artist,
+                callerTuneUrl = savedTune.audioUrl,
+                callerTuneAudioBase64 = savedTune.audioBase64,
+                callerTuneSource = savedTune.source,
+                callerTuneStartMs = savedTune.startMs,
+                callerTuneEndMs = savedTune.endMs
             )
             _currentUser.value = user
 
@@ -531,6 +539,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val finalFcmToken = existing?.fcmToken?.ifBlank { savedFcmToken } ?: savedFcmToken
 
         val myPublicKey = com.example.data.crypto.ChatCryptoManager.getInstance(context).getMyPublicKeyBase64()
+        val localTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
         val user = UserDto(
             phoneNumber = phoneNumber,
             displayName = name.ifBlank { existing?.displayName ?: "User ${phoneNumber.takeLast(4)}" },
@@ -543,7 +552,14 @@ class FirebaseManager private constructor(private val context: Context) {
             createdAt = existing?.createdAt?.takeIf { it > 0 } ?: System.currentTimeMillis(),
             blockedNumbers = existing?.blockedNumbers?.ifEmpty { _blockedNumbers.value } ?: _blockedNumbers.value,
             isDndEnabled = existing?.isDndEnabled ?: _isDndEnabled.value,
-            publicKey = myPublicKey
+            publicKey = myPublicKey,
+            callerTuneTitle = existing?.callerTuneTitle?.ifBlank { localTune.title } ?: localTune.title,
+            callerTuneArtist = existing?.callerTuneArtist?.ifBlank { localTune.artist } ?: localTune.artist,
+            callerTuneUrl = existing?.callerTuneUrl?.ifBlank { localTune.audioUrl } ?: localTune.audioUrl,
+            callerTuneAudioBase64 = existing?.callerTuneAudioBase64?.ifBlank { localTune.audioBase64 } ?: localTune.audioBase64,
+            callerTuneSource = existing?.callerTuneSource ?: localTune.source,
+            callerTuneStartMs = existing?.callerTuneStartMs?.takeIf { it > 0 } ?: localTune.startMs,
+            callerTuneEndMs = existing?.callerTuneEndMs?.takeIf { it > 0 } ?: localTune.endMs
         )
         _currentUser.value = user
         
