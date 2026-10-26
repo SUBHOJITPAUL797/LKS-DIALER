@@ -624,6 +624,84 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    fun updateCallerTune(
+        title: String,
+        artist: String,
+        audioUrl: String,
+        audioBase64: String,
+        source: String,
+        startMs: Long = 0L,
+        endMs: Long = 30000L
+    ) {
+        val current = _currentUser.value ?: return
+        val updated = current.copy(
+            callerTuneTitle = title,
+            callerTuneArtist = artist,
+            callerTuneUrl = audioUrl,
+            callerTuneAudioBase64 = audioBase64,
+            callerTuneSource = source,
+            callerTuneStartMs = startMs,
+            callerTuneEndMs = endMs
+        )
+        _currentUser.value = updated
+
+        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+            val updates = mapOf(
+                "callerTuneTitle" to title,
+                "callerTuneArtist" to artist,
+                "callerTuneUrl" to audioUrl,
+                "callerTuneAudioBase64" to audioBase64,
+                "callerTuneSource" to source,
+                "callerTuneStartMs" to startMs,
+                "callerTuneEndMs" to endMs
+            )
+            FirebaseFirestore.getInstance().collection("users")
+                .document(updated.phoneNumber)
+                .set(updates, com.google.firebase.firestore.SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.i(TAG, "Caller Tune synced to Firestore: $title")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to sync Caller Tune to Firestore: ${e.message}")
+                }
+        }
+    }
+
+    fun removeCallerTune() {
+        val current = _currentUser.value ?: return
+        val updated = current.copy(
+            callerTuneTitle = "",
+            callerTuneArtist = "",
+            callerTuneUrl = "",
+            callerTuneAudioBase64 = "",
+            callerTuneSource = "DEFAULT",
+            callerTuneStartMs = 0L,
+            callerTuneEndMs = 0L
+        )
+        _currentUser.value = updated
+
+        if (_isFirebaseConfigured.value && updated.phoneNumber.isNotBlank()) {
+            val updates = mapOf(
+                "callerTuneTitle" to "",
+                "callerTuneArtist" to "",
+                "callerTuneUrl" to "",
+                "callerTuneAudioBase64" to "",
+                "callerTuneSource" to "DEFAULT",
+                "callerTuneStartMs" to 0L,
+                "callerTuneEndMs" to 0L
+            )
+            FirebaseFirestore.getInstance().collection("users")
+                .document(updated.phoneNumber)
+                .set(updates, com.google.firebase.firestore.SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.i(TAG, "Caller Tune removed from Firestore")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to remove Caller Tune from Firestore: ${e.message}")
+                }
+        }
+    }
+
     private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
 
     /**

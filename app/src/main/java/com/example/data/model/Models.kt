@@ -18,7 +18,14 @@ data class UserDto(
     val blockedNumbers: List<String> = emptyList(),
     @get:PropertyName("isDndEnabled") @set:PropertyName("isDndEnabled")
     var isDndEnabled: Boolean = false,
-    val publicKey: String = ""
+    val publicKey: String = "",
+    val callerTuneTitle: String = "",
+    val callerTuneArtist: String = "",
+    val callerTuneUrl: String = "",
+    val callerTuneAudioBase64: String = "",
+    val callerTuneSource: String = "DEFAULT",
+    val callerTuneStartMs: Long = 0L,
+    val callerTuneEndMs: Long = 0L
 )
 
 enum class CallType {
@@ -54,7 +61,10 @@ data class CallDto(
     @get:PropertyName("isOnHold") @set:PropertyName("isOnHold")
     var isOnHold: Boolean = false,
     @get:PropertyName("heldBy") @set:PropertyName("heldBy")
-    var heldBy: String? = null
+    var heldBy: String? = null,
+    val callerTuneTitle: String? = null,
+    val callerTuneAudioBase64: String? = null,
+    val callerTuneUrl: String? = null
 )
 
 data class IceCandidateDto(

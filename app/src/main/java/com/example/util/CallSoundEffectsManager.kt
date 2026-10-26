@@ -2,6 +2,8 @@ package com.example.util
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.AudioAttributes
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
@@ -25,6 +27,9 @@ object CallSoundEffectsManager {
 
     @Volatile
     private var isRingbackActive = false
+
+    @Volatile
+    private var callerTunePlayer: MediaPlayer? = null
 
     private var holdReminderRunnable: Runnable? = null
 
@@ -56,6 +61,78 @@ object CallSoundEffectsManager {
     }
 
     /**
+     * Start Caller Tune (Hello Tune) playback during outgoing call ringing.
+     * Plays through voice communication audio stream so it works across earpiece, speaker, and bluetooth.
+     * Falls back to standard ringback tone if audio fails or is unavailable.
+     */
+    @Synchronized
+    fun startCallerTune(context: Context, audioBase64: String?, audioUrl: String? = null, title: String? = null) {
+        stopRingbackTone()
+        stopCallerTune()
+
+        if (audioBase64.isNullOrBlank() && audioUrl.isNullOrBlank()) {
+            startRingbackTone(context)
+            return
+        }
+
+        try {
+            val player = MediaPlayer()
+            callerTunePlayer = player
+
+            if (!audioBase64.isNullOrBlank()) {
+                val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
+                if (tempFile != null && tempFile.exists()) {
+                    player.setDataSource(tempFile.absolutePath)
+                } else if (!audioUrl.isNullOrBlank()) {
+                    player.setDataSource(audioUrl)
+                } else {
+                    startRingbackTone(context)
+                    return
+                }
+            } else if (!audioUrl.isNullOrBlank()) {
+                player.setDataSource(audioUrl)
+            }
+
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+
+            player.isLooping = true
+            player.setOnPreparedListener {
+                try {
+                    it.start()
+                    Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
+                    startRingbackTone(context)
+                }
+            }
+            player.setOnErrorListener { _, what, extra ->
+                Log.w(TAG, "Caller tune error ($what, $extra), reverting to standard ringback tone")
+                stopCallerTune()
+                startRingbackTone(context)
+                true
+            }
+            player.prepareAsync()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize caller tune player: ${e.message}", e)
+            startRingbackTone(context)
+        }
+    }
+
+    @Synchronized
+    fun stopCallerTune() {
+        try {
+            callerTunePlayer?.stop()
+            callerTunePlayer?.release()
+        } catch (_: Exception) {}
+        callerTunePlayer = null
+    }
+
+    /**
      * Stop the outgoing ringback tone.
      * Called when the call is answered, declined, or ended.
      */
@@ -64,6 +141,7 @@ object CallSoundEffectsManager {
         if (!isRingbackActive && ringbackToneGenerator == null) return
         isRingbackActive = false
         Log.d(TAG, "Stopping outgoing ringback tone")
+        stopCallerTune()
         try {
             ringbackToneGenerator?.stopTone()
             ringbackToneGenerator?.release()

@@ -38,7 +38,8 @@ data class WebRtcState(
     val isVideoUpgradeRequested: Boolean = false,
     val didIRequestVideoUpgrade: Boolean = false,
     val isOnHold: Boolean = false,
-    val isHeldLocally: Boolean = false
+    val isHeldLocally: Boolean = false,
+    val activeCallerTuneTitle: String? = null
 )
 
 class WebRtcEngine private constructor(private val context: Context) {
@@ -736,6 +737,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             } catch (_: Exception) {}
             configureAudio(callType)
             com.example.util.CallSoundEffectsManager.startRingbackTone(context)
+            resolveAndPlayCalleeTune(calleeNumber)
             
             // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
             scope.launch {
@@ -921,7 +923,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                     
                     if (!isCallTerminated(incomingCall.callId)) {
-                        firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
+                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+                        val ringUpdates = mutableMapOf<String, Any>("status" to CallStatus.RINGING.name)
+                        if (myTune.isConfigured) {
+                            ringUpdates["callerTuneTitle"] = myTune.title
+                            if (myTune.audioBase64.isNotBlank()) ringUpdates["callerTuneAudioBase64"] = myTune.audioBase64
+                            if (myTune.audioUrl.isNotBlank()) ringUpdates["callerTuneUrl"] = myTune.audioUrl
+                        }
+                        firestore.collection("calls").document(incomingCall.callId).update(ringUpdates)
                     }
                     headsetButtonManager.startListening()
 
@@ -1397,12 +1406,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                         val oldCall = currentCall
                         _state.value = _state.value.copy(activeCall = call)
                         
-                        if (isCaller && call.status == CallStatus.RINGING && _state.value.callStatus == CallStatus.CALLING) {
-                            _state.value = _state.value.copy(
-                                callStatus = CallStatus.RINGING,
-                                connectionStatusText = "Ringing..."
-                            )
-                            com.example.util.CallSoundEffectsManager.startRingbackTone(context)
+                        if (isCaller && call.status == CallStatus.RINGING) {
+                            if (_state.value.callStatus == CallStatus.CALLING) {
+                                _state.value = _state.value.copy(
+                                    callStatus = CallStatus.RINGING,
+                                    connectionStatusText = "Ringing..."
+                                )
+                            }
+                            if (!call.callerTuneTitle.isNullOrBlank() && _state.value.activeCallerTuneTitle == null) {
+                                _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
+                                com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle)
+                            } else if (_state.value.activeCallerTuneTitle == null) {
+                                com.example.util.CallSoundEffectsManager.startRingbackTone(context)
+                            }
                         }
 
                         // Video Upgrade Logic
@@ -1603,6 +1619,35 @@ class WebRtcEngine private constructor(private val context: Context) {
         _state.value = _state.value.copy(isVideoUpgradeRequested = false)
         firestore.collection("calls").document(currentCall.callId)
             .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
+    }
+
+    private fun resolveAndPlayCalleeTune(calleeNumber: String) {
+        val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
+        val variations = mutableListOf(calleeNumber)
+        if (cleanDigits.isNotBlank()) {
+            variations.add(cleanDigits)
+            if (cleanDigits.length > 10) variations.add(cleanDigits.takeLast(10))
+            if (!calleeNumber.startsWith("+")) variations.add("+$calleeNumber")
+        }
+        val distinctVars = variations.distinct().take(10)
+
+        firestore.collection("users").whereIn("phoneNumber", distinctVars).get()
+            .addOnSuccessListener { qs ->
+                val doc = qs.documents.firstOrNull { !it.getString("callerTuneTitle").isNullOrBlank() }
+                    ?: qs.documents.firstOrNull()
+                val title = doc?.getString("callerTuneTitle")
+                val audio = doc?.getString("callerTuneAudioBase64")
+                val url = doc?.getString("callerTuneUrl")
+                if (!title.isNullOrBlank() && (!audio.isNullOrBlank() || !url.isNullOrBlank())) {
+                    if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
+                        _state.value = _state.value.copy(activeCallerTuneTitle = title)
+                        com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title)
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                Log.w("WebRtcEngine", "Failed to resolve callee tune: ${e.message}")
+            }
     }
 
     fun revertToAudioCall(reason: String = "Switched to Audio") {

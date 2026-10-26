@@ -131,9 +131,15 @@ fun SettingsScreen(
     var appRingtoneState by remember { mutableStateOf(LksRingtoneManager.getAppRingtone(context)) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
 
+    // Caller Tune (Hello Tune) States
+    var callerTuneState by remember { mutableStateOf(com.example.util.LksCallerTuneManager.getMyCallerTune(context)) }
+    var showCallerTunePicker by remember { mutableStateOf(false) }
+    var isCallerTunePreviewPlaying by remember { mutableStateOf(false) }
+
     DisposableEffect(Unit) {
         onDispose {
             LksRingtoneManager.stopPreview()
+            com.example.util.LksCallerTuneManager.stopPreview()
         }
     }
 
@@ -217,6 +223,18 @@ fun SettingsScreen(
                 settingsTrimmerUri = null
             },
             onDismiss = { settingsTrimmerUri = null }
+        )
+    }
+
+    if (showCallerTunePicker) {
+        com.example.ui.components.CallerTunePickerDialog(
+            onTuneSelected = { selectedTune ->
+                callerTuneState = selectedTune
+                showCallerTunePicker = false
+            },
+            onDismiss = {
+                showCallerTunePicker = false
+            }
         )
     }
 
@@ -760,6 +778,134 @@ fun SettingsScreen(
                         checked = isVibrateOn,
                         onCheckedChange = { isVibrateOn = it }
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // ── Caller Tune (Hello Tune) Section ──────────────────────────────────
+            SettingsSectionHeader("Caller Tune (Hello Tune)")
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color(0xFF6750A4).copy(alpha = 0.15f),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.RingVolume,
+                                    contentDescription = null,
+                                    tint = Color(0xFF6750A4),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Hello Tune for Callers",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = if (callerTuneState.isConfigured) callerTuneState.title else "Default Ringback Tone (None set)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (callerTuneState.isConfigured) Color(0xFF6750A4) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (callerTuneState.isConfigured && callerTuneState.artist.isNotBlank()) {
+                                Text(
+                                    text = callerTuneState.artist,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // Play/Stop Preview Button
+                        if (callerTuneState.isConfigured) {
+                            IconButton(
+                                onClick = {
+                                    if (isCallerTunePreviewPlaying) {
+                                        com.example.util.LksCallerTuneManager.stopPreview()
+                                        isCallerTunePreviewPlaying = false
+                                    } else {
+                                        LksRingtoneManager.stopPreview()
+                                        isPreviewPlaying = false
+                                        isCallerTunePreviewPlaying = com.example.util.LksCallerTuneManager.playPreview(context, callerTuneState) {
+                                            isCallerTunePreviewPlaying = false
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    if (isCallerTunePreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                                    contentDescription = if (isCallerTunePreviewPlaying) "Stop Preview" else "Play Preview",
+                                    tint = if (isCallerTunePreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                                    modifier = Modifier.size(32.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "People who call you will hear this song while their call is ringing instead of standard beep.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                com.example.util.LksCallerTuneManager.stopPreview()
+                                isCallerTunePreviewPlaying = false
+                                showCallerTunePicker = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4))
+                        ) {
+                            Icon(Icons.Default.MusicNote, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (callerTuneState.isConfigured) "Change Caller Tune" else "Set Caller Tune", fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+
+                        if (callerTuneState.isConfigured) {
+                            OutlinedButton(
+                                onClick = {
+                                    com.example.util.LksCallerTuneManager.stopPreview()
+                                    isCallerTunePreviewPlaying = false
+                                    com.example.util.LksCallerTuneManager.removeMyCallerTune(context)
+                                    com.example.data.repository.FirebaseManager.getInstance(context).removeCallerTune()
+                                    callerTuneState = com.example.util.CallerTuneInfo()
+                                    Toast.makeText(context, "Caller Tune removed. Reverted to standard ringback tone.", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Remove", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                 }
             }
 
