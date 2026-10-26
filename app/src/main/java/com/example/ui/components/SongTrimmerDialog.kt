@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
@@ -38,6 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 
 private const val TAG = "SongTrimmerDialog"
 
@@ -70,30 +74,42 @@ fun SongTrimmerDialog(
     var endFraction by remember { mutableFloatStateOf(1f) }
 
     var isPreviewPlaying by remember { mutableStateOf(false) }
+    var isPreparingPreview by remember { mutableStateOf(false) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewProgress by remember { mutableFloatStateOf(0f) }
 
     var isSaving by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf("") }
 
-    DisposableEffect(previewPlayer) {
+    fun stopPreviewPlayback() {
+        try {
+            previewPlayer?.stop()
+            previewPlayer?.release()
+        } catch (_: Exception) {}
+        previewPlayer = null
+        isPreviewPlaying = false
+        isPreparingPreview = false
+    }
+
+    DisposableEffect(Unit) {
         onDispose {
-            try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
+            stopPreviewPlayback()
         }
     }
 
     LaunchedEffect(uri) {
+        isLoadingDuration = true
         withContext(Dispatchers.IO) {
             try {
                 val mmr = android.media.MediaMetadataRetriever()
-                mmr.setDataSource(context, uri)
+                setSongRetrieverDataSource(context, mmr, uri)
                 val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                 totalDurationMs = durationStr?.toLongOrNull() ?: 0L
                 mmr.release()
             } catch (_: Exception) {
                 try {
                     val player = MediaPlayer()
-                    player.setDataSource(context, uri)
+                    setSongMediaPlayerDataSource(context, player, uri)
                     player.prepare()
                     totalDurationMs = player.duration.toLong()
                     player.release()
@@ -113,18 +129,19 @@ fun SongTrimmerDialog(
                 try {
                     if (p.isPlaying) {
                         val currentMs = p.currentPosition.toLong()
-                        val endMs = (endFraction * totalDurationMs).toLong()
-                        if (currentMs >= endMs) {
-                            p.pause()
-                            isPreviewPlaying = false
+                        val targetEndMs = (endFraction * totalDurationMs).toLong()
+                        val targetStartMs = (startFraction * totalDurationMs).toLong()
+                        if (currentMs >= targetEndMs) {
+                            stopPreviewPlayback()
                             previewProgress = endFraction
-                        } else {
+                            break
+                        } else if (currentMs >= targetStartMs) {
                             previewProgress = if (totalDurationMs > 0) currentMs.toFloat() / totalDurationMs else startFraction
                         }
                     }
                 } catch (_: Exception) {}
             }
-            delay(100)
+            delay(50)
         }
     }
 
@@ -141,7 +158,7 @@ fun SongTrimmerDialog(
 
     Dialog(
         onDismissRequest = {
-            try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
+            stopPreviewPlayback()
             onDismiss()
         },
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -250,7 +267,7 @@ fun SongTrimmerDialog(
                                             if (barWidthPx > 0) {
                                                 val delta = dragAmount / barWidthPx
                                                 startFraction = (startFraction + delta).coerceIn(0f, endFraction - 0.02f)
-                                                if (isPreviewPlaying) { try { previewPlayer?.stop() } catch (_: Exception) {}; isPreviewPlaying = false }
+                                                stopPreviewPlayback()
                                             }
                                         }
                                     }
@@ -271,7 +288,7 @@ fun SongTrimmerDialog(
                                             if (barWidthPx > 0) {
                                                 val delta = dragAmount / barWidthPx
                                                 endFraction = (endFraction + delta).coerceIn(startFraction + 0.02f, 1f)
-                                                if (isPreviewPlaying) { try { previewPlayer?.stop() } catch (_: Exception) {}; isPreviewPlaying = false }
+                                                stopPreviewPlayback()
                                             }
                                         }
                                     }
@@ -290,23 +307,78 @@ fun SongTrimmerDialog(
                         // Preview button
                         OutlinedButton(
                             onClick = {
-                                if (isPreviewPlaying) {
-                                    try { previewPlayer?.pause() } catch (_: Exception) {}
-                                    isPreviewPlaying = false
+                                if (isPreviewPlaying || isPreparingPreview) {
+                                    stopPreviewPlayback()
                                 } else {
+                                    isPreparingPreview = true
                                     coroutineScope.launch {
                                         try {
+                                            stopPreviewPlayback()
+                                            isPreparingPreview = true
+
                                             val p = MediaPlayer()
-                                            try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
-                                            previewPlayer = p
-                                            p.setDataSource(context, uri)
-                                            p.prepare()
-                                            p.seekTo(startMs.toInt())
-                                            p.start()
-                                            previewProgress = startFraction
-                                            isPreviewPlaying = true
+                                            p.setAudioAttributes(
+                                                AudioAttributes.Builder()
+                                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                                    .build()
+                                            )
+                                            p.setVolume(1.0f, 1.0f)
+
+                                            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                                            try {
+                                                if (audioManager?.mode == AudioManager.MODE_IN_COMMUNICATION) {
+                                                    audioManager.mode = AudioManager.MODE_NORMAL
+                                                }
+                                            } catch (_: Exception) {}
+
+                                            withContext(Dispatchers.IO) {
+                                                setSongMediaPlayerDataSource(context, p, uri)
+                                                p.prepare()
+                                            }
+
+                                            p.setOnErrorListener { _, what, extra ->
+                                                Log.w(TAG, "SongTrimmer MediaPlayer error: what=$what extra=$extra")
+                                                stopPreviewPlayback()
+                                                true
+                                            }
+
+                                            p.setOnCompletionListener {
+                                                stopPreviewPlayback()
+                                                previewProgress = endFraction
+                                            }
+
+                                            val targetStartMs = (startFraction * totalDurationMs).toLong().coerceIn(0L, totalDurationMs)
+
+                                            if (targetStartMs > 50L) {
+                                                p.setOnSeekCompleteListener {
+                                                    try {
+                                                        p.start()
+                                                        previewPlayer = p
+                                                        isPreviewPlaying = true
+                                                        isPreparingPreview = false
+                                                        previewProgress = startFraction
+                                                    } catch (e: Exception) {
+                                                        Log.e(TAG, "Error starting after seek: ${e.message}", e)
+                                                        stopPreviewPlayback()
+                                                    }
+                                                }
+                                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                    p.seekTo(targetStartMs, MediaPlayer.SEEK_CLOSEST)
+                                                } else {
+                                                    p.seekTo(targetStartMs.toInt())
+                                                }
+                                            } else {
+                                                p.seekTo(0)
+                                                p.start()
+                                                previewPlayer = p
+                                                isPreviewPlaying = true
+                                                isPreparingPreview = false
+                                                previewProgress = startFraction
+                                            }
                                         } catch (e: Exception) {
                                             Log.w(TAG, "Preview error: ${e.message}")
+                                            stopPreviewPlayback()
                                         }
                                     }
                                 }
@@ -314,14 +386,24 @@ fun SongTrimmerDialog(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(
-                                if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
-                                contentDescription = null,
-                                tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview Trimmed Section")
+                            if (isPreparingPreview) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = GreenCall
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Preparing Preview...", fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(
+                                    if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                                    contentDescription = null,
+                                    tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview Trimmed Section")
+                            }
                         }
 
                         Spacer(Modifier.height(10.dp))
@@ -336,8 +418,7 @@ fun SongTrimmerDialog(
                             onClick = {
                                 coroutineScope.launch {
                                     isSaving = true; saveError = ""
-                                    try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
-                                    isPreviewPlaying = false
+                                    stopPreviewPlayback()
                                     val result = withContext(Dispatchers.IO) {
                                         com.example.util.AudioTrimmerUtil.trimAudio(context, uri, startMs, endMs)
                                     }
@@ -369,6 +450,94 @@ fun SongTrimmerDialog(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+private fun setSongMediaPlayerDataSource(context: Context, player: MediaPlayer, uri: Uri) {
+    when {
+        uri.scheme == "file" && uri.path != null -> {
+            val file = File(uri.path!!)
+            if (file.exists()) {
+                val fis = FileInputStream(file)
+                try {
+                    player.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+        uri.scheme == "content" -> {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                try {
+                    player.setDataSource(pfd.fileDescriptor)
+                } finally {
+                    pfd.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+        else -> {
+            val path = uri.path
+            if (path != null && File(path).exists()) {
+                val file = File(path)
+                val fis = FileInputStream(file)
+                try {
+                    player.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+    }
+}
+
+private fun setSongRetrieverDataSource(context: Context, mmr: android.media.MediaMetadataRetriever, uri: Uri) {
+    when {
+        uri.scheme == "file" && uri.path != null -> {
+            val file = File(uri.path!!)
+            if (file.exists()) {
+                val fis = FileInputStream(file)
+                try {
+                    mmr.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
+            }
+        }
+        uri.scheme == "content" -> {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                try {
+                    mmr.setDataSource(pfd.fileDescriptor)
+                } finally {
+                    pfd.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
+            }
+        }
+        else -> {
+            val path = uri.path
+            if (path != null && File(path).exists()) {
+                val file = File(path)
+                val fis = FileInputStream(file)
+                try {
+                    mmr.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
             }
         }
     }

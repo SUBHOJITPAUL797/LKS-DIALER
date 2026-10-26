@@ -1,5 +1,8 @@
 package com.example.ui.components
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Log
@@ -41,6 +44,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 
 private const val TAG = "CallerTuneTrimmer"
 private const val MAX_TUNE_DURATION_MS = 30_000L // 30 seconds standard caller tune limit
@@ -75,36 +79,49 @@ fun CallerTuneTrimmerDialog(
     var endFraction by remember { mutableFloatStateOf(1f) }
 
     var isPreviewPlaying by remember { mutableStateOf(false) }
+    var isPreparingPreview by remember { mutableStateOf(false) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewProgress by remember { mutableFloatStateOf(0f) }
 
     var isSaving by remember { mutableStateOf(false) }
     var statusError by remember { mutableStateOf("") }
 
-    DisposableEffect(previewPlayer) {
+    fun stopPreviewPlayback() {
+        try {
+            previewPlayer?.stop()
+            previewPlayer?.release()
+        } catch (_: Exception) {}
+        previewPlayer = null
+        isPreviewPlaying = false
+        isPreparingPreview = false
+    }
+
+    DisposableEffect(Unit) {
         onDispose {
-            try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
+            stopPreviewPlayback()
         }
     }
 
     // Read total duration of audio file
     LaunchedEffect(sourceUri) {
+        isLoadingDuration = true
         withContext(Dispatchers.IO) {
             try {
                 val mmr = android.media.MediaMetadataRetriever()
-                mmr.setDataSource(context, sourceUri)
+                setRetrieverDataSource(context, mmr, sourceUri)
                 val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                 totalDurationMs = durationStr?.toLongOrNull() ?: 0L
                 mmr.release()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaMetadataRetriever error: ${e.message}")
                 try {
                     val player = MediaPlayer()
-                    player.setDataSource(context, sourceUri)
+                    setMediaPlayerDataSource(context, player, sourceUri)
                     player.prepare()
                     totalDurationMs = player.duration.toLong()
                     player.release()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not determine duration: ${e.message}")
+                } catch (e2: Exception) {
+                    Log.w(TAG, "MediaPlayer duration fallback error: ${e2.message}")
                     totalDurationMs = 60_000L // Default 60s fallback
                 }
             }
@@ -115,6 +132,7 @@ fun CallerTuneTrimmerDialog(
         if (totalDurationMs > 0) {
             val maxInitialEnd = minOf(MAX_TUNE_DURATION_MS, totalDurationMs)
             endFraction = maxInitialEnd.toFloat() / totalDurationMs
+            startFraction = 0f
         }
     }
 
@@ -126,18 +144,19 @@ fun CallerTuneTrimmerDialog(
                 try {
                     if (p.isPlaying) {
                         val currentMs = p.currentPosition.toLong()
-                        val endMs = (endFraction * totalDurationMs).toLong()
-                        if (currentMs >= endMs) {
-                            p.pause()
-                            isPreviewPlaying = false
+                        val targetEndMs = (endFraction * totalDurationMs).toLong()
+                        val targetStartMs = (startFraction * totalDurationMs).toLong()
+                        if (currentMs >= targetEndMs) {
+                            stopPreviewPlayback()
                             previewProgress = endFraction
-                        } else {
+                            break
+                        } else if (currentMs >= targetStartMs) {
                             previewProgress = if (totalDurationMs > 0) currentMs.toFloat() / totalDurationMs else startFraction
                         }
                     }
                 } catch (_: Exception) {}
             }
-            delay(100)
+            delay(50)
         }
     }
 
@@ -154,7 +173,7 @@ fun CallerTuneTrimmerDialog(
 
     Dialog(
         onDismissRequest = {
-            try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
+            stopPreviewPlayback()
             onDismiss()
         },
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -208,7 +227,10 @@ fun CallerTuneTrimmerDialog(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    IconButton(onClick = onDismiss) {
+                    IconButton(onClick = {
+                        stopPreviewPlayback()
+                        onDismiss()
+                    }) {
                         Icon(Icons.Default.Close, contentDescription = "Close")
                     }
                 }
@@ -298,7 +320,7 @@ fun CallerTuneTrimmerDialog(
                                 val ex = endFraction * size.width
                                 drawRoundRect(brush = selectedBrush, topLeft = Offset(sx, 0f), size = Size(ex - sx, size.height), cornerRadius = r)
 
-                                if (isPreviewPlaying || previewProgress > startFraction) {
+                                if (isPreviewPlaying || (previewProgress > startFraction && previewProgress <= endFraction)) {
                                     val px = previewProgress * size.width
                                     drawLine(
                                         color = Color.White,
@@ -333,10 +355,7 @@ fun CallerTuneTrimmerDialog(
                                                     startFraction = newStart
                                                     endFraction = (newStart + maxFractionFor30s).coerceAtMost(1f)
                                                 }
-                                                if (isPreviewPlaying) {
-                                                    try { previewPlayer?.stop() } catch (_: Exception) {}
-                                                    isPreviewPlaying = false
-                                                }
+                                                stopPreviewPlayback()
                                             }
                                         }
                                     }
@@ -365,10 +384,7 @@ fun CallerTuneTrimmerDialog(
                                                     endFraction = newEnd
                                                     startFraction = (newEnd - maxFractionFor30s).coerceAtLeast(0f)
                                                 }
-                                                if (isPreviewPlaying) {
-                                                    try { previewPlayer?.stop() } catch (_: Exception) {}
-                                                    isPreviewPlaying = false
-                                                }
+                                                stopPreviewPlayback()
                                             }
                                         }
                                     }
@@ -401,7 +417,7 @@ fun CallerTuneTrimmerDialog(
                                 onClick = {
                                     startFraction = 0f
                                     endFraction = (30_000f / totalDurationMs).coerceAtMost(1f)
-                                    if (isPreviewPlaying) { try { previewPlayer?.stop() } catch (_: Exception) {}; isPreviewPlaying = false }
+                                    stopPreviewPlayback()
                                 },
                                 label = { Text("Intro 0:00-0:30", fontSize = 11.sp) },
                                 modifier = Modifier.weight(1f)
@@ -412,7 +428,7 @@ fun CallerTuneTrimmerDialog(
                                     onClick = {
                                         startFraction = (30_000f / totalDurationMs).coerceIn(0f, 1f)
                                         endFraction = (60_000f / totalDurationMs).coerceIn(0f, 1f)
-                                        if (isPreviewPlaying) { try { previewPlayer?.stop() } catch (_: Exception) {}; isPreviewPlaying = false }
+                                        stopPreviewPlayback()
                                     },
                                     label = { Text("Chorus 0:30-1:00", fontSize = 11.sp) },
                                     modifier = Modifier.weight(1f)
@@ -424,7 +440,7 @@ fun CallerTuneTrimmerDialog(
                                     onClick = {
                                         startFraction = (60_000f / totalDurationMs).coerceIn(0f, 1f)
                                         endFraction = (90_000f / totalDurationMs).coerceIn(0f, 1f)
-                                        if (isPreviewPlaying) { try { previewPlayer?.stop() } catch (_: Exception) {}; isPreviewPlaying = false }
+                                        stopPreviewPlayback()
                                     },
                                     label = { Text("Hook 1:00-1:30", fontSize = 11.sp) },
                                     modifier = Modifier.weight(1f)
@@ -437,36 +453,80 @@ fun CallerTuneTrimmerDialog(
                         // Preview Button
                         OutlinedButton(
                             onClick = {
-                                if (isPreviewPlaying) {
-                                    try { previewPlayer?.pause() } catch (_: Exception) {}
-                                    isPreviewPlaying = false
+                                if (isPreviewPlaying || isPreparingPreview) {
+                                    stopPreviewPlayback()
                                 } else {
+                                    isPreparingPreview = true
+                                    statusError = ""
                                     coroutineScope.launch {
                                         try {
+                                            stopPreviewPlayback()
+                                            isPreparingPreview = true
+
                                             val p = MediaPlayer()
-                                            try { previewPlayer?.stop(); previewPlayer?.release() } catch (_: Exception) {}
-                                            previewPlayer = p
+                                            p.setAudioAttributes(
+                                                AudioAttributes.Builder()
+                                                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                                    .build()
+                                            )
+                                            p.setVolume(1.0f, 1.0f)
+
+                                            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                                            try {
+                                                if (audioManager?.mode == AudioManager.MODE_IN_COMMUNICATION) {
+                                                    audioManager.mode = AudioManager.MODE_NORMAL
+                                                }
+                                            } catch (_: Exception) {}
+
                                             withContext(Dispatchers.IO) {
-                                                p.setDataSource(context, sourceUri)
+                                                setMediaPlayerDataSource(context, p, sourceUri)
                                                 p.prepare()
                                             }
-                                            if (previewPlayer == p) {
-                                                p.seekTo(startMs.toInt())
-                                                p.start()
-                                                previewProgress = startFraction
-                                                isPreviewPlaying = true
-                                            } else {
-                                                try { p.release() } catch (_: Exception) {}
-                                            }
-                                            p.setOnErrorListener { _, _, _ ->
-                                                try { p.stop(); p.release() } catch (_: Exception) {}
-                                                previewPlayer = null
-                                                isPreviewPlaying = false
+
+                                            p.setOnErrorListener { _, what, extra ->
+                                                Log.w(TAG, "Preview MediaPlayer error: what=$what extra=$extra")
+                                                stopPreviewPlayback()
                                                 true
                                             }
+
+                                            p.setOnCompletionListener {
+                                                stopPreviewPlayback()
+                                                previewProgress = endFraction
+                                            }
+
+                                            val targetStartMs = (startFraction * totalDurationMs).toLong().coerceIn(0L, totalDurationMs)
+
+                                            if (targetStartMs > 50L) {
+                                                p.setOnSeekCompleteListener {
+                                                    try {
+                                                        p.start()
+                                                        previewPlayer = p
+                                                        isPreviewPlaying = true
+                                                        isPreparingPreview = false
+                                                        previewProgress = startFraction
+                                                    } catch (e: Exception) {
+                                                        Log.e(TAG, "Failed starting preview after seek: ${e.message}", e)
+                                                        stopPreviewPlayback()
+                                                    }
+                                                }
+                                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                                    p.seekTo(targetStartMs, MediaPlayer.SEEK_CLOSEST)
+                                                } else {
+                                                    p.seekTo(targetStartMs.toInt())
+                                                }
+                                            } else {
+                                                p.seekTo(0)
+                                                p.start()
+                                                previewPlayer = p
+                                                isPreviewPlaying = true
+                                                isPreparingPreview = false
+                                                previewProgress = startFraction
+                                            }
                                         } catch (e: Exception) {
-                                            Log.w(TAG, "Preview playback error: ${e.message}")
-                                            isPreviewPlaying = false
+                                            Log.e(TAG, "Preview playback error: ${e.message}", e)
+                                            stopPreviewPlayback()
+                                            statusError = "Could not preview audio. Please try again."
                                         }
                                     }
                                 }
@@ -474,14 +534,24 @@ fun CallerTuneTrimmerDialog(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp)
                         ) {
-                            Icon(
-                                if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
-                                contentDescription = null,
-                                tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
-                                modifier = Modifier.size(22.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview 30s Caller Tune")
+                            if (isPreparingPreview) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = GreenCall
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("Preparing Preview...", fontWeight = FontWeight.Bold)
+                            } else {
+                                Icon(
+                                    if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                                    contentDescription = null,
+                                    tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview 30s Caller Tune")
+                            }
                         }
 
                         Spacer(Modifier.height(10.dp))
@@ -497,8 +567,7 @@ fun CallerTuneTrimmerDialog(
                                 coroutineScope.launch {
                                     isSaving = true
                                     statusError = ""
-                                    try { previewPlayer?.stop(); previewPlayer?.release(); previewPlayer = null } catch (_: Exception) {}
-                                    isPreviewPlaying = false
+                                    stopPreviewPlayback()
 
                                     // 1. Trim audio clip
                                     val trimmedUri = withContext(Dispatchers.IO) {
@@ -557,6 +626,108 @@ fun CallerTuneTrimmerDialog(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Robust DataSource setter for MediaPlayer supporting internal cache file descriptors,
+ * content URIs, and remote streams without SELinux permission errors.
+ */
+private fun setMediaPlayerDataSource(context: Context, player: MediaPlayer, uri: Uri) {
+    when {
+        uri.scheme == "file" && uri.path != null -> {
+            val file = File(uri.path!!)
+            if (file.exists()) {
+                val fis = FileInputStream(file)
+                try {
+                    player.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+        uri.scheme == "content" -> {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                try {
+                    player.setDataSource(pfd.fileDescriptor)
+                } finally {
+                    pfd.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+        uri.scheme?.startsWith("http") == true -> {
+            val headers = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 10)")
+            player.setDataSource(context, uri, headers)
+        }
+        else -> {
+            val path = uri.path
+            if (path != null && File(path).exists()) {
+                val file = File(path)
+                val fis = FileInputStream(file)
+                try {
+                    player.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                player.setDataSource(context, uri)
+            }
+        }
+    }
+}
+
+/**
+ * Robust DataSource setter for MediaMetadataRetriever supporting internal cache file descriptors.
+ */
+private fun setRetrieverDataSource(context: Context, mmr: android.media.MediaMetadataRetriever, uri: Uri) {
+    when {
+        uri.scheme == "file" && uri.path != null -> {
+            val file = File(uri.path!!)
+            if (file.exists()) {
+                val fis = FileInputStream(file)
+                try {
+                    mmr.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
+            }
+        }
+        uri.scheme == "content" -> {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                try {
+                    mmr.setDataSource(pfd.fileDescriptor)
+                } finally {
+                    pfd.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
+            }
+        }
+        uri.scheme?.startsWith("http") == true -> {
+            mmr.setDataSource(uri.toString(), mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 10)"))
+        }
+        else -> {
+            val path = uri.path
+            if (path != null && File(path).exists()) {
+                val file = File(path)
+                val fis = FileInputStream(file)
+                try {
+                    mmr.setDataSource(fis.fd, 0, file.length())
+                } finally {
+                    fis.close()
+                }
+            } else {
+                mmr.setDataSource(context, uri)
             }
         }
     }
