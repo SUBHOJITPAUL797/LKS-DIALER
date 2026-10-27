@@ -85,8 +85,8 @@ function App() {
         return;
       }
 
-      // If the incoming call was canceled by the caller, it will send status: 'REMOVED'
-      if (callData.status === 'REMOVED') {
+      // If the incoming call was canceled by the caller, or ended/declined/missed
+      if (callData.status === 'REMOVED' || callData.status === 'ENDED' || callData.status === 'MISSED' || callData.status === 'DECLINED') {
         if ('serviceWorker' in navigator) {
           navigator.serviceWorker.ready.then(reg => {
             reg.getNotifications().then(notifs => {
@@ -97,6 +97,14 @@ function App() {
           }).catch(() => {});
         }
         setIncomingCall(prev => (prev && prev.id === callData.id) ? null : prev);
+        setActiveCall(prev => {
+          if (!prev || prev.id !== callData.id) return prev;
+          if (prev.status === 'CALLING' || prev.status === 'RINGING' || !prev.answeredAt) {
+            return null;
+          }
+          setTimeout(() => setActiveCall(null), 1200);
+          return { ...prev, status: callData.status };
+        });
         return;
       }
 

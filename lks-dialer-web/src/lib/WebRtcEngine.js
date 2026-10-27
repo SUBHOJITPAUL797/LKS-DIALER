@@ -799,6 +799,17 @@ class WebRtcEngine {
     // Trigger Push Notification via Cloudflare Worker
     this.triggerPushNotification(callee, callType, this.activeCallId);
 
+    // Optimistic RINGING after 1200ms so caller sees feedback if FCM is slow
+    const _optimisticCallId = this.activeCallId;
+    setTimeout(() => {
+      if (this.callStatus === 'CALLING' && this.activeCallId === _optimisticCallId) {
+        console.log('[WebRtcEngine] Optimistic RINGING: FCM hasn\'t arrived yet, writing RINGING for caller feedback');
+        updateDoc(callDoc, { status: 'RINGING' }).catch(() => {});
+        if (this.onCallStateChange) this.onCallStateChange({ status: 'RINGING', connectionStatusText: 'Ringing...' });
+        this.callStatus = 'RINGING';
+      }
+    }, 1200);
+
     // Listen for Answer and ICE candidates
     this.listenToActiveCall(callDoc, true);
 
@@ -867,11 +878,15 @@ class WebRtcEngine {
               if (this.currentUser.callerTuneAudioBase64) ringUpdates.callerTuneAudioBase64 = this.currentUser.callerTuneAudioBase64;
               if (this.currentUser.callerTuneUrl) ringUpdates.callerTuneUrl = this.currentUser.callerTuneUrl;
             }
+            if (this.currentUser?.callerTuneStartMs !== undefined) ringUpdates.callerTuneStartMs = this.currentUser.callerTuneStartMs;
+            if (this.currentUser?.callerTuneEndMs !== undefined) ringUpdates.callerTuneEndMs = this.currentUser.callerTuneEndMs;
             updateDoc(change.doc.ref, ringUpdates);
           }
           if (this.onCallStateChange) this.onCallStateChange({ id: change.doc.id, ...data });
         } else if (change.type === 'removed') {
-          // If the call falls out of CALLING/RINGING (e.g. caller hung up), clear it from the UI.
+          // Call doc fell out of CALLING/RINGING query (status changed) → call was ended by caller
+          console.log('[WebRtcEngine] Call removed from incoming query (caller ended):', change.doc.id);
+          callSounds.stopRingbackTone();
           if (this.onCallStateChange) this.onCallStateChange({ id: change.doc.id, status: 'REMOVED' });
         }
       });
@@ -1117,6 +1132,7 @@ class WebRtcEngine {
         callSounds.stopRingbackTone();
         callSounds.playCallEndedTone();
         this.cleanup();
+        if (this.onCallStateChange) this.onCallStateChange({ id: snapshot.id, status: data.status });
       }
     });
 

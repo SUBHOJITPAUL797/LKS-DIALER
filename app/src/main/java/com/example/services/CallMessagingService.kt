@@ -75,7 +75,11 @@ class CallMessagingService : FirebaseMessagingService() {
             val callId = remoteMessage.data["callId"] ?: return
             
             if (type == "cancel_call" || type == "missed_call" || type == "call_declined" || type == "call_ended") {
-                val endStatus = if (type == "call_declined") com.example.data.model.CallStatus.DECLINED else com.example.data.model.CallStatus.ENDED
+                val endStatus = when (type) {
+                    "call_declined" -> com.example.data.model.CallStatus.DECLINED
+                    "missed_call", "cancel_call" -> com.example.data.model.CallStatus.MISSED
+                    else -> com.example.data.model.CallStatus.ENDED
+                }
                 Log.d("FCM", "Received $type for callId: $callId, ending call immediately with status $endStatus")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
@@ -125,6 +129,10 @@ class CallMessagingService : FirebaseMessagingService() {
             }
             
             if (type == "incoming_call") {
+                if (com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+                    Log.d("FCM", "Call $callId already terminated locally. Skipping incoming push.")
+                    return
+                }
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 if (engine != null && engine.state.value.activeCall?.callId == callId &&
                     (engine.state.value.callStatus == com.example.data.model.CallStatus.ENDED ||
@@ -192,6 +200,10 @@ class CallMessagingService : FirebaseMessagingService() {
         callId: String,
         callerProfilePic: String
     ) {
+        if (com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+            Log.d("FCM", "showIncomingCallNotification: call $callId was already terminated locally. Skipping.")
+            return
+        }
         // Prevent zombie notifications if Firestore already answered/declined the call via the active UI
         val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
         if (engine != null) {

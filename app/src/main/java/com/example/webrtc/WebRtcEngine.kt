@@ -87,6 +87,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     
     private var incomingCallListener: ListenerRegistration? = null
     private var activeCallListener: ListenerRegistration? = null
+    private var currentListeningCallId: String? = null
     private var iceCandidateListener: ListenerRegistration? = null
     
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -729,6 +730,19 @@ class WebRtcEngine private constructor(private val context: Context) {
             
             // Trigger Push Notification via external Worker (Cloudflare / Vercel)
             triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
+
+            // Optimistic RINGING: If FCM delivery is slow, write RINGING after 1.2s so caller sees feedback
+            scope.launch {
+                delay(1200)
+                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
+                    Log.i("WebRtcEngine", "Optimistic RINGING: FCM hasn't arrived yet, writing RINGING for caller feedback")
+                    _state.value = _state.value.copy(
+                        callStatus = CallStatus.RINGING,
+                        connectionStatusText = "Ringing..."
+                    )
+                    firestore.collection("calls").document(newCall.callId).update("status", CallStatus.RINGING.name)
+                }
+            }
             
             com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
             headsetButtonManager.startListening()
@@ -842,6 +856,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                         if (statusStr == CallStatus.ENDED.name || statusStr == CallStatus.DECLINED.name || statusStr == CallStatus.MISSED.name) {
                             Log.d("WebRtcEngine", "Incoming call was terminated by caller: ${currentActive.callId} ($statusStr)")
                             endCallInternalLocal(try { CallStatus.valueOf(statusStr) } catch (_: Exception) { CallStatus.MISSED })
+                        }
+                    } else if (snapshot != null && _state.value.callStatus == CallStatus.RINGING) {
+                        // Document no longer in snapshot (deleted or status changed) and we're still ringing → force end
+                        Log.d("WebRtcEngine", "Active call doc ${currentActive.callId} no longer in callee's snapshot → ending ringing call")
+                        // Quick Firestore fetch to confirm status before ending
+                        firestore.collection("calls").document(currentActive.callId).get().addOnSuccessListener { doc ->
+                            val remoteStatus = doc.getString("status")
+                            if (remoteStatus == CallStatus.ENDED.name || remoteStatus == CallStatus.DECLINED.name ||
+                                remoteStatus == CallStatus.MISSED.name || !doc.exists()) {
+                                if (_state.value.callStatus == CallStatus.RINGING && _state.value.activeCall?.callId == currentActive.callId) {
+                                    endCallInternalLocal(try { CallStatus.valueOf(remoteStatus ?: "MISSED") } catch (_: Exception) { CallStatus.MISSED })
+                                }
+                            }
                         }
                     }
                 }
@@ -1194,6 +1221,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 connectionStatusText = "Incoming Call"
             )
             headsetButtonManager.startListening()
+            listenToActiveCall(callId, isCaller = false)
+            listenForIceCandidates(callId, isCaller = false)
         }
 
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
@@ -1388,6 +1417,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun listenToActiveCall(callId: String, isCaller: Boolean) {
+        if (currentListeningCallId == callId && activeCallListener != null) {
+            return
+        }
+        currentListeningCallId = callId
         activeCallListener?.remove()
         activeCallListener = firestore.collection("calls").document(callId)
             .addSnapshotListener { snapshot, e ->
@@ -2123,6 +2156,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         videoUpgradeWatchdogJob = null
         activeCallListener?.remove()
         activeCallListener = null
+        currentListeningCallId = null
         iceCandidateListener?.remove()
         iceCandidateListener = null
         
