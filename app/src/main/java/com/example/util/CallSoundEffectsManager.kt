@@ -13,10 +13,12 @@ import java.io.FileInputStream
 /**
  * CallSoundEffectsManager
  * Provides professional telecom audio progress feedback:
- * 1. Outgoing Ringback Tone: classic supervisory "tuuut... tuuut..." played to caller while recipient rings.
- * 2. Call Ended / Disconnect Tone: 1 single prompt beep played when call drops or hangs up.
- * 3. Call Hold Tone: soft prompt tone when call is placed on hold + periodic reminder.
- * 4. Call Resume / Unhold Tone: rising confirmation chime when call is taken off hold.
+ * 1. Outgoing Connecting Tone: Telecom connecting pulse ("tuk... tuk...") played while callStatus == CALLING.
+ * 2. Outgoing Ringback Tone: Supervisory "tuuut... tuuut..." played while callStatus == RINGING (if no caller tune).
+ * 3. Outgoing Caller Tune: Plays callee's custom Hello Tune immediately on RINGING with zero delay (pre-buffered).
+ * 4. Call Ended / Disconnect Tone: 1 single crisp prompt beep played when call drops or hangs up.
+ * 5. Call Hold Tone: Soft prompt double-chime when call is placed on hold + periodic reminder.
+ * 6. Call Resume / Unhold Tone: Rising confirmation chime when call is taken off hold.
  */
 object CallSoundEffectsManager {
 
@@ -24,65 +26,132 @@ object CallSoundEffectsManager {
     private val handler = Handler(Looper.getMainLooper())
 
     @Volatile
-    private var ringbackToneGenerator: ToneGenerator? = null
+    private var connectingToneGenerator: ToneGenerator? = null
+    @Volatile
+    private var isConnectingActive = false
+    private var connectingRunnable: Runnable? = null
 
+    @Volatile
+    private var ringbackToneGenerator: ToneGenerator? = null
     @Volatile
     private var isRingbackActive = false
 
     @Volatile
     private var callerTunePlayer: MediaPlayer? = null
+    @Volatile
+    private var isCallerTunePrepared = false
+    @Volatile
+    private var isRingingState = false
+
+    private data class PendingTune(
+        val audioBase64: String?,
+        val audioUrl: String?,
+        val title: String?,
+        val startMs: Long,
+        val isBase64Playing: Boolean
+    )
+
+    @Volatile
+    private var pendingTune: PendingTune? = null
 
     private var holdReminderRunnable: Runnable? = null
 
     /**
-     * Start the outgoing supervisory ringback tone.
-     * Played to the caller while the recipient device is CALLING / RINGING.
-     * Uses STREAM_VOICE_CALL so it routes through earpiece, speaker, or bluetooth headset.
+     * Start the outgoing connecting tone ("tuk... tuk...").
+     * Played to the caller while the call is being routed/connected (callStatus == CALLING).
+     * Cadence: double "tuk... tuk..." pulse every 1.4s, conveying active telecom connection.
      */
     @Synchronized
-    fun startRingbackTone(context: Context) {
-        if (isRingbackActive && ringbackToneGenerator != null) return
-        stopCallerTune()
+    fun startConnectingTone(context: Context) {
+        if (isConnectingActive) return
+        stopConnectingTone()
         internalStopToneGenerator()
 
-        isRingbackActive = true
-        Log.i(TAG, "Starting outgoing ringback tone")
+        isConnectingActive = true
+        isRingingState = false
+        Log.i(TAG, "Starting outgoing connecting tone (tuk... tuk...)")
 
         try {
-            ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
-            ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+            connectingToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 75)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to start ToneGenerator ringback tone on STREAM_VOICE_CALL: ${e.message}")
+            Log.w(TAG, "Failed to start connecting ToneGenerator on STREAM_VOICE_CALL: ${e.message}")
             try {
-                // Fallback: try with STREAM_RING or STREAM_MUSIC if STREAM_VOICE_CALL failed on device
-                ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 80)
-                ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+                connectingToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 70)
             } catch (e2: Exception) {
-                Log.e(TAG, "Secondary ToneGenerator fallback also failed: ${e2.message}")
+                Log.e(TAG, "Secondary connecting ToneGenerator fallback failed: ${e2.message}")
             }
+        }
+
+        connectingRunnable = object : Runnable {
+            override fun run() {
+                if (!isConnectingActive) return
+                try {
+                    // Pulse 1: "tuk" (60ms)
+                    connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 60)
+
+                    // Pulse 2: "tuk" (60ms) after 160ms
+                    handler.postDelayed({
+                        if (isConnectingActive) {
+                            try {
+                                connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 60)
+                            } catch (_: Exception) {}
+                        }
+                    }, 160L)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Connecting pulse error: ${e.message}")
+                }
+
+                // Repeat cadence every 1400ms: "tuk... tuk...      tuk... tuk..."
+                if (isConnectingActive) {
+                    handler.postDelayed(this, 1400L)
+                }
+            }
+        }
+
+        handler.post(connectingRunnable!!)
+    }
+
+    @Synchronized
+    fun stopConnectingTone() {
+        if (!isConnectingActive && connectingToneGenerator == null) return
+        isConnectingActive = false
+        Log.d(TAG, "Stopping outgoing connecting tone")
+        connectingRunnable?.let { handler.removeCallbacks(it) }
+        connectingRunnable = null
+        try {
+            connectingToneGenerator?.stopTone()
+            connectingToneGenerator?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping connecting tone: ${e.message}")
+        } finally {
+            connectingToneGenerator = null
         }
     }
 
     /**
-     * Start Caller Tune (Hello Tune) playback during outgoing call ringing.
-     * Plays through voice communication audio stream so it works across earpiece, speaker, and bluetooth.
-     * Falls back to standard ringback tone if audio fails or is unavailable.
+     * Prepares (preloads) the callee's Caller Tune in the background while CALLING.
+     * When call transitions to RINGING, playback starts INSTANTLY with 0ms delay.
      */
     @Synchronized
-    fun startCallerTune(
+    fun prepareCallerTune(
         context: Context,
         audioBase64: String?,
         audioUrl: String? = null,
         title: String? = null,
         startMs: Long = 0L
     ) {
-        internalStopToneGenerator()
-        stopCallerTune()
-
         if (audioBase64.isNullOrBlank() && audioUrl.isNullOrBlank()) {
-            startRingbackTone(context)
+            pendingTune = null
             return
         }
+
+        // Avoid recreating if already preparing the same tune
+        if (pendingTune != null && pendingTune?.title == title && callerTunePlayer != null) {
+            return
+        }
+
+        stopCallerTune()
+        isCallerTunePrepared = false
 
         try {
             val player = MediaPlayer()
@@ -104,15 +173,15 @@ object CallSoundEffectsManager {
                 } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                     player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
                 } else {
-                    startRingbackTone(context)
                     return
                 }
             } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                 player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
             } else {
-                startRingbackTone(context)
                 return
             }
+
+            pendingTune = PendingTune(audioBase64, audioUrl, title, startMs, isBase64Playing)
 
             player.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -121,48 +190,138 @@ object CallSoundEffectsManager {
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
-
             player.isLooping = true
+
             player.setOnPreparedListener { mp ->
                 synchronized(this) {
                     if (callerTunePlayer == mp) {
-                        try {
-                            // If streaming from full audioUrl and startMs is set, seek to the cropped section!
-                            if (!isBase64Playing && startMs > 0) {
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                    mp.seekTo(startMs, MediaPlayer.SEEK_CLOSEST)
-                                } else {
-                                    mp.seekTo(startMs.toInt())
-                                }
-                            }
-                            mp.start()
-                            isRingbackActive = true
-                            Log.i(TAG, "🎵 Outgoing Caller Tune playing: ${title ?: "Song"} (base64=$isBase64Playing, startMs=$startMs)")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
-                            startRingbackTone(context)
+                        isCallerTunePrepared = true
+                        Log.i(TAG, "🎵 Caller Tune prepared in memory: $title (isRingingState=$isRingingState)")
+                        if (isRingingState) {
+                            startPreparedCallerTune(mp, context)
                         }
                     } else {
                         try { mp.release() } catch (_: Exception) {}
                     }
                 }
             }
+
             player.setOnErrorListener { _, what, extra ->
-                Log.w(TAG, "Caller tune error ($what, $extra)")
+                Log.w(TAG, "Caller tune prepare error ($what, $extra)")
                 stopCallerTune()
-                if (!audioUrl.isNullOrBlank() && !audioBase64.isNullOrBlank()) {
-                    // Base64 file failed to decode/play; try fallback stream URL with exact startMs seek!
-                    Log.i(TAG, "Retrying caller tune with direct URL stream at $startMs ms: $audioUrl")
-                    startCallerTune(context, null, audioUrl, title, startMs)
-                } else {
+                if (isRingingState) {
                     startRingbackTone(context)
                 }
                 true
             }
+
             player.prepareAsync()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize caller tune player: ${e.message}", e)
+            Log.e(TAG, "Failed to prepare caller tune: ${e.message}", e)
+            stopCallerTune()
+        }
+    }
+
+    private fun startPreparedCallerTune(mp: MediaPlayer, context: Context) {
+        try {
+            stopConnectingTone()
+            internalStopToneGenerator()
+
+            val info = pendingTune
+            if (info != null && !info.isBase64Playing && info.startMs > 0) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    mp.seekTo(info.startMs, MediaPlayer.SEEK_CLOSEST)
+                } else {
+                    mp.seekTo(info.startMs.toInt())
+                }
+            }
+            mp.start()
+            isRingbackActive = true
+            Log.i(TAG, "🎵 Outgoing Caller Tune playing INSTANTLY: ${info?.title ?: "Song"} (startMs=${info?.startMs ?: 0})")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
             startRingbackTone(context)
+        }
+    }
+
+    /**
+     * Start Caller Tune immediately (or fallback to prepare).
+     */
+    @Synchronized
+    fun startCallerTune(
+        context: Context,
+        audioBase64: String?,
+        audioUrl: String? = null,
+        title: String? = null,
+        startMs: Long = 0L
+    ) {
+        isRingingState = true
+        stopConnectingTone()
+
+        if (callerTunePlayer != null && isCallerTunePrepared && pendingTune?.title == title) {
+            startPreparedCallerTune(callerTunePlayer!!, context)
+            return
+        }
+
+        prepareCallerTune(context, audioBase64, audioUrl, title, startMs)
+        val player = callerTunePlayer
+        if (player != null && isCallerTunePrepared) {
+            startPreparedCallerTune(player, context)
+        }
+    }
+
+    /**
+     * Called when outgoing call transitions to RINGING.
+     * Stops "tuk... tuk..." connecting tone.
+     * If caller tune is prepared, starts it with 0ms delay.
+     * If caller tune is currently buffering, waits for onPrepared (NO false "ring ring").
+     * If no caller tune exists for callee, plays standard ringback tone ("ring ring").
+     */
+    @Synchronized
+    fun onCallRinging(context: Context) {
+        Log.i(TAG, "Call transitioned to RINGING")
+        isRingingState = true
+        stopConnectingTone()
+
+        val player = callerTunePlayer
+        if (player != null && isCallerTunePrepared) {
+            startPreparedCallerTune(player, context)
+            return
+        }
+
+        if (pendingTune != null && player != null) {
+            Log.i(TAG, "Caller Tune is currently buffering in background, will start immediately on prepared")
+            return
+        }
+
+        startRingbackTone(context)
+    }
+
+    /**
+     * Start the outgoing supervisory ringback tone ("tuuut... tuuut... / ring ring").
+     * Played to the caller ONLY when recipient is physically RINGING and has NO caller tune.
+     */
+    @Synchronized
+    fun startRingbackTone(context: Context) {
+        if (isRingbackActive && ringbackToneGenerator != null) return
+        stopConnectingTone()
+        stopCallerTune()
+        internalStopToneGenerator()
+
+        isRingbackActive = true
+        Log.i(TAG, "Starting outgoing supervisory ringback tone (ring ring)")
+
+        try {
+            ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
+            ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start ToneGenerator ringback tone on STREAM_VOICE_CALL: ${e.message}")
+            try {
+                ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 80)
+                ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Secondary ToneGenerator fallback also failed: ${e2.message}")
+            }
         }
     }
 
@@ -179,17 +338,21 @@ object CallSoundEffectsManager {
             Log.w(TAG, "Error releasing caller tune player: ${e.message}")
         } finally {
             callerTunePlayer = null
+            isCallerTunePrepared = false
+            pendingTune = null
         }
     }
 
     /**
-     * Stop the outgoing ringback tone.
+     * Stop all outgoing progress tones (connecting, ringback, caller tune).
      * Called when the call is answered, declined, or ended.
      */
     @Synchronized
     fun stopRingbackTone() {
+        stopConnectingTone()
         stopCallerTune()
         internalStopToneGenerator()
+        isRingingState = false
     }
 
     private fun internalStopToneGenerator() {
@@ -291,6 +454,7 @@ object CallSoundEffectsManager {
      * Reset all call sound effects (e.g. when app goes IDLE).
      */
     fun resetAll() {
+        stopConnectingTone()
         stopRingbackTone()
         stopHoldReminder()
     }

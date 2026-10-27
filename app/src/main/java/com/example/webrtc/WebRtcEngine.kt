@@ -742,6 +742,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         connectionStatusText = "Ringing..."
                     )
                     firestore.collection("calls").document(newCall.callId).update("status", CallStatus.RINGING.name)
+                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
                 }
             }
             
@@ -751,8 +752,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 com.example.services.LksTelecomManager.reportOutgoingCall(context, newCall.callId, calleeName, calleeNumber, callType)
             } catch (_: Exception) {}
             configureAudio(callType)
-            com.example.util.CallSoundEffectsManager.startRingbackTone(context)
-            resolveAndPlayCalleeTune(calleeNumber)
+            com.example.util.CallSoundEffectsManager.startConnectingTone(context)
+            resolveAndPrepareCalleeTune(calleeNumber)
             
             // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
             scope.launch {
@@ -1447,11 +1448,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     connectionStatusText = "Ringing..."
                                 )
                             }
-                            if (!call.callerTuneTitle.isNullOrBlank() && (_state.value.activeCallerTuneTitle == null || _state.value.activeCallerTuneTitle != call.callerTuneTitle)) {
-                                _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
-                                com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
-                            } else if (_state.value.activeCallerTuneTitle == null) {
-                                com.example.util.CallSoundEffectsManager.startRingbackTone(context)
+                            if (!call.callerTuneTitle.isNullOrBlank()) {
+                                if (_state.value.activeCallerTuneTitle != call.callerTuneTitle) {
+                                    _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
+                                    com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
+                                } else {
+                                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                                }
+                            } else {
+                                com.example.util.CallSoundEffectsManager.onCallRinging(context)
                             }
                         }
 
@@ -1655,7 +1660,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
     }
 
-    private fun resolveAndPlayCalleeTune(calleeNumber: String) {
+    private fun resolveAndPrepareCalleeTune(calleeNumber: String) {
         val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
         val variations = mutableListOf(calleeNumber)
         if (cleanDigits.isNotBlank()) {
@@ -1671,11 +1676,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             val url = doc?.getString("callerTuneUrl")
             val startMs = doc?.getLong("callerTuneStartMs") ?: 0L
             if (!title.isNullOrBlank() && (!audio.isNullOrBlank() || !url.isNullOrBlank())) {
-                if ((_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) && _state.value.activeCallerTuneTitle == null) {
-                    _state.value = _state.value.copy(activeCallerTuneTitle = title)
+                _state.value = _state.value.copy(activeCallerTuneTitle = title)
+                if (_state.value.callStatus == CallStatus.RINGING) {
                     com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title, startMs)
-                    return true
+                } else {
+                    com.example.util.CallSoundEffectsManager.prepareCallerTune(context, audio, url, title, startMs)
                 }
+                return true
             }
             return false
         }

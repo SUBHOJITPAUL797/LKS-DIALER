@@ -797,8 +797,9 @@ class WebRtcEngine {
 
     await setDoc(callDoc, callData);
     
-    // Play supervisory outgoing ringback tone or callee's caller tune immediately
-    callSounds.startRingbackOrCallerTune(callee.callerTuneAudioBase64, callee.callerTuneUrl);
+    // Play connecting tone ("tuk... tuk...") and pre-load callee's caller tune in background
+    callSounds.startConnectingTone();
+    callSounds.prepareCallerTune(callee.callerTuneAudioBase64, callee.callerTuneUrl, callee.callerTuneStartMs || 0);
 
     // Trigger Push Notification via Cloudflare Worker
     this.triggerPushNotification(callee, callType, this.activeCallId);
@@ -811,6 +812,7 @@ class WebRtcEngine {
         updateDoc(callDoc, { status: 'RINGING' }).catch(() => {});
         if (this.onCallStateChange) this.onCallStateChange({ status: 'RINGING', connectionStatusText: 'Ringing...' });
         this.callStatus = 'RINGING';
+        callSounds.onCallRinging(callee.callerTuneAudioBase64, callee.callerTuneUrl, callee.callerTuneStartMs || 0);
       }
     }, 3500);
 
@@ -1135,7 +1137,7 @@ class WebRtcEngine {
       }
 
       if (isCaller && data.status === 'RINGING') {
-        callSounds.startRingbackOrCallerTune(data.callerTuneAudioBase64, data.callerTuneUrl);
+        callSounds.onCallRinging(data.callerTuneAudioBase64, data.callerTuneUrl, data.callerTuneStartMs || 0);
       }
       if (isCaller && data.status === 'ANSWERED') {
         callSounds.stopRingbackTone();

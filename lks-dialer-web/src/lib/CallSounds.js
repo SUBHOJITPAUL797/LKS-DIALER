@@ -1,20 +1,22 @@
 /**
  * CallSounds.js
  * Professional telecom audio progress feedback using Web Audio API synthesis:
- * 1. Outgoing Ringback Tone: Telecom dual frequency (440Hz + 480Hz) supervisory tone (tuuuut... tuuuut...).
- * 2. Call Ended / Disconnect Tone: 3 crisp beeps when call drops or either party hangs up.
- * 3. Call Hold Tone: Pleasant double chime + gentle periodic reminder chime.
- * 4. Call Resume / Unhold Tone: Rising confirmation chime.
+ * 1. Outgoing Connecting Tone: Telecom connecting pulse ("tuk... tuk...") played while callStatus === 'CALLING'.
+ * 2. Outgoing Ringback Tone: Telecom dual frequency (440Hz + 480Hz) supervisory tone (tuuuut... tuuuut...).
+ * 3. Outgoing Caller Tune: Plays callee's Hello Tune immediately on RINGING with zero delay (pre-buffered).
+ * 4. Call Ended / Disconnect Tone: Crisp telecom prompt beep when call drops or either party hangs up.
+ * 5. Call Hold Tone: Pleasant double chime + gentle periodic reminder chime.
+ * 6. Call Resume / Unhold Tone: Rising confirmation chime.
  */
 
 class CallSoundsManager {
   constructor() {
     this.audioCtx = null;
     this.ringbackTimer = null;
-    this.ringbackOsc1 = null;
-    this.ringbackOsc2 = null;
-    this.ringbackGain = null;
+    this.connectingTimer = null;
+    this.isConnectingActive = false;
     this.isRingbackActive = false;
+    this.isRingingState = false;
     this.holdReminderInterval = null;
     this.callerTuneAudio = null;
   }
@@ -33,11 +35,74 @@ class CallSoundsManager {
   }
 
   /**
+   * Starts outgoing connecting tone ("tuk... tuk..."):
+   * Cadence: double "tuk... tuk..." pulse every 1.4s, conveying active telecom connection.
+   * Played while callStatus === 'CALLING'.
+   */
+  startConnectingTone() {
+    if (this.isConnectingActive) return;
+    this.stopConnectingTone();
+    this.stopRingbackTone();
+    this.isConnectingActive = true;
+    this.isRingingState = false;
+
+    const ctx = this.getAudioContext();
+    if (!ctx) return;
+
+    const playPulseCadence = () => {
+      if (!this.isConnectingActive) return;
+
+      try {
+        const now = ctx.currentTime;
+
+        // Play gentle soft "tuk" (55ms)
+        const playTuk = (t) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(450, t);
+
+          gain.gain.setValueAtTime(0.001, t);
+          gain.gain.linearRampToValueAtTime(0.09, t + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
+
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(t);
+          osc.stop(t + 0.06);
+        };
+
+        playTuk(now);
+        playTuk(now + 0.16);
+
+        this.connectingTimer = setTimeout(() => {
+          if (this.isConnectingActive) playPulseCadence();
+        }, 1400);
+      } catch (e) {
+        console.warn("Error playing connecting tone cadence:", e);
+      }
+    };
+
+    playPulseCadence();
+  }
+
+  stopConnectingTone() {
+    this.isConnectingActive = false;
+    if (this.connectingTimer) {
+      clearTimeout(this.connectingTimer);
+      this.connectingTimer = null;
+    }
+  }
+
+  /**
    * Starts supervisory outgoing ringback tone: 440Hz + 480Hz dual tones.
    * Cadence: 1.8s tone ON, 2.5s silence OFF, repeated.
+   * Played ONLY when status === RINGING and no caller tune is present.
    */
   startRingbackTone() {
     if (this.isRingbackActive) return;
+    this.stopConnectingTone();
+    this.stopCallerTune();
     this.isRingbackActive = true;
     const ctx = this.getAudioContext();
     if (!ctx) return;
@@ -83,13 +148,53 @@ class CallSoundsManager {
   }
 
   /**
+   * Pre-loads the Caller Tune during CALLING phase so it is ready to play with 0ms delay.
+   */
+  prepareCallerTune(audioBase64, audioUrl, startMs = 0) {
+    let src = "";
+    if (audioBase64 && typeof audioBase64 === 'string' && audioBase64.trim().length > 0) {
+      src = audioBase64.startsWith('data:') ? audioBase64 : `data:audio/mp3;base64,${audioBase64}`;
+    } else if (audioUrl && typeof audioUrl === 'string' && audioUrl.trim().length > 0) {
+      src = audioUrl;
+    }
+
+    if (!src) return;
+    if (this.callerTuneAudio && this.callerTuneAudio.src === src) return;
+
+    this.stopCallerTune();
+    try {
+      const audio = new Audio();
+      this.callerTuneAudio = audio;
+      audio.src = src;
+      audio.loop = true;
+      audio.volume = 0.5;
+      audio.preload = 'auto';
+
+      if (startMs > 0) {
+        audio.currentTime = startMs / 1000.0;
+      }
+
+      audio.onerror = () => {
+        console.warn("[CallSounds] Caller tune failed to load");
+        this.stopCallerTune();
+        if (this.isRingingState) {
+          this.startRingbackTone();
+        }
+      };
+    } catch (e) {
+      console.warn("[CallSounds] Error preparing caller tune:", e);
+    }
+  }
+
+  /**
    * Starts playing a Caller Tune (Hello Tune) for outgoing ringing.
    * If audioBase64 or audioUrl is provided, it plays via HTML5 Audio with looping.
    * If audio fails to load or play, it automatically falls back to standard ringback tone.
    */
-  startCallerTune(audioBase64, audioUrl) {
+  startCallerTune(audioBase64, audioUrl, startMs = 0) {
+    this.isRingingState = true;
+    this.stopConnectingTone();
     this.stopRingbackTone();
-    this.isRingbackActive = true;
 
     try {
       let src = "";
@@ -104,11 +209,31 @@ class CallSoundsManager {
         return;
       }
 
+      if (this.callerTuneAudio && this.callerTuneAudio.src === src) {
+        if (startMs > 0 && Math.abs(this.callerTuneAudio.currentTime - (startMs / 1000.0)) > 1) {
+          this.callerTuneAudio.currentTime = startMs / 1000.0;
+        }
+        const p = this.callerTuneAudio.play();
+        if (p !== undefined) {
+          p.catch((err) => {
+            console.warn("[CallSounds] Autoplay blocked or error playing caller tune:", err);
+            this.stopCallerTune();
+            this.startRingbackTone();
+          });
+        }
+        return;
+      }
+
+      this.stopCallerTune();
       const audio = new Audio();
       this.callerTuneAudio = audio;
       audio.src = src;
       audio.loop = true;
       audio.volume = 0.5;
+
+      if (startMs > 0) {
+        audio.currentTime = startMs / 1000.0;
+      }
 
       audio.onerror = () => {
         console.warn("[CallSounds] Caller tune failed to load, falling back to standard ringback tone");
@@ -131,14 +256,42 @@ class CallSoundsManager {
   }
 
   /**
-   * Automatically selects Caller Tune if available, or falls back to standard supervisory tone.
+   * Called when outgoing call transitions to RINGING.
+   * Stops connecting tone ("tuk... tuk...").
+   * Starts pre-buffered caller tune instantly with 0ms delay.
+   * If no caller tune exists, plays standard ringback tone.
    */
-  startRingbackOrCallerTune(audioBase64, audioUrl) {
+  onCallRinging(audioBase64, audioUrl, startMs = 0) {
+    this.isRingingState = true;
+    this.stopConnectingTone();
+
+    if (this.callerTuneAudio) {
+      if (startMs > 0 && this.callerTuneAudio.currentTime === 0) {
+        this.callerTuneAudio.currentTime = startMs / 1000.0;
+      }
+      const playPromise = this.callerTuneAudio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn("[CallSounds] Autoplay blocked, falling back to ringback:", err);
+          this.stopCallerTune();
+          this.startRingbackTone();
+        });
+      }
+      return;
+    }
+
     if ((audioBase64 && audioBase64.trim().length > 0) || (audioUrl && audioUrl.trim().length > 0)) {
-      this.startCallerTune(audioBase64, audioUrl);
+      this.startCallerTune(audioBase64, audioUrl, startMs);
     } else {
       this.startRingbackTone();
     }
+  }
+
+  /**
+   * Automatically selects Caller Tune if available, or falls back to standard supervisory tone.
+   */
+  startRingbackOrCallerTune(audioBase64, audioUrl, startMs = 0) {
+    this.onCallRinging(audioBase64, audioUrl, startMs);
   }
 
   stopCallerTune() {
@@ -153,10 +306,12 @@ class CallSoundsManager {
   }
 
   /**
-   * Stops the outgoing ringback tone or caller tune immediately.
+   * Stops all outgoing progress tones (connecting, ringback, caller tune) immediately.
    */
   stopRingbackTone() {
     this.isRingbackActive = false;
+    this.isRingingState = false;
+    this.stopConnectingTone();
     if (this.ringbackTimer) {
       clearTimeout(this.ringbackTimer);
       this.ringbackTimer = null;
