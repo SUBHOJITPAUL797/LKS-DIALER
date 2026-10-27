@@ -16,6 +16,7 @@ import com.example.MainActivity
 import com.example.data.repository.FirebaseManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import kotlinx.coroutines.*
 
 class CallMessagingService : FirebaseMessagingService() {
 
@@ -68,6 +69,26 @@ class CallMessagingService : FirebaseMessagingService() {
                     try {
                         if (wakeLock?.isHeld == true) wakeLock.release()
                     } catch (_: Exception) {}
+                }
+                return
+            }
+
+            if (type == "app_update" || type == "new_release" || remoteMessage.data["update_available"] == "true") {
+                Log.d("FCM", "Received app update push notification from FCM")
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    try {
+                        val updater = com.example.util.GitHubUpdater(applicationContext)
+                        val info = updater.checkForUpdates(force = true)
+                        if (info != null && info.isUpdateAvailable) {
+                            updater.showUpdateAvailableNotification(info)
+                        }
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to process app update push: ${e.message}")
+                    } finally {
+                        try {
+                            if (wakeLock?.isHeld == true) wakeLock.release()
+                        } catch (_: Exception) {}
+                    }
                 }
                 return
             }
@@ -309,31 +330,17 @@ class CallMessagingService : FirebaseMessagingService() {
             .setName(callerName)
             .setImportant(true)
             
-        // Load Profile Picture if available (Supports HTTP/HTTPS URLs and Base64)
+        // Load Profile Picture fast in-memory if Base64; NEVER block notification with synchronous HTTP network requests
         if (callerProfilePic.isNotEmpty()) {
             try {
-                val originalBitmap = if (callerProfilePic.startsWith("http://") || callerProfilePic.startsWith("https://")) {
-                    val url = java.net.URL(callerProfilePic)
-                    val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                        connectTimeout = 3000
-                        readTimeout = 3000
-                        doInput = true
-                    }
-                    try {
-                        conn.inputStream.use { stream ->
-                            android.graphics.BitmapFactory.decodeStream(stream)
-                        }
-                    } finally {
-                        conn.disconnect()
-                    }
-                } else {
+                if (!callerProfilePic.startsWith("http://") && !callerProfilePic.startsWith("https://")) {
                     val clean = if (callerProfilePic.contains(",")) callerProfilePic.substringAfter(",") else callerProfilePic
                     val decodedBytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
-                    android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                }
-                if (originalBitmap != null) {
-                    val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, 128, 128, true)
-                    callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(scaledBitmap))
+                    val originalBitmap = android.graphics.BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                    if (originalBitmap != null) {
+                        val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(originalBitmap, 128, 128, true)
+                        callerBuilder.setIcon(androidx.core.graphics.drawable.IconCompat.createWithBitmap(scaledBitmap))
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("FCM", "Failed to decode profile picture for notification", e)
@@ -366,24 +373,28 @@ class CallMessagingService : FirebaseMessagingService() {
         val targetChannelId = "lks_incoming_call_v12"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Delete all legacy channels so stale settings/importance don't interfere
-            val oldChannels = listOf(
-                "incoming_call_channel",
-                "incoming_call_silent_channel",
-                "lks_incoming_call_v1",
-                "lks_incoming_call_v2",
-                "lks_incoming_call_v3",
-                "lks_incoming_call_v4",
-                "lks_incoming_call_v5",
-                "lks_incoming_call_v6",
-                "lks_incoming_call_v7",
-                "lks_incoming_call_v8",
-                "lks_incoming_call_v9",
-                "lks_incoming_call_v10",
-                "lks_incoming_call_v11"
-            )
-            for (oldChannel in oldChannels) {
-                try { notificationManager.deleteNotificationChannel(oldChannel) } catch (_: Exception) {}
+            // Delete legacy channels only ONCE across app lifecycle, not on every incoming call
+            val channelPrefs = getSharedPreferences("lks_channel_cleanup", Context.MODE_PRIVATE)
+            if (!channelPrefs.getBoolean("cleaned_v12", false)) {
+                val oldChannels = listOf(
+                    "incoming_call_channel",
+                    "incoming_call_silent_channel",
+                    "lks_incoming_call_v1",
+                    "lks_incoming_call_v2",
+                    "lks_incoming_call_v3",
+                    "lks_incoming_call_v4",
+                    "lks_incoming_call_v5",
+                    "lks_incoming_call_v6",
+                    "lks_incoming_call_v7",
+                    "lks_incoming_call_v8",
+                    "lks_incoming_call_v9",
+                    "lks_incoming_call_v10",
+                    "lks_incoming_call_v11"
+                )
+                for (oldChannel in oldChannels) {
+                    try { notificationManager.deleteNotificationChannel(oldChannel) } catch (_: Exception) {}
+                }
+                channelPrefs.edit().putBoolean("cleaned_v12", true).apply()
             }
 
             val audioAttributes = AudioAttributes.Builder()

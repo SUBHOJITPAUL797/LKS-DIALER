@@ -89,6 +89,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var activeCallListener: ListenerRegistration? = null
     private var currentListeningCallId: String? = null
     private var iceCandidateListener: ListenerRegistration? = null
+    private val pushTokenCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
     
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private fun recordSeenCall(callId: String) {
@@ -666,7 +667,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         try {
             val now = System.currentTimeMillis()
-            if (now - lastInitiateCallTimestamp < 1500L) {
+            if (now - lastInitiateCallTimestamp < 500L) {
                 Log.w("WebRtcEngine", "initiateCall dropped: rapid call initiation debounce (${now - lastInitiateCallTimestamp}ms ago)")
                 return
             }
@@ -731,11 +732,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Trigger Push Notification via external Worker (Cloudflare / Vercel)
             triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
 
-            // Optimistic RINGING: If FCM delivery is slow, write RINGING after 1.2s so caller sees feedback
+            // Fallback RINGING: If callee push acknowledgment is delayed, switch to RINGING after 3.5s
             scope.launch {
-                delay(1200)
+                delay(3500)
                 if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
-                    Log.i("WebRtcEngine", "Optimistic RINGING: FCM hasn't arrived yet, writing RINGING for caller feedback")
+                    Log.i("WebRtcEngine", "Fallback RINGING: Callee acknowledgment delayed, switching to RINGING status")
                     _state.value = _state.value.copy(
                         callStatus = CallStatus.RINGING,
                         connectionStatusText = "Ringing..."
@@ -858,18 +859,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                             endCallInternalLocal(try { CallStatus.valueOf(statusStr) } catch (_: Exception) { CallStatus.MISSED })
                         }
                     } else if (snapshot != null && _state.value.callStatus == CallStatus.RINGING) {
-                        // Document no longer in snapshot (deleted or status changed) and we're still ringing → force end
-                        Log.d("WebRtcEngine", "Active call doc ${currentActive.callId} no longer in callee's snapshot → ending ringing call")
-                        // Quick Firestore fetch to confirm status before ending
-                        firestore.collection("calls").document(currentActive.callId).get().addOnSuccessListener { doc ->
-                            val remoteStatus = doc.getString("status")
-                            if (remoteStatus == CallStatus.ENDED.name || remoteStatus == CallStatus.DECLINED.name ||
-                                remoteStatus == CallStatus.MISSED.name || !doc.exists()) {
-                                if (_state.value.callStatus == CallStatus.RINGING && _state.value.activeCall?.callId == currentActive.callId) {
-                                    endCallInternalLocal(try { CallStatus.valueOf(remoteStatus ?: "MISSED") } catch (_: Exception) { CallStatus.MISSED })
-                                }
-                            }
-                        }
+                        // Document no longer in snapshot (deleted or status changed) and we're still ringing → force end immediately
+                        Log.d("WebRtcEngine", "Active call doc ${currentActive.callId} no longer in callee's snapshot → ending ringing call immediately")
+                        endCallInternalLocal(CallStatus.MISSED)
                     }
                 }
 
@@ -927,16 +919,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addSnapshotListener
                 }
 
-                // CRITICAL FIX: Guard on callStatus being IDLE/ENDED/DECLINED/MISSED, NOT on activeCall == null.
-                // Previously: activeCall == null → was only true after 1500ms (when UI reset to IDLE)
-                // This meant any incoming call that arrived during the 1500ms "Call Ended" display window
-                // was silently dropped via Firestore snapshot (which never re-fires on same data).
-                // Fix: accept a new call whenever we are NOT in an active/ringing/calling state.
+                // CRITICAL FIX: Guard on callStatus being IDLE/ENDED/DECLINED/MISSED or new incoming callId
                 val isReadyForNewCall = _state.value.callStatus == CallStatus.IDLE ||
                     _state.value.callStatus == CallStatus.ENDED ||
                     _state.value.callStatus == CallStatus.DECLINED ||
                     _state.value.callStatus == CallStatus.MISSED ||
-                    _state.value.activeCall == null
+                    _state.value.activeCall == null ||
+                    (incomingCall != null && _state.value.activeCall?.callId != incomingCall.callId)
 
                 if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds && !isCallTerminated(incomingCall.callId)) {
                     recordSeenCall(incomingCall.callId)
@@ -977,6 +966,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         Log.w("WebRtcEngine", "Telecom reportIncomingCall failed (non-fatal): ${e.message}")
                     }
 
+                    resetIdleJob?.cancel()
+                    resetIdleJob = null
                     _state.value = WebRtcState(
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
                         callStatus = CallStatus.RINGING,
@@ -1230,9 +1221,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was terminated locally. Aborting.")
                 return@addOnSuccessListener
             }
-            val curLocalStatus = _state.value.callStatus
-            if (curLocalStatus == CallStatus.ENDED || curLocalStatus == CallStatus.DECLINED || curLocalStatus == CallStatus.MISSED) {
-                Log.d("WebRtcEngine", "attachToCall doc callback: local status is $curLocalStatus. Aborting.")
+            if (_state.value.activeCall?.callId == callId && (_state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.DECLINED)) {
+                Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was already ended/declined locally. Aborting.")
                 return@addOnSuccessListener
             }
             val call = doc.toObject(CallDto::class.java)
@@ -1244,7 +1234,25 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addOnSuccessListener
                 }
 
-                if (_state.value.callStatus != CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
+                val isNewCallOrIdle = _state.value.activeCall?.callId != callId ||
+                    _state.value.callStatus == CallStatus.IDLE ||
+                    _state.value.callStatus == CallStatus.ENDED ||
+                    _state.value.callStatus == CallStatus.DECLINED ||
+                    _state.value.callStatus == CallStatus.MISSED
+
+                if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.activeCall?.callId == callId) {
+                    _state.value = _state.value.copy(
+                        activeCall = call.copy(status = CallStatus.ANSWERED)
+                    )
+                    listenToActiveCall(callId, isCaller = false)
+                    listenForIceCandidates(callId, isCaller = false)
+                    if (call.offerSdp != null && !hasProcessedOffer) {
+                        processOfferSdpIfAvailable()
+                    }
+                } else if (isNewCallOrIdle || _state.value.callStatus == CallStatus.RINGING) {
+                    resetIdleJob?.cancel()
+                    resetIdleJob = null
+
                     val resolvedStatus = if (call.status == CallStatus.CALLING) CallStatus.RINGING else call.status
                                          
                     if (resolvedStatus == CallStatus.RINGING && call.status != CallStatus.RINGING && !isCallTerminated(callId)) {
@@ -1260,15 +1268,6 @@ class WebRtcEngine private constructor(private val context: Context) {
                     headsetButtonManager.startListening()
                     listenToActiveCall(callId, isCaller = false)
                     listenForIceCandidates(callId, isCaller = false)
-                } else if (_state.value.callStatus == CallStatus.ANSWERED) {
-                    _state.value = _state.value.copy(
-                        activeCall = call.copy(status = CallStatus.ANSWERED)
-                    )
-                    listenToActiveCall(callId, isCaller = false)
-                    listenForIceCandidates(callId, isCaller = false)
-                    if (call.offerSdp != null && !hasProcessedOffer) {
-                        processOfferSdpIfAvailable()
-                    }
                 }
             }
         }
@@ -2145,6 +2144,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status")
         
+        lastInitiateCallTimestamp = 0L // Reset debounce so user can redial immediately
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
         com.example.util.CallSoundEffectsManager.stopHoldReminder()
 
@@ -2337,6 +2337,13 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         val distinctVariations = variations.distinct().take(10)
 
+        fun cacheTokens(fcm: String, web: String) {
+            if (fcm.isNotBlank() || web.isNotBlank()) {
+                val pair = Pair(fcm, web)
+                distinctVariations.forEach { pushTokenCache[it] = pair }
+            }
+        }
+
         fun sendPush(fcmToken: String, webToken: String) {
             val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
             val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
@@ -2373,7 +2380,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     
                     conn.outputStream.use { it.write(json.toByteArray()) }
                     val responseCode = conn.responseCode
-                    android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode")
+                    android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode (type=$type, callId=$callId)")
                 } catch (e: Exception) {
                     android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
                 } finally {
@@ -2382,6 +2389,26 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
 
+        // 1. Check local in-memory pushTokenCache first (0ms)
+        for (variant in distinctVariations) {
+            val cached = pushTokenCache[variant]
+            if (cached != null && (cached.first.isNotBlank() || cached.second.isNotBlank())) {
+                Log.d("WebRtcEngine", "Push token found in pushTokenCache for $calleeNumber")
+                sendPush(cached.first, cached.second)
+                return
+            }
+        }
+
+        // 2. Check in-memory registered users in FirebaseManager (0ms)
+        val inMemoryUser = com.example.data.repository.FirebaseManager.getInstance(context).lookupUserByNumber(calleeNumber)
+        if (inMemoryUser != null && (inMemoryUser.fcmToken.isNotBlank() || inMemoryUser.webToken.isNotBlank())) {
+            Log.d("WebRtcEngine", "Push token found in FirebaseManager cache for $calleeNumber")
+            cacheTokens(inMemoryUser.fcmToken, inMemoryUser.webToken)
+            sendPush(inMemoryUser.fcmToken, inMemoryUser.webToken)
+            return
+        }
+
+        // 3. Fallback to Firestore lookup if not found in memory
         fun tryDirectLookup(index: Int) {
             if (index >= distinctVariations.size) return
             val docId = distinctVariations[index]
@@ -2389,6 +2416,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 val fcmToken = doc.getString("fcmToken") ?: ""
                 val webToken = doc.getString("webToken") ?: ""
                 if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
+                    cacheTokens(fcmToken, webToken)
                     sendPush(fcmToken, webToken)
                 } else {
                     tryDirectLookup(index + 1)
@@ -2406,6 +2434,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val webToken = userDoc?.getString("webToken") ?: ""
             
             if (fcmToken.isNotEmpty() || webToken.isNotEmpty()) {
+                cacheTokens(fcmToken, webToken)
                 sendPush(fcmToken, webToken)
             } else {
                 tryDirectLookup(0)

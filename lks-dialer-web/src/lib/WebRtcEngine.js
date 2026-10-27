@@ -754,6 +754,10 @@ class WebRtcEngine {
     const callee = await this.lookupUser(calleeNumber);
     if (!callee) throw new Error("User not found on LKS-DIALER");
 
+    if (!this.userCache) this.userCache = {};
+    if (callee.phoneNumber) this.userCache[callee.phoneNumber] = callee;
+    this.userCache[calleeNumber] = callee;
+
     await this.setupLocalStream(callType);
     this.createPeerConnection(true);
 
@@ -799,16 +803,16 @@ class WebRtcEngine {
     // Trigger Push Notification via Cloudflare Worker
     this.triggerPushNotification(callee, callType, this.activeCallId);
 
-    // Optimistic RINGING after 1200ms so caller sees feedback if FCM is slow
+    // Fallback RINGING after 3500ms so caller sees feedback if FCM is delayed
     const _optimisticCallId = this.activeCallId;
     setTimeout(() => {
       if (this.callStatus === 'CALLING' && this.activeCallId === _optimisticCallId) {
-        console.log('[WebRtcEngine] Optimistic RINGING: FCM hasn\'t arrived yet, writing RINGING for caller feedback');
+        console.log('[WebRtcEngine] Fallback RINGING: Callee acknowledgment delayed, switching to RINGING');
         updateDoc(callDoc, { status: 'RINGING' }).catch(() => {});
         if (this.onCallStateChange) this.onCallStateChange({ status: 'RINGING', connectionStatusText: 'Ringing...' });
         this.callStatus = 'RINGING';
       }
-    }, 1200);
+    }, 3500);
 
     // Listen for Answer and ICE candidates
     this.listenToActiveCall(callDoc, true);
@@ -951,55 +955,75 @@ class WebRtcEngine {
   async endCall() {
     callSounds.stopRingbackTone();
     callSounds.playCallEndedTone();
-    if (this.activeCallId) {
-      const callDocRef = doc(db, 'calls', this.activeCallId);
-      const callSnap = await getDoc(callDocRef);
-      const callData = callSnap.data();
+    const callId = this.activeCallId;
+    const currentStatus = this.callStatus;
+    const isUnanswered = currentStatus === 'CALLING' || currentStatus === 'RINGING';
+    const endStatus = isUnanswered ? 'MISSED' : 'ENDED';
 
-      const isUnanswered = callData && (callData.status === 'CALLING' || callData.status === 'RINGING');
-      const endStatus = isUnanswered ? 'MISSED' : 'ENDED';
+    // Instant local cleanup (<10ms) so UI resets immediately
+    this.cleanup();
 
-      await updateDoc(callDocRef, { status: endStatus, endedAt: Date.now() });
+    if (callId) {
+      const callDocRef = doc(db, 'calls', callId);
+      updateDoc(callDocRef, { status: endStatus, endedAt: Date.now() }).catch(e => {
+        console.warn('Failed to update call status:', e);
+      });
 
-      // If we hung up before it was answered, send push to silence ringing and show missed call
-      if (isUnanswered && callData?.calleeNumber) {
+      // Background push notification
+      (async () => {
         try {
-          const calleeNum = callData.calleeNumber;
-          const variations = [calleeNum];
-          const clean = calleeNum.replace(/[^0-9]/g, '');
-          if (clean) {
-            variations.push(clean);
-            if (clean.length > 10) variations.push(clean.slice(-10));
-            if (!calleeNum.startsWith('+')) variations.push('+' + calleeNum);
-          }
-          const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
-          const userQ = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
-          const userSnap = await getDocs(userQ);
-          if (!userSnap.empty) {
-            const calleeData = userSnap.docs[0].data();
-            // First cancel ringing notification
-            this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'cancel_call');
-            // Then record missed call
-            this.triggerPushNotification(calleeData, callData.callType, this.activeCallId, 'missed_call');
+          const callSnap = await getDoc(callDocRef);
+          const callData = callSnap.data();
+          if (callData?.calleeNumber) {
+            const calleeNum = callData.calleeNumber;
+            const cachedUser = this.userCache?.[calleeNum];
+            if (cachedUser) {
+              this.triggerPushNotification(cachedUser, callData.callType, callId, 'cancel_call');
+              if (isUnanswered) {
+                this.triggerPushNotification(cachedUser, callData.callType, callId, 'missed_call');
+              }
+            } else {
+              const variations = [calleeNum];
+              const clean = calleeNum.replace(/[^0-9]/g, '');
+              if (clean) {
+                variations.push(clean);
+                if (clean.length > 10) variations.push(clean.slice(-10));
+                if (!calleeNum.startsWith('+')) variations.push('+' + calleeNum);
+              }
+              const distinctVariations = Array.from(new Set(variations)).slice(0, 10);
+              const userQ = query(collection(db, 'users'), where('phoneNumber', 'in', distinctVariations));
+              const userSnap = await getDocs(userQ);
+              if (!userSnap.empty) {
+                const calleeData = userSnap.docs[0].data();
+                if (!this.userCache) this.userCache = {};
+                this.userCache[calleeNum] = calleeData;
+                this.triggerPushNotification(calleeData, callData.callType, callId, 'cancel_call');
+                if (isUnanswered) {
+                  this.triggerPushNotification(calleeData, callData.callType, callId, 'missed_call');
+                }
+              }
+            }
           }
         } catch (e) {
           console.warn('Failed to send cancel/missed push:', e);
         }
-      }
+      })();
     }
-    this.cleanup();
   }
 
   async declineCall(callId) {
     callSounds.stopRingbackTone();
     callSounds.playCallEndedTone();
-    await updateDoc(doc(db, 'calls', callId), { status: 'DECLINED' });
     this.cleanup();
+    if (callId) {
+      updateDoc(doc(db, 'calls', callId), { status: 'DECLINED', endedAt: Date.now() }).catch(() => {});
+    }
   }
 
   cleanup() {
     callSounds.resetAll();
     this.isOnHold = false;
+    this.callStatus = 'IDLE';
     if (this.peerConnection) {
       this.peerConnection.close();
       this.peerConnection = null;

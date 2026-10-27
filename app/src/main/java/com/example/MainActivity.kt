@@ -681,6 +681,22 @@ class MainActivity : ComponentActivity() {
                             webRtcEngine.answerCall()
                         }
 
+                        val showUpdateDialog = incoming.getBooleanExtra("show_update_dialog", false)
+                        if (showUpdateDialog) {
+                            val version = incoming.getStringExtra("update_version") ?: ""
+                            val notes = incoming.getStringExtra("update_notes") ?: ""
+                            val url = incoming.getStringExtra("update_url") ?: ""
+                            if (url.isNotBlank() && version.isNotBlank()) {
+                                updateInfo = UpdateInfo(
+                                    isUpdateAvailable = true,
+                                    latestVersion = version,
+                                    releaseNotes = notes,
+                                    downloadUrl = url,
+                                    isMandatory = false
+                                )
+                            }
+                        }
+
                         val openTab = incoming.getStringExtra("open_tab")
                         if (openTab == "RECENTS") {
                             navState = AppNavState.MAIN
@@ -821,7 +837,7 @@ class MainActivity : ComponentActivity() {
                         isCallMinimized = false
                     } else {
                         val now = System.currentTimeMillis()
-                        if (now - lastCallClickTime > 1500L) {
+                        if (now - lastCallClickTime > 500L) {
                             lastCallClickTime = now
                             val myNum = currentUser?.phoneNumber
                             if (!myNum.isNullOrBlank()) {

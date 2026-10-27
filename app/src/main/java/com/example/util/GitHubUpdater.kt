@@ -1,11 +1,15 @@
 package com.example.util
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import kotlinx.coroutines.*
@@ -42,6 +46,12 @@ sealed class DownloadState {
 }
 
 class GitHubUpdater(context: Context) {
+    companion object {
+        const val UPDATE_CHANNEL_ID = "lks_app_updates"
+        const val UPDATE_NOTIFICATION_ID = 2001
+        const val UPDATE_DOWNLOAD_NOTIFICATION_ID = 2002
+    }
+
     private val context = context.applicationContext
     private val TAG = "GitHubUpdater"
     private val REPO_OWNER = "SUBHOJITPAUL797"
@@ -82,6 +92,7 @@ class GitHubUpdater(context: Context) {
             // Tier 1: Try GitHub REST API (detailed release notes + asset metadata)
             val apiResult = checkViaGitHubApi(resolvedLocalVersion)
             if (apiResult != null) {
+                showUpdateAvailableNotification(apiResult)
                 if (!force && dismissedVersion == apiResult.latestVersion && (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L) {
                     Log.d(TAG, "Update ${apiResult.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
                     return@withContext null
@@ -93,6 +104,7 @@ class GitHubUpdater(context: Context) {
             Log.i(TAG, "GitHub API unavailable or rate-limited; attempting direct web redirect fallback...")
             val fallbackResult = checkViaWebRedirect(resolvedLocalVersion)
             if (fallbackResult != null) {
+                showUpdateAvailableNotification(fallbackResult)
                 if (!force && dismissedVersion == fallbackResult.latestVersion && (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L) {
                     Log.d(TAG, "Update ${fallbackResult.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
                     return@withContext null
@@ -195,9 +207,13 @@ class GitHubUpdater(context: Context) {
         val destinationFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), fileName)
         val tempFile = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "$fileName.tmp")
 
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        ensureNotificationChannel(notificationManager)
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 _downloadState.value = DownloadState.Downloading(0f, 0L, 0L, 0L)
+                updateDownloadNotification(notificationManager, version, 0, 0L)
 
                 // High-performance OkHttp client tuned for fast large downloads
                 val downloadClient = okHttpClient.newBuilder()
@@ -216,11 +232,13 @@ class GitHubUpdater(context: Context) {
 
                 downloadClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
+                        notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
                         _downloadState.value = DownloadState.Error("Server returned HTTP ${response.code}")
                         return@launch
                     }
 
                     val body = response.body ?: run {
+                        notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
                         _downloadState.value = DownloadState.Error("Empty response body from server")
                         return@launch
                     }
@@ -255,7 +273,7 @@ class GitHubUpdater(context: Context) {
                                     lastSpeedBytes = downloadedBytes
                                 }
 
-                                if (now - lastUiUpdate > 120) {
+                                if (now - lastUiUpdate > 300) {
                                     val progress = if (totalBytes > 0) downloadedBytes.toFloat() / totalBytes.toFloat() else 0f
                                     _downloadState.value = DownloadState.Downloading(
                                         progress = progress,
@@ -263,6 +281,7 @@ class GitHubUpdater(context: Context) {
                                         totalBytes = totalBytes,
                                         speedBytesPerSec = currentSpeed
                                     )
+                                    updateDownloadNotification(notificationManager, version, (progress * 100).toInt(), currentSpeed)
                                     lastUiUpdate = now
                                 }
                             }
@@ -279,6 +298,9 @@ class GitHubUpdater(context: Context) {
                     val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", destinationFile)
                     _downloadState.value = DownloadState.Downloaded(contentUri)
 
+                    notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
+                    showDownloadCompleteNotification(notificationManager, version, contentUri)
+
                     withContext(Dispatchers.Main) {
                         installApk(contentUri)
                     }
@@ -286,8 +308,167 @@ class GitHubUpdater(context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "Download failed", e)
                 try { if (tempFile.exists()) tempFile.delete() } catch (_: Exception) {}
+                notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
                 _downloadState.value = DownloadState.Error(e.message ?: "Download failed")
             }
+        }
+    }
+
+    fun showUpdateAvailableNotification(info: UpdateInfo) {
+        if (!info.isUpdateAvailable) return
+
+        val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
+        val lastNotifiedVersion = prefs.getString("last_notified_version", "") ?: ""
+        val lastNotifiedTime = prefs.getLong("last_notified_time", 0L)
+        // Throttle notifications to at most once per 6 hours for the same version
+        if (lastNotifiedVersion == info.latestVersion && (System.currentTimeMillis() - lastNotifiedTime) < 6 * 60 * 60 * 1000L) {
+            Log.d(TAG, "Update notification for ${info.latestVersion} already shown within 6 hours — skipping duplicate")
+            return
+        }
+
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        ensureNotificationChannel(notificationManager)
+
+        // Tapping the notification body opens MainActivity and shows UpdateDialog
+        val openAppIntent = Intent(context, com.example.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("show_update_dialog", true)
+            putExtra("update_version", info.latestVersion)
+            putExtra("update_notes", info.releaseNotes)
+            putExtra("update_url", info.downloadUrl)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            UPDATE_NOTIFICATION_ID,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+
+        // "⚡ Update Now" action button: starts download directly in background
+        val downloadIntent = Intent(context, com.example.services.UpdateDownloadReceiver::class.java).apply {
+            action = "ACTION_START_UPDATE_DOWNLOAD"
+            putExtra("update_url", info.downloadUrl)
+            putExtra("update_version", info.latestVersion)
+        }
+        val downloadPendingIntent = PendingIntent.getBroadcast(
+            context,
+            UPDATE_NOTIFICATION_ID + 1,
+            downloadIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+
+        val cleanNotes = if (info.releaseNotes.isNotBlank() && info.releaseNotes != "null") {
+            info.releaseNotes.take(200).replace(Regex("[#*`-]"), " ").trim()
+        } else {
+            "Includes performance optimizations, instant call connectivity, and bug fixes."
+        }
+
+        val notification = androidx.core.app.NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("🚀 Update Available: ${info.latestVersion}")
+            .setContentText("A new version of LKS-DIALER is ready to install!")
+            .setStyle(
+                androidx.core.app.NotificationCompat.BigTextStyle()
+                    .setBigContentTitle("🚀 LKS-DIALER ${info.latestVersion} Available")
+                    .bigText("A new version is available with the latest features and bug fixes:\n\n$cleanNotes\n\nTap to download & install now.")
+                    .setSummaryText("Update Available")
+            )
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(androidx.core.app.NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(contentPendingIntent)
+            .addAction(
+                android.R.drawable.stat_sys_download,
+                "⚡ Update Now",
+                downloadPendingIntent
+            )
+            .addAction(
+                android.R.drawable.ic_menu_info_details,
+                "Details",
+                contentPendingIntent
+            )
+            .setColor(0xFF00ADB5.toInt())
+            .build()
+
+        notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+
+        prefs.edit()
+            .putString("last_notified_version", info.latestVersion)
+            .putLong("last_notified_time", System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun ensureNotificationChannel(notificationManager: NotificationManager) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                UPDATE_CHANNEL_ID,
+                "App Updates",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notifications for new LKS-DIALER updates and releases"
+                enableLights(true)
+                lightColor = android.graphics.Color.CYAN
+                enableVibration(true)
+                setShowBadge(true)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun updateDownloadNotification(notificationManager: NotificationManager, version: String, progressPercent: Int, speedBytes: Long) {
+        val speedStr = formatSpeed(speedBytes)
+        val notif = androidx.core.app.NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("Downloading LKS-DIALER $version")
+            .setContentText("$progressPercent% • $speedStr")
+            .setProgress(100, progressPercent, progressPercent <= 0)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
+            .setColor(0xFF00ADB5.toInt())
+            .build()
+        notificationManager.notify(UPDATE_DOWNLOAD_NOTIFICATION_ID, notif)
+    }
+
+    private fun showDownloadCompleteNotification(notificationManager: NotificationManager, version: String, contentUri: Uri) {
+        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(contentUri, "application/vnd.android.package-archive")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+        val installPendingIntent = PendingIntent.getActivity(
+            context,
+            UPDATE_DOWNLOAD_NOTIFICATION_ID + 5,
+            installIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+        val readyNotif = androidx.core.app.NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("✅ Update Ready to Install")
+            .setContentText("LKS-DIALER $version has downloaded. Tap to install now.")
+            .setStyle(
+                androidx.core.app.NotificationCompat.BigTextStyle()
+                    .setBigContentTitle("✅ LKS-DIALER $version Downloaded")
+                    .bigText("The update package has been downloaded successfully. Tap to install now and restart the app.")
+            )
+            .setContentIntent(installPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(androidx.core.app.NotificationCompat.DEFAULT_ALL)
+            .addAction(
+                android.R.drawable.stat_sys_download_done,
+                "Install Now",
+                installPendingIntent
+            )
+            .setColor(0xFF00ADB5.toInt())
+            .build()
+        notificationManager.notify(UPDATE_NOTIFICATION_ID, readyNotif)
+    }
+
+    private fun formatSpeed(bytesPerSec: Long): String {
+        return when {
+            bytesPerSec >= 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB/s", bytesPerSec / (1024f * 1024f))
+            bytesPerSec >= 1024 -> String.format(java.util.Locale.US, "%.0f KB/s", bytesPerSec / 1024f)
+            else -> "$bytesPerSec B/s"
         }
     }
 

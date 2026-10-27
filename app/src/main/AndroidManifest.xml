@@ -228,6 +228,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Update Download Receiver — downloads updates triggered from system notification panel -->
+        <receiver
+            android:name=".services.UpdateDownloadReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ACTION_START_UPDATE_DOWNLOAD" />
+            </intent-filter>
+        </receiver>
+
         <!-- FileProvider for APK Installation -->
         <provider
             android:name="androidx.core.content.FileProvider"
