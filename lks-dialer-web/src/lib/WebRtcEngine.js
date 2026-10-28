@@ -944,10 +944,14 @@ class WebRtcEngine {
 
     let offerObj = offer;
     if (!offerObj) {
-      const snap = await getDoc(callDoc);
-      const data = snap.data();
-      if (data && data.offerSdp) {
-        offerObj = { type: 'offer', sdp: data.offerSdp };
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const snap = await getDoc(callDoc);
+        const data = snap.data();
+        if (data && data.offerSdp) {
+          offerObj = { type: 'offer', sdp: data.offerSdp };
+          break;
+        }
+        await new Promise(r => setTimeout(r, 250));
       }
     }
     
@@ -1242,6 +1246,8 @@ class WebRtcEngine {
                 if (this.remoteStream) {
                   this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
                 }
+              }
+              if (this.hasProcessedAnswer) {
                 clearInterval(this.activeCallPollingInterval);
                 this.activeCallPollingInterval = null;
               }
