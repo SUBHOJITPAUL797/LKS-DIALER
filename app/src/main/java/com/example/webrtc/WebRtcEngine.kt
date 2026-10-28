@@ -11,6 +11,7 @@ import com.example.data.repository.FirebaseManager
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.*
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +50,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var reconnectJob: Job? = null
     private var resetIdleJob: Job? = null
     private var videoUpgradeWatchdogJob: Job? = null
+    private var activeCallPollingJob: Job? = null
 
     private var hasProcessedOffer = false
     private var hasProcessedAnswer = false
@@ -139,6 +141,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
         // Static fallback TURN — Metered.ca free tier (no auth required on free plan)
         // Will be REPLACED by short-lived credentials from Cloudflare Worker at call start
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80")
@@ -154,6 +157,14 @@ class WebRtcEngine private constructor(private val context: Context) {
             .setPassword("openrelayproject")
             .createIceServer(),
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turns:a.relay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turns:a.relay.metered.ca:443?transport=tcp")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
             .createIceServer()
@@ -401,6 +412,74 @@ class WebRtcEngine private constructor(private val context: Context) {
         peerConnection = null
     }
 
+    /**
+     * Ensures all local and remote audio tracks are active, unmuted, and routed properly.
+     * Crucial when calls are answered to resolve one-way audio where tracks received during
+     * ringing/connecting were muted to volume 0.0.
+     */
+    fun unmuteAllAudioTracks() {
+        try {
+            localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+            val receivers = peerConnection?.receivers ?: emptyList()
+            for (receiver in receivers) {
+                val track = receiver.track()
+                if (track is AudioTrack) {
+                    track.setEnabled(true)
+                    track.setVolume(1.0)
+                    Log.i("WebRtcEngine", "🔊 Unmuted remote AudioTrack: ${track.id()} to volume 1.0")
+                }
+            }
+            audioRouteManager.reassertCurrentRoute()
+            hookWebRtcAudioTrackPlayout()
+        } catch (e: Exception) {
+            Log.w("WebRtcEngine", "Error unmuting audio tracks: ${e.message}")
+        }
+    }
+
+    /**
+     * Triggered immediately when high-priority FCM 'call_answered' push arrives.
+     * Bypasses any stalled gRPC listener on mobile data and connects the call in <200ms.
+     */
+    fun onCallAnsweredFromPush(callId: String) {
+        val currentCall = _state.value.activeCall
+        if (currentCall == null || currentCall.callId != callId) {
+            Log.w("WebRtcEngine", "onCallAnsweredFromPush: ignored for non-matching callId $callId (active=${currentCall?.callId})")
+            return
+        }
+        Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId")
+        com.example.util.CallSoundEffectsManager.stopRingbackTone()
+        activeCallPollingJob?.cancel()
+        activeCallPollingJob = null
+
+        if (_state.value.callStatus != CallStatus.ANSWERED) {
+            _state.value = _state.value.copy(
+                callStatus = CallStatus.ANSWERED,
+                connectionStatusText = if (currentCall.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
+            )
+            unmuteAllAudioTracks()
+            if (_state.value.callDurationSeconds == 0) {
+                startCallTimer()
+            }
+        }
+
+        // Force direct server-side read to fetch answerSdp immediately
+        scope.launch(Dispatchers.IO) {
+            try {
+                val doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                if (doc.exists()) {
+                    val call = doc.toObject(CallDto::class.java)
+                    if (call != null) {
+                        withContext(Dispatchers.Main) {
+                            handleCallDocumentUpdate(call, doc, isCaller = true)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("WebRtcEngine", "onCallAnsweredFromPush server fetch failed: ${e.message}")
+            }
+        }
+    }
+
     private fun createPeerConnection(isCaller: Boolean, callId: String) {
         // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
         cleanupMediaAndPeerConnection()
@@ -424,8 +503,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         reconnectJob = null
                         if (_state.value.callStatus == CallStatus.ANSWERED) {
                             _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
-                            audioRouteManager.reassertCurrentRoute()
-                            localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+                            unmuteAllAudioTracks()
                         }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -1068,12 +1146,36 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
 
+        // 0. High-Priority FCM Push Notification to Caller:
+        val callerNum = callerNumber ?: _state.value.activeCall?.callerNumber ?: ""
+        if (callerNum.isNotBlank()) {
+            triggerPushNotification(
+                calleeNumber = callerNum,
+                callerName = myPhoneNumber,
+                callerNumber = myPhoneNumber,
+                callType = type.name,
+                callId = callId,
+                type = "call_answered"
+            )
+        }
+
         // 1. Instantly mark status as ANSWERED in Firestore so the CALLER screen updates immediately (<50ms)
         try {
             firestore.collection("calls").document(callId).update(
                 "status", CallStatus.ANSWERED.name,
                 "answeredAt", System.currentTimeMillis()
-            )
+            ).addOnFailureListener { e ->
+                Log.w("WebRtcEngine", "Failed to update status to ANSWERED in answerIncomingCall, retrying: ${e.message}")
+                scope.launch {
+                    delay(300)
+                    try {
+                        firestore.collection("calls").document(callId).update(
+                            "status", CallStatus.ANSWERED.name,
+                            "answeredAt", System.currentTimeMillis()
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
         } catch (_: Exception) {}
 
         // 2. Ensure real-time active call & ICE listeners are attached immediately
@@ -1122,7 +1224,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         // Create PeerConnection right away so it is ready the moment offerSdp is resolved
         createPeerConnection(isCaller = false, callId = callId)
-        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+        unmuteAllAudioTracks()
         if (type == CallType.VIDEO) {
             startVideoCaptureIfNeeded()
         }
@@ -1278,6 +1380,18 @@ class WebRtcEngine private constructor(private val context: Context) {
         val call = _state.value.activeCall ?: return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
 
+        // 0. High-Priority FCM Push Notification to Caller:
+        // Tells caller device immediately (<200ms) that the call was answered,
+        // bypassing any stalled Firestore snapshot listener on mobile data outside the home!
+        triggerPushNotification(
+            calleeNumber = call.callerNumber,
+            callerName = myPhoneNumber,
+            callerNumber = myPhoneNumber,
+            callType = call.callType.name,
+            callId = call.callId,
+            type = "call_answered"
+        )
+
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
             connectionStatusText = "Connecting P2P..."
@@ -1313,7 +1427,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                 "status", CallStatus.ANSWERED.name,
                 "answeredAt", System.currentTimeMillis(),
                 "answerSdp", cachedAnswer
-            )
+            ).addOnFailureListener { e ->
+                Log.w("WebRtcEngine", "Failed to update status and answerSdp, retrying: ${e.message}")
+                scope.launch {
+                    delay(300)
+                    try {
+                        firestore.collection("calls").document(call.callId).update(
+                            "status", CallStatus.ANSWERED.name,
+                            "answeredAt", System.currentTimeMillis(),
+                            "answerSdp", cachedAnswer
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
         } else {
             // 🔁 FALLBACK PATH: Pre-warm not ready (e.g. offer arrived late, or pre-warm failed).
             // Reset pre-warm flags so processOfferSdpIfAvailable() runs the full negotiation.
@@ -1326,29 +1452,55 @@ class WebRtcEngine private constructor(private val context: Context) {
             firestore.collection("calls").document(call.callId).update(
                 "status", CallStatus.ANSWERED.name,
                 "answeredAt", System.currentTimeMillis()
-            )
+            ).addOnFailureListener { e ->
+                Log.w("WebRtcEngine", "Failed to update status to ANSWERED, retrying: ${e.message}")
+                scope.launch {
+                    delay(300)
+                    try {
+                        firestore.collection("calls").document(call.callId).update(
+                            "status", CallStatus.ANSWERED.name,
+                            "answeredAt", System.currentTimeMillis()
+                        )
+                    } catch (_: Exception) {}
+                }
+            }
 
             createPeerConnection(isCaller = false, callId = call.callId)
-            processOfferSdpIfAvailable()
+
+            if (call.offerSdp.isNullOrBlank()) {
+                scope.launch(Dispatchers.IO) {
+                    for (attempt in 1..12) {
+                        try {
+                            val snap = firestore.collection("calls").document(call.callId)
+                                .get(com.google.firebase.firestore.Source.SERVER).await()
+                            val offer = snap.getString("offerSdp")
+                            if (!offer.isNullOrBlank()) {
+                                withContext(Dispatchers.Main) {
+                                    val current = _state.value.activeCall
+                                    if (current?.callId == call.callId) {
+                                        _state.value = _state.value.copy(
+                                            activeCall = current.copy(offerSdp = offer)
+                                        )
+                                        processOfferSdpIfAvailable()
+                                    }
+                                }
+                                break
+                            }
+                        } catch (_: Exception) {}
+                        delay(250)
+                    }
+                }
+            } else {
+                processOfferSdpIfAvailable()
+            }
         }
 
-        // Unmute local audio track now that user tapped answer
-        localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
+        // Unmute local & remote audio tracks now that user tapped answer
+        unmuteAllAudioTracks()
 
         // If video call, start camera capture if it was deferred during pre-warm
         if (call.callType == CallType.VIDEO) {
             startVideoCaptureIfNeeded()
-        }
-
-        // Enable any remote audio tracks that were received while ringing
-        peerConnection?.receivers?.forEach { rtpReceiver ->
-            val track = rtpReceiver.track()
-            if (track is AudioTrack) {
-                try {
-                    track.setEnabled(true)
-                    track.setVolume(1.0)
-                } catch (_: Exception) {}
-            }
         }
 
         // Phase 3: Reliable call logs — record call start immediately on answer
@@ -1377,6 +1529,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             override fun onSetSuccess() {
                 Log.i("WebRtcEngine", "Remote offer SDP set successfully")
                 drainQueuedRemoteIceCandidates()
+                unmuteAllAudioTracks()
                 
                 val constraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
@@ -1393,6 +1546,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     Log.i("WebRtcEngine", "Local answer SDP set successfully, uploading to Firestore")
                                     firestore.collection("calls").document(call.callId)
                                         .update("answerSdp", tunedSdp)
+                                        .addOnFailureListener { e ->
+                                            Log.w("WebRtcEngine", "Failed to update answerSdp, retrying: ${e.message}")
+                                            scope.launch {
+                                                delay(300)
+                                                try {
+                                                    firestore.collection("calls").document(call.callId).update("answerSdp", tunedSdp)
+                                                } catch (_: Exception) {}
+                                            }
+                                        }
+                                    unmuteAllAudioTracks()
                                 }
                                 override fun onSetFailure(error: String?) {
                                     Log.e("WebRtcEngine", "Failed to set local answer: $error")
@@ -1436,207 +1599,244 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 val call = snapshot.toObject(CallDto::class.java)
                 if (call != null) {
-                    val currentCall = _state.value.activeCall
-                    if (currentCall?.callId == call.callId || currentCall == null) {
-                        val oldCall = currentCall
-                        _state.value = _state.value.copy(activeCall = call)
-                        
-                        if (isCaller && call.status == CallStatus.RINGING) {
-                            if (_state.value.callStatus == CallStatus.CALLING) {
-                                _state.value = _state.value.copy(
-                                    callStatus = CallStatus.RINGING,
-                                    connectionStatusText = "Ringing..."
-                                )
-                            }
-                            if (!call.callerTuneTitle.isNullOrBlank()) {
-                                if (_state.value.activeCallerTuneTitle != call.callerTuneTitle) {
-                                    _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
-                                    com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
-                                } else {
-                                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
-                                }
-                            } else {
-                                com.example.util.CallSoundEffectsManager.onCallRinging(context)
-                            }
-                        }
+                    handleCallDocumentUpdate(call, snapshot, isCaller)
+                }
+            }
 
-                        // Video Upgrade Logic
-                        if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED) {
-                            if (!_state.value.didIRequestVideoUpgrade && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
-                                // If I didn't request it, someone else did, so I am being requested!
-                                _state.value = _state.value.copy(isVideoUpgradeRequested = true)
-                            }
-                        } else {
-                            _state.value = _state.value.copy(
-                                isVideoUpgradeRequested = false
-                            )
-                            if (call.videoUpgradeStatus == null) {
-                                _state.value = _state.value.copy(
-                                    didIRequestVideoUpgrade = false
-                                )
-                            }
-                        }
-
-                        if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.ACCEPTED && _state.value.callType == CallType.AUDIO) {
-                            executeVideoUpgrade(isCaller)
-                        }
-
-                        if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.DECLINED) {
-                            if (_state.value.callType == CallType.VIDEO) {
-                                revertToAudioCall("Video Declined • Switched to Audio")
-                            }
-                            if (_state.value.didIRequestVideoUpgrade) {
-                                // Show a toast or update state so the requester knows it was declined
-                                _state.value = _state.value.copy(
-                                    connectionStatusText = "Video Request Declined",
-                                    didIRequestVideoUpgrade = false
-                                )
-                                scope.launch {
-                                    delay(3000)
-                                    if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
-                                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
-                                    }
-                                }
-                                // Reset the status so we can request again
-                                firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
-                            }
-                        }
-
-                        // Fallback: If remote callType reverted to AUDIO while local is still in VIDEO
-                        if (call.callType == CallType.AUDIO && _state.value.callType == CallType.VIDEO &&
-                            call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.REQUESTED &&
-                            call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.ACCEPTED) {
-                            Log.i("WebRtcEngine", "Remote callType is AUDIO while local is VIDEO -> reverting to AUDIO")
-                            revertToAudioCall("Switched to Audio")
-                        }
-
-                        // ICE Restart Requested by Peer (e.g. mobile network dropped to No Service while on Wi-Fi)
-                        val iceRestartTs = snapshot.getLong("iceRestartRequested") ?: 0L
-                        if (isCaller && iceRestartTs > lastProcessedIceRestartTimestamp && _state.value.callStatus == CallStatus.ANSWERED) {
-                            lastProcessedIceRestartTimestamp = iceRestartTs
-                            Log.i("WebRtcEngine", "Peer requested ICE restart ($iceRestartTs) — initiating IceRestart as caller")
-                            scope.launch {
-                                try {
-                                    peerConnection?.restartIce()
-                                } catch (_: Exception) {}
-                                val constraints = MediaConstraints().apply {
-                                    mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
-                                }
-                                peerConnection?.createOffer(object : SimpleSdpObserver() {
-                                    override fun onCreateSuccess(desc: SessionDescription?) {
-                                        peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                                        desc?.let {
-                                            firestore.collection("calls").document(call.callId)
-                                                .update("offerSdp", it.description)
-                                        }
-                                    }
-                                }, constraints)
-                            }
-                        }
-
-                        if (isCaller && call.status == CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ANSWERED) {
-                            com.example.util.CallSoundEffectsManager.stopRingbackTone()
-                            _state.value = _state.value.copy(
-                                callStatus = CallStatus.ANSWERED,
-                                connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
-                            )
-                            // Phase 3: Reliable call logs — record outgoing call start immediately on answer
-                            com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
-                                callId = call.callId,
-                                direction = com.example.data.model.CallDirection.OUTGOING,
-                                otherPartyNumber = call.calleeNumber,
-                                otherPartyName = call.calleeName,
-                                callType = call.callType
-                            )
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                try {
-                                    com.example.services.LksConnectionService.setCallActive()
-                                } catch (_: Exception) {}
-                            }
-                            if (_state.value.callDurationSeconds == 0) {
-                                startCallTimer()
-                            }
-                        }
-
-
-                        if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
-                            com.example.util.CallSoundEffectsManager.stopRingbackTone()
-                            hasProcessedAnswer = true
-                            val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
-                            peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                                override fun onSetSuccess() {
-                                    Log.i("WebRtcEngine", "Remote answer SDP set successfully")
-                                    drainQueuedRemoteIceCandidates()
-                                }
-                                override fun onSetFailure(error: String?) {
-                                    Log.e("WebRtcEngine", "Failed to set remote answer: $error")
-                                }
-                            }, sessionDescription)
-                            _state.value = _state.value.copy(
-                                callStatus = CallStatus.ANSWERED,
-                                connectionStatusText = "Connected • WebRTC"
-                            )
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                try {
-                                    com.example.services.LksConnectionService.setCallActive()
-                                } catch (_: Exception) {}
-                            }
-                            refreshAvailableAudioDevices(defaultCallType = null)
-                            if (_state.value.callDurationSeconds == 0) {
-                                startCallTimer()
-                            }
-                        }
-
-                        if (!isCaller && call.offerSdp != null && (!hasProcessedOffer || call.offerSdp != oldCall?.offerSdp)) {
-                            // If still ringing and pre-warm not done, retry pre-warm now that offer has arrived
-                            if (_state.value.callStatus == CallStatus.RINGING && !preWarmDone) {
-                                preWarmForIncomingCall(call)
-                            } else {
-                                processOfferSdpIfAvailable()
-                            }
-                        }
-
-                        // Hold State synchronization
-                        val remoteHold = snapshot.getBoolean("isOnHold") == true || snapshot.getBoolean("onHold") == true || call.isOnHold
-                        val heldBy = snapshot.getString("heldBy") ?: call.heldBy ?: ""
-                        val myPhone = myPhoneNumber.ifBlank {
-                            com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
-                        }
-                        val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
-                        
-                        if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
-                            val statusMsg = when {
-                                !remoteHold -> "Connected • WebRTC"
-                                isHeldByMe -> "Call On Hold"
-                                else -> "Call On Hold (Other Party)"
-                            }
-                            Log.i("WebRtcEngine", "Hold state updated: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy, myPhone=$myPhone")
-                            _state.value = _state.value.copy(
-                                isOnHold = remoteHold,
-                                isHeldLocally = isHeldByMe,
-                                connectionStatusText = statusMsg
-                            )
-                            if (remoteHold) {
-                                com.example.util.CallSoundEffectsManager.playHoldTone(context)
-                                localAudioTrack?.setEnabled(false)
-                                _state.value.localVideoTrack?.setEnabled(false)
-                            } else {
-                                com.example.util.CallSoundEffectsManager.playUnholdTone(context)
-                                localAudioTrack?.setEnabled(!_state.value.isMuted)
-                                _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
-                            }
-                        }
-                        
-                        if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
-                            Log.i("WebRtcEngine", "listenToActiveCall: call $callId remote status is ${call.status} -> ending call immediately")
-                            markCallTerminated(call.callId)
-                            if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
-                                endCallInternalLocal(call.status)
+        // Active server-side polling watchdog:
+        // When on mobile data outside the house, cellular towers switch and gRPC stream can stall
+        // without dropping TCP. Polling Source.SERVER every 1500ms ensures that answer status
+        // and answerSdp are detected within 1.5s even if the snapshot listener hung!
+        activeCallPollingJob?.cancel()
+        activeCallPollingJob = scope.launch(Dispatchers.IO) {
+            while (isActive && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING)) {
+                delay(1500)
+                try {
+                    val serverDoc = firestore.collection("calls").document(callId)
+                        .get(com.google.firebase.firestore.Source.SERVER).await()
+                    if (serverDoc.exists()) {
+                        val serverCall = serverDoc.toObject(CallDto::class.java)
+                        if (serverCall != null) {
+                            withContext(Dispatchers.Main) {
+                                handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
                             }
                         }
                     }
+                } catch (e: Exception) {
+                    Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun handleCallDocumentUpdate(call: CallDto, snapshot: com.google.firebase.firestore.DocumentSnapshot?, isCaller: Boolean) {
+        val currentCall = _state.value.activeCall
+        if (currentCall?.callId == call.callId || currentCall == null) {
+            val oldCall = currentCall
+            _state.value = _state.value.copy(activeCall = call)
+            
+            if (isCaller && call.status == CallStatus.RINGING) {
+                if (_state.value.callStatus == CallStatus.CALLING) {
+                    _state.value = _state.value.copy(
+                        callStatus = CallStatus.RINGING,
+                        connectionStatusText = "Ringing..."
+                    )
+                }
+                if (!call.callerTuneTitle.isNullOrBlank()) {
+                    if (_state.value.activeCallerTuneTitle != call.callerTuneTitle) {
+                        _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
+                        com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
+                    } else {
+                        com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                    }
+                } else {
+                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                }
+            }
+
+            // Video Upgrade Logic
+            if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED) {
+                if (!_state.value.didIRequestVideoUpgrade && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
+                    // If I didn't request it, someone else did, so I am being requested!
+                    _state.value = _state.value.copy(isVideoUpgradeRequested = true)
+                }
+            } else {
+                _state.value = _state.value.copy(
+                    isVideoUpgradeRequested = false
+                )
+                if (call.videoUpgradeStatus == null) {
+                    _state.value = _state.value.copy(
+                        didIRequestVideoUpgrade = false
+                    )
+                }
+            }
+
+            if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.ACCEPTED && _state.value.callType == CallType.AUDIO) {
+                executeVideoUpgrade(isCaller)
+            }
+
+            if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.DECLINED) {
+                if (_state.value.callType == CallType.VIDEO) {
+                    revertToAudioCall("Video Declined • Switched to Audio")
+                }
+                if (_state.value.didIRequestVideoUpgrade) {
+                    // Show a toast or update state so the requester knows it was declined
+                    _state.value = _state.value.copy(
+                        connectionStatusText = "Video Request Declined",
+                        didIRequestVideoUpgrade = false
+                    )
+                    scope.launch {
+                        delay(3000)
+                        if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
+                            _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                        }
+                    }
+                    // Reset the status so we can request again
+                    firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
+                }
+            }
+
+            // Fallback: If remote callType reverted to AUDIO while local is still in VIDEO
+            if (call.callType == CallType.AUDIO && _state.value.callType == CallType.VIDEO &&
+                call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.REQUESTED &&
+                call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.ACCEPTED) {
+                Log.i("WebRtcEngine", "Remote callType is AUDIO while local is VIDEO -> reverting to AUDIO")
+                revertToAudioCall("Switched to Audio")
+            }
+
+            // ICE Restart Requested by Peer (e.g. mobile network dropped to No Service while on Wi-Fi)
+            val iceRestartTs = snapshot?.getLong("iceRestartRequested") ?: 0L
+            if (isCaller && iceRestartTs > lastProcessedIceRestartTimestamp && _state.value.callStatus == CallStatus.ANSWERED) {
+                lastProcessedIceRestartTimestamp = iceRestartTs
+                Log.i("WebRtcEngine", "Peer requested ICE restart ($iceRestartTs) — initiating IceRestart as caller")
+                scope.launch {
+                    try {
+                        peerConnection?.restartIce()
+                    } catch (_: Exception) {}
+                    val constraints = MediaConstraints().apply {
+                        mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+                    }
+                    peerConnection?.createOffer(object : SimpleSdpObserver() {
+                        override fun onCreateSuccess(desc: SessionDescription?) {
+                            peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
+                            desc?.let {
+                                firestore.collection("calls").document(call.callId)
+                                    .update("offerSdp", it.description)
+                            }
+                        }
+                    }, constraints)
+                }
+            }
+
+            if (isCaller && call.status == CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ANSWERED) {
+                activeCallPollingJob?.cancel()
+                activeCallPollingJob = null
+                com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                _state.value = _state.value.copy(
+                    callStatus = CallStatus.ANSWERED,
+                    connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
+                )
+                unmuteAllAudioTracks()
+                // Phase 3: Reliable call logs — record outgoing call start immediately on answer
+                com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+                    callId = call.callId,
+                    direction = com.example.data.model.CallDirection.OUTGOING,
+                    otherPartyNumber = call.calleeNumber,
+                    otherPartyName = call.calleeName,
+                    callType = call.callType
+                )
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    try {
+                        com.example.services.LksConnectionService.setCallActive()
+                    } catch (_: Exception) {}
+                }
+                if (_state.value.callDurationSeconds == 0) {
+                    startCallTimer()
+                }
+            }
+
+            if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
+                activeCallPollingJob?.cancel()
+                activeCallPollingJob = null
+                com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                hasProcessedAnswer = true
+                val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
+                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                    override fun onSetSuccess() {
+                        Log.i("WebRtcEngine", "Remote answer SDP set successfully")
+                        drainQueuedRemoteIceCandidates()
+                        unmuteAllAudioTracks()
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.e("WebRtcEngine", "Failed to set remote answer: $error")
+                    }
+                }, sessionDescription)
+                _state.value = _state.value.copy(
+                    callStatus = CallStatus.ANSWERED,
+                    connectionStatusText = "Connected • WebRTC"
+                )
+                unmuteAllAudioTracks()
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    try {
+                        com.example.services.LksConnectionService.setCallActive()
+                    } catch (_: Exception) {}
+                }
+                refreshAvailableAudioDevices(defaultCallType = null)
+                if (_state.value.callDurationSeconds == 0) {
+                    startCallTimer()
+                }
+            }
+
+            if (!isCaller && call.offerSdp != null && (!hasProcessedOffer || call.offerSdp != oldCall?.offerSdp)) {
+                // If still ringing and pre-warm not done, retry pre-warm now that offer has arrived
+                if (_state.value.callStatus == CallStatus.RINGING && !preWarmDone) {
+                    preWarmForIncomingCall(call)
+                } else {
+                    processOfferSdpIfAvailable()
+                }
+            }
+
+            // Hold State synchronization
+            val remoteHold = snapshot?.getBoolean("isOnHold") == true || snapshot?.getBoolean("onHold") == true || call.isOnHold
+            val heldBy = snapshot?.getString("heldBy") ?: call.heldBy ?: ""
+            val myPhone = myPhoneNumber.ifBlank {
+                com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
+            }
+            val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
+            
+            if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
+                val statusMsg = when {
+                    !remoteHold -> "Connected • WebRTC"
+                    isHeldByMe -> "Call On Hold"
+                    else -> "Call On Hold (Other Party)"
+                }
+                Log.i("WebRtcEngine", "Hold state updated: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy, myPhone=$myPhone")
+                _state.value = _state.value.copy(
+                    isOnHold = remoteHold,
+                    isHeldLocally = isHeldByMe,
+                    connectionStatusText = statusMsg
+                )
+                if (remoteHold) {
+                    com.example.util.CallSoundEffectsManager.playHoldTone(context)
+                    localAudioTrack?.setEnabled(false)
+                    _state.value.localVideoTrack?.setEnabled(false)
+                } else {
+                    com.example.util.CallSoundEffectsManager.playUnholdTone(context)
+                    localAudioTrack?.setEnabled(!_state.value.isMuted)
+                    _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
+                }
+            }
+            
+            if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
+                activeCallPollingJob?.cancel()
+                activeCallPollingJob = null
+                Log.i("WebRtcEngine", "handleCallDocumentUpdate: call ${call.callId} remote status is ${call.status} -> ending call immediately")
+                markCallTerminated(call.callId)
+                if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
+                    endCallInternalLocal(call.status)
+                }
+            }
+        }
     }
 
     fun requestVideoUpgrade() {
@@ -2157,6 +2357,8 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         timerJob?.cancel()
         timerJob = null
+        activeCallPollingJob?.cancel()
+        activeCallPollingJob = null
         reconnectJob?.cancel()
         reconnectJob = null
         videoUpgradeWatchdogJob?.cancel()

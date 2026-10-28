@@ -149,6 +149,18 @@ messaging.onBackgroundMessage((payload) => {
       });
     });
   }
+
+  // 5. CALL ANSWERED NOTIFICATION (Notify caller clients immediately to cut ringback)
+  if (type === "call_answered") {
+    return self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      clients.forEach(client => {
+        client.postMessage({
+          type: 'CALL_ANSWERED',
+          callId: data.callId
+        });
+      });
+    });
+  }
 });
 
 self.addEventListener('notificationclick', function(event) {

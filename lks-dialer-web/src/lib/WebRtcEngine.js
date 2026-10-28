@@ -90,6 +90,7 @@ class WebRtcEngine {
     this.currentUser = null;
     this.isFrontCamera = true;
     this.iceServers = servers;
+    this.activeCallPollingInterval = null;
     
     // Presence & heartbeat properties
     this.presenceInterval = null;
@@ -104,6 +105,21 @@ class WebRtcEngine {
     
     this.callUnsubscribers = [];
     this.fetchIceServers();
+
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'CALL_ANSWERED') {
+          console.log("⚡ CALL_ANSWERED message received from ServiceWorker for call:", event.data.callId);
+          callSounds.stopRingbackTone();
+          if (this.remoteStream) {
+            this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+          }
+          if (this.onCallStateChange) {
+            this.onCallStateChange({ id: event.data.callId, status: 'ANSWERED' });
+          }
+        }
+      });
+    }
   }
 
   async fetchIceServers() {
@@ -910,6 +926,22 @@ class WebRtcEngine {
       answeredAt: Date.now()
     }).catch(e => console.warn("Initial answered status update:", e));
 
+    // Send instant FCM answer push notification to caller (<200ms)
+    (async () => {
+      try {
+        const snap = await getDoc(callDoc);
+        const data = snap.data();
+        if (data && data.callerNumber) {
+          const callerUser = await this.lookupUser(data.callerNumber);
+          if (callerUser) {
+            this.triggerPushNotification(callerUser, callType, callId, 'call_answered');
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to send call_answered push from web:", e);
+      }
+    })();
+
     let offerObj = offer;
     if (!offerObj) {
       const snap = await getDoc(callDoc);
@@ -950,6 +982,10 @@ class WebRtcEngine {
       status: "ANSWERED",
       answeredAt: Date.now()
     });
+
+    if (this.remoteStream) {
+      this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+    }
 
     this.listenToActiveCall(callDoc, false);
   }
@@ -1026,6 +1062,10 @@ class WebRtcEngine {
     callSounds.resetAll();
     this.isOnHold = false;
     this.callStatus = 'IDLE';
+    if (this.activeCallPollingInterval) {
+      clearInterval(this.activeCallPollingInterval);
+      this.activeCallPollingInterval = null;
+    }
     if (this.peerConnection) {
       this.peerConnection.close();
       this.peerConnection = null;
@@ -1113,7 +1153,11 @@ class WebRtcEngine {
       if (isCaller && !this.hasProcessedAnswer && answerObj) {
         this.hasProcessedAnswer = true;
         this.lastProcessedAnswerSdp = answerObj.sdp;
+        callSounds.stopRingbackTone();
         this.peerConnection.setRemoteDescription(new RTCSessionDescription(answerObj));
+        if (this.remoteStream) {
+          this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+        }
       }
 
       // Handle renegotiated answer if caller (prevent race condition with old audio answer)
@@ -1141,6 +1185,9 @@ class WebRtcEngine {
       }
       if (isCaller && data.status === 'ANSWERED') {
         callSounds.stopRingbackTone();
+        if (this.remoteStream) {
+          this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+        }
       }
 
       // Hold state audio synchronization
@@ -1161,6 +1208,50 @@ class WebRtcEngine {
         if (this.onCallStateChange) this.onCallStateChange({ id: snapshot.id, status: data.status });
       }
     });
+
+    // Active 1500ms server polling watchdog for callers while in CALLING or RINGING
+    if (this.activeCallPollingInterval) {
+      clearInterval(this.activeCallPollingInterval);
+      this.activeCallPollingInterval = null;
+    }
+    if (isCaller) {
+      this.activeCallPollingInterval = setInterval(async () => {
+        if (!this.activeCallId) {
+          clearInterval(this.activeCallPollingInterval);
+          this.activeCallPollingInterval = null;
+          return;
+        }
+        try {
+          const snap = await getDoc(callDoc);
+          if (snap.exists()) {
+            const d = snap.data();
+            if (d && (d.status === 'ANSWERED' || d.answerSdp)) {
+              if (!this.hasProcessedAnswer && (d.answer || d.answerSdp)) {
+                const answerObj = d.answer || { type: 'answer', sdp: d.answerSdp };
+                this.hasProcessedAnswer = true;
+                this.lastProcessedAnswerSdp = answerObj.sdp;
+                callSounds.stopRingbackTone();
+                this.peerConnection.setRemoteDescription(new RTCSessionDescription(answerObj))
+                  .catch(err => console.error("Error setting remote answer from poll:", err));
+                if (this.remoteStream) {
+                  this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+                }
+              }
+              if (d.status === 'ANSWERED') {
+                callSounds.stopRingbackTone();
+                if (this.remoteStream) {
+                  this.remoteStream.getAudioTracks().forEach(t => { t.enabled = true; });
+                }
+                clearInterval(this.activeCallPollingInterval);
+                this.activeCallPollingInterval = null;
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("Active call poll error:", err);
+        }
+      }, 1500);
+    }
 
     const targetType = isCaller ? 'answerCandidate' : 'offerCandidate';
     const qCandidates = query(collection(callDoc, 'candidates'), where('type', '==', targetType));

@@ -94,6 +94,16 @@ class CallMessagingService : FirebaseMessagingService() {
             }
 
             val callId = remoteMessage.data["callId"] ?: return
+
+            if (type == "call_answered") {
+                Log.i("FCM", "Received call_answered push notification for callId: $callId")
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                engine?.onCallAnsweredFromPush(callId)
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (_: Exception) {}
+                return
+            }
             
             if (type == "cancel_call" || type == "missed_call" || type == "call_declined" || type == "call_ended") {
                 val endStatus = when (type) {
