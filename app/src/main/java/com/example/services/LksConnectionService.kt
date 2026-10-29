@@ -194,7 +194,21 @@ class LksCallConnection(
 
     override fun onDisconnect() {
         val cause = disconnectCause
-        Log.i("LksCallConnection", "Telecom onDisconnect called: causeCode=${cause?.code}, causeDesc=${cause?.description}, callId=$callId")
+        Log.i("LksCallConnection", "Telecom onDisconnect called: causeCode=${cause?.code}, causeDesc=${cause?.description}, callId=$callId, isIncoming=$isIncoming, state=$state")
+
+        // 🛡️ CRITICAL GUARD: If this is an incoming call that has NOT been answered yet (still RINGING/INITIALIZING),
+        // Android Telecom onDisconnect is just the system releasing its internal phone account connection.
+        // The user did NOT hang up (the user can only decline via onReject()).
+        // DO NOT terminate the WebRTC call! Preserve the incoming ringing UI and ringtone!
+        if (isIncoming && (state == STATE_RINGING || state == STATE_INITIALIZING)) {
+            Log.w("LksCallConnection", "🛡️ Telecom disconnect occurred while incoming call is still RINGING. Preserving active ringing call!")
+            try {
+                setDisconnected(cause ?: DisconnectCause(DisconnectCause.LOCAL))
+                destroy()
+                LksConnectionService.clearActiveConnection()
+            } catch (_: Exception) {}
+            return
+        }
 
         // Guard: If Android OS Telecom kills this connection because of cellular radio/telephony drop
         // (ERROR, RESTRICTED, CANCELED, OTHER), DO NOT terminate the WebRTC call!

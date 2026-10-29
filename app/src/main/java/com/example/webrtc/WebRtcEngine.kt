@@ -976,15 +976,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 val now = System.currentTimeMillis()
                 val activeCalls = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) } ?: emptyList()
 
-                // Auto-cleanup stale/expired calls (>45s old) and delete finished calls (>60s) from Firestore to keep DB lean & fast
+                // Auto-cleanup finished calls (>5 minutes old) from Firestore to keep DB lean & fast
                 for (call in activeCalls) {
-                    if ((call.status == CallStatus.CALLING || call.status == CallStatus.RINGING) && (now - call.createdAt > 45_000L)) {
-                        Log.d("WebRtcEngine", "Cleaning up stale call document from Firestore: ${call.callId} (${now - call.createdAt}ms old)")
-                        try {
-                            firestore.collection("calls").document(call.callId).update("status", CallStatus.MISSED.name)
-                        } catch (_: Exception) {}
-                    } else if ((call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) && (now - call.createdAt > 60_000L)) {
-                        // Delete finished call document and orphaned candidates to prevent DB bloat
+                    if ((call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) && (now - call.createdAt > 300_000L)) {
                         deleteCallAndCandidates(call.callId)
                     }
                 }
@@ -1003,16 +997,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                             Log.d("WebRtcEngine", "Incoming call was terminated by caller: ${currentActive.callId} ($statusStr)")
                             endCallInternalLocal(try { CallStatus.valueOf(statusStr) } catch (_: Exception) { CallStatus.MISSED })
                         }
-                    } else if (snapshot != null && _state.value.callStatus == CallStatus.RINGING) {
-                        // Document no longer in snapshot (deleted or status changed) and we're still ringing → force end immediately
-                        Log.d("WebRtcEngine", "Active call doc ${currentActive.callId} no longer in callee's snapshot → ending ringing call immediately")
-                        endCallInternalLocal(CallStatus.MISSED)
                     }
                 }
 
-                // Filter for FRESH incoming calls (<45s old) not initiated by self
+                // Filter for FRESH incoming calls (<120s old, clock-skew tolerant) not initiated by self
                 val incomingCall = activeCalls
-                    .filter { (it.status == CallStatus.CALLING || it.status == CallStatus.RINGING) && (now - it.createdAt <= 45_000L) }
+                    .filter { (it.status == CallStatus.CALLING || it.status == CallStatus.RINGING) && (Math.abs(now - it.createdAt) <= 120_000L || it.createdAt == 0L) }
                     .filter { it.callerNumber != myPhoneNumber && it.callerNumber.replace(Regex("[^0-9]"), "") != cleanDigits }
                     .maxByOrNull { it.createdAt }
 
@@ -1672,6 +1662,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         currentListeningCallId = callId
         activeCallListener?.remove()
+        var hasSeenActiveDoc = false
         activeCallListener = firestore.collection("calls").document(callId)
             .addSnapshotListener { snapshot, e ->
                 if (e != null) {
@@ -1679,11 +1670,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addSnapshotListener
                 }
                 if (snapshot == null || !snapshot.exists()) {
-                    Log.i("WebRtcEngine", "Call doc $callId no longer exists in Firestore -> terminating call immediately")
-                    markCallTerminated(callId)
-                    endCallInternalLocal(CallStatus.ENDED)
+                    // Ignore initial cache-miss snapshot when document is not in local Firestore cache yet
+                    if (snapshot?.metadata?.isFromCache == true) {
+                        Log.d("WebRtcEngine", "listenToActiveCall: cache miss for $callId, awaiting server response...")
+                        return@addSnapshotListener
+                    }
+                    if (hasSeenActiveDoc) {
+                        Log.i("WebRtcEngine", "Call doc $callId no longer exists in Firestore -> terminating call immediately")
+                        markCallTerminated(callId)
+                        endCallInternalLocal(CallStatus.ENDED)
+                    }
                     return@addSnapshotListener
                 }
+                hasSeenActiveDoc = true
                 val call = snapshot.toObject(CallDto::class.java)
                 if (call != null) {
                     if (call.callerNumber.isNotBlank() && (call.callerFcmToken.isNotBlank() || call.callerWebToken.isNotBlank())) {
@@ -1697,35 +1696,38 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
 
         // Active server-side polling watchdog (350ms rapid polling):
+        // Only run on caller (who waits for callee to answer and update answerSdp)
         // When on mobile data outside the house, cellular towers switch and gRPC stream can stall
         // without dropping TCP. Polling Source.SERVER at 350ms ensures that answer status
         // and answerSdp are detected immediately even if the snapshot listener hung!
         activeCallPollingJob?.cancel()
-        activeCallPollingJob = scope.launch(Dispatchers.IO) {
-            delay(200)
-            while (isActive && !hasProcessedAnswer && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
-                try {
-                    val serverDoc = firestore.collection("calls").document(callId)
-                        .get(com.google.firebase.firestore.Source.SERVER).await()
-                    if (serverDoc.exists()) {
-                        val serverCall = serverDoc.toObject(CallDto::class.java)
-                        if (serverCall != null) {
-                            if (serverCall.callerNumber.isNotBlank() && (serverCall.callerFcmToken.isNotBlank() || serverCall.callerWebToken.isNotBlank())) {
-                                pushTokenCache[serverCall.callerNumber] = Pair(serverCall.callerFcmToken, serverCall.callerWebToken)
-                            }
-                            if (serverCall.calleeNumber.isNotBlank() && (serverCall.calleeFcmToken.isNotBlank() || serverCall.calleeWebToken.isNotBlank())) {
-                                pushTokenCache[serverCall.calleeNumber] = Pair(serverCall.calleeFcmToken, serverCall.calleeWebToken)
-                            }
-                            withContext(Dispatchers.Main) {
-                                handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
+        if (isCaller) {
+            activeCallPollingJob = scope.launch(Dispatchers.IO) {
+                delay(200)
+                while (isActive && !hasProcessedAnswer && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
+                    try {
+                        val serverDoc = firestore.collection("calls").document(callId)
+                            .get(com.google.firebase.firestore.Source.SERVER).await()
+                        if (serverDoc.exists()) {
+                            val serverCall = serverDoc.toObject(CallDto::class.java)
+                            if (serverCall != null) {
+                                if (serverCall.callerNumber.isNotBlank() && (serverCall.callerFcmToken.isNotBlank() || serverCall.callerWebToken.isNotBlank())) {
+                                    pushTokenCache[serverCall.callerNumber] = Pair(serverCall.callerFcmToken, serverCall.callerWebToken)
+                                }
+                                if (serverCall.calleeNumber.isNotBlank() && (serverCall.calleeFcmToken.isNotBlank() || serverCall.calleeWebToken.isNotBlank())) {
+                                    pushTokenCache[serverCall.calleeNumber] = Pair(serverCall.calleeFcmToken, serverCall.calleeWebToken)
+                                }
+                                withContext(Dispatchers.Main) {
+                                    handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
+                    val pollDelay = if (_state.value.callStatus == CallStatus.ANSWERED) 250L else 350L
+                    delay(pollDelay)
                 }
-                val pollDelay = if (_state.value.callStatus == CallStatus.ANSWERED) 250L else 350L
-                delay(pollDelay)
             }
         }
     }
