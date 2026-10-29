@@ -521,7 +521,7 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
         // Also trigger fallback in-app audio player in case system sound stream is ducked
-        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
+        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber, callId)
 
         if (needsFullScreen) {
             // Screen is off or phone is locked: Aggressively wake display and launch full-screen UI

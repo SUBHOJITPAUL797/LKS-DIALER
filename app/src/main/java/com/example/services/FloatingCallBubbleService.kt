@@ -78,7 +78,7 @@ class FloatingCallBubbleService : Service() {
 
         fun silenceRingtone(context: Context) {
             com.example.util.LksIncomingRingtonePlayer.silence()
-            instance?.stopRinging()
+            instance?.silenceRingingInternal()
             LksKeepAliveService.silenceRingtone(context)
         }
 
@@ -337,7 +337,18 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun startRinging(callerNumber: String) {
-        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber)
+        com.example.util.LksIncomingRingtonePlayer.start(this, callerNumber, callId)
+    }
+
+    private fun silenceRingingInternal() {
+        try { com.example.util.LksIncomingRingtonePlayer.silence() } catch (_: Exception) {}
+        try { LksKeepAliveService.silenceRingtone(this) } catch (_: Exception) {}
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am?.mode == AudioManager.MODE_RINGTONE) {
+                am.mode = AudioManager.MODE_NORMAL
+            }
+        } catch (_: Exception) {}
     }
 
     private fun stopRinging() {

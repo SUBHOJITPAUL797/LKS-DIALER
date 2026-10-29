@@ -24,6 +24,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.util.Log
 import android.view.WindowManager
 
 import com.example.data.model.CallDirection
@@ -325,22 +326,57 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            // Silence ringtone on volume button press during incoming call
-            if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
-                event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                if (engine != null && engine.state.value.callStatus == com.example.data.model.CallStatus.RINGING) {
+        // Silence ringtone on volume button press during incoming call
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
+            val isRingingNow = LksIncomingRingtonePlayer.isRinging ||
+                (com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.let { 
+                    it.callStatus == com.example.data.model.CallStatus.RINGING && 
+                    it.activeCall?.calleeNumber == (com.example.data.repository.FirebaseManager.getInstance(this).currentUser.value?.phoneNumber ?: "")
+                } ?: false)
+
+            if (isRingingNow) {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    Log.i("MainActivity", "🔇 Volume key pressed in foreground during incoming call -> silencing ringtone & vibration")
                     LksIncomingRingtonePlayer.silence()
                     com.example.services.FloatingCallBubbleService.silenceRingtone(this)
-                    return true
                 }
+                // Consume both ACTION_DOWN and ACTION_UP so volume slider doesn't pop up
+                return true
             }
+        }
+        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
             if (com.example.services.HeadsetButtonManager.handleHeadsetKeyEvent(event)) {
                 return true
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
+            if (LksIncomingRingtonePlayer.isRinging) {
+                Log.i("MainActivity", "🔇 onKeyDown volume key -> silencing ringtone & vibration")
+                LksIncomingRingtonePlayer.silence()
+                com.example.services.FloatingCallBubbleService.silenceRingtone(this)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) {
+            if (LksIncomingRingtonePlayer.isSilenced) {
+                return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -404,9 +440,10 @@ class MainActivity : ComponentActivity() {
                             com.example.services.FloatingCallBubbleService.hide(context)
                             (context as? MainActivity)?.dismissIncomingCallNotificationBanner()
                         }
-                        if (!LksIncomingRingtonePlayer.isRinging) {
+                        if (!LksIncomingRingtonePlayer.isRinging && !LksIncomingRingtonePlayer.isSilenced) {
                             val callerNumber = rtcState.activeCall?.callerNumber ?: ""
-                            LksIncomingRingtonePlayer.start(context, callerNumber)
+                            val callId = rtcState.activeCall?.callId
+                            LksIncomingRingtonePlayer.start(context, callerNumber, callId)
                         }
                     } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
                                rtcState.callStatus == com.example.data.model.CallStatus.ENDED ||

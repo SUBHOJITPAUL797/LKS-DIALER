@@ -166,6 +166,8 @@ class LksCallConnection(
     val isIncoming: Boolean
 ) : Connection() {
 
+    private val connectionStartTime = System.currentTimeMillis()
+
     init {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             connectionProperties = PROPERTY_SELF_MANAGED
@@ -251,10 +253,18 @@ class LksCallConnection(
     }
 
     override fun onSilence() {
-        Log.i("LksCallConnection", "Telecom onSilence called on callId=$callId")
-        // NOTE: Do NOT silence LksIncomingRingtonePlayer here! Telecom invokes onSilence autonomously
-        // on Samsung/Xiaomi when focus shifts or when notification is posted.
-        // Hardware volume key silencing is handled directly in MainActivity.dispatchKeyEvent.
+        val elapsed = System.currentTimeMillis() - connectionStartTime
+        Log.i("LksCallConnection", "Telecom onSilence called on callId=$callId (elapsed=${elapsed}ms)")
+        if (elapsed < 800L) {
+            // Guard: On some Samsung/Xiaomi models, Telecom emits an initial onSilence right when the
+            // phone account connection is created (within the first 500-800ms) before the ringtone even starts.
+            Log.d("LksCallConnection", "Ignoring initial transient onSilence during setup (${elapsed}ms < 800ms)")
+            return
+        }
+        Log.i("LksCallConnection", "🔇 Telecom onSilence -> User pressed Volume Button! Silencing ringtone & vibration.")
+        com.example.util.LksIncomingRingtonePlayer.silence()
+        com.example.services.FloatingCallBubbleService.silenceRingtone(context)
+        try { com.example.services.LksKeepAliveService.silenceRingtone(context) } catch (_: Exception) {}
     }
 
     override fun onCallAudioStateChanged(state: android.telecom.CallAudioState?) {
@@ -295,7 +305,7 @@ class LksCallConnection(
         val isLocked = km?.isKeyguardLocked == true
         if (isLocked) {
             Log.d("LksCallConnection", "onShowIncomingCallUi triggered on locked device -> launching full screen UI")
-            com.example.util.LksIncomingRingtonePlayer.start(context, peerNumber)
+            com.example.util.LksIncomingRingtonePlayer.start(context, peerNumber, callId)
             try {
                 val fullScreenIntent = android.content.Intent(context, com.example.MainActivity::class.java).apply {
                     flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or

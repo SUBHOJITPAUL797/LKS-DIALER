@@ -1,6 +1,9 @@
 package com.example.util
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -28,6 +31,7 @@ import android.util.Log
  * 3. Continuous hardware ToneGenerator fallback if audio files cannot be decoded.
  * 4. Requests exclusive AUDIOFOCUS_GAIN_TRANSIENT so system chimes cannot silence the ringtone.
  * 5. Partial WakeLock keeps CPU running continuously through lockscreen deep-sleep.
+ * 6. Native hardware volume key silence detection (background broadcast & Telecom).
  */
 object LksIncomingRingtonePlayer {
     private const val TAG = "LksRingtonePlayer"
@@ -45,6 +49,58 @@ object LksIncomingRingtonePlayer {
     @Volatile
     var isRinging: Boolean = false
         private set
+
+    @Volatile
+    var isSilenced: Boolean = false
+        private set
+
+    @Volatile
+    var activeCallId: String? = null
+        private set
+
+    private var ringStartTime: Long = 0L
+    private var volumeChangeReceiver: BroadcastReceiver? = null
+
+    private fun registerVolumeChangeReceiver(context: Context) {
+        if (volumeChangeReceiver != null) return
+        try {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context?, intent: Intent?) {
+                    val action = intent?.action ?: return
+                    if (action == "android.media.VOLUME_CHANGED_ACTION" || action == AudioManager.RINGER_MODE_CHANGED_ACTION) {
+                        val elapsed = System.currentTimeMillis() - ringStartTime
+                        if (isRinging && elapsed >= 400L) {
+                            Log.i(TAG, "🔇 Hardware Volume/Ringer key event detected in background ($action, elapsed=${elapsed}ms) -> silencing ringtone & vibration!")
+                            silence()
+                            com.example.services.FloatingCallBubbleService.silenceRingtone(c ?: context)
+                        }
+                    }
+                }
+            }
+            val filter = IntentFilter().apply {
+                addAction("android.media.VOLUME_CHANGED_ACTION")
+                addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(receiver, filter)
+            }
+            volumeChangeReceiver = receiver
+            Log.d(TAG, "Registered volume change broadcast receiver for hardware silence detection")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register volume change receiver: ${e.message}")
+        }
+    }
+
+    private fun unregisterVolumeChangeReceiver() {
+        volumeChangeReceiver?.let {
+            try {
+                appContext?.unregisterReceiver(it)
+            } catch (_: Exception) {}
+        }
+        volumeChangeReceiver = null
+    }
 
     /**
      * Safety timeout: auto-stop ringing after 45 seconds to prevent infinite loops
@@ -117,7 +173,21 @@ object LksIncomingRingtonePlayer {
      * Thread-safe and idempotent.
      */
     @Synchronized
-    fun start(context: Context, callerNumber: String) {
+    fun start(context: Context, callerNumber: String, callId: String? = null) {
+        // If silenced by hardware volume key for this call, do NOT restart ringtone!
+        if (isSilenced && (callId == null || callId == activeCallId)) {
+            Log.d(TAG, "Ringtone is currently silenced by user for call $activeCallId, skipping start")
+            return
+        }
+
+        // Reset silenced state if this is a brand new incoming call
+        if (callId != null && callId != activeCallId) {
+            isSilenced = false
+            activeCallId = callId
+        } else if (callId != null) {
+            activeCallId = callId
+        }
+
         if (isRinging) {
             Log.d(TAG, "Already ringing actively, ensuring loop monitor is running")
             mainHandler.removeCallbacks(loopMonitorRunnable)
@@ -126,10 +196,12 @@ object LksIncomingRingtonePlayer {
         }
 
         isRinging = true
-        Log.i(TAG, "🔔 STARTING BULLETPROOF RINGTONE for caller: $callerNumber")
+        ringStartTime = System.currentTimeMillis()
+        Log.i(TAG, "🔔 STARTING BULLETPROOF RINGTONE for caller: $callerNumber (callId=$callId)")
 
         val appCtx = context.applicationContext
         appContext = appCtx
+        registerVolumeChangeReceiver(appCtx)
 
         // 1. Acquire partial wake lock to keep CPU awake while ringing on locked screen
         try {
@@ -384,11 +456,14 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun stop() {
-        if (!isRinging && mediaPlayer == null && ringtone == null && toneGenerator == null && vibrator == null) {
+        if (!isRinging && !isSilenced && mediaPlayer == null && ringtone == null && toneGenerator == null && vibrator == null) {
             return
         }
 
         isRinging = false
+        isSilenced = false
+        activeCallId = null
+        unregisterVolumeChangeReceiver()
         Log.i(TAG, "⏹️ STOPPING RINGTONE and vibration")
         mainHandler.removeCallbacks(loopMonitorRunnable)
         stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
@@ -412,6 +487,10 @@ object LksIncomingRingtonePlayer {
         toneGenerator = null
 
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = appContext?.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.cancel()
+            }
             vibrator?.cancel()
         } catch (_: Exception) {}
         vibrator = null
@@ -443,9 +522,17 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun silence() {
+        if (!isRinging && !isSilenced) {
+            return
+        }
+
         isRinging = false
-        Log.i(TAG, "🔇 SILENCING RINGTONE")
+        isSilenced = true
+        Log.i(TAG, "🔇 SILENCING RINGTONE & VIBRATION (activeCallId=$activeCallId)")
         mainHandler.removeCallbacks(loopMonitorRunnable)
+        stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        stopTimeoutRunnable = null
+        unregisterVolumeChangeReceiver()
 
         try {
             mediaPlayer?.stop()
@@ -465,6 +552,10 @@ object LksIncomingRingtonePlayer {
         toneGenerator = null
 
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = appContext?.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.cancel()
+            }
             vibrator?.cancel()
         } catch (_: Exception) {}
         vibrator = null

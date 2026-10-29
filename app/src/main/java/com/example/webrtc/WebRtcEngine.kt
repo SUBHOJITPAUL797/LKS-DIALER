@@ -1118,7 +1118,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         val isInteractive = pm?.isInteractive == true
 
                         // Start custom incoming ringtone immediately (<10ms)
-                        com.example.util.LksIncomingRingtonePlayer.start(context, incomingCall.callerNumber)
+                        com.example.util.LksIncomingRingtonePlayer.start(context, incomingCall.callerNumber, incomingCall.callId)
 
                         if (isLocked || !isInteractive) {
                             try {
