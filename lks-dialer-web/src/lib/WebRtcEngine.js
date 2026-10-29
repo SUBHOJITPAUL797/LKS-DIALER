@@ -807,6 +807,10 @@ class WebRtcEngine {
       status: "CALLING",
       offer: { type: offerDescription.type, sdp: offerDescription.sdp },
       offerSdp: offerDescription.sdp,
+      callerFcmToken: this.currentUser?.fcmToken || "",
+      callerWebToken: this.currentUser?.webToken || "",
+      calleeFcmToken: callee.fcmToken || "",
+      calleeWebToken: callee.webToken || "",
       createdAt: Date.now(),
       timestamp: serverTimestamp() // Keeping this just in case, but Android uses createdAt
     };
@@ -932,9 +936,20 @@ class WebRtcEngine {
         const snap = await getDoc(callDoc);
         const data = snap.data();
         if (data && data.callerNumber) {
-          const callerUser = await this.lookupUser(data.callerNumber);
-          if (callerUser) {
-            this.triggerPushNotification(callerUser, callType, callId, 'call_answered');
+          const targetUser = {
+            phoneNumber: data.callerNumber,
+            fcmToken: data.callerFcmToken || "",
+            webToken: data.callerWebToken || ""
+          };
+          if (!targetUser.fcmToken && !targetUser.webToken) {
+            const callerUser = await this.lookupUser(data.callerNumber);
+            if (callerUser) {
+              targetUser.fcmToken = callerUser.fcmToken || "";
+              targetUser.webToken = callerUser.webToken || "";
+            }
+          }
+          if (targetUser.fcmToken || targetUser.webToken) {
+            this.triggerPushNotification(targetUser, callType, callId, 'call_answered');
           }
         }
       } catch (e) {
@@ -1213,7 +1228,7 @@ class WebRtcEngine {
       }
     });
 
-    // Active 1500ms server polling watchdog for callers while in CALLING or RINGING
+    // Active 350ms rapid server polling watchdog for callers while in CALLING or RINGING
     if (this.activeCallPollingInterval) {
       clearInterval(this.activeCallPollingInterval);
       this.activeCallPollingInterval = null;
@@ -1256,7 +1271,7 @@ class WebRtcEngine {
         } catch (err) {
           console.warn("Active call poll error:", err);
         }
-      }, 1500);
+      }, 350);
     }
 
     const targetType = isCaller ? 'answerCandidate' : 'offerCandidate';

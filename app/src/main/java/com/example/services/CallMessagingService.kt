@@ -95,8 +95,17 @@ class CallMessagingService : FirebaseMessagingService() {
 
             val callId = remoteMessage.data["callId"] ?: return
 
+            // Cache peer tokens immediately into WebRtcEngine in-memory cache (0ms lookup on answer/hangup)
+            val callerNumber = remoteMessage.data["callerNumber"] ?: ""
+            val callerFcm = remoteMessage.data["callerFcmToken"] ?: ""
+            val callerWeb = remoteMessage.data["callerWebToken"] ?: ""
+            if (callerNumber.isNotBlank() && (callerFcm.isNotBlank() || callerWeb.isNotBlank())) {
+                com.example.webrtc.WebRtcEngine.pushTokenCache[callerNumber] = Pair(callerFcm, callerWeb)
+            }
+
             if (type == "call_answered") {
                 Log.i("FCM", "Received call_answered push notification for callId: $callId")
+                com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
                 engine?.onCallAnsweredFromPush(callId)
                 try {

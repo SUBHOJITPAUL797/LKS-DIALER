@@ -66,7 +66,11 @@ data class CallDto(
     val callerTuneAudioBase64: String? = null,
     val callerTuneUrl: String? = null,
     val callerTuneStartMs: Long = 0L,
-    val callerTuneEndMs: Long = 0L
+    val callerTuneEndMs: Long = 0L,
+    val callerFcmToken: String = "",
+    val callerWebToken: String = "",
+    val calleeFcmToken: String = "",
+    val calleeWebToken: String = ""
 )
 
 data class IceCandidateDto(

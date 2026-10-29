@@ -91,7 +91,6 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var activeCallListener: ListenerRegistration? = null
     private var currentListeningCallId: String? = null
     private var iceCandidateListener: ListenerRegistration? = null
-    private val pushTokenCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
     
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private fun recordSeenCall(callId: String) {
@@ -455,14 +454,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                 connectionStatusText = if (currentCall.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
             )
             unmuteAllAudioTracks()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    com.example.services.LksConnectionService.setCallActive()
+                } catch (_: Exception) {}
+            }
             if (_state.value.callDurationSeconds == 0) {
                 startCallTimer()
             }
         }
 
-        // Aggressively fetch answerSdp directly from the Firestore server with rapid retries
+        // Aggressively fetch answerSdp directly from the Firestore server with rapid retries (<200ms cadence)
         scope.launch(Dispatchers.IO) {
-            for (attempt in 1..12) {
+            for (attempt in 1..15) {
                 if (hasProcessedAnswer || isCallTerminated(callId)) break
                 try {
                     val doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
@@ -481,7 +485,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 } catch (e: Exception) {
                     Log.w("WebRtcEngine", "onCallAnsweredFromPush server fetch attempt $attempt failed: ${e.message}")
                 }
-                delay(250)
+                delay(200)
             }
         }
     }
@@ -779,6 +783,22 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
             cleanupMediaAndPeerConnection()
 
+            val myUser = FirebaseManager.getInstance(context).currentUser.value
+            val myFcm = myUser?.fcmToken?.ifBlank { getCachedFcmToken(context) } ?: getCachedFcmToken(context)
+            val myWeb = myUser?.webToken ?: ""
+
+            val inMemoryCallee = FirebaseManager.getInstance(context).lookupUserByNumber(calleeNumber)
+            val calleeTokens = pushTokenCache[calleeNumber]
+            val calleeFcm = calleeTokens?.first?.ifBlank { inMemoryCallee?.fcmToken ?: "" } ?: inMemoryCallee?.fcmToken ?: ""
+            val calleeWeb = calleeTokens?.second?.ifBlank { inMemoryCallee?.webToken ?: "" } ?: inMemoryCallee?.webToken ?: ""
+
+            // Pre-seed Callee's custom caller tune if available in memory cache
+            val calleeTuneTitle = inMemoryCallee?.callerTuneTitle?.takeIf { it.isNotBlank() }
+            val calleeTuneAudio = inMemoryCallee?.callerTuneAudioBase64 ?: ""
+            val calleeTuneUrl = inMemoryCallee?.callerTuneUrl ?: ""
+            val calleeTuneStartMs = inMemoryCallee?.callerTuneStartMs ?: 0L
+            val calleeTuneEndMs = inMemoryCallee?.callerTuneEndMs ?: 0L
+
             val newCall = CallDto(
                 callId = UUID.randomUUID().toString(),
                 callerNumber = callerNumber,
@@ -787,7 +807,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                 calleeName = calleeName.ifBlank { calleeNumber },
                 callType = callType,
                 status = CallStatus.CALLING,
-                createdAt = System.currentTimeMillis()
+                createdAt = System.currentTimeMillis(),
+                callerTuneTitle = calleeTuneTitle,
+                callerTuneAudioBase64 = calleeTuneAudio,
+                callerTuneUrl = calleeTuneUrl,
+                callerTuneStartMs = calleeTuneStartMs,
+                callerTuneEndMs = calleeTuneEndMs,
+                callerFcmToken = myFcm,
+                callerWebToken = myWeb,
+                calleeFcmToken = calleeFcm,
+                calleeWebToken = calleeWeb
             )
 
             _state.value = WebRtcState(
@@ -795,7 +824,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 callStatus = CallStatus.CALLING,
                 callType = callType,
                 isSpeakerOn = callType == CallType.VIDEO,
-                connectionStatusText = "Calling ..."
+                connectionStatusText = "Calling ...",
+                activeCallerTuneTitle = calleeTuneTitle
             )
 
             hasProcessedOffer = false
@@ -813,8 +843,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                 }
             
-            // Trigger Push Notification via external Worker (Cloudflare / Vercel)
-            triggerPushNotification(calleeNumber, callerName, callerNumber, callType.name, newCall.callId)
+            // Trigger Push Notification via external Worker (0ms direct token delivery)
+            triggerPushNotification(
+                calleeNumber = calleeNumber,
+                callerName = callerName,
+                callerNumber = callerNumber,
+                callType = callType.name,
+                callId = newCall.callId,
+                explicitFcmToken = calleeFcm,
+                explicitWebToken = calleeWeb
+            )
 
             // Fallback RINGING: If callee push acknowledgment is delayed, switch to RINGING after 3.5s
             scope.launch {
@@ -825,7 +863,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                         callStatus = CallStatus.RINGING,
                         connectionStatusText = "Ringing..."
                     )
-                    firestore.collection("calls").document(newCall.callId).update("status", CallStatus.RINGING.name)
+                    val ringMap = mutableMapOf<String, Any>("status" to CallStatus.RINGING.name)
+                    if (!calleeTuneTitle.isNullOrBlank()) {
+                        ringMap["callerTuneTitle"] = calleeTuneTitle
+                        if (calleeTuneAudio.isNotBlank()) ringMap["callerTuneAudioBase64"] = calleeTuneAudio
+                        if (calleeTuneUrl.isNotBlank()) ringMap["callerTuneUrl"] = calleeTuneUrl
+                        ringMap["callerTuneStartMs"] = calleeTuneStartMs
+                    }
+                    firestore.collection("calls").document(newCall.callId).update(ringMap)
                     com.example.util.CallSoundEffectsManager.onCallRinging(context)
                 }
             }
@@ -837,7 +882,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             } catch (_: Exception) {}
             configureAudio(callType)
             com.example.util.CallSoundEffectsManager.startConnectingTone(context)
-            resolveAndPrepareCalleeTune(calleeNumber)
+            if (!calleeTuneTitle.isNullOrBlank() && (calleeTuneAudio.isNotBlank() || calleeTuneUrl.isNotBlank())) {
+                com.example.util.CallSoundEffectsManager.prepareCallerTune(
+                    context, calleeTuneAudio, calleeTuneUrl, calleeTuneTitle, calleeTuneStartMs
+                )
+            } else {
+                resolveAndPrepareCalleeTune(calleeNumber)
+            }
             
             // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
             scope.launch {
@@ -1161,8 +1212,11 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
 
-        // 0. High-Priority FCM Push Notification to Caller:
-        val callerNum = callerNumber ?: _state.value.activeCall?.callerNumber ?: ""
+        // 0. High-Priority FCM Push Notification to Caller (0ms direct token delivery):
+        val currentCall = _state.value.activeCall
+        val callerNum = callerNumber ?: currentCall?.callerNumber ?: ""
+        val targetFcm = currentCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.first ?: ""
+        val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
         if (callerNum.isNotBlank()) {
             triggerPushNotification(
                 calleeNumber = callerNum,
@@ -1170,7 +1224,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 callerNumber = myPhoneNumber,
                 callType = type.name,
                 callId = callId,
-                type = "call_answered"
+                type = "call_answered",
+                explicitFcmToken = targetFcm,
+                explicitWebToken = targetWeb
             )
         }
 
@@ -1198,7 +1254,6 @@ class WebRtcEngine private constructor(private val context: Context) {
         listenForIceCandidates(callId, isCaller = false)
 
         // 3. Fast-path: Check if WebRtcEngine already has this call cached with offerSdp!
-        val currentCall = _state.value.activeCall
         if (currentCall != null && currentCall.callId == callId && !currentCall.offerSdp.isNullOrBlank()) {
             Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp")
             answerCall()
@@ -1410,16 +1465,18 @@ class WebRtcEngine private constructor(private val context: Context) {
         val call = _state.value.activeCall ?: return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
 
-        // 0. High-Priority FCM Push Notification to Caller:
-        // Tells caller device immediately (<200ms) that the call was answered,
-        // bypassing any stalled Firestore snapshot listener on mobile data outside the home!
+        // 0. High-Priority FCM Push Notification to Caller (0ms direct token delivery):
+        val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+        val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
         triggerPushNotification(
             calleeNumber = call.callerNumber,
             callerName = myPhoneNumber,
             callerNumber = myPhoneNumber,
             callType = call.callType.name,
             callId = call.callId,
-            type = "call_answered"
+            type = "call_answered",
+            explicitFcmToken = targetFcm,
+            explicitWebToken = targetWeb
         )
 
         _state.value = _state.value.copy(
@@ -1629,24 +1686,36 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 val call = snapshot.toObject(CallDto::class.java)
                 if (call != null) {
+                    if (call.callerNumber.isNotBlank() && (call.callerFcmToken.isNotBlank() || call.callerWebToken.isNotBlank())) {
+                        pushTokenCache[call.callerNumber] = Pair(call.callerFcmToken, call.callerWebToken)
+                    }
+                    if (call.calleeNumber.isNotBlank() && (call.calleeFcmToken.isNotBlank() || call.calleeWebToken.isNotBlank())) {
+                        pushTokenCache[call.calleeNumber] = Pair(call.calleeFcmToken, call.calleeWebToken)
+                    }
                     handleCallDocumentUpdate(call, snapshot, isCaller)
                 }
             }
 
-        // Active server-side polling watchdog:
+        // Active server-side polling watchdog (350ms rapid polling):
         // When on mobile data outside the house, cellular towers switch and gRPC stream can stall
-        // without dropping TCP. Polling Source.SERVER ensures that answer status
-        // and answerSdp are detected within 1.5s even if the snapshot listener hung!
+        // without dropping TCP. Polling Source.SERVER at 350ms ensures that answer status
+        // and answerSdp are detected immediately even if the snapshot listener hung!
         activeCallPollingJob?.cancel()
         activeCallPollingJob = scope.launch(Dispatchers.IO) {
+            delay(200)
             while (isActive && !hasProcessedAnswer && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
-                delay(1500)
                 try {
                     val serverDoc = firestore.collection("calls").document(callId)
                         .get(com.google.firebase.firestore.Source.SERVER).await()
                     if (serverDoc.exists()) {
                         val serverCall = serverDoc.toObject(CallDto::class.java)
                         if (serverCall != null) {
+                            if (serverCall.callerNumber.isNotBlank() && (serverCall.callerFcmToken.isNotBlank() || serverCall.callerWebToken.isNotBlank())) {
+                                pushTokenCache[serverCall.callerNumber] = Pair(serverCall.callerFcmToken, serverCall.callerWebToken)
+                            }
+                            if (serverCall.calleeNumber.isNotBlank() && (serverCall.calleeFcmToken.isNotBlank() || serverCall.calleeWebToken.isNotBlank())) {
+                                pushTokenCache[serverCall.calleeNumber] = Pair(serverCall.calleeFcmToken, serverCall.calleeWebToken)
+                            }
                             withContext(Dispatchers.Main) {
                                 handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
                             }
@@ -1655,6 +1724,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 } catch (e: Exception) {
                     Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
                 }
+                val pollDelay = if (_state.value.callStatus == CallStatus.ANSWERED) 250L else 350L
+                delay(pollDelay)
             }
         }
     }
@@ -1889,6 +1960,22 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun resolveAndPrepareCalleeTune(calleeNumber: String) {
+        // Fast path: check in-memory cache first (0ms)
+        val inMemory = FirebaseManager.getInstance(context).lookupUserByNumber(calleeNumber)
+        if (inMemory != null && !inMemory.callerTuneTitle.isNullOrBlank()) {
+            val title = inMemory.callerTuneTitle
+            val audio = inMemory.callerTuneAudioBase64
+            val url = inMemory.callerTuneUrl
+            val startMs = inMemory.callerTuneStartMs
+            _state.value = _state.value.copy(activeCallerTuneTitle = title)
+            if (_state.value.callStatus == CallStatus.RINGING) {
+                com.example.util.CallSoundEffectsManager.startCallerTune(context, audio, url, title, startMs)
+            } else {
+                com.example.util.CallSoundEffectsManager.prepareCallerTune(context, audio, url, title, startMs)
+            }
+            return
+        }
+
         val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
         val variations = mutableListOf(calleeNumber)
         if (cleanDigits.isNotBlank()) {
@@ -2268,18 +2355,24 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callerName = call.callerName,
                     callType = call.callType
                 )
+                val targetFcm = call.calleeFcmToken
+                val targetWeb = call.calleeWebToken
                 triggerPushNotification(
                     calleeNumber = call.calleeNumber,
                     callerName = call.callerName,
                     callerNumber = call.callerNumber,
                     callType = call.callType.name,
                     callId = callId,
-                    type = "missed_call"
+                    type = "missed_call",
+                    explicitFcmToken = targetFcm.ifBlank { pushTokenCache[call.calleeNumber]?.first },
+                    explicitWebToken = targetWeb.ifBlank { pushTokenCache[call.calleeNumber]?.second }
                 )
             } else if (call != null) {
                 // When ending an active/connected call, notify other party via push so they don't lag
                 val otherPartyNumber = if (isCaller) call.calleeNumber else call.callerNumber
                 val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: currentPhone
+                val targetFcm = if (isCaller) call.calleeFcmToken else call.callerFcmToken
+                val targetWeb = if (isCaller) call.calleeWebToken else call.callerWebToken
                 if (otherPartyNumber.isNotBlank()) {
                     triggerPushNotification(
                         calleeNumber = otherPartyNumber,
@@ -2287,7 +2380,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         callerNumber = currentPhone,
                         callType = call.callType.name,
                         callId = callId,
-                        type = "call_ended"
+                        type = "call_ended",
+                        explicitFcmToken = targetFcm.ifBlank { pushTokenCache[otherPartyNumber]?.first },
+                        explicitWebToken = targetWeb.ifBlank { pushTokenCache[otherPartyNumber]?.second }
                     )
                 }
             }
@@ -2328,13 +2423,17 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (callerNumber.isNotBlank()) {
                 val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
                 val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: currentPhone
+                val targetFcm = call?.callerFcmToken ?: ""
+                val targetWeb = call?.callerWebToken ?: ""
                 triggerPushNotification(
                     calleeNumber = callerNumber,
                     callerName = currentName,
                     callerNumber = currentPhone,
                     callType = callType.name,
                     callId = callId,
-                    type = "call_declined"
+                    type = "call_declined",
+                    explicitFcmToken = targetFcm.ifBlank { pushTokenCache[callerNumber]?.first },
+                    explicitWebToken = targetWeb.ifBlank { pushTokenCache[callerNumber]?.second }
                 )
             }
 
@@ -2559,7 +2658,16 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
-    private fun triggerPushNotification(calleeNumber: String, callerName: String, callerNumber: String, callType: String, callId: String, type: String = "incoming_call") {
+    private fun triggerPushNotification(
+        calleeNumber: String,
+        callerName: String,
+        callerNumber: String,
+        callType: String,
+        callId: String,
+        type: String = "incoming_call",
+        explicitFcmToken: String? = null,
+        explicitWebToken: String? = null
+    ) {
         val variations = mutableListOf<String>()
         variations.add(calleeNumber)
         val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
@@ -2598,6 +2706,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                         doOutput = true
                     }
                     
+                    val myUser = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value
+                    val myFcm = myUser?.fcmToken?.ifBlank { getCachedFcmToken(context) } ?: getCachedFcmToken(context)
+                    val myWeb = myUser?.webToken ?: ""
+
                     val jsonObj = org.json.JSONObject().apply {
                         put("token", fcmToken)
                         put("webToken", webToken)
@@ -2606,7 +2718,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         put("callType", callType)
                         put("callId", callId)
                         put("type", type)
-                        val myPic = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.profilePictureUrl ?: ""
+                        put("callerFcmToken", myFcm)
+                        put("callerWebToken", myWeb)
+                        val myPic = myUser?.profilePictureUrl ?: ""
                         // NEVER send Base64 image strings in FCM payload (hard 4096-byte limit will reject push).
                         // Only send external HTTP/HTTPS image URLs.
                         if (myPic.isNotBlank() && (myPic.startsWith("http://") || myPic.startsWith("https://")) && myPic.length < 500) {
@@ -2624,6 +2738,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                     conn?.disconnect()
                 }
             }
+        }
+
+        // 0. Fast path: If caller passed explicit tokens directly (0ms)
+        if (!explicitFcmToken.isNullOrBlank() || !explicitWebToken.isNullOrBlank()) {
+            val fcm = explicitFcmToken ?: ""
+            val web = explicitWebToken ?: ""
+            cacheTokens(fcm, web)
+            sendPush(fcm, web)
+            return
         }
 
         // 1. Check local in-memory pushTokenCache first (0ms)
@@ -2697,6 +2820,15 @@ class WebRtcEngine private constructor(private val context: Context) {
     companion object {
         @Volatile
         private var INSTANCE: WebRtcEngine? = null
+
+        val pushTokenCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
+
+        fun getCachedFcmToken(context: Context): String {
+            return try {
+                context.getSharedPreferences("lks_prefs", Context.MODE_PRIVATE)
+                    .getString("fcm_token", "") ?: ""
+            } catch (_: Exception) { "" }
+        }
 
         private val terminatedCallIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 

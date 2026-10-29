@@ -71,9 +71,10 @@ export default {
       );
     }
 
-    // Cancel pushes: 5s TTL. Incoming call pushes: 60s TTL. Chat messages: 4 weeks (2419200s, max FCM allowed)
-    const ttlSeconds = pushType === "cancel_call" ? "5s" : (isChat ? "2419200s" : "60s");
-    const webTtl = pushType === "cancel_call" ? "5" : (isChat ? "2419200" : "60");
+    // Call control pushes: 10s TTL. Incoming call pushes: 60s TTL. Chat messages: 4 weeks (2419200s, max FCM allowed)
+    const isCallControl = pushType === "cancel_call" || pushType === "call_answered" || pushType === "call_declined" || pushType === "call_ended";
+    const ttlSeconds = isCallControl ? "10s" : (isChat ? "2419200s" : "60s");
+    const webTtl = isCallControl ? "10" : (isChat ? "2419200" : "60");
 
     try {
       // Re-use cached Google OAuth2 access token to eliminate 200-400ms latency per push
