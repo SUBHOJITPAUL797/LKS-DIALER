@@ -664,8 +664,8 @@ class ChatRepositoryWeb {
           const progressPercent = Math.min(100, Math.round((currentCount / totalChunks) * 100));
           this.activeTransfers.set(parentMessageId, {
             percent: progressPercent,
-            mbTransferred: ((currentCount * 512) / 1024).toFixed(1),
-            totalMb: fileSize ? (fileSize / 1048576).toFixed(1) : ((totalChunks * 512) / 1024).toFixed(1),
+            mbTransferred: ((currentCount * 128) / 1024).toFixed(1),
+            totalMb: fileSize ? (fileSize / 1048576).toFixed(1) : ((totalChunks * 128) / 1024).toFixed(1),
             speedMbps: '1.5',
             status: 'TRANSFERRING',
             mode: 'RELAY',
@@ -1828,7 +1828,7 @@ class ChatRepositoryWeb {
         console.warn('[ChatRepositoryWeb] P2P failed — falling back to relay ☁');
         this.activeTransfers.set(messageId, {
           percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
-          speedMbps: '0', status: 'CONNECTING', mode: 'RELAY', isIncoming: false,
+          speedMbps: '0', status: 'TRANSFERRING', mode: 'RELAY', isIncoming: false,
           messageId, fileName: text || 'Document'
         });
         this.notifySubscribers();
@@ -1836,14 +1836,14 @@ class ChatRepositoryWeb {
         console.log(`[ChatRepositoryWeb] Peer OFFLINE — using relay ☁`);
         this.activeTransfers.set(messageId, {
           percent: 0, mbTransferred: '0', totalMb: (blob.size / 1048576).toFixed(1),
-          speedMbps: '0', status: 'CONNECTING', mode: 'RELAY', isIncoming: false,
+          speedMbps: '0', status: 'TRANSFERRING', mode: 'RELAY', isIncoming: false,
           messageId, fileName: text || 'Document'
         });
         this.notifySubscribers();
       }
 
-      // ── FALLBACK: Firestore 512 KB Chunk Relay with Auto-Switch to P2P ────────
-      const chunkSize = 512 * 1024;
+      // ── FALLBACK: Firestore 128 KB Chunk Relay with Auto-Switch to P2P ────────
+      const chunkSize = 128 * 1024;
       const cleanBase64 = mediaData.replace(/^data:.*?;base64,/, '').replace(/\s/g, '');
       const binary = atob(cleanBase64);
       const totalBytes = binary.length;

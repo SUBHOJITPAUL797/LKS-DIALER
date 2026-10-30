@@ -712,7 +712,7 @@ class ChatRepository private constructor(private val context: Context) {
                         if (File(chunksDir, "part_$i").exists()) receivedCount++
                     }
 
-                    val calcTotalBytes = if (fileSize > 0L) fileSize else (totalChunks * 512L * 1024L)
+                    val calcTotalBytes = if (fileSize > 0L) fileSize else (totalChunks * 128L * 1024L)
                     val calcTransferredBytes = (receivedCount.toFloat() / totalChunks.coerceAtLeast(1) * calcTotalBytes).toLong()
                     val calcPercent = (receivedCount * 100 / totalChunks.coerceAtLeast(1)).coerceIn(0, 100)
 
@@ -1596,7 +1596,8 @@ class ChatRepository private constructor(private val context: Context) {
                 Log.w(TAG, "P2P transfer FAILED or timed out for $messageId (${mediaType.name}) — falling back to Firestore relay ☁")
                 _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
                     messageId = messageId, fileName = fileNameToSend,
-                    totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                    totalBytes = savedFile.length(), transferredBytes = 0L,
+                    status = TransferStatus.TRANSFERRING, mode = TransferMode.RELAY
                 ))
             }
 
@@ -1674,14 +1675,25 @@ class ChatRepository private constructor(private val context: Context) {
             var hasAttemptedP2p = true
             val wasInitiallyOnline = true
 
-            // ── FALLBACK: Firestore 512KB Chunk Relay with Auto-Switch to P2P ───────────────
-            val chunkSize = 512 * 1024
+            // ── FALLBACK: Firestore 128KB Chunk Relay with Auto-Switch to P2P ───────────────
+            val chunkSize = 128 * 1024
             val fileBytes = savedFile.readBytes()
             val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
             val myPublicKey = cryptoManager.getMyPublicKeyBase64()
 
             try {
                 var relayUploadedBytes = 0L
+                var relayLastSpeedTs = System.currentTimeMillis()
+                var relayLastSpeedBytes = 0L
+                var relayCurrentSpeed = 0L
+
+                // Immediately emit TRANSFERRING with 0 transferred so UI immediately shows relay upload progress
+                _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
+                    messageId = messageId, fileName = fileNameToSend,
+                    totalBytes = savedFile.length(), transferredBytes = 0L,
+                    speedBytesPerSec = 0L,
+                    mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
+                ))
                 for (i in 0 until totalChunks) {
                     // 1. Cancellation check BEFORE chunk upload
                     if (cancelledTransfers.contains(messageId) || !coroutineContext.isActive) {
@@ -1812,7 +1824,9 @@ class ChatRepository private constructor(private val context: Context) {
                             Log.w(TAG, "⚡ AUTO-SWITCH P2P failed — resuming Relay mode ☁")
                             _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
                                 messageId = messageId, fileName = fileNameToSend,
-                                totalBytes = savedFile.length(), status = TransferStatus.CONNECTING, mode = TransferMode.RELAY
+                                totalBytes = savedFile.length(), transferredBytes = relayUploadedBytes,
+                                speedBytesPerSec = relayCurrentSpeed,
+                                status = TransferStatus.TRANSFERRING, mode = TransferMode.RELAY
                             ))
                         }
                     }
@@ -1876,11 +1890,20 @@ class ChatRepository private constructor(private val context: Context) {
                     }
 
                     relayUploadedBytes += slice.size
+                    val nowSpeed = System.currentTimeMillis()
+                    val dt = nowSpeed - relayLastSpeedTs
+                    if (dt >= 200) {
+                        relayCurrentSpeed = ((relayUploadedBytes - relayLastSpeedBytes) * 1000L) / dt.coerceAtLeast(1)
+                        relayLastSpeedTs = nowSpeed
+                        relayLastSpeedBytes = relayUploadedBytes
+                    }
+
                     if (!cancelledTransfers.contains(messageId) && coroutineContext.isActive) {
                         _activeTransfers.value = _activeTransfers.value + (messageId to FileTransferProgress(
                             messageId = messageId, fileName = fileNameToSend,
                             totalBytes = savedFile.length(), transferredBytes = relayUploadedBytes,
-                            mode = TransferMode.RELAY, status = TransferStatus.TRANSFERRING
+                            speedBytesPerSec = relayCurrentSpeed,
+                            mode = TransferMode.RELAY, status = if (relayUploadedBytes >= savedFile.length()) TransferStatus.DONE else TransferStatus.TRANSFERRING
                         ))
                     }
                 }

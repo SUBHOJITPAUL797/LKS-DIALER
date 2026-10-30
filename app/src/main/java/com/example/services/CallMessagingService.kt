@@ -32,7 +32,7 @@ class CallMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        // 1. Immediately hold CPU awake for up to 35 seconds to prevent Battery Saver / Doze from freezing execution
+        // 1. Immediately hold CPU awake for up to 45 seconds to prevent Battery Saver / Doze from freezing execution
         val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         val wakeLock = try {
             powerManager?.newWakeLock(
@@ -40,7 +40,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 "lksdialer:fcm_incoming_wakelock"
             )?.apply {
                 setReferenceCounted(false)
-                acquire(35_000L)
+                acquire(45_000L)
             }
         } catch (e: Exception) {
             Log.w("FCM", "Failed to acquire CPU wake lock: ${e.message}")
@@ -56,9 +56,11 @@ class CallMessagingService : FirebaseMessagingService() {
 
             if (type == "chat_message") {
                 Log.d("FCM", "Received chat_message push notification, handling via ChatRepository")
+                val isP2pOffer = remoteMessage.data["mediaType"] == "P2P_OFFER"
+                val timeoutMs = if (isP2pOffer) 40000L else 15000L
                 try {
                     kotlinx.coroutines.runBlocking {
-                        kotlinx.coroutines.withTimeoutOrNull(15000L) {
+                        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
                             com.example.data.repository.ChatRepository.getInstance(applicationContext)
                                 .handlePushMessageReceived(remoteMessage.data)
                         }

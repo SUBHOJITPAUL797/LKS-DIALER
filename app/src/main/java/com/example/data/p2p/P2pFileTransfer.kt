@@ -1,6 +1,7 @@
 package com.example.data.p2p
 
 import android.content.Context
+import android.os.PowerManager
 import android.util.Log
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -51,7 +52,7 @@ class P2pFileTransfer(private val context: Context) {
         private const val TAG = "P2pFileTransfer"
         private const val CHUNK_SIZE = 16 * 1024            // 16 KB per DataChannel send
         private const val BUFFER_LOW_THRESHOLD = 65536L     // 64 KB backpressure
-        private const val ICE_TIMEOUT_MS = 15000L           // 15s handshake timeout before seamless relay fallback
+        private const val ICE_TIMEOUT_MS = 30000L           // 30s handshake timeout before seamless relay fallback
         private const val COLLECTION = "p2p_transfers"
 
         @Volatile private var sharedFactory: PeerConnectionFactory? = null
@@ -81,28 +82,29 @@ class P2pFileTransfer(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder(
                 listOf(
                     "turn:a.relay.metered.ca:80",
                     "turn:a.relay.metered.ca:80?transport=tcp",
                     "turn:a.relay.metered.ca:443",
-                    "turn:a.relay.metered.ca:443?transport=tcp"
+                    "turn:a.relay.metered.ca:443?transport=tcp",
+                    "turns:a.relay.metered.ca:443",
+                    "turns:a.relay.metered.ca:443?transport=tcp"
                 )
             ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         )
 
-        fun getEffectiveIceServers(context: Context? = null): List<PeerConnection.IceServer> {
+        suspend fun getEffectiveIceServers(context: Context? = null): List<PeerConnection.IceServer> {
+            if (context != null) {
+                try {
+                    val fresh = com.example.webrtc.WebRtcEngine.getInstance(context).getFreshIceServers()
+                    if (fresh.isNotEmpty()) return fresh
+                } catch (_: Exception) {}
+            }
             val engineServers = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.getIceServers()
             if (!engineServers.isNullOrEmpty()) {
                 return engineServers
-            }
-            if (context != null) {
-                try {
-                    val fromInstance = com.example.webrtc.WebRtcEngine.getInstance(context).getIceServers()
-                    if (!fromInstance.isNullOrEmpty()) {
-                        return fromInstance
-                    }
-                } catch (_: Exception) {}
             }
             return STATIC_ICE_SERVERS
         }
@@ -115,9 +117,31 @@ class P2pFileTransfer(private val context: Context) {
     @Volatile private var isCancelled = false
     private var peerConnection: PeerConnection? = null
     private var dataChannel: DataChannel? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireWakeLock(tag: String) {
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LKS:P2P:$tag")?.apply {
+                setReferenceCounted(false)
+                acquire(180_000L) // 3 minutes max
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wake lock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+            }
+        } catch (_: Exception) {}
+        wakeLock = null
+    }
 
     // --- Helper: build RTCConfiguration ---
-    private fun buildRtcConfig(): PeerConnection.RTCConfiguration =
+    private suspend fun buildRtcConfig(): PeerConnection.RTCConfiguration =
         PeerConnection.RTCConfiguration(getEffectiveIceServers(context)).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -203,6 +227,8 @@ class P2pFileTransfer(private val context: Context) {
                 messageId = sessionId, fileName = fileName,
                 totalBytes = totalBytes, status = TransferStatus.CONNECTING
             ))
+
+            acquireWakeLock("tx_$sessionId")
 
             val factory = getOrCreateFactory(context)
             val rtcConfig = buildRtcConfig()
@@ -495,6 +521,7 @@ class P2pFileTransfer(private val context: Context) {
     ) {
         scope.launch {
             try {
+                acquireWakeLock("rx_$sessionId")
                 var fileName = initialFileName?.takeIf { it.isNotBlank() } ?: "received_file"
                 var totalBytes = initialFileSize
 
@@ -713,12 +740,7 @@ class P2pFileTransfer(private val context: Context) {
                 }
                 pc.setLocalSuspend(answerSdp)
 
-                // Write answer back to Firestore session
-                firestore.collection(COLLECTION).document(sessionId)
-                    .set(mapOf("answerSdp" to answerSdp.description, "status" to "ANSWERING"), SetOptions.merge())
-                    .await()
-
-                // Listen for sender ICE candidates
+                // Listen for sender ICE candidates immediately in parallel with writing answer to Firestore
                 val txIceListener = firestore.collection(COLLECTION).document(sessionId)
                     .collection("sender_ice")
                     .addSnapshotListener { snap, err ->
@@ -736,6 +758,23 @@ class P2pFileTransfer(private val context: Context) {
                     }
                 listeners.add(txIceListener)
 
+                // Write answer back to Firestore session
+                firestore.collection(COLLECTION).document(sessionId)
+                    .set(mapOf("answerSdp" to answerSdp.description, "status" to "ANSWERING"), SetOptions.merge())
+                    .await()
+
+                // ICE connection & stream timeout (35s) for receiver safety
+                scope.launch {
+                    delay(35000L)
+                    if (!isFinished && (dataChannel == null || dataChannel?.state() != DataChannel.State.OPEN)) {
+                        Log.w(TAG, "Receiver handshake timeout -- cleaning up sessionId=$sessionId")
+                        try { fileOutputStream.close() } catch (_: Exception) {}
+                        try { tempOutputFile.delete() } catch (_: Exception) {}
+                        onComplete(null, sessionId)
+                        cleanup(sessionId)
+                    }
+                }
+
             } catch (e: Exception) {
                 Log.e(TAG, "receiveFile error: ${e.message}", e)
                 onComplete(null, sessionId)
@@ -751,6 +790,7 @@ class P2pFileTransfer(private val context: Context) {
     }
 
     private fun cleanup(sessionId: String) {
+        releaseWakeLock()
         listeners.forEach { try { it.remove() } catch (_: Exception) {} }
         listeners.clear()
         try { dataChannel?.close() } catch (_: Exception) {}

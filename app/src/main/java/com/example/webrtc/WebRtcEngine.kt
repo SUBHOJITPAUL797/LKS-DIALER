@@ -172,48 +172,59 @@ class WebRtcEngine private constructor(private val context: Context) {
     fun getIceServers(): List<PeerConnection.IceServer> = iceServers
 
     /**
+     * Suspend-friendly fresh TURN credentials fetch from Cloudflare Worker.
+     * Fetches TLS TURN / STUN credentials and updates the internal cache.
+     * Used by both WebRTC calling and P2P file transfers.
+     */
+    suspend fun getFreshIceServers(): List<PeerConnection.IceServer> = withContext(Dispatchers.IO) {
+        try {
+            val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+                .removeSuffix("/").let { if (it.endsWith("/call")) it.dropLast(5) else it }
+            val url = java.net.URL("$workerUrl/turn-credentials")
+            val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("X-Worker-Secret", com.example.BuildConfig.CALL_WORKER_SECRET)
+                connectTimeout = 4000
+                readTimeout = 4000
+            }
+            if (conn.responseCode == 200) {
+                val body = conn.inputStream.bufferedReader().readText()
+                val json = org.json.JSONObject(body)
+                val serversJson = json.getJSONArray("iceServers")
+                val servers = mutableListOf<PeerConnection.IceServer>()
+                for (i in 0 until serversJson.length()) {
+                    val s = serversJson.getJSONObject(i)
+                    val urls = s.getJSONArray("urls")
+                    val username = if (s.has("username")) s.getString("username") else null
+                    val credential = if (s.has("credential")) s.getString("credential") else null
+                    for (j in 0 until urls.length()) {
+                        val builder = PeerConnection.IceServer.builder(urls.getString(j))
+                        if (username != null) builder.setUsername(username)
+                        if (credential != null) builder.setPassword(credential)
+                        servers.add(builder.createIceServer())
+                    }
+                }
+                if (servers.isNotEmpty()) {
+                    iceServers = servers
+                    Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers")
+                    return@withContext servers
+                }
+            }
+            conn.disconnect()
+        } catch (e: Exception) {
+            Log.w("WebRtcEngine", "TURN fetch failed, using cached/fallback ICE servers: ${e.message}")
+        }
+        return@withContext iceServers
+    }
+
+    /**
      * Fetch fresh TURN credentials from Cloudflare Worker before each call.
      * Credentials are short-lived (24h) and generated server-side via HMAC so
      * they are never hardcoded in the APK. Falls back to static list on failure.
      */
     private fun fetchIceServersAsync(onDone: () -> Unit) {
         scope.launch(Dispatchers.IO) {
-            try {
-                val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
-                    .removeSuffix("/").let { if (it.endsWith("/call")) it.dropLast(5) else it }
-                val url = java.net.URL("$workerUrl/turn-credentials")
-                val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    setRequestProperty("X-Worker-Secret", com.example.BuildConfig.CALL_WORKER_SECRET)
-                    connectTimeout = 5000
-                    readTimeout = 5000
-                }
-                if (conn.responseCode == 200) {
-                    val body = conn.inputStream.bufferedReader().readText()
-                    val json = org.json.JSONObject(body)
-                    val serversJson = json.getJSONArray("iceServers")
-                    val servers = mutableListOf<PeerConnection.IceServer>()
-                    for (i in 0 until serversJson.length()) {
-                        val s = serversJson.getJSONObject(i)
-                        val urls = s.getJSONArray("urls")
-                        val username = if (s.has("username")) s.getString("username") else null
-                        val credential = if (s.has("credential")) s.getString("credential") else null
-                        for (j in 0 until urls.length()) {
-                            val builder = PeerConnection.IceServer.builder(urls.getString(j))
-                            if (username != null) builder.setUsername(username)
-                            if (credential != null) builder.setPassword(credential)
-                            servers.add(builder.createIceServer())
-                        }
-                    }
-                    if (servers.isNotEmpty()) {
-                        iceServers = servers
-                        Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers")
-                    }
-                }
-                conn.disconnect()
-            } catch (e: Exception) {
-                Log.w("WebRtcEngine", "TURN fetch failed, using fallback ICE servers: ${e.message}")
-            }
+            getFreshIceServers()
             onDone()
         }
     }

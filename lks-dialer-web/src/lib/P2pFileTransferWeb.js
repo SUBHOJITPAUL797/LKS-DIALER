@@ -8,7 +8,7 @@ import { mediaStorageWeb } from './MediaStorageWeb';
 const P2P_COLLECTION = 'p2p_transfers';
 const CHUNK_SIZE = 16 * 1024;          // 16 KB — safe WebRTC DataChannel chunk
 const BUFFER_LOW_THRESHOLD = 65536;   // 64 KB backpressure
-const ICE_TIMEOUT_MS = 15000;         // 15s to establish DataChannel before fallback
+const ICE_TIMEOUT_MS = 30000;         // 30s to establish DataChannel before fallback
 
 const ICE_SERVERS = {
   iceServers: [
@@ -17,7 +17,8 @@ const ICE_SERVERS = {
         'stun:stun1.l.google.com:19302',
         'stun:stun2.l.google.com:19302',
         'stun:stun3.l.google.com:19302',
-        'stun:stun4.l.google.com:19302'
+        'stun:stun4.l.google.com:19302',
+        'stun:stun.cloudflare.com:3478'
     ]},
     {
       urls: [
@@ -25,6 +26,7 @@ const ICE_SERVERS = {
         'turn:a.relay.metered.ca:80?transport=tcp',
         'turn:a.relay.metered.ca:443',
         'turn:a.relay.metered.ca:443?transport=tcp',
+        'turns:a.relay.metered.ca:443',
         'turns:a.relay.metered.ca:443?transport=tcp'
       ],
       username: 'openrelayproject',
