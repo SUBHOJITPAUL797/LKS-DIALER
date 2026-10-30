@@ -460,41 +460,13 @@ private fun setSongMediaPlayerDataSource(context: Context, player: MediaPlayer, 
         uri.scheme == "file" && uri.path != null -> {
             val file = File(uri.path!!)
             if (file.exists()) {
-                val fis = FileInputStream(file)
-                try {
-                    player.setDataSource(fis.fd, 0, file.length())
-                } finally {
-                    fis.close()
-                }
-            } else {
-                player.setDataSource(context, uri)
-            }
-        }
-        uri.scheme == "content" -> {
-            val pfd = context.contentResolver.openFileDescriptor(uri, "r")
-            if (pfd != null) {
-                try {
-                    player.setDataSource(pfd.fileDescriptor)
-                } finally {
-                    pfd.close()
-                }
+                player.setDataSource(file.absolutePath)
             } else {
                 player.setDataSource(context, uri)
             }
         }
         else -> {
-            val path = uri.path
-            if (path != null && File(path).exists()) {
-                val file = File(path)
-                val fis = FileInputStream(file)
-                try {
-                    player.setDataSource(fis.fd, 0, file.length())
-                } finally {
-                    fis.close()
-                }
-            } else {
-                player.setDataSource(context, uri)
-            }
+            player.setDataSource(context, uri)
         }
     }
 }

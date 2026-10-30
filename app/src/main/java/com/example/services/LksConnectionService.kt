@@ -255,16 +255,11 @@ class LksCallConnection(
     override fun onSilence() {
         val elapsed = System.currentTimeMillis() - connectionStartTime
         Log.i("LksCallConnection", "Telecom onSilence called on callId=$callId (elapsed=${elapsed}ms)")
-        if (elapsed < 800L) {
-            // Guard: On some Samsung/Xiaomi models, Telecom emits an initial onSilence right when the
-            // phone account connection is created (within the first 500-800ms) before the ringtone even starts.
-            Log.d("LksCallConnection", "Ignoring initial transient onSilence during setup (${elapsed}ms < 800ms)")
-            return
-        }
-        Log.i("LksCallConnection", "🔇 Telecom onSilence -> User pressed Volume Button! Silencing ringtone & vibration.")
-        com.example.util.LksIncomingRingtonePlayer.silence()
-        com.example.services.FloatingCallBubbleService.silenceRingtone(context)
-        try { com.example.services.LksKeepAliveService.silenceRingtone(context) } catch (_: Exception) {}
+        // 🛡️ CRITICAL OEM GUARD: On Samsung One UI, Xiaomi HyperOS, and Android 12+, Telecom autonomously sends
+        // onSilence() to self-managed ConnectionServices when floating overlay windows (TYPE_APPLICATION_OVERLAY) are
+        // added or when system focus shifts. To avoid muting/killing the ringtone when our floating pill appears,
+        // we DO NOT silence playback from here. Physical volume button silencing is reliably handled via
+        // VOLUME_CHANGED_ACTION in LksIncomingRingtonePlayer and the dedicated Silence button on the floating pill.
     }
 
     override fun onCallAudioStateChanged(state: android.telecom.CallAudioState?) {

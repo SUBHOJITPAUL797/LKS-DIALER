@@ -44,8 +44,19 @@ object LksRingtoneManager {
 
         if (!uriStr.isNullOrBlank()) {
             val uri = Uri.parse(uriStr)
-            val title = titleStr ?: getRingtoneTitle(context, uri)
-            return Pair(uri, title)
+            var isValid = true
+            if (uri.scheme == "file") {
+                val file = java.io.File(uri.path ?: "")
+                if (!file.exists() || file.length() == 0L) {
+                    Log.w(TAG, "Cached app custom ringtone file missing or empty: ${file.absolutePath}, resetting to system default")
+                    isValid = false
+                    prefs.edit().remove(KEY_APP_RINGTONE_URI).remove(KEY_APP_RINGTONE_TITLE).apply()
+                }
+            }
+            if (isValid) {
+                val title = titleStr ?: getRingtoneTitle(context, uri)
+                return Pair(uri, title)
+            }
         }
 
         val actualUri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
@@ -88,6 +99,13 @@ object LksRingtoneManager {
             val uriStr = prefs.getString(PREFIX_CONTACT_URI + varNumber, null)
             if (!uriStr.isNullOrBlank()) {
                 val uri = Uri.parse(uriStr)
+                if (uri.scheme == "file") {
+                    val file = java.io.File(uri.path ?: "")
+                    if (!file.exists() || file.length() == 0L) {
+                        Log.w(TAG, "Cached contact ringtone file missing or empty: ${file.absolutePath}")
+                        continue
+                    }
+                }
                 val title = prefs.getString(PREFIX_CONTACT_TITLE + varNumber, null)
                     ?: getRingtoneTitle(context, uri)
                 Log.d(TAG, "Found contact ringtone by variation ($varNumber): $title -> $uri")
@@ -103,6 +121,13 @@ object LksRingtoneManager {
                     val storedNum = key.removePrefix(PREFIX_CONTACT_URI)
                     if (ContactsHelper.numbersMatch(storedNum, phoneNumber)) {
                         val uri = Uri.parse(value)
+                        if (uri.scheme == "file") {
+                            val file = java.io.File(uri.path ?: "")
+                            if (!file.exists() || file.length() == 0L) {
+                                Log.w(TAG, "Cached contact ringtone file missing or empty: ${file.absolutePath}")
+                                continue
+                            }
+                        }
                         val title = prefs.getString(PREFIX_CONTACT_TITLE + storedNum, null)
                             ?: getRingtoneTitle(context, uri)
                         Log.d(TAG, "Found contact ringtone by numbersMatch ($storedNum matches $phoneNumber): $title -> $uri")
@@ -121,7 +146,7 @@ object LksRingtoneManager {
         if (phoneNumber.isBlank()) return
         takePersistablePermission(context, uri)
         val title = customTitle ?: getRingtoneTitle(context, uri)
-        val cleanDigits = phoneNumber.replace(Regex("[^0-9+]"), "")
+        val cleanDigits = phoneNumber.replace(Regex("[^0-9]"), "").takeLast(10)
         val safeUri = copyToInternalStorageIfNeeded(context, uri, "contact_ringtone_${cleanDigits}.mp3")
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val editor = prefs.edit()
@@ -135,22 +160,38 @@ object LksRingtoneManager {
     }
 
     private fun copyToInternalStorageIfNeeded(context: Context, uri: Uri, fileName: String): Uri {
-        // If it's already a file URI, return as is
-        if (uri.scheme == "file") return uri
-
-        // For SAF / content URIs, copy to internal filesDir so it is permanently accessible even when phone is locked in pocket
         try {
             val ringtonesDir = java.io.File(context.filesDir, "ringtones").apply { mkdirs() }
             val destFile = java.io.File(ringtonesDir, fileName)
 
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                java.io.FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            if (destFile.exists() && destFile.length() > 0) {
-                Log.i(TAG, "Cached custom ringtone to internal storage: ${destFile.absolutePath} (${destFile.length()} bytes)")
+            // If it's already the destination file, return it
+            if (uri.scheme == "file" && uri.path == destFile.absolutePath && destFile.exists() && destFile.length() > 0) {
                 return Uri.fromFile(destFile)
+            }
+
+            if (uri.scheme == "file" && uri.path != null) {
+                val srcFile = java.io.File(uri.path!!)
+                if (srcFile.exists()) {
+                    srcFile.inputStream().use { input ->
+                        java.io.FileOutputStream(destFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (destFile.exists() && destFile.length() > 0) {
+                        Log.i(TAG, "Copied file to permanent internal storage: ${destFile.absolutePath} (${destFile.length()} bytes)")
+                        return Uri.fromFile(destFile)
+                    }
+                }
+            } else {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                if (destFile.exists() && destFile.length() > 0) {
+                    Log.i(TAG, "Cached custom ringtone to internal storage: ${destFile.absolutePath} (${destFile.length()} bytes)")
+                    return Uri.fromFile(destFile)
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not copy ringtone to internal storage: ${e.message}")
@@ -297,7 +338,11 @@ object LksRingtoneManager {
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
-                setDataSource(context, uri)
+                if (uri.scheme == "file" && uri.path != null) {
+                    setDataSource(uri.path!!)
+                } else {
+                    setDataSource(context, uri)
+                }
                 prepare()
                 start()
                 setOnCompletionListener {
@@ -309,16 +354,19 @@ object LksRingtoneManager {
         } catch (e: Exception) {
             Log.w(TAG, "MediaPlayer preview failed, trying Ringtone fallback: ${e.message}")
             try {
-                previewRingtone = RingtoneManager.getRingtone(context, uri)?.apply {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        audioAttributes = AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
+                if (uri.scheme != "file") {
+                    previewRingtone = RingtoneManager.getRingtone(context, uri)?.apply {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            audioAttributes = AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .build()
+                        }
+                        play()
                     }
-                    play()
+                    if (previewRingtone != null) return true
                 }
-                return true
+                return false
             } catch (e2: Exception) {
                 Log.e(TAG, "Failed to play ringtone preview", e2)
                 return false

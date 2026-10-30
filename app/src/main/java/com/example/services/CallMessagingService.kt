@@ -379,9 +379,10 @@ class CallMessagingService : FirebaseMessagingService() {
 
         val needsFullScreen = !isInteractive || isLocked
 
-        // Resolve system ringtone URI for bulletproof OS-level playback
+        // Resolve system-safe ringtone URI for bulletproof OS-level notification channel playback
+        // (App-private file:// URIs must NEVER be passed to NotificationChannel as system_server lacks permission)
         val ringtoneUri = try {
-            com.example.util.LksRingtoneManager.getRingtoneForIncomingCall(this, callerNumber)
+            com.example.util.LksRingtoneManager.getSystemSafeRingtoneUri(this)
         } catch (_: Exception) {
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         }

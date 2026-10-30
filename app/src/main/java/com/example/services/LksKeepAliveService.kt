@@ -199,7 +199,11 @@ class LksKeepAliveService : Service() {
         // Try MediaPlayer first (better control: looping, volume)
         try {
             ringtonePlayer = MediaPlayer().apply {
-                setDataSource(this@LksKeepAliveService, ringtoneUri)
+                if (ringtoneUri.scheme == "file" && ringtoneUri.path != null) {
+                    setDataSource(ringtoneUri.path!!)
+                } else {
+                    setDataSource(this@LksKeepAliveService, ringtoneUri)
+                }
                 setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)

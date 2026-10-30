@@ -67,10 +67,25 @@ object LksIncomingRingtonePlayer {
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
                     val action = intent?.action ?: return
-                    if (action == "android.media.VOLUME_CHANGED_ACTION" || action == AudioManager.RINGER_MODE_CHANGED_ACTION) {
-                        val elapsed = System.currentTimeMillis() - ringStartTime
-                        if (isRinging && elapsed >= 400L) {
-                            Log.i(TAG, "🔇 Hardware Volume/Ringer key event detected in background ($action, elapsed=${elapsed}ms) -> silencing ringtone & vibration!")
+                    val elapsed = System.currentTimeMillis() - ringStartTime
+                    // Guard against initial broadcasts during audio session setup: only respond after 1.5s
+                    if (!isRinging || elapsed < 1500L) return
+
+                    if (action == "android.media.VOLUME_CHANGED_ACTION") {
+                        val streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1)
+                        val newVol = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1)
+                        val prevVol = intent.getIntExtra("android.media.EXTRA_PREV_VOLUME_STREAM_VALUE", -1)
+                        // Only trigger if STREAM_RING volume was modified by physical volume key
+                        if (streamType == AudioManager.STREAM_RING && newVol != prevVol && newVol != -1 && prevVol != -1) {
+                            Log.i(TAG, "🔇 Hardware Volume key event detected ($action, stream=$streamType, old=$prevVol, new=$newVol, elapsed=${elapsed}ms) -> silencing ringtone & vibration!")
+                            silence()
+                            com.example.services.FloatingCallBubbleService.silenceRingtone(c ?: context)
+                        }
+                    } else if (action == AudioManager.RINGER_MODE_CHANGED_ACTION) {
+                        val mode = intent.getIntExtra(AudioManager.EXTRA_RINGER_MODE, -1)
+                        // Sticky broadcast: only silence if user explicitly flipped hardware switch to Silent or Vibrate
+                        if (mode == AudioManager.RINGER_MODE_SILENT || mode == AudioManager.RINGER_MODE_VIBRATE) {
+                            Log.i(TAG, "🔇 Hardware Ringer mode changed to silent/vibrate ($mode, elapsed=${elapsed}ms) -> silencing ringtone!")
                             silence()
                             com.example.services.FloatingCallBubbleService.silenceRingtone(c ?: context)
                         }
@@ -329,20 +344,6 @@ object LksIncomingRingtonePlayer {
                 }
             }
 
-            if (!dataSourceSet && resolvedUri.scheme == "content") {
-                try {
-                    val pfd = appCtx.contentResolver.openFileDescriptor(resolvedUri, "r")
-                    if (pfd != null) {
-                        player.setDataSource(pfd.fileDescriptor)
-                        pfd.close()
-                        dataSourceSet = true
-                        Log.d(TAG, "MediaPlayer dataSource set from FileDescriptor: $resolvedUri")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to open FileDescriptor for $resolvedUri: ${e.message}")
-                }
-            }
-
             if (!dataSourceSet) {
                 player.setDataSource(appCtx, resolvedUri)
                 dataSourceSet = true
@@ -408,7 +409,10 @@ object LksIncomingRingtonePlayer {
 
     private fun playFallbackRingtone(appCtx: Context, uri: Uri) {
         try {
-            var r = RingtoneManager.getRingtone(appCtx, uri)
+            var r: Ringtone? = null
+            if (uri.scheme != "file") {
+                r = RingtoneManager.getRingtone(appCtx, uri)
+            }
             if (r == null) {
                 val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)

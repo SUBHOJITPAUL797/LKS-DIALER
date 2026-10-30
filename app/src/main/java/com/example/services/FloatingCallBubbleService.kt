@@ -566,10 +566,36 @@ class FloatingCallBubbleService : Service() {
         infoArea.addView(avatar)
         infoArea.addView(textContainer)
 
-        // Action Buttons Row (Only triggers buttons — NEVER opens full screen!)
+        // Action Buttons Row (Silence, Decline, Answer — NEVER opens full screen!)
         val buttonsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+        }
+
+        // 🔇 Quick Silence / Mute Ringtone Button
+        var isRingtoneSilenced = false
+        val silenceBtn = ImageView(this).apply {
+            setImageResource(com.example.R.drawable.ic_ringtone_silent)
+            setColorFilter(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFF475569.toInt()) // Slate 600
+            }
+            setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
+            layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f)).apply {
+                marginEnd = dpToPx(8f)
+            }
+            setOnClickListener {
+                if (!isRingtoneSilenced) {
+                    Log.i(TAG, "🔇 Silence pressed on incoming call pill for callId=$callId")
+                    silenceRingingInternal()
+                    isRingtoneSilenced = true
+                    subTextView.text = "Ringtone Silenced"
+                    subTextView.setTextColor(0xFFF59E0B.toInt()) // Amber 500
+                    setColorFilter(0xFF94A3B8.toInt())
+                    (background as? GradientDrawable)?.setColor(0xFF1E293B.toInt())
+                }
+            }
         }
 
         // Red Decline Button
@@ -633,6 +659,7 @@ class FloatingCallBubbleService : Service() {
             }
         }
 
+        buttonsContainer.addView(silenceBtn)
         buttonsContainer.addView(declineBtn)
         buttonsContainer.addView(answerBtn)
 
