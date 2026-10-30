@@ -1321,7 +1321,7 @@ class ChatRepository private constructor(private val context: Context) {
         var payloadToEncrypt = text
         var localSavedPath: String? = null
 
-        if (mediaFile != null && mediaFile.exists()) {
+        if (!isGroup && mediaFile != null && mediaFile.exists()) {
             val isAudio = mediaType == ChatMediaType.AUDIO
             val isImage = mediaType == ChatMediaType.IMAGE
             val isSticker = mediaType == ChatMediaType.STICKER
@@ -1957,6 +1957,76 @@ class ChatRepository private constructor(private val context: Context) {
             val isAudio = mediaType == ChatMediaType.AUDIO
             val isImage = mediaType == ChatMediaType.IMAGE
             val isSticker = mediaType == ChatMediaType.STICKER
+
+            if (mediaFile != null && mediaFile.exists()) {
+                val savedFile = when {
+                    isImage -> {
+                        val isAnimatedOrLossless = mediaFile.extension.equals("gif", ignoreCase = true) ||
+                                mediaFile.extension.equals("webp", ignoreCase = true) ||
+                                mediaFile.extension.equals("png", ignoreCase = true)
+                        if (isAnimatedOrLossless) {
+                            val ext = mediaFile.extension.ifBlank { "gif" }
+                            val target = File(ensureMediaDirectory(), "img_$messageId.$ext")
+                            mediaFile.copyTo(target, overwrite = true)
+                            target
+                        } else {
+                            val target = File(ensureMediaDirectory(), "img_$messageId.jpg")
+                            com.example.util.ImageUtils.compressAndSaveChatImage(
+                                inputFile = mediaFile,
+                                outputFile = target,
+                                maxDimension = 1600,
+                                targetMaxBytes = 450 * 1024
+                            )
+                            target
+                        }
+                    }
+                    isSticker -> {
+                        val ext = mediaFile.extension.ifBlank { "png" }
+                        val target = File(ensureMediaDirectory(), "sticker_$messageId.$ext")
+                        mediaFile.copyTo(target, overwrite = true)
+                        target
+                    }
+                    isAudio -> {
+                        val target = File(ensureMediaDirectory(), "voice_$messageId.m4a")
+                        mediaFile.copyTo(target, overwrite = true)
+                        target
+                    }
+                    else -> {
+                        val ext = mediaFile.extension.ifBlank { "bin" }
+                        val target = File(ensureMediaDirectory(), "doc_${messageId}.$ext")
+                        mediaFile.copyTo(target, overwrite = true)
+                        target
+                    }
+                }
+                localSavedPath = savedFile.absolutePath
+
+                val fileBytes = savedFile.readBytes()
+                val base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+                val json = when {
+                    isImage -> JSONObject().apply {
+                        put("caption", text)
+                        put("bytes", base64Data)
+                        put("ext", savedFile.extension.ifBlank { "jpg" })
+                        put("isViewOnce", isViewOnce)
+                    }
+                    isSticker -> JSONObject().apply {
+                        put("caption", text.ifBlank { "Sticker" })
+                        put("bytes", base64Data)
+                        put("ext", savedFile.extension.ifBlank { "png" })
+                    }
+                    isAudio -> JSONObject().apply {
+                        put("duration", mediaDurationMs)
+                        put("bytes", base64Data)
+                        put("isViewOnce", isViewOnce)
+                    }
+                    else -> JSONObject().apply {
+                        put("fileName", mediaFile.name)
+                        put("fileSize", mediaFile.length())
+                        put("bytes", base64Data)
+                    }
+                }
+                payloadToEncrypt = json.toString()
+            }
 
             val displayText = when {
                 mediaFile != null -> when {

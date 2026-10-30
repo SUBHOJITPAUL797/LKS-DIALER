@@ -280,22 +280,29 @@ class P2pFileTransfer(private val context: Context) {
             if (dc == null) { deferred.complete(false); cleanup(sessionId); return@withContext false }
             dataChannel = dc
 
+            var streamStarted = false
+            fun startStreaming() {
+                synchronized(pc) {
+                    if (streamStarted) return
+                    streamStarted = true
+                }
+                scope.launch {
+                    val success = streamFile(
+                        dc = dc, file = file,
+                        totalChunks = totalChunks,
+                        sessionId = sessionId, fileName = fileName,
+                        totalBytes = totalBytes, onProgress = onProgress
+                    )
+                    if (!deferred.isCompleted) deferred.complete(success)
+                }
+            }
+
             dc.registerObserver(object : DataChannel.Observer {
                 override fun onBufferedAmountChange(prev: Long) {}
                 override fun onStateChange() {
                     Log.d(TAG, "Sender DC state: ${dc.state()}")
                     when (dc.state()) {
-                        DataChannel.State.OPEN -> {
-                            scope.launch {
-                                val success = streamFile(
-                                    dc = dc, file = file,
-                                    totalChunks = totalChunks,
-                                    sessionId = sessionId, fileName = fileName,
-                                    totalBytes = totalBytes, onProgress = onProgress
-                                )
-                                if (!deferred.isCompleted) deferred.complete(success)
-                            }
-                        }
+                        DataChannel.State.OPEN -> startStreaming()
                         DataChannel.State.CLOSED, DataChannel.State.CLOSING -> {
                             if (!deferred.isCompleted) deferred.complete(false)
                         }
@@ -307,15 +314,7 @@ class P2pFileTransfer(private val context: Context) {
 
             // If DataChannel is already open upon observer registration, start streaming immediately
             if (dc.state() == DataChannel.State.OPEN) {
-                scope.launch {
-                    val success = streamFile(
-                        dc = dc, file = file,
-                        totalChunks = totalChunks,
-                        sessionId = sessionId, fileName = fileName,
-                        totalBytes = totalBytes, onProgress = onProgress
-                    )
-                    if (!deferred.isCompleted) deferred.complete(success)
-                }
+                startStreaming()
             }
 
             // Create and set local offer
@@ -591,6 +590,16 @@ class P2pFileTransfer(private val context: Context) {
                     }
                     override fun onIceConnectionChange(s: PeerConnection.IceConnectionState?) {
                         Log.d(TAG, "Receiver ICE: $s")
+                        if (s == PeerConnection.IceConnectionState.FAILED && !isFinished) {
+                            Log.w(TAG, "Receiver ICE failed -- cleaning up")
+                            isFinished = true
+                            try { fileOutputStream.close() } catch (_: Exception) {}
+                            try { tempOutputFile.delete() } catch (_: Exception) {}
+                            scope.launch {
+                                onComplete(null, sessionId)
+                                cleanup(sessionId)
+                            }
+                        }
                     }
                     override fun onDataChannel(dc: DataChannel?) {
                         dc ?: return
@@ -607,6 +616,15 @@ class P2pFileTransfer(private val context: Context) {
                                         totalBytes = totalBytes, status = TransferStatus.TRANSFERRING,
                                         mode = TransferMode.P2P, isIncoming = true
                                     ))
+                                } else if ((dc.state() == DataChannel.State.CLOSED || dc.state() == DataChannel.State.CLOSING) && !isFinished) {
+                                    Log.w(TAG, "Receiver DC closed before transfer completed")
+                                    isFinished = true
+                                    try { fileOutputStream.close() } catch (_: Exception) {}
+                                    try { tempOutputFile.delete() } catch (_: Exception) {}
+                                    scope.launch {
+                                        onComplete(null, sessionId)
+                                        cleanup(sessionId)
+                                    }
                                 }
                             }
                             override fun onMessage(buffer: DataChannel.Buffer?) {
