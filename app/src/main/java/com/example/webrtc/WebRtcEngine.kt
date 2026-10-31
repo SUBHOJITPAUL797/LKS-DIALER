@@ -349,39 +349,43 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private fun createVideoTrack(startCaptureNow: Boolean = true) {
         if (peerConnectionFactory == null) return
-        val enumerator = Camera2Enumerator(context)
-        val deviceNames = enumerator.deviceNames
-        var cameraDeviceName: String? = null
-        
-        // Find front facing camera by default
-        for (deviceName in deviceNames) {
-            if (enumerator.isFrontFacing(deviceName)) {
-                cameraDeviceName = deviceName
-                break
-            }
-        }
-        if (cameraDeviceName == null) {
+        try {
+            val enumerator = Camera2Enumerator(context)
+            val deviceNames = enumerator.deviceNames
+            var cameraDeviceName: String? = null
+            
+            // Find front facing camera by default
             for (deviceName in deviceNames) {
-                if (enumerator.isBackFacing(deviceName)) {
+                if (enumerator.isFrontFacing(deviceName)) {
                     cameraDeviceName = deviceName
                     break
                 }
             }
-        }
-        
-        if (cameraDeviceName != null) {
-            videoCapturer = enumerator.createCapturer(cameraDeviceName, null)
-            surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
-            videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
-            videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-            if (startCaptureNow) {
-                try { videoCapturer?.startCapture(1280, 720, 30) } catch (_: Exception) {}
+            if (cameraDeviceName == null) {
+                for (deviceName in deviceNames) {
+                    if (enumerator.isBackFacing(deviceName)) {
+                        cameraDeviceName = deviceName
+                        break
+                    }
+                }
             }
             
-            val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
-            videoTrack?.setEnabled(startCaptureNow)
-            
-            _state.value = _state.value.copy(localVideoTrack = videoTrack)
+            if (cameraDeviceName != null) {
+                videoCapturer = enumerator.createCapturer(cameraDeviceName, null)
+                surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
+                videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
+                videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
+                if (startCaptureNow) {
+                    try { videoCapturer?.startCapture(1280, 720, 30) } catch (_: Exception) {}
+                }
+                
+                val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
+                videoTrack?.setEnabled(startCaptureNow)
+                
+                _state.value = _state.value.copy(localVideoTrack = videoTrack)
+            }
+        } catch (e: Throwable) {
+            Log.e("WebRtcEngine", "Failed to create video track safely: ${e.message}", e)
         }
     }
 

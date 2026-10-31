@@ -1,7 +1,7 @@
 {
   "name": "lks-dialer-web",
   "private": true,
-  "version": "2.9.43",
+  "version": "2.9.44",
   "type": "module",
   "scripts": {
     "dev": "vite",

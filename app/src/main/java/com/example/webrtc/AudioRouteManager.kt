@@ -142,47 +142,59 @@ class AudioRouteManager(
 
     private fun registerAudioDeviceListeners() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback == null) {
-            audioDeviceCallback = object : AudioDeviceCallback() {
-                override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
-                    Log.d(TAG, "Audio devices added, refreshing device list")
-                    triggerHardwareDeviceRefresh()
-                }
+            try {
+                audioDeviceCallback = object : AudioDeviceCallback() {
+                    override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                        Log.d(TAG, "Audio devices added, refreshing device list")
+                        triggerHardwareDeviceRefresh()
+                    }
 
-                override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
-                    Log.d(TAG, "Audio devices removed, refreshing device list")
-                    triggerHardwareDeviceRefresh()
+                    override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                        Log.d(TAG, "Audio devices removed, refreshing device list")
+                        triggerHardwareDeviceRefresh()
+                    }
                 }
+                audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to register audio device callback: ${e.message}")
             }
-            audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         }
 
         if (headsetReceiver == null) {
-            headsetReceiver = object : BroadcastReceiver() {
-                override fun onReceive(context: Context?, intent: Intent?) {
-                    when (intent?.action) {
-                        Intent.ACTION_HEADSET_PLUG,
-                        BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED,
-                        BluetoothDevice.ACTION_ACL_CONNECTED,
-                        BluetoothDevice.ACTION_ACL_DISCONNECTED,
-                        BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED,
-                        BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED,
-                        AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED -> {
-                            Log.d(TAG, "Audio hardware broadcast received: ${intent.action}")
-                            triggerHardwareDeviceRefresh()
+            try {
+                headsetReceiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        when (intent?.action) {
+                            Intent.ACTION_HEADSET_PLUG,
+                            BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED,
+                            BluetoothDevice.ACTION_ACL_CONNECTED,
+                            BluetoothDevice.ACTION_ACL_DISCONNECTED,
+                            BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED,
+                            BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED,
+                            AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED -> {
+                                Log.d(TAG, "Audio hardware broadcast received: ${intent.action}")
+                                triggerHardwareDeviceRefresh()
+                            }
                         }
                     }
                 }
+                val filter = IntentFilter().apply {
+                    addAction(Intent.ACTION_HEADSET_PLUG)
+                    addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                    addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                    addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+                    addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
+                    addAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
+                    addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(headsetReceiver, filter, Context.RECEIVER_EXPORTED)
+                } else {
+                    context.registerReceiver(headsetReceiver, filter)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to register headset receiver: ${e.message}")
             }
-            val filter = IntentFilter().apply {
-                addAction(Intent.ACTION_HEADSET_PLUG)
-                addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
-                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-                addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
-                addAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
-                addAction(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
-            }
-            context.registerReceiver(headsetReceiver, filter)
         }
     }
 
