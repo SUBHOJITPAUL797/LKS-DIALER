@@ -184,6 +184,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
                 requestMethod = "GET"
                 setRequestProperty("X-Worker-Secret", com.example.BuildConfig.CALL_WORKER_SECRET)
+                setRequestProperty("User-Agent", "LKS-Dialer-Android")
                 connectTimeout = 4000
                 readTimeout = 4000
             }
@@ -1747,24 +1748,39 @@ class WebRtcEngine private constructor(private val context: Context) {
         val currentCall = _state.value.activeCall
         if (currentCall?.callId == call.callId || currentCall == null) {
             val oldCall = currentCall
-            _state.value = _state.value.copy(activeCall = call)
+
+            // Strictly enforce monotonic call state progression:
+            // IDLE -> CALLING -> RINGING -> ANSWERED -> ENDED.
+            // If the local call is already ANSWERED, NEVER revert activeCall.status to RINGING or CALLING
+            val effectiveCall = if (_state.value.callStatus == CallStatus.ANSWERED && 
+                call.status != CallStatus.ENDED && call.status != CallStatus.DECLINED) {
+                call.copy(status = CallStatus.ANSWERED)
+            } else {
+                call
+            }
+            _state.value = _state.value.copy(activeCall = effectiveCall)
             
-            if (isCaller && call.status == CallStatus.RINGING) {
+            // Once the call is ANSWERED or ENDED, NEVER process RINGING or replay ringback tones!
+            if (isCaller && call.status == CallStatus.RINGING && 
+                _state.value.callStatus != CallStatus.ANSWERED && 
+                _state.value.callStatus != CallStatus.ENDED &&
+                _state.value.callStatus != CallStatus.DECLINED) {
                 if (_state.value.callStatus == CallStatus.CALLING) {
                     _state.value = _state.value.copy(
                         callStatus = CallStatus.RINGING,
                         connectionStatusText = "Ringing..."
                     )
-                }
-                if (!call.callerTuneTitle.isNullOrBlank()) {
-                    if (_state.value.activeCallerTuneTitle != call.callerTuneTitle) {
-                        _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
-                        com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
+                    // Trigger sound feedback ONLY ONCE upon the transition from CALLING to RINGING
+                    if (!call.callerTuneTitle.isNullOrBlank()) {
+                        if (_state.value.activeCallerTuneTitle != call.callerTuneTitle) {
+                            _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
+                            com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
+                        } else {
+                            com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                        }
                     } else {
                         com.example.util.CallSoundEffectsManager.onCallRinging(context)
                     }
-                } else {
-                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
                 }
             }
 

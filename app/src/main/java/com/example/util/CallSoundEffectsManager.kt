@@ -42,6 +42,8 @@ object CallSoundEffectsManager {
     private var isCallerTunePrepared = false
     @Volatile
     private var isRingingState = false
+    @Volatile
+    private var isCallAnswered = false
 
     private data class PendingTune(
         val audioBase64: String?,
@@ -64,6 +66,7 @@ object CallSoundEffectsManager {
     @Synchronized
     fun startConnectingTone(context: Context) {
         if (isConnectingActive) return
+        isCallAnswered = false
         stopConnectingTone()
         internalStopToneGenerator()
 
@@ -255,6 +258,7 @@ object CallSoundEffectsManager {
         title: String? = null,
         startMs: Long = 0L
     ) {
+        if (isCallAnswered) return
         isRingingState = true
         stopConnectingTone()
 
@@ -279,6 +283,7 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun onCallRinging(context: Context) {
+        if (isCallAnswered) return
         Log.i(TAG, "Call transitioned to RINGING")
         isRingingState = true
         stopConnectingTone()
@@ -303,6 +308,7 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun startRingbackTone(context: Context) {
+        if (isCallAnswered) return
         if (isRingbackActive && ringbackToneGenerator != null) return
         stopConnectingTone()
         stopCallerTune()
@@ -349,6 +355,7 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun stopRingbackTone() {
+        isCallAnswered = true
         stopConnectingTone()
         stopCallerTune()
         internalStopToneGenerator()
@@ -454,6 +461,7 @@ object CallSoundEffectsManager {
      * Reset all call sound effects (e.g. when app goes IDLE).
      */
     fun resetAll() {
+        isCallAnswered = false
         stopConnectingTone()
         stopRingbackTone()
         stopHoldReminder()
