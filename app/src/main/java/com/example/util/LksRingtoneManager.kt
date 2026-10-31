@@ -348,7 +348,7 @@ object LksRingtoneManager {
                         .build()
                 )
                 if (uri.scheme == "file" && uri.path != null) {
-                    setDataSource(uri.path!!)
+                    setDataSource(uri.path ?: return@apply)
                 } else {
                     setDataSource(context, uri)
                 }

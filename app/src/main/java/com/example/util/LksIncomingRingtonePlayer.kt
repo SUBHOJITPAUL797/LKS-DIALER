@@ -159,15 +159,17 @@ object LksIncomingRingtonePlayer {
                         am?.isSpeakerphoneOn = true
                     } catch (_: Exception) {}
 
-                    if (mediaPlayer != null) {
-                        if (!mediaPlayer!!.isPlaying) {
+                    val mp = mediaPlayer
+                    val rt = ringtone
+                    if (mp != null) {
+                        if (!mp.isPlaying) {
                             Log.d(TAG, "MediaPlayer paused or finished loop cycle, restarting...")
-                            mediaPlayer!!.start()
+                            mp.start()
                         }
-                    } else if (ringtone != null) {
-                        if (!ringtone!!.isPlaying) {
+                    } else if (rt != null) {
+                        if (!rt.isPlaying) {
                             Log.d(TAG, "Ringtone completed 3-second cycle, replaying loop...")
-                            ringtone!!.play()
+                            rt.play()
                         }
                     } else if (toneGenerator == null) {
                         Log.d(TAG, "No active audio player found during ring, activating ToneGenerator fallback...")
@@ -514,7 +516,7 @@ object LksIncomingRingtonePlayer {
         try {
             val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
-                am?.abandonAudioFocusRequest(audioFocusRequest!!)
+                audioFocusRequest?.let { am?.abandonAudioFocusRequest(it) }
             }
             if (am?.mode == AudioManager.MODE_RINGTONE) {
                 am.mode = AudioManager.MODE_NORMAL
@@ -578,7 +580,7 @@ object LksIncomingRingtonePlayer {
         try {
             val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
-                am?.abandonAudioFocusRequest(audioFocusRequest!!)
+                audioFocusRequest?.let { am?.abandonAudioFocusRequest(it) }
             }
             if (am?.mode == AudioManager.MODE_RINGTONE) {
                 am.mode = AudioManager.MODE_NORMAL

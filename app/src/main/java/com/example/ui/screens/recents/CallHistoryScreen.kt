@@ -380,7 +380,7 @@ fun CallHistoryScreen(
     }
 
     if (showBlockConfirmDialog && selectedLogForDetail != null) {
-        val targetLog = selectedLogForDetail!!
+        val targetLog = selectedLogForDetail ?: return
         val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
         val targetName = targetUser?.displayName ?: targetLog.otherPartyName
         AlertDialog(
@@ -418,7 +418,7 @@ fun CallHistoryScreen(
     }
 
     if (showSpamConfirmDialog && selectedLogForDetail != null) {
-        val targetLog = selectedLogForDetail!!
+        val targetLog = selectedLogForDetail ?: return
         val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
         val targetName = targetUser?.displayName ?: targetLog.otherPartyName
         AlertDialog(

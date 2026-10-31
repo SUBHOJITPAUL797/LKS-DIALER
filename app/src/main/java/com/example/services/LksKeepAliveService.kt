@@ -199,8 +199,9 @@ class LksKeepAliveService : Service() {
         // Try MediaPlayer first (better control: looping, volume)
         try {
             ringtonePlayer = MediaPlayer().apply {
-                if (ringtoneUri.scheme == "file" && ringtoneUri.path != null) {
-                    setDataSource(ringtoneUri.path!!)
+                val ringtonePath = if (ringtoneUri.scheme == "file") ringtoneUri.path else null
+                if (ringtonePath != null) {
+                    setDataSource(ringtonePath)
                 } else {
                     setDataSource(this@LksKeepAliveService, ringtoneUri)
                 }
@@ -356,7 +357,7 @@ class LksKeepAliveService : Service() {
                 handler.postDelayed(this, TOKEN_REFRESH_INTERVAL)
             }
         }
-        handler.postDelayed(tokenRefreshRunnable!!, TOKEN_REFRESH_INTERVAL)
+        tokenRefreshRunnable?.let { handler.postDelayed(it, TOKEN_REFRESH_INTERVAL) }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {

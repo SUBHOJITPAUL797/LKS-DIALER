@@ -42,7 +42,7 @@ object AudioTrimmerUtil {
             try {
                 // Read input directly into RAM bytes for instant parsing
                 val bytes = if (srcUri.scheme == "file" && srcUri.path != null) {
-                    File(srcUri.path!!).readBytes()
+                    File(srcUri.path ?: throw IllegalArgumentException("Cannot resolve file path from URI: $srcUri")).readBytes()
                 } else {
                     context.contentResolver.openInputStream(srcUri)?.use { input ->
                         val buffer = ByteArrayOutputStream()

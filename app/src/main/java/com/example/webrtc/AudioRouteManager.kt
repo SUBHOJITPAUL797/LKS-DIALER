@@ -416,7 +416,7 @@ class AudioRouteManager(
 
         val now = System.currentTimeMillis()
         if (defaultCallType == null && userExplicitSelectedDevice != null) {
-            val explicitType = userExplicitSelectedDevice!!
+            val explicitType = userExplicitSelectedDevice ?: return
             val target = deviceList.firstOrNull { it.type == explicitType }
                 ?: (if (explicitType == AudioDeviceType.SPEAKERPHONE) speakerOption ?: earpieceOption else earpieceOption ?: speakerOption)
                 ?: deviceList.first()
