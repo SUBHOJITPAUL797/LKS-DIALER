@@ -1720,7 +1720,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (isCaller) {
             activeCallPollingJob = scope.launch(Dispatchers.IO) {
                 delay(200)
-                while (isActive && !hasProcessedAnswer && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
+                // Bug fix v2.9.45: removed !hasProcessedAnswer guard so polling continues
+                // after answer SDP is received — lets us detect DECLINED/ENDED via polling
+                // even if the Firestore snapshot listener is lagged.
+                while (isActive && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
                     try {
                         val serverDoc = firestore.collection("calls").document(callId)
                             .get(com.google.firebase.firestore.Source.SERVER).await()
@@ -1733,16 +1736,36 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 if (serverCall.calleeNumber.isNotBlank() && (serverCall.calleeFcmToken.isNotBlank() || serverCall.calleeWebToken.isNotBlank())) {
                                     pushTokenCache[serverCall.calleeNumber] = Pair(serverCall.calleeFcmToken, serverCall.calleeWebToken)
                                 }
-                                withContext(Dispatchers.Main) {
-                                    handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
+                                val sStatus = serverCall.status
+                                if (sStatus == CallStatus.ENDED || sStatus == CallStatus.DECLINED || sStatus == CallStatus.MISSED) {
+                                    // Terminal status detected by polling — deliver update and stop polling
+                                    withContext(Dispatchers.Main) {
+                                        handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
+                                    }
+                                    break
+                                } else if (!hasProcessedAnswer) {
+                                    // Pre-answer: keep delivering updates (waiting for answerSdp)
+                                    withContext(Dispatchers.Main) {
+                                        handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
+                                    }
                                 }
+                                // Post-answer, non-terminal: skip to avoid re-processing SDP
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
                     }
                     val pollDelay = if (_state.value.callStatus == CallStatus.ANSWERED) 250L else 350L
                     delay(pollDelay)
+                }
+            }
+            // Bug fix v2.9.45 — Hard 90-second watchdog: if caller is still in RINGING/CALLING
+            // after 90 s with no answer, force-end the call as MISSED (safety net).
+            scope.launch {
+                delay(90_000L)
+                if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
+                    Log.w("WebRtcEngine", "listenToActiveCall watchdog: caller stuck in ${_state.value.callStatus} for 90s — force ending")
+                    endCallInternalLocal(CallStatus.MISSED)
                 }
             }
         }
@@ -2496,12 +2519,13 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (activeCallId != null && activeCallId == callId) {
                 Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status")
                 endCallInternalLocal(status)
-            } else if (activeCallId == null && (_state.value.callStatus == CallStatus.IDLE || _state.value.callStatus == CallStatus.ENDED)) {
-                // No active call — safe to process (e.g., clearing ringtone for a missed call push)
-                Log.d("WebRtcEngine", "forceEndCallFromPush: no active call, processing cleanup for push $callId")
+            } else if (activeCallId == null && (_state.value.callStatus == CallStatus.IDLE || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING)) {
+                // Bug fix v2.9.45: also handle CALLING/RINGING when activeCall not yet set
+                // (race: listener may not have populated activeCall before push arrives)
+                Log.d("WebRtcEngine", "forceEndCallFromPush: no active call (status=${_state.value.callStatus}), processing cleanup for push $callId")
                 endCallInternalLocal(status)
             } else {
-                Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId)")
+                Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId, status=${_state.value.callStatus})")
             }
         }
     }
