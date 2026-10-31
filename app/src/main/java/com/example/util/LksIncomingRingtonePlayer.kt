@@ -321,10 +321,12 @@ object LksIncomingRingtonePlayer {
         // 3. Resolve ringtone URI
         val resolvedUri: Uri = try {
             LksRingtoneManager.getRingtoneForIncomingCall(appCtx, callerNumber)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "Failed to resolve ringtone via LksRingtoneManager: ${e.message}")
-            RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val fallback = try {
+                RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
+            } catch (_: Throwable) { null }
+            fallback ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         }
 
         Log.d(TAG, "Resolved Ringtone URI: $resolvedUri")
@@ -414,7 +416,9 @@ object LksIncomingRingtonePlayer {
                 r = RingtoneManager.getRingtone(appCtx, uri)
             }
             if (r == null) {
-                val fallbackUri = RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
+                val fallbackUri = try {
+                    RingtoneManager.getActualDefaultRingtoneUri(appCtx, RingtoneManager.TYPE_RINGTONE)
+                } catch (_: Throwable) { null }
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 r = RingtoneManager.getRingtone(appCtx, fallbackUri)
             }

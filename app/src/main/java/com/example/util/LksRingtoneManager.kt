@@ -59,9 +59,18 @@ object LksRingtoneManager {
             }
         }
 
-        val actualUri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+        val actualUri = try {
+            RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+        } catch (e: Throwable) {
+            Log.w(TAG, "SecurityException/Error resolving actual default ringtone: ${e.message}")
+            null
+        }
         val defaultUri = actualUri ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        val defaultTitle = getRingtoneTitle(context, defaultUri)
+        val defaultTitle = try {
+            getRingtoneTitle(context, defaultUri)
+        } catch (_: Throwable) {
+            "System Default Ringtone"
+        }
         return Pair(defaultUri, defaultTitle.ifBlank { "System Default Ringtone" })
     }
 
