@@ -266,11 +266,9 @@ fun ChatListScreen(
                         }
                         val isPeerOnline = com.example.data.repository.FirebaseManager.isUserOnline(matchedUser)
                         val resolvedAvatar = remember(conv.profilePicUrl, matchedUser, matchedContact) {
-                            when {
-                                !matchedUser?.profilePictureUrl.isNullOrBlank() -> matchedUser!!.profilePictureUrl
-                                !matchedContact?.profilePictureUrl.isNullOrBlank() -> matchedContact!!.profilePictureUrl
-                                else -> conv.profilePicUrl
-                            }
+                            matchedUser?.profilePictureUrl?.takeIf { it.isNotBlank() }
+                                ?: matchedContact?.profilePictureUrl?.takeIf { it.isNotBlank() }
+                                ?: conv.profilePicUrl
                         }
                         val isInActiveCall = remember(activeCallNumber, conv.phoneNumber) {
                             activeCallNumber != null && com.example.util.ContactsHelper.numbersMatch(conv.phoneNumber, activeCallNumber)
@@ -359,8 +357,8 @@ fun ChatListScreen(
     }
 
     // Conversation Options Bottom Sheet (Pin, Unpin, Delete)
-    if (selectedConversationForOptions != null) {
-        val selectedConv = selectedConversationForOptions!!
+    val selectedConv = selectedConversationForOptions
+    if (selectedConv != null) {
         ModalBottomSheet(
             onDismissRequest = { selectedConversationForOptions = null }
         ) {
@@ -909,9 +907,10 @@ private fun NewGroupDialog(
                         .clickable { iconPickerLauncher.launch("image/*") },
                     contentAlignment = Alignment.Center
                 ) {
-                    if (!groupIconBase64.isNullOrBlank()) {
-                        val bitmap = remember(groupIconBase64) {
-                            com.example.util.ImageUtils.decodeBase64ToImageBitmap(groupIconBase64!!)
+                    val iconBase64 = groupIconBase64
+                    if (!iconBase64.isNullOrBlank()) {
+                        val bitmap = remember(iconBase64) {
+                            com.example.util.ImageUtils.decodeBase64ToImageBitmap(iconBase64)
                         }
                         if (bitmap != null) {
                             Image(

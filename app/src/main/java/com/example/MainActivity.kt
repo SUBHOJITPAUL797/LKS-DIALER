@@ -1135,9 +1135,10 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // WhatsApp-style "Send to..." Share Sheet contact picker
-                    if (pendingSharedPayload != null) {
+                    val activeSharePayload = pendingSharedPayload
+                    if (activeSharePayload != null) {
                         com.example.ui.screens.chat.ShareTargetPickerModal(
-                            payload = pendingSharedPayload!!,
+                            payload = activeSharePayload,
                             firebaseManager = firebaseManager,
                             chatRepository = chatRepo,
                             onSelectTarget = { phone, name, avatar ->

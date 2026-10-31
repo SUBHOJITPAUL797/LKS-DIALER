@@ -339,8 +339,9 @@ object LksIncomingRingtonePlayer {
             val player = MediaPlayer()
             var dataSourceSet = false
 
-            if (resolvedUri.scheme == "file" && resolvedUri.path != null) {
-                val file = java.io.File(resolvedUri.path!!)
+            val resolvedPath = resolvedUri.path
+            if (resolvedUri.scheme == "file" && resolvedPath != null) {
+                val file = java.io.File(resolvedPath)
                 if (file.exists() && file.length() > 0) {
                     player.setDataSource(file.absolutePath)
                     dataSourceSet = true

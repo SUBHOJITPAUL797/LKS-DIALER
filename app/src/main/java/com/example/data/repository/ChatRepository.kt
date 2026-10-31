@@ -2575,8 +2575,9 @@ class ChatRepository private constructor(private val context: Context) {
     private suspend fun resolvePeerPublicKey(phoneNumber: String): String? {
         val firebaseManager = FirebaseManager.getInstance(context)
         val cached = firebaseManager.lookupUserByNumber(phoneNumber)
-        if (!cached?.publicKey.isNullOrBlank()) {
-            return cached!!.publicKey
+        val cachedPk = cached?.publicKey
+        if (!cachedPk.isNullOrBlank()) {
+            return cachedPk
         }
 
         // Fetch from Firestore checking all variations
@@ -2585,8 +2586,9 @@ class ChatRepository private constructor(private val context: Context) {
             try {
                 val doc = firestore.collection("users").document(variant).get().await()
                 val user = doc.toObject(UserDto::class.java)
-                if (!user?.publicKey.isNullOrBlank()) {
-                    return user!!.publicKey
+                val userPk = user?.publicKey
+                if (!userPk.isNullOrBlank()) {
+                    return userPk
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error looking up public key for variant $variant: ${e.message}")
@@ -3242,8 +3244,8 @@ class ChatRepository private constructor(private val context: Context) {
             val path = msg.mediaPath
             val isMedia = !path.isNullOrBlank()
 
-            if (isMedia) {
-                val lower = path!!.lowercase()
+            if (isMedia && path != null) {
+                val lower = path.lowercase()
                 val isVideo = (msg.mediaType == ChatMediaType.DOCUMENT.name && (lower.endsWith(".mp4") || lower.endsWith(".mkv") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".3gp"))) || lower.endsWith(".mp4") || lower.endsWith(".mkv")
                 val isPhoto = msg.mediaType == ChatMediaType.IMAGE.name || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") || lower.endsWith(".webp")
                 val isAudio = msg.mediaType == ChatMediaType.AUDIO.name || lower.endsWith(".m4a") || lower.endsWith(".mp3") || lower.endsWith(".aac") || lower.endsWith(".wav")

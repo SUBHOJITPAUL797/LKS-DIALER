@@ -354,7 +354,7 @@ fun WhatsAppPhotoCropper(
                                         normTop = (normTop + dNormY).coerceIn(0f, normBottom - minSizeNorm)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = targetH / displayedH
                                             normTop = (normBottom - normH).coerceIn(0f, normBottom - minSizeNorm)
                                         }
@@ -364,7 +364,7 @@ fun WhatsAppPhotoCropper(
                                         normTop = (normTop + dNormY).coerceIn(0f, normBottom - minSizeNorm)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = targetH / displayedH
                                             normTop = (normBottom - normH).coerceIn(0f, normBottom - minSizeNorm)
                                         }
@@ -374,7 +374,7 @@ fun WhatsAppPhotoCropper(
                                         normBottom = (normBottom + dNormY).coerceIn(normTop + minSizeNorm, 1f)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = targetH / displayedH
                                             normBottom = (normTop + normH).coerceIn(normTop + minSizeNorm, 1f)
                                         }
@@ -384,7 +384,7 @@ fun WhatsAppPhotoCropper(
                                         normBottom = (normBottom + dNormY).coerceIn(normTop + minSizeNorm, 1f)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = targetH / displayedH
                                             normBottom = (normTop + normH).coerceIn(normTop + minSizeNorm, 1f)
                                         }
@@ -393,7 +393,7 @@ fun WhatsAppPhotoCropper(
                                         normTop = (normTop + dNormY).coerceIn(0f, normBottom - minSizeNorm)
                                         if (selectedAspect.ratio != null) {
                                             val h = (normBottom - normTop) * displayedH
-                                            val targetW = h * selectedAspect.ratio!!
+                                            val targetW = h * (selectedAspect.ratio ?: 1f)
                                             val normW = (targetW / displayedW).coerceIn(minSizeNorm, 1f)
                                             val midX = (normLeft + normRight) / 2f
                                             normLeft = (midX - normW / 2f).coerceIn(0f, 1f - normW)
@@ -404,7 +404,7 @@ fun WhatsAppPhotoCropper(
                                         normBottom = (normBottom + dNormY).coerceIn(normTop + minSizeNorm, 1f)
                                         if (selectedAspect.ratio != null) {
                                             val h = (normBottom - normTop) * displayedH
-                                            val targetW = h * selectedAspect.ratio!!
+                                            val targetW = h * (selectedAspect.ratio ?: 1f)
                                             val normW = (targetW / displayedW).coerceIn(minSizeNorm, 1f)
                                             val midX = (normLeft + normRight) / 2f
                                             normLeft = (midX - normW / 2f).coerceIn(0f, 1f - normW)
@@ -415,7 +415,7 @@ fun WhatsAppPhotoCropper(
                                         normLeft = (normLeft + dNormX).coerceIn(0f, normRight - minSizeNorm)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = (targetH / displayedH).coerceIn(minSizeNorm, 1f)
                                             val midY = (normTop + normBottom) / 2f
                                             normTop = (midY - normH / 2f).coerceIn(0f, 1f - normH)
@@ -426,7 +426,7 @@ fun WhatsAppPhotoCropper(
                                         normRight = (normRight + dNormX).coerceIn(normLeft + minSizeNorm, 1f)
                                         if (selectedAspect.ratio != null) {
                                             val w = (normRight - normLeft) * displayedW
-                                            val targetH = w / selectedAspect.ratio!!
+                                            val targetH = w / (selectedAspect.ratio ?: 1f)
                                             val normH = (targetH / displayedH).coerceIn(minSizeNorm, 1f)
                                             val midY = (normTop + normBottom) / 2f
                                             normTop = (midY - normH / 2f).coerceIn(0f, 1f - normH)

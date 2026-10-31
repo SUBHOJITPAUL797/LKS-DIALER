@@ -111,7 +111,7 @@ object CallSoundEffectsManager {
             }
         }
 
-        handler.post(connectingRunnable!!)
+        connectingRunnable?.let { handler.post(it) }
     }
 
     @Synchronized
@@ -262,8 +262,9 @@ object CallSoundEffectsManager {
         isRingingState = true
         stopConnectingTone()
 
-        if (callerTunePlayer != null && isCallerTunePrepared && pendingTune?.title == title) {
-            startPreparedCallerTune(callerTunePlayer!!, context)
+        val existingPlayer = callerTunePlayer
+        if (existingPlayer != null && isCallerTunePrepared && pendingTune?.title == title) {
+            startPreparedCallerTune(existingPlayer, context)
             return
         }
 
@@ -428,7 +429,7 @@ object CallSoundEffectsManager {
                 handler.postDelayed(this, 8000L)
             }
         }
-        handler.postDelayed(holdReminderRunnable!!, 8000L)
+        holdReminderRunnable?.let { handler.postDelayed(it, 8000L) }
     }
 
     /**

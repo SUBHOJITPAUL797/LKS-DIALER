@@ -371,18 +371,23 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
             
             if (cameraDeviceName != null) {
-                videoCapturer = enumerator.createCapturer(cameraDeviceName, null)
-                surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
-                videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
-                videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-                if (startCaptureNow) {
-                    try { videoCapturer?.startCapture(1280, 720, 30) } catch (_: Exception) {}
+                val capturer = enumerator.createCapturer(cameraDeviceName, null)
+                videoCapturer = capturer
+                if (capturer != null) {
+                    surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", eglBaseContext)
+                    videoSource = peerConnectionFactory?.createVideoSource(capturer.isScreencast)
+                    capturer.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
+                    if (startCaptureNow) {
+                        try { capturer.startCapture(1280, 720, 30) } catch (_: Exception) {}
+                    }
+                    
+                    val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
+                    videoTrack?.setEnabled(startCaptureNow)
+                    
+                    _state.value = _state.value.copy(localVideoTrack = videoTrack)
+                } else {
+                    Log.w("WebRtcEngine", "createCapturer returned null for $cameraDeviceName")
                 }
-                
-                val videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
-                videoTrack?.setEnabled(startCaptureNow)
-                
-                _state.value = _state.value.copy(localVideoTrack = videoTrack)
             }
         } catch (e: Throwable) {
             Log.e("WebRtcEngine", "Failed to create video track safely: ${e.message}", e)

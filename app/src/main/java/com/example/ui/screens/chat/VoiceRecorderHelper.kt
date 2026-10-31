@@ -171,13 +171,14 @@ class VoiceRecorderHelper(private val context: Context) {
         val file = File(path)
         if (!file.exists()) return
 
-        if (_currentPlayingPath.value == path && mediaPlayer != null) {
-            if (mediaPlayer!!.isPlaying) {
-                mediaPlayer!!.pause()
+        val activePlayer = mediaPlayer
+        if (_currentPlayingPath.value == path && activePlayer != null) {
+            if (activePlayer.isPlaying) {
+                activePlayer.pause()
                 _isPlaying.value = false
                 handler.removeCallbacks(playbackTimerRunnable)
             } else {
-                mediaPlayer!!.start()
+                activePlayer.start()
                 _isPlaying.value = true
                 handler.post(playbackTimerRunnable)
             }
@@ -221,9 +222,10 @@ class VoiceRecorderHelper(private val context: Context) {
         val nextSpeed = speeds[(currentIndex + 1) % speeds.size]
         _playbackSpeed.value = nextSpeed
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && mediaPlayer != null) {
-                val params = mediaPlayer!!.playbackParams
-                mediaPlayer!!.playbackParams = params.setSpeed(nextSpeed)
+            val activePlayer = mediaPlayer
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && activePlayer != null) {
+                val params = activePlayer.playbackParams
+                activePlayer.playbackParams = params.setSpeed(nextSpeed)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update playback speed: ${e.message}")

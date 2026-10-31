@@ -300,7 +300,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
                 }
             }
         }
-        mainHandler.postDelayed(timerRunnable!!, 1000)
+        timerRunnable?.let { mainHandler.postDelayed(it, 1000) }
     }
 
     private fun stopDurationTimer() {

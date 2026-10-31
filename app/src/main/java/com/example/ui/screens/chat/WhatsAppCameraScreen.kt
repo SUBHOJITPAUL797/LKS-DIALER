@@ -322,7 +322,8 @@ fun WhatsAppCameraScreen(
         }
 
         // Tap to Focus Ring Animation
-        if (showFocusRing && focusRingOffset != null) {
+        val ringOffset = focusRingOffset
+        if (showFocusRing && ringOffset != null) {
             val ringScale by animateFloatAsState(
                 targetValue = if (showFocusRing) 1f else 1.3f,
                 animationSpec = tween(250),
@@ -331,8 +332,8 @@ fun WhatsAppCameraScreen(
             Box(
                 modifier = Modifier
                     .offset(
-                        x = with(density) { (focusRingOffset!!.x - 36.dp.toPx()).toDp() },
-                        y = with(density) { (focusRingOffset!!.y - 36.dp.toPx()).toDp() }
+                        x = with(density) { (ringOffset.x - 36.dp.toPx()).toDp() },
+                        y = with(density) { (ringOffset.y - 36.dp.toPx()).toDp() }
                     )
                     .size(72.dp)
                     .scale(ringScale)

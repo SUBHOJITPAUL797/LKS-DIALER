@@ -458,7 +458,7 @@ fun SongTrimmerDialog(
 private fun setSongMediaPlayerDataSource(context: Context, player: MediaPlayer, uri: Uri) {
     when {
         uri.scheme == "file" && uri.path != null -> {
-            val file = File(uri.path!!)
+            val file = File(uri.path ?: "")
             if (file.exists()) {
                 player.setDataSource(file.absolutePath)
             } else {
@@ -474,7 +474,7 @@ private fun setSongMediaPlayerDataSource(context: Context, player: MediaPlayer, 
 private fun setSongRetrieverDataSource(context: Context, mmr: android.media.MediaMetadataRetriever, uri: Uri) {
     when {
         uri.scheme == "file" && uri.path != null -> {
-            val file = File(uri.path!!)
+            val file = File(uri.path ?: "")
             if (file.exists()) {
                 val fis = FileInputStream(file)
                 try {

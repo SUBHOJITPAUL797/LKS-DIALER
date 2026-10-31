@@ -314,10 +314,11 @@ fun CallHistoryScreen(
                 }
                 var currentRecording by remember(recordingFile) { mutableStateOf(recordingFile) }
 
-                if (currentRecording != null && currentRecording!!.exists()) {
+                val rec = currentRecording
+                if (rec != null && rec.exists()) {
                     Spacer(modifier = Modifier.height(16.dp))
                     CallRecordingPlayerCard(
-                        file = currentRecording!!,
+                        file = rec,
                         callId = log.callId,
                         onDeleted = {
                             currentRecording = null

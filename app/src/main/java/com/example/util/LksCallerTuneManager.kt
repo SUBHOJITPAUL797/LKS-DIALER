@@ -142,8 +142,9 @@ object LksCallerTuneManager {
                         endMs = durationMs,
                         targetBitrate = 64000
                     )
-                    if (compressedUri != null && compressedUri.path != null) {
-                        val compressedFile = File(compressedUri.path!!)
+                    val compPath = compressedUri?.path
+                    if (compressedUri != null && compPath != null) {
+                        val compressedFile = File(compPath)
                         if (compressedFile.exists() && compressedFile.length() > 0) {
                             bytes = compressedFile.readBytes()
                             compressedFile.delete()
@@ -262,8 +263,9 @@ object LksCallerTuneManager {
             if (!dataSourceSet && !info.localUri.isNullOrBlank()) {
                 try {
                     val uri = Uri.parse(info.localUri)
-                    if (uri.scheme == "file" && uri.path != null) {
-                        val f = File(uri.path!!)
+                    val filePath = uri.path
+                    if (uri.scheme == "file" && filePath != null) {
+                        val f = File(filePath)
                         if (f.exists() && f.length() > 0) {
                             val fis = FileInputStream(f)
                             player.setDataSource(fis.fd, 0, f.length())

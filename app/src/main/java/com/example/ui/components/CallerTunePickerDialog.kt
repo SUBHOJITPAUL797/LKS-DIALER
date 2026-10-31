@@ -104,9 +104,10 @@ fun CallerTunePickerDialog(
     }
 
     // If trimmer is active, show the CallerTuneTrimmerDialog
-    if (activeTrimmerUri != null) {
+    val trimmerUri = activeTrimmerUri
+    if (trimmerUri != null) {
         CallerTuneTrimmerDialog(
-            sourceUri = activeTrimmerUri!!,
+            sourceUri = trimmerUri,
             songTitle = activeTrimmerTitle,
             artist = activeTrimmerArtist,
             source = activeTrimmerSource,

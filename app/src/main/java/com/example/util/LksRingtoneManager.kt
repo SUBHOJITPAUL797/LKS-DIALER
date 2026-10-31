@@ -178,8 +178,9 @@ object LksRingtoneManager {
                 return Uri.fromFile(destFile)
             }
 
-            if (uri.scheme == "file" && uri.path != null) {
-                val srcFile = java.io.File(uri.path!!)
+            val filePath = uri.path
+            if (uri.scheme == "file" && filePath != null) {
+                val srcFile = java.io.File(filePath)
                 if (srcFile.exists()) {
                     srcFile.inputStream().use { input ->
                         java.io.FileOutputStream(destFile).use { output ->

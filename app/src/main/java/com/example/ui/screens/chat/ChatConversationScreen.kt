@@ -1198,35 +1198,36 @@ fun ChatConversationScreen(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val reply = replyingTo
                             // Accent bar
                             Box(
                                 modifier = Modifier
                                     .width(4.dp)
                                     .height(40.dp)
                                     .clip(RoundedCornerShape(2.dp))
-                                    .background(if (replyingTo!!.isOutgoing) TealPrimary else GreenCall)
+                                    .background(if (reply?.isOutgoing == true) TealPrimary else GreenCall)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Replying to ${replyingTo!!.senderLabel}",
+                                    text = "Replying to ${reply?.senderLabel ?: ""}",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = if (replyingTo!!.isOutgoing) TealPrimary else GreenCall
+                                        color = if (reply?.isOutgoing == true) TealPrimary else GreenCall
                                     )
                                 )
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    val isVoice = replyingTo!!.text.contains("Voice message", ignoreCase = true) || replyingTo!!.text.startsWith("🎤")
+                                    val isVoice = reply?.text?.contains("Voice message", ignoreCase = true) == true || reply?.text?.startsWith("🎤") == true
                                     if (isVoice) {
                                         Icon(
                                             Icons.Default.Mic,
                                             contentDescription = null,
-                                            tint = if (replyingTo!!.isOutgoing) TealPrimary else GreenCall,
+                                            tint = if (reply?.isOutgoing == true) TealPrimary else GreenCall,
                                             modifier = Modifier.size(14.dp).padding(end = 2.dp)
                                         )
                                     }
                                     Text(
-                                        text = replyingTo!!.text.removePrefix("🎤 ").trim(),
+                                        text = (reply?.text ?: "").removePrefix("🎤 ").trim(),
                                         style = MaterialTheme.typography.bodySmall,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -1246,13 +1247,14 @@ fun ChatConversationScreen(
             }
 
             // ── Edit Preview Bar ──────────────────────────────────────────────
-            AnimatedVisibility(visible = editingMessage != null) {
-                if (editingMessage != null) {
-                    val editPreviewText = remember(editingMessage!!.text) {
+            val currentEditingMsg = editingMessage
+            AnimatedVisibility(visible = currentEditingMsg != null) {
+                if (currentEditingMsg != null) {
+                    val editPreviewText = remember(currentEditingMsg.text) {
                         try {
-                            val obj = JSONObject(editingMessage!!.text)
-                            obj.optString("text", editingMessage!!.text)
-                        } catch (_: Exception) { editingMessage!!.text }
+                            val obj = JSONObject(currentEditingMsg.text)
+                            obj.optString("text", currentEditingMsg.text)
+                        } catch (_: Exception) { currentEditingMsg.text }
                     }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -1596,8 +1598,9 @@ fun ChatConversationScreen(
                                     if (showMediaPicker) showMediaPicker = false
                                 },
                                 placeholder = {
+                                    val currentReply = replyingTo
                                     Text(
-                                        if (replyingTo != null) "Reply to ${replyingTo!!.senderLabel}…"
+                                        if (currentReply != null) "Reply to ${currentReply.senderLabel}…"
                                         else "Message…"
                                     )
                                 },
@@ -1618,8 +1621,9 @@ fun ChatConversationScreen(
                                 IconButton(
                                     onClick = {
                                         val textToEdit = inputText.trim()
-                                        if (textToEdit.isNotEmpty()) {
-                                            val targetId = editingMessage!!.id
+                                        val editMsg = editingMessage
+                                        if (textToEdit.isNotEmpty() && editMsg != null) {
+                                            val targetId = editMsg.id
                                             editingMessage = null
                                             inputText = ""
                                             chatRepository.setTyping(normPeer, false)
@@ -2266,9 +2270,10 @@ fun ChatConversationScreen(
     }
 
     // Fullscreen Video Player
-    if (selectedVideoPreviewFile != null) {
+    val videoPreview = selectedVideoPreviewFile
+    if (videoPreview != null) {
         com.example.ui.components.VideoPlayerDialog(
-            videoFile = selectedVideoPreviewFile!!,
+            videoFile = videoPreview,
             onDismissRequest = { selectedVideoPreviewFile = null }
         )
     }
@@ -2358,9 +2363,10 @@ fun ChatConversationScreen(
     }
 
     // ── WhatsApp Multi-Photo Review, Carousel & Captions ─────────
-    if (photosToPreview != null && photosToPreview!!.isNotEmpty()) {
+    val activePhotos = photosToPreview
+    if (!activePhotos.isNullOrEmpty()) {
         WhatsAppMediaPreviewScreen(
-            initialPhotos = photosToPreview!!,
+            initialPhotos = activePhotos,
             initialCaption = initialSharedText ?: "",
             onSendPhotos = { results, isViewOnce ->
                 photosToPreview = null
@@ -2387,8 +2393,8 @@ fun ChatConversationScreen(
     }
 
     // ── Message Options Bottom Sheet (Reply, Copy, Edit, Delete) ──
-    if (selectedMessageForOptions != null) {
-        val targetMsg = selectedMessageForOptions!!
+    val targetMsg = selectedMessageForOptions
+    if (targetMsg != null) {
         val isDeleted = targetMsg.text.startsWith("🚫 ")
         val isEligibleForEdit = targetMsg.isOutgoing &&
                 !isDeleted &&
@@ -2991,7 +2997,7 @@ private fun MessageBubble(
     }
 
     val hasLinkPreview = linkPreview != null && !isDeleted
-    val hasHeroPreview = hasLinkPreview && !linkPreview!!.imageUrl.isNullOrBlank()
+    val hasHeroPreview = hasLinkPreview && !linkPreview?.imageUrl.isNullOrBlank()
     val isPureUrlMessage = firstUrl != null && displayText.trim().trimEnd(*LinkPreviewHelper.TRAILING_PUNCTUATION).equals(firstUrl.trim(), ignoreCase = true)
     val isHeroPreviewOnly = hasHeroPreview && isPureUrlMessage
 
@@ -3653,11 +3659,14 @@ private fun MessageBubble(
                         if (message.mediaDurationMs > 0L) message.mediaDurationMs
                         else if (isAudio && hasFile) {
                             try {
-                                val retriever = android.media.MediaMetadataRetriever()
-                                retriever.setDataSource(docFile!!.absolutePath)
-                                val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                                retriever.release()
-                                dur
+                                val doc = docFile
+                                if (doc != null) {
+                                    val retriever = android.media.MediaMetadataRetriever()
+                                    retriever.setDataSource(doc.absolutePath)
+                                    val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                                    retriever.release()
+                                    dur
+                                } else 0L
                             } catch (_: Exception) { 0L }
                         } else 0L
                     }
@@ -3786,7 +3795,7 @@ private fun MessageBubble(
                                     playbackSpeed = playbackSpeed,
                                     isOutgoing = isOutgoing,
                                     onTogglePlay = {
-                                        onPlayAudio(docFile!!.absolutePath)
+                                        docFile?.let { onPlayAudio(it.absolutePath) }
                                         if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
                                             onMarkMessageRead(message.id)
                                         }
@@ -3810,9 +3819,10 @@ private fun MessageBubble(
                 }
 
                 // ── Rich Link Preview Card (WhatsApp style) ───────────────────
-                if (linkPreview != null && !isDeleted) {
+                val activePreview = linkPreview
+                if (activePreview != null && !isDeleted) {
                     LinkPreviewCard(
-                        preview = linkPreview!!,
+                        preview = activePreview,
                         isOutgoing = isOutgoing,
                         onOpenUrl = { url ->
                             try {

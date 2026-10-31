@@ -516,8 +516,8 @@ fun ContactsScreen(
             val regUser = registeredUsers.find {
                 it.phoneNumber == contactPair.second || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPair.second)
             }
-            val profilePic = if (!contactDto?.profilePictureUrl.isNullOrBlank()) contactDto!!.profilePictureUrl
-                             else regUser?.profilePictureUrl ?: ""
+            val profilePic = contactDto?.profilePictureUrl?.takeIf { it.isNotBlank() }
+                             ?: regUser?.profilePictureUrl ?: ""
 
             ContactRingtoneBottomSheet(
                 contactName = contactPair.first,

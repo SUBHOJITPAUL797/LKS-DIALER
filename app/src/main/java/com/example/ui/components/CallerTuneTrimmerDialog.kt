@@ -638,7 +638,7 @@ fun CallerTuneTrimmerDialog(
 private fun setMediaPlayerDataSource(context: Context, player: MediaPlayer, uri: Uri) {
     when {
         uri.scheme == "file" && uri.path != null -> {
-            val file = File(uri.path!!)
+            val file = File(uri.path ?: "")
             if (file.exists()) {
                 val fis = FileInputStream(file)
                 try {
@@ -689,7 +689,7 @@ private fun setMediaPlayerDataSource(context: Context, player: MediaPlayer, uri:
 private fun setRetrieverDataSource(context: Context, mmr: android.media.MediaMetadataRetriever, uri: Uri) {
     when {
         uri.scheme == "file" && uri.path != null -> {
-            val file = File(uri.path!!)
+            val file = File(uri.path ?: "")
             if (file.exists()) {
                 val fis = FileInputStream(file)
                 try {
