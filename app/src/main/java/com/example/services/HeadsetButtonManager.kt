@@ -31,6 +31,10 @@ class HeadsetButtonManager(context: Context) {
 
     @Synchronized
     fun startListening() {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post { startListening() }
+            return
+        }
         if (isRegistered) return
         isRegistered = true
 

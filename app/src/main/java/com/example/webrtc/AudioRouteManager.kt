@@ -43,6 +43,14 @@ class AudioRouteManager(
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val delayedRefreshRunnable400 = Runnable { refreshAvailableAudioDevices() }
     private val delayedRefreshRunnable1000 = Runnable { refreshAvailableAudioDevices() }
+    private val pendingBtRetries = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
+
+    private fun cancelPendingBtRetries() {
+        for (r in pendingBtRetries) {
+            mainHandler.removeCallbacks(r)
+        }
+        pendingBtRetries.clear()
+    }
 
     private fun triggerHardwareDeviceRefresh() {
         refreshAvailableAudioDevices()
@@ -636,49 +644,44 @@ class AudioRouteManager(
                             } catch (_: Exception) {}
                         }
 
-                        // Schedule automatic retries at 250ms, 600ms, and 1200ms
-                        // so as soon as Android's Bluetooth SCO handshake completes, it firmly latches onto headphones!
-                        mainHandler.postDelayed({
-                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
-                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
-                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                                }
-                                if (retryBt != null) {
-                                    val r = audioManager.setCommunicationDevice(retryBt)
-                                    Log.d(TAG, "Delayed retry 250ms setCommunicationDevice: $r (${retryBt.productName})")
-                                }
-                            }
-                        }, 250L)
-
-                        mainHandler.postDelayed({
-                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
-                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
-                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                                }
-                                if (retryBt != null) {
-                                    val r = audioManager.setCommunicationDevice(retryBt)
-                                    Log.d(TAG, "Delayed retry 600ms setCommunicationDevice: $r (${retryBt.productName})")
+                        // Deduplicated Bluetooth retry: cancel pending retries to avoid looper pileup
+                        cancelPendingBtRetries()
+                        val r250 = object : Runnable {
+                            override fun run() {
+                                pendingBtRetries.remove(this)
+                                if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                    val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                        it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                    }
+                                    if (retryBt != null) {
+                                        val r = audioManager.setCommunicationDevice(retryBt)
+                                        Log.d(TAG, "Delayed retry 250ms setCommunicationDevice: $r (${retryBt.productName})")
+                                    }
                                 }
                             }
-                        }, 600L)
-
-                        mainHandler.postDelayed({
-                            if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
-                                val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
-                                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                    it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                                }
-                                if (retryBt != null) {
-                                    val r = audioManager.setCommunicationDevice(retryBt)
-                                    Log.d(TAG, "Delayed retry 1200ms setCommunicationDevice: $r (${retryBt.productName})")
+                        }
+                        val r700 = object : Runnable {
+                            override fun run() {
+                                pendingBtRetries.remove(this)
+                                if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                    val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                        it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                    }
+                                    if (retryBt != null) {
+                                        val r = audioManager.setCommunicationDevice(retryBt)
+                                        Log.d(TAG, "Delayed retry 700ms setCommunicationDevice: $r (${retryBt.productName})")
+                                    }
                                 }
                             }
-                        }, 1200L)
+                        }
+                        pendingBtRetries.add(r250)
+                        pendingBtRetries.add(r700)
+                        mainHandler.postDelayed(r250, 250L)
+                        mainHandler.postDelayed(r700, 700L)
                     } else {
                         @Suppress("DEPRECATION")
                         try {
@@ -813,6 +816,7 @@ class AudioRouteManager(
         // Release Samsung One UI Voice Focus pipeline
         com.example.util.SamsungVoiceFocusManager.stop()
 
+        cancelPendingBtRetries()
         unregisterAudioDeviceListeners()
         mainHandler.removeCallbacksAndMessages(null)
         try {

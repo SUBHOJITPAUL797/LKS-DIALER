@@ -115,6 +115,8 @@ class WebRtcEngine private constructor(private val context: Context) {
     @Volatile private var prebuiltAnswerSdp: String? = null
     @Volatile private var prebuiltCallId: String? = null
     @Volatile private var preWarmDone = false
+    @Volatile private var cachedIncomingOfferSdp: String? = null
+    private var incomingOfferFetchJob: Job? = null
 
     // WebRTC Core
     private val eglBase = EglBase.create()
@@ -468,12 +470,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
 
-        // Aggressively fetch answerSdp directly from the Firestore server with rapid retries (<200ms cadence)
+        // Aggressively fetch answerSdp directly from Firestore with rapid retries (<150ms cadence)
         scope.launch(Dispatchers.IO) {
             for (attempt in 1..15) {
                 if (hasProcessedAnswer || isCallTerminated(callId)) break
                 try {
-                    val doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                    val doc = firestore.collection("calls").document(callId).get().await()
                     if (doc.exists()) {
                         val call = doc.toObject(CallDto::class.java)
                         if (call != null) {
@@ -481,15 +483,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 handleCallDocumentUpdate(call, doc, isCaller = true)
                             }
                             if (!call.answerSdp.isNullOrBlank()) {
-                                Log.i("WebRtcEngine", "⚡ Retrieved answerSdp from server on attempt $attempt via push flow")
+                                Log.i("WebRtcEngine", "⚡ Retrieved answerSdp on attempt $attempt via push flow")
                                 break
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w("WebRtcEngine", "onCallAnsweredFromPush server fetch attempt $attempt failed: ${e.message}")
+                    Log.w("WebRtcEngine", "onCallAnsweredFromPush fetch attempt $attempt failed: ${e.message}")
                 }
-                delay(200)
+                delay(150)
             }
         }
     }
@@ -1295,36 +1297,45 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
 
         // Concurrently fetch document to acquire offerSdp as fast as possible from Firestore with retries
-        scope.launch(Dispatchers.IO) {
-            for (attempt in 1..12) {
-                if (hasProcessedOffer || isCallTerminated(callId)) break
-                try {
-                    val doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                    if (doc.exists()) {
-                        val docOffer = doc.getString("offerSdp")
-                        val docCall = doc.toObject(CallDto::class.java)
-                        if (!docOffer.isNullOrBlank()) {
-                            Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via server fetch (attempt $attempt) for $callId -> processing SDP answer")
-                            withContext(Dispatchers.Main) {
-                                if (!isCallTerminated(callId)) {
-                                    _state.value = _state.value.copy(
-                                        activeCall = (docCall ?: _state.value.activeCall)?.copy(
-                                            status = CallStatus.ANSWERED,
-                                            offerSdp = docOffer
+        val initialOffer = currentCall?.offerSdp ?: cachedIncomingOfferSdp
+        if (!initialOffer.isNullOrBlank()) {
+            _state.value = _state.value.copy(
+                activeCall = _state.value.activeCall?.copy(offerSdp = initialOffer)
+            )
+            processOfferSdpIfAvailable()
+        } else {
+            scope.launch(Dispatchers.IO) {
+                for (attempt in 1..25) {
+                    if (hasProcessedOffer || isCallTerminated(callId)) break
+                    try {
+                        val doc = firestore.collection("calls").document(callId).get().await()
+                        if (doc.exists()) {
+                            val docOffer = doc.getString("offerSdp")
+                            val docCall = doc.toObject(CallDto::class.java)
+                            if (!docOffer.isNullOrBlank()) {
+                                cachedIncomingOfferSdp = docOffer
+                                Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via fast fetch (attempt $attempt) for $callId -> processing SDP answer")
+                                withContext(Dispatchers.Main) {
+                                    if (!isCallTerminated(callId)) {
+                                        _state.value = _state.value.copy(
+                                            activeCall = (docCall ?: _state.value.activeCall)?.copy(
+                                                status = CallStatus.ANSWERED,
+                                                offerSdp = docOffer
+                                            )
                                         )
-                                    )
-                                    if (!hasProcessedOffer) {
-                                        processOfferSdpIfAvailable()
+                                        if (!hasProcessedOffer) {
+                                            processOfferSdpIfAvailable()
+                                        }
                                     }
                                 }
+                                break
                             }
-                            break
                         }
+                    } catch (e: Exception) {
+                        Log.d("WebRtcEngine", "answerIncomingCall offer fetch attempt $attempt failed: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    Log.d("WebRtcEngine", "answerIncomingCall offer fetch attempt $attempt failed: ${e.message}")
+                    delay(100)
                 }
-                delay(250)
             }
         }
         startCallTimer()
@@ -1375,7 +1386,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             _state.value.callStatus == CallStatus.MISSED ||
             _state.value.activeCall?.callId != callId
 
-        val existingOfferSdp = if (_state.value.activeCall?.callId == callId) _state.value.activeCall?.offerSdp else null
+        val existingOfferSdp = if (_state.value.activeCall?.callId == callId) {
+            _state.value.activeCall?.offerSdp ?: cachedIncomingOfferSdp
+        } else cachedIncomingOfferSdp
 
         // Optimistically show the call screen if we have the data
         if (callerName != null && callerNumber != null && callTypeStr != null && isNotCurrentlyInCall) {
@@ -1399,6 +1412,42 @@ class WebRtcEngine private constructor(private val context: Context) {
             listenForIceCandidates(callId, isCaller = false)
         }
 
+        // ⚡ Aggressive offerSdp pre-fetch during ringing:
+        // Runs concurrently while user hears the ringtone (3-5s).
+        // Resolves offerSdp in RAM BEFORE user taps answer — 0ms wait on pickup!
+        incomingOfferFetchJob?.cancel()
+        incomingOfferFetchJob = scope.launch(Dispatchers.IO) {
+            for (attempt in 1..30) {
+                if (hasProcessedOffer || isCallTerminated(callId) || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.DECLINED) break
+                val currentOffer = _state.value.activeCall?.offerSdp ?: cachedIncomingOfferSdp
+                if (!currentOffer.isNullOrBlank()) {
+                    cachedIncomingOfferSdp = currentOffer
+                    Log.i("WebRtcEngine", "⚡ Callee has offerSdp cached for $callId (attempt $attempt)")
+                    break
+                }
+                try {
+                    val snap = firestore.collection("calls").document(callId).get().await()
+                    val offer = snap.getString("offerSdp")
+                    if (!offer.isNullOrBlank()) {
+                        cachedIncomingOfferSdp = offer
+                        withContext(Dispatchers.Main) {
+                            val cur = _state.value.activeCall
+                            if (cur?.callId == callId && !isCallTerminated(callId)) {
+                                _state.value = _state.value.copy(
+                                    activeCall = cur.copy(offerSdp = offer)
+                                )
+                                Log.i("WebRtcEngine", "⚡ Callee acquired offerSdp in background during ringing (attempt $attempt)")
+                            }
+                        }
+                        break
+                    }
+                } catch (e: Exception) {
+                    Log.d("WebRtcEngine", "Callee offer fetch attempt $attempt: ${e.message}")
+                }
+                delay(150)
+            }
+        }
+
         firestore.collection("calls").document(callId).get().addOnSuccessListener { doc ->
             if (isCallTerminated(callId)) {
                 Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was terminated locally. Aborting.")
@@ -1417,6 +1466,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addOnSuccessListener
                 }
 
+                // Preserve non-null offerSdp: NEVER overwrite with null!
+                val currentOffer = _state.value.activeCall?.offerSdp ?: cachedIncomingOfferSdp
+                val mergedOffer = call.offerSdp ?: currentOffer
+                if (!mergedOffer.isNullOrBlank()) {
+                    cachedIncomingOfferSdp = mergedOffer
+                }
+
                 val isNewCallOrIdle = _state.value.activeCall?.callId != callId ||
                     _state.value.callStatus == CallStatus.IDLE ||
                     _state.value.callStatus == CallStatus.ENDED ||
@@ -1425,11 +1481,11 @@ class WebRtcEngine private constructor(private val context: Context) {
 
                 if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.activeCall?.callId == callId) {
                     _state.value = _state.value.copy(
-                        activeCall = call.copy(status = CallStatus.ANSWERED)
+                        activeCall = call.copy(status = CallStatus.ANSWERED, offerSdp = mergedOffer)
                     )
                     listenToActiveCall(callId, isCaller = false)
                     listenForIceCandidates(callId, isCaller = false)
-                    if (call.offerSdp != null && !hasProcessedOffer) {
+                    if (mergedOffer != null && !hasProcessedOffer) {
                         processOfferSdpIfAvailable()
                     }
                 } else if (isNewCallOrIdle || _state.value.callStatus == CallStatus.RINGING) {
@@ -1443,7 +1499,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
 
                     _state.value = _state.value.copy(
-                        activeCall = call.copy(status = resolvedStatus),
+                        activeCall = call.copy(status = resolvedStatus, offerSdp = mergedOffer),
                         callType = call.callType,
                         callStatus = resolvedStatus,
                         connectionStatusText = "Incoming Call"
@@ -1549,14 +1605,26 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             createPeerConnection(isCaller = false, callId = call.callId)
 
-            if (call.offerSdp.isNullOrBlank()) {
+            val offerToProcess = call.offerSdp ?: cachedIncomingOfferSdp ?: _state.value.activeCall?.offerSdp
+            if (!offerToProcess.isNullOrBlank()) {
+                Log.i("WebRtcEngine", "⚡ Fast-path answer: processing in-memory offerSdp immediately (<1ms)")
+                val current = _state.value.activeCall
+                if (current?.callId == call.callId) {
+                    _state.value = _state.value.copy(
+                        activeCall = current.copy(offerSdp = offerToProcess)
+                    )
+                }
+                processOfferSdpIfAvailable()
+            } else {
+                Log.w("WebRtcEngine", "offerSdp not yet in memory at answer time — rapid polling cache/network")
                 scope.launch(Dispatchers.IO) {
-                    for (attempt in 1..12) {
+                    for (attempt in 1..25) {
+                        if (hasProcessedOffer || isCallTerminated(call.callId)) break
                         try {
-                            val snap = firestore.collection("calls").document(call.callId)
-                                .get(com.google.firebase.firestore.Source.SERVER).await()
+                            val snap = firestore.collection("calls").document(call.callId).get().await()
                             val offer = snap.getString("offerSdp")
                             if (!offer.isNullOrBlank()) {
+                                cachedIncomingOfferSdp = offer
                                 withContext(Dispatchers.Main) {
                                     val current = _state.value.activeCall
                                     if (current?.callId == call.callId) {
@@ -1569,11 +1637,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 break
                             }
                         } catch (_: Exception) {}
-                        delay(250)
+                        delay(100)
                     }
                 }
-            } else {
-                processOfferSdpIfAvailable()
             }
         }
 
@@ -1601,11 +1667,12 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private fun processOfferSdpIfAvailable() {
         val call = _state.value.activeCall ?: return
-        val offerSdp = call.offerSdp ?: return
+        val offerSdp = call.offerSdp ?: cachedIncomingOfferSdp ?: return
         val pc = peerConnection ?: return
         if (hasProcessedOffer && pc.remoteDescription?.description == offerSdp) return
         
         hasProcessedOffer = true
+        Log.i("WebRtcEngine", "⚡ processOfferSdpIfAvailable: setting remote offer description")
         val sessionDescription = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
         pc.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
@@ -1627,16 +1694,21 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 override fun onSetSuccess() {
                                     Log.i("WebRtcEngine", "Local answer SDP set successfully, uploading to Firestore")
                                     firestore.collection("calls").document(call.callId)
-                                        .update("answerSdp", tunedSdp)
+                                        .set(mapOf(
+                                            "answerSdp" to tunedSdp,
+                                            "status" to CallStatus.ANSWERED.name,
+                                            "answeredAt" to System.currentTimeMillis()
+                                        ), com.google.firebase.firestore.SetOptions.merge())
                                         .addOnFailureListener { e ->
                                             Log.w("WebRtcEngine", "Failed to update answerSdp, retrying: ${e.message}")
                                             scope.launch {
-                                                delay(300)
+                                                delay(200)
                                                 try {
                                                     firestore.collection("calls").document(call.callId).update("answerSdp", tunedSdp)
                                                 } catch (_: Exception) {}
                                             }
                                         }
+                                    drainQueuedRemoteIceCandidates()
                                     unmuteAllAudioTracks()
                                 }
                                 override fun onSetFailure(error: String?) {
@@ -1714,8 +1786,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 // even if the Firestore snapshot listener is lagged.
                 while (isActive && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
                     try {
-                        val serverDoc = firestore.collection("calls").document(callId)
-                            .get(com.google.firebase.firestore.Source.SERVER).await()
+                        val serverDoc = firestore.collection("calls").document(callId).get().await()
                         if (serverDoc.exists()) {
                             val serverCall = serverDoc.toObject(CallDto::class.java)
                             if (serverCall != null) {
@@ -1765,14 +1836,20 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (currentCall?.callId == call.callId || currentCall == null) {
             val oldCall = currentCall
 
+            val currentOffer = currentCall?.offerSdp ?: cachedIncomingOfferSdp
+            val mergedOffer = call.offerSdp ?: currentOffer
+            if (!mergedOffer.isNullOrBlank()) {
+                cachedIncomingOfferSdp = mergedOffer
+            }
+
             // Strictly enforce monotonic call state progression:
             // IDLE -> CALLING -> RINGING -> ANSWERED -> ENDED.
             // If the local call is already ANSWERED, NEVER revert activeCall.status to RINGING or CALLING
             val effectiveCall = if (_state.value.callStatus == CallStatus.ANSWERED && 
                 call.status != CallStatus.ENDED && call.status != CallStatus.DECLINED) {
-                call.copy(status = CallStatus.ANSWERED)
+                call.copy(status = CallStatus.ANSWERED, offerSdp = mergedOffer)
             } else {
-                call
+                call.copy(offerSdp = mergedOffer)
             }
             _state.value = _state.value.copy(activeCall = effectiveCall)
             
@@ -1931,11 +2008,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
 
-            if (!isCaller && call.offerSdp != null && (!hasProcessedOffer || call.offerSdp != oldCall?.offerSdp)) {
-                // If still ringing and pre-warm not done, retry pre-warm now that offer has arrived
-                if (_state.value.callStatus == CallStatus.RINGING && !preWarmDone) {
-                    preWarmForIncomingCall(call)
-                } else {
+            val offerCheck = call.offerSdp ?: cachedIncomingOfferSdp
+            if (!isCaller && offerCheck != null && (!hasProcessedOffer || offerCheck != oldCall?.offerSdp)) {
+                if (_state.value.callStatus == CallStatus.ANSWERED) {
                     processOfferSdpIfAvailable()
                 }
             }
@@ -2536,6 +2611,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         reconnectJob = null
         videoUpgradeWatchdogJob?.cancel()
         videoUpgradeWatchdogJob = null
+        incomingOfferFetchJob?.cancel()
+        incomingOfferFetchJob = null
+        cachedIncomingOfferSdp = null
         activeCallListener?.remove()
         activeCallListener = null
         currentListeningCallId = null
