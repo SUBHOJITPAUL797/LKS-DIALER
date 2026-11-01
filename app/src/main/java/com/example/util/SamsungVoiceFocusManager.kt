@@ -34,53 +34,17 @@ object SamsungVoiceFocusManager {
      */
     fun updateRoute(isSpeaker: Boolean, context: Context) {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        // Rock-solid OEM guard: Only apply Samsung proprietary Voice Focus parameters on Samsung hardware
+        if (!android.os.Build.MANUFACTURER.contains("samsung", ignoreCase = true)) {
+            return
+        }
         Log.i(TAG, "Updating Samsung Voice Focus parameters: isSpeaker=$isSpeaker")
         try {
             if (isSpeaker) {
-                // LOUDSPEAKER (Speakerphone) Voice Focus
-                audioManager.setParameters("voice_focus=on")
-                audioManager.setParameters("voice_focus_enable=true")
-                audioManager.setParameters("voice_focus_mode=speaker")
-                audioManager.setParameters("voice_focus_mode=2")
-                audioManager.setParameters("mic_mode=voice_focus")
-                audioManager.setParameters("sec_audio_mic_mode=1")
-                audioManager.setParameters("sec_mic_mode=1")
-                audioManager.setParameters("situation=voip;device=speaker;mic_mode=voice_focus;sec_audio_mic_mode=1")
-                audioManager.setParameters("situation=voip;device=speaker")
-                audioManager.setParameters("call_state=incall")
-                audioManager.setParameters("voip=on")
-                audioManager.setParameters("sec_audio_voip_mic_mode=1")
-                audioManager.setParameters("voip_mic_mode=voice_focus")
-                audioManager.setParameters("samsung_voice_focus=on")
-                audioManager.setParameters("samsung_voice_focus=speaker")
-                audioManager.setParameters("g_call_mode=voip")
+                // Single consolidated parameter write to eliminate Binder IPC latency on Samsung
+                audioManager.setParameters("situation=voip;device=speaker;mic_mode=voice_focus;sec_audio_mic_mode=1;voice_focus=on;samsung_voice_focus=on;samsung_voice_focus=speaker;call_state=incall;voip=on;g_call_mode=voip")
             } else {
-                // EARPIECE Voice Focus (Handset Receiver)
-                audioManager.setParameters("voice_focus=on")
-                audioManager.setParameters("voice_focus_enable=true")
-                audioManager.setParameters("sec_audio_mic_mode=1")
-                audioManager.setParameters("sec_mic_mode=1")
-                audioManager.setParameters("voice_focus_mode=earpiece")
-                audioManager.setParameters("voice_focus_mode=1")
-                audioManager.setParameters("voice_focus_earpiece=on")
-                audioManager.setParameters("voice_focus_earpiece_enable=true")
-                audioManager.setParameters("earpiece_voice_focus=on")
-                audioManager.setParameters("earpiece_voice_focus_enable=true")
-                audioManager.setParameters("mic_mode=voice_focus")
-                audioManager.setParameters("situation=voip;device=earpiece;mic_mode=voice_focus;sec_audio_mic_mode=1")
-                audioManager.setParameters("situation=voip;device=earpiece")
-                audioManager.setParameters("call_state=incall")
-                audioManager.setParameters("voip=on")
-                audioManager.setParameters("sec_audio_voip_mic_mode=1")
-                audioManager.setParameters("voip_mic_mode=voice_focus")
-                audioManager.setParameters("samsung_voice_focus=on")
-                audioManager.setParameters("samsung_voice_focus=earpiece")
-                audioManager.setParameters("samsung_voice_focus_earpiece=on")
-                audioManager.setParameters("voice_focus_earpiece=true")
-                audioManager.setParameters("dual_mic_noise_reduction=on")
-                audioManager.setParameters("sec_rx_noise_reduction=on")
-                audioManager.setParameters("two_mic_solution=on")
-                audioManager.setParameters("g_call_mode=voip")
+                audioManager.setParameters("situation=voip;device=earpiece;mic_mode=voice_focus;sec_audio_mic_mode=1;voice_focus=on;samsung_voice_focus=on;samsung_voice_focus=earpiece;dual_mic_noise_reduction=on;sec_rx_noise_reduction=on;two_mic_solution=on;call_state=incall;voip=on;g_call_mode=voip")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update Voice Focus route parameters: ${e.message}")

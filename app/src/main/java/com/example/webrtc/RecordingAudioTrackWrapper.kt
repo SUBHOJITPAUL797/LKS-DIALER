@@ -22,7 +22,7 @@ class RecordingAudioTrackWrapper(
     private val context: Context
 ) : AudioTrack(
     AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        .setUsage(AudioAttributes.USAGE_MEDIA)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build(),
     AudioFormat.Builder()

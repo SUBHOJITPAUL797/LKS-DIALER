@@ -167,20 +167,14 @@ async function handleTurnCredentials(env, corsHeaders) {
     // WebRTC tries them in order — STUN succeeds ~80% of calls so TURN is rarely used
     const iceServers = [
       // 1. Google STUN — globally distributed, zero cost, sub-10ms latency
-      { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-      // 2. Cloudflare STUN — low latency on Cloudflare's edge network (same CDN as our Worker)
+      { urls: ["stun:stun.l.google.com:19302"] },
+      // 2. Cloudflare STUN — low latency on Cloudflare's edge network
       { urls: ["stun:stun.cloudflare.com:3478"] },
-      // 3. Metered.ca free-tier TURN relay — only used when direct P2P fails (symmetric NAT / strict firewall)
-      //    Free tier: 500MB/month relay. For personal use this is more than enough.
-      //    Priority: UDP 80 first (fastest), TCP 443 last (most firewall-friendly)
+      // 3. Metered.ca TURN relay — UDP 80 fastest, TCP 443 fallback for strict firewalls
       {
         urls: [
-          "turn:a.relay.metered.ca:80",          // UDP — fastest, try first
-          "turn:a.relay.metered.ca:80?transport=tcp", // TCP fallback
-          "turn:a.relay.metered.ca:443",
+          "turn:a.relay.metered.ca:80",
           "turn:a.relay.metered.ca:443?transport=tcp",
-          "turns:a.relay.metered.ca:443",         // TLS — most firewall-friendly, try last
-          "turns:a.relay.metered.ca:443?transport=tcp",
         ],
         username: "openrelayproject",
         credential: "openrelayproject",

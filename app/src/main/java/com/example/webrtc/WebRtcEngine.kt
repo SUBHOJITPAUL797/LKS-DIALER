@@ -136,34 +136,13 @@ class WebRtcEngine private constructor(private val context: Context) {
     // TURN relay is fetched from Cloudflare Worker so credentials rotate and are not baked into APK.
     private var iceServers = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-        // Static fallback TURN — Metered.ca free tier (no auth required on free plan)
-        // Will be REPLACED by short-lived credentials from Cloudflare Worker at call start
+        // Lean high-performance TURN relay: UDP 80 first (sub-50ms), TCP 443 fallback
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
             .createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turns:a.relay.metered.ca:443")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turns:a.relay.metered.ca:443?transport=tcp")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
             .createIceServer()
@@ -198,8 +177,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                     val urls = s.getJSONArray("urls")
                     val username = if (s.has("username")) s.getString("username") else null
                     val credential = if (s.has("credential")) s.getString("credential") else null
+                    val urlList = mutableListOf<String>()
                     for (j in 0 until urls.length()) {
-                        val builder = PeerConnection.IceServer.builder(urls.getString(j))
+                        urlList.add(urls.getString(j))
+                    }
+                    if (urlList.isNotEmpty()) {
+                        val builder = PeerConnection.IceServer.builder(urlList)
                         if (username != null) builder.setUsername(username)
                         if (credential != null) builder.setPassword(credential)
                         servers.add(builder.createIceServer())
@@ -520,8 +503,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
-            iceCandidatePoolSize = 2
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
+            iceCandidatePoolSize = 0
         }
         
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
@@ -1192,6 +1175,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } catch (_: Exception) {}
 
                     listenToActiveCall(incomingCall.callId, isCaller = false)
+                    listenForIceCandidates(incomingCall.callId, isCaller = false)
 
                     // ⚡ Pre-warm: build answer SDP NOW during ringing so Accept tap is instant
                     prebuiltAnswerSdp = null
@@ -2678,6 +2662,10 @@ class WebRtcEngine private constructor(private val context: Context) {
      */
     fun hookWebRtcAudioTrackPlayout() {
         try {
+            val recorder = com.example.util.CallAudioRecorder.getInstance(context)
+            if (!recorder.isRecording.value) {
+                return // Direct pristine hardware playout when not recording
+            }
             val adm = audioDeviceModule ?: return
             val audioOutputField = JavaAudioDeviceModule::class.java.getDeclaredField("audioOutput").apply {
                 isAccessible = true
@@ -2710,12 +2698,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             recorder.stopRecording(active.callId)
             false
         } else {
-            hookWebRtcAudioTrackPlayout()
             recorder.startRecording(
                 callId = active.callId,
                 otherPartyName = active.calleeName.ifBlank { active.callerName },
                 otherPartyNumber = active.calleeNumber.ifBlank { active.callerNumber }
             )
+            hookWebRtcAudioTrackPlayout()
             true
         }
     }

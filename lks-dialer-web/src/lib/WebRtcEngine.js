@@ -11,21 +11,18 @@ import { numbersMatch } from './ChatRepositoryWeb';
 
 const servers = {
   iceServers: [
-    { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
+    { urls: ['stun:stun.l.google.com:19302'] },
+    { urls: ['stun:stun.cloudflare.com:3478'] },
     {
       urls: [
         'turn:a.relay.metered.ca:80',
-        'turn:a.relay.metered.ca:80?transport=tcp',
-        'turn:a.relay.metered.ca:443',
-        'turn:a.relay.metered.ca:443?transport=tcp',
-        'turns:a.relay.metered.ca:443',
-        'turns:a.relay.metered.ca:443?transport=tcp'
+        'turn:a.relay.metered.ca:443?transport=tcp'
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
     }
   ],
-  iceCandidatePoolSize: 10,
+  iceCandidatePoolSize: 2,
 };
 
 export const PRESENCE_TIMEOUT_MS = 40000; // 40s timeout for presence staleness (matches Android)

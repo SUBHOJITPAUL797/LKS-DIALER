@@ -78,19 +78,11 @@ class P2pFileTransfer(private val context: Context) {
 
         private val STATIC_ICE_SERVERS: List<PeerConnection.IceServer> = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
             PeerConnection.IceServer.builder(
                 listOf(
                     "turn:a.relay.metered.ca:80",
-                    "turn:a.relay.metered.ca:80?transport=tcp",
-                    "turn:a.relay.metered.ca:443",
-                    "turn:a.relay.metered.ca:443?transport=tcp",
-                    "turns:a.relay.metered.ca:443",
-                    "turns:a.relay.metered.ca:443?transport=tcp"
+                    "turn:a.relay.metered.ca:443?transport=tcp"
                 )
             ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
         )

@@ -25,6 +25,8 @@ class CallSignalingManager(
 
     private var activeCallListener: ListenerRegistration? = null
     private var iceCandidateListener: ListenerRegistration? = null
+    @Volatile private var activeCandidateCallId: String? = null
+    @Volatile private var activeCandidateType: String? = null
     private val sentIceCandidateHashes = ConcurrentHashMap.newKeySet<String>()
 
     /**
@@ -54,6 +56,11 @@ class CallSignalingManager(
         onCandidateReceived: (IceCandidateDto) -> Unit
     ) {
         val targetType = if (isCaller) "answerCandidate" else "offerCandidate"
+        if (iceCandidateListener != null && activeCandidateCallId == callId && activeCandidateType == targetType) {
+            return // Listener already actively streaming candidates for this call
+        }
+        activeCandidateCallId = callId
+        activeCandidateType = targetType
         iceCandidateListener?.remove()
         iceCandidateListener = firestore.collection("calls").document(callId)
             .collection("candidates")
@@ -184,6 +191,8 @@ class CallSignalingManager(
         activeCallListener = null
         iceCandidateListener?.remove()
         iceCandidateListener = null
+        activeCandidateCallId = null
+        activeCandidateType = null
         sentIceCandidateHashes.clear()
     }
 }

@@ -12,22 +12,12 @@ const ICE_TIMEOUT_MS = 30000;         // 30s to establish DataChannel before fal
 
 const ICE_SERVERS = {
   iceServers: [
-    { urls: [
-        'stun:stun.l.google.com:19302',
-        'stun:stun1.l.google.com:19302',
-        'stun:stun2.l.google.com:19302',
-        'stun:stun3.l.google.com:19302',
-        'stun:stun4.l.google.com:19302',
-        'stun:stun.cloudflare.com:3478'
-    ]},
+    { urls: ['stun:stun.l.google.com:19302'] },
+    { urls: ['stun:stun.cloudflare.com:3478'] },
     {
       urls: [
         'turn:a.relay.metered.ca:80',
-        'turn:a.relay.metered.ca:80?transport=tcp',
-        'turn:a.relay.metered.ca:443',
-        'turn:a.relay.metered.ca:443?transport=tcp',
-        'turns:a.relay.metered.ca:443',
-        'turns:a.relay.metered.ca:443?transport=tcp'
+        'turn:a.relay.metered.ca:443?transport=tcp'
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
