@@ -205,7 +205,11 @@ class CallMessagingService : FirebaseMessagingService() {
                 }
                 
                 // Immediately update Firestore status to RINGING + callee's caller tune so caller can play it
-                if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+                val earlyEngine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                val isEarlyAnsweredOrDone = earlyEngine?.state?.value?.let { s ->
+                    s.activeCall?.callId == callId && (s.callStatus == com.example.data.model.CallStatus.ANSWERED || s.callStatus == com.example.data.model.CallStatus.ENDED || s.callStatus == com.example.data.model.CallStatus.DECLINED)
+                } ?: false
+                if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId) && !isEarlyAnsweredOrDone) {
                     try {
                         val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         val docRef = db.collection("calls").document(callId)
@@ -495,7 +499,11 @@ class CallMessagingService : FirebaseMessagingService() {
         }
 
         // ─── Update Firestore status to RINGING + caller tune so the CALLER hears the hello tune ───
-        if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
+        val notifEngine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+        val isNotifAnsweredOrDone = notifEngine?.state?.value?.let { s ->
+            s.activeCall?.callId == callId && (s.callStatus == com.example.data.model.CallStatus.ANSWERED || s.callStatus == com.example.data.model.CallStatus.ENDED || s.callStatus == com.example.data.model.CallStatus.DECLINED)
+        } ?: false
+        if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId) && !isNotifAnsweredOrDone) {
             try {
                 val db2 = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val docRef2 = db2.collection("calls").document(callId)
