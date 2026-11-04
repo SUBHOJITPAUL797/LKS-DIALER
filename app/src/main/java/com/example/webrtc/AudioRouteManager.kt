@@ -81,20 +81,29 @@ class AudioRouteManager(
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         Log.d(TAG, "AudioFocus changed: $focusChange")
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Background media playback (e.g. YouTube, Spotify, navigation, games).
+                // VoIP call retains top priority: do NOT place VoIP call on hold!
+                Log.d(TAG, "AudioFocus transient can duck received ── maintaining active VoIP call (media ducked)")
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 val timeSinceFocusGrant = System.currentTimeMillis() - callAudioFocusGrantedAt
                 if (timeSinceFocusGrant < 5000L) {
                     Log.d(TAG, "Suppressing auto-hold: audio focus granted only ${timeSinceFocusGrant}ms ago (startup transient)")
                     return@OnAudioFocusChangeListener
                 }
-                Log.i(TAG, "Cellular call interruption detected — placing VoIP call on hold")
+                Log.i(TAG, "Cellular call or alarm interruption detected ── placing VoIP call on hold")
+                isCellularCallInterrupting = true
+                onCellularInterruption(true)
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                Log.i(TAG, "Permanent audio focus loss ── placing VoIP call on hold")
                 isCellularCallInterrupting = true
                 onCellularInterruption(true)
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 if (isCellularCallInterrupting) {
-                    Log.i(TAG, "Regained audio focus after cellular call — resuming VoIP call")
+                    Log.i(TAG, "Regained audio focus after cellular call ── resuming VoIP call")
                     isCellularCallInterrupting = false
                     onCellularInterruption(false)
                 }

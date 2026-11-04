@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.collectLatest
 class ActiveCallService : Service() {
 
     private var headsetButtonManager: HeadsetButtonManager? = null
+    private var proximityWakeLock: android.os.PowerManager.WakeLock? = null
     private val serviceJob = kotlinx.coroutines.SupervisorJob()
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + serviceJob)
 
@@ -58,6 +59,16 @@ class ActiveCallService : Service() {
             headsetButtonManager?.startListening()
         }
 
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        // PROXIMITY_SCREEN_OFF_WAKE_LOCK is 32 (added in API 21)
+        if (powerManager?.isWakeLockLevelSupported(32) == true && proximityWakeLock == null) {
+            try {
+                proximityWakeLock = powerManager.newWakeLock(32, "LksDialer:ActiveCallProximity").apply {
+                    setReferenceCounted(false)
+                }
+            } catch (_: Exception) {}
+        }
+
         // Auto-stop self if call ends in WebRtcEngine
         serviceScope.launch {
             val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
@@ -68,9 +79,19 @@ class ActiveCallService : Service() {
                     com.example.data.model.CallStatus.DECLINED,
                     com.example.data.model.CallStatus.MISSED,
                     com.example.data.model.CallStatus.IDLE -> {
+                        releaseProximityLock()
                         stopSelf()
                     }
-                    else -> {}
+                    else -> {
+                        val shouldLock = s.callStatus == com.example.data.model.CallStatus.ANSWERED &&
+                            s.callType == com.example.data.model.CallType.AUDIO &&
+                            s.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE
+                        if (shouldLock) {
+                            try { proximityWakeLock?.acquire() } catch (_: Exception) {}
+                        } else {
+                            try { if (proximityWakeLock?.isHeld == true) proximityWakeLock?.release() } catch (_: Exception) {}
+                        }
+                    }
                 }
             }
         }
@@ -132,8 +153,18 @@ class ActiveCallService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun releaseProximityLock() {
+        try {
+            if (proximityWakeLock?.isHeld == true) {
+                proximityWakeLock?.release()
+            }
+        } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
         serviceJob.cancel()
+        releaseProximityLock()
+        proximityWakeLock = null
         try {
             headsetButtonManager?.stopListening()
         } catch (_: Exception) {}

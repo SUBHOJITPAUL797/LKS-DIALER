@@ -18,8 +18,8 @@ android {
     applicationId = "com.subhojit.lksdialer.app"
     minSdk = 24
     targetSdk = 35
-    versionCode = 208
-    versionName = "2.9.50"
+    versionCode = 209
+    versionName = "2.9.51"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

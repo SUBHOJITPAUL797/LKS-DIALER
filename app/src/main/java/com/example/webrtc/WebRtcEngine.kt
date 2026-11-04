@@ -248,8 +248,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
 
         val audioDeviceModule: JavaAudioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(isAecSupported)
-            .setUseHardwareNoiseSuppressor(isNsSupported)
+            .setUseHardwareAcousticEchoCanceler(false) // Enables WebRTC native C++ AEC3 (gold-standard software echo canceler)
+            .setUseHardwareNoiseSuppressor(false)      // Enables WebRTC native multi-band spectral noise suppression
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
             .setAudioAttributes(
@@ -320,9 +320,13 @@ class WebRtcEngine private constructor(private val context: Context) {
         val audioConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("echoCancellation", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation2", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googDAEchoCancellation", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl2", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
         }
@@ -391,6 +395,7 @@ class WebRtcEngine private constructor(private val context: Context) {
      * Prevents orphaned audio/video tracks and native AudioRecord/AudioTrack conflicts.
      */
     private fun cleanupMediaAndPeerConnection() {
+        unregisterNetworkHandoffCallback()
         try { localAudioTrack?.setEnabled(false) } catch (_: Exception) {}
         try { localAudioTrack?.dispose() } catch (_: Exception) {}
         localAudioTrack = null
@@ -467,6 +472,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
             if (_state.value.callDurationSeconds == 0) {
                 startCallTimer()
+        registerNetworkHandoffCallback()
             }
         }
 
@@ -502,6 +508,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private fun createPeerConnection(isCaller: Boolean, callId: String) {
         // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
+        unregisterNetworkHandoffCallback()
         cleanupMediaAndPeerConnection()
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -735,6 +742,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (!newLine.contains("useinbandfec=")) newLine += ";useinbandfec=1"
                 if (!newLine.contains("maxaveragebitrate=")) newLine += ";maxaveragebitrate=64000"
                 if (!newLine.contains("minptime=")) newLine += ";minptime=10"
+                if (!newLine.contains("usedtx=")) newLine += ";usedtx=1"
+                if (!newLine.contains("stereo=")) newLine += ";stereo=0;sprop-stereo=0"
+                if (!newLine.contains("cbr=")) newLine += ";cbr=0"
                 lines[i] = newLine
                 break
             }
@@ -743,13 +753,72 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (!fmtpFound) {
             for (i in lines.indices) {
                 if (lines[i].startsWith("a=rtpmap:$opusPayloadType")) {
-                    lines.add(i + 1, "a=fmtp:$opusPayloadType minptime=10;useinbandfec=1;maxaveragebitrate=64000")
+                    lines.add(i + 1, "a=fmtp:$opusPayloadType minptime=10;useinbandfec=1;maxaveragebitrate=64000;usedtx=1;stereo=0;sprop-stereo=0;cbr=0")
                     break
                 }
             }
         }
         
         return lines.joinToString("\r\n")
+    }
+
+    // ─── Network Handoff Watchdog (Seamless Wi-Fi <-> Cellular auto-reconnect) ───
+    private var networkHandoffCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    private fun registerNetworkHandoffCallback() {
+        if (networkHandoffCallback != null) return
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+        try {
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                private var activeNet: android.net.Network? = null
+                override fun onAvailable(network: android.net.Network) {
+                    if (activeNet != null && activeNet != network && _state.value.callStatus == CallStatus.ANSWERED) {
+                        Log.i("WebRtcEngine", "Default network switch detected ($activeNet -> $network) ── initiating seamless ICE restart")
+                        scope.launch {
+                            try {
+                                peerConnection?.restartIce()
+                                val constraints = MediaConstraints().apply {
+                                    mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+                                }
+                                peerConnection?.createOffer(object : SimpleSdpObserver() {
+                                    override fun onCreateSuccess(desc: SessionDescription?) {
+                                        if (desc != null) {
+                                            val tunedSdp = preferOpusAndEnableFec(desc.description)
+                                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                                            val activeId = _state.value.activeCall?.callId ?: return
+                                            firestore.collection("calls").document(activeId)
+                                                .set(mapOf(
+                                                    "offerSdp" to tunedSdp,
+                                                    "iceRestartRequested" to System.currentTimeMillis()
+                                                ), com.google.firebase.firestore.SetOptions.merge())
+                                        }
+                                    }
+                                }, constraints)
+                            } catch (e: Exception) {
+                                Log.w("WebRtcEngine", "ICE restart on network switch failed: ${e.message}")
+                            }
+                        }
+                    }
+                    activeNet = network
+                }
+            }
+            cm.registerDefaultNetworkCallback(callback)
+            networkHandoffCallback = callback
+            Log.d("WebRtcEngine", "Network handoff callback registered")
+        } catch (e: Exception) {
+            Log.w("WebRtcEngine", "Failed to register network handoff callback: ${e.message}")
+        }
+    }
+
+    private fun unregisterNetworkHandoffCallback() {
+        val callback = networkHandoffCallback ?: return
+        networkHandoffCallback = null
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            cm?.unregisterNetworkCallback(callback)
+            Log.d("WebRtcEngine", "Network handoff callback unregistered")
+        } catch (_: Exception) {}
     }
 
     private val isInitiatingCall = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -791,7 +860,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             myPhoneNumber = callerNumber
 
             // Industry Standard: Guarantee complete cleanup of any previous native connection/tracks
-            cleanupMediaAndPeerConnection()
+            unregisterNetworkHandoffCallback()
+        cleanupMediaAndPeerConnection()
 
             val myUser = FirebaseManager.getInstance(context).currentUser.value
             val myFcm = myUser?.fcmToken?.ifBlank { getCachedFcmToken(context) } ?: getCachedFcmToken(context)
@@ -1372,6 +1442,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
         startCallTimer()
+        registerNetworkHandoffCallback()
     }
 
     fun attachToCall(
@@ -1729,6 +1800,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         listenForIceCandidates(call.callId, isCaller = false)
         startCallTimer()
+        registerNetworkHandoffCallback()
     }
 
 
@@ -2055,6 +2127,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 if (_state.value.callDurationSeconds == 0) {
                     startCallTimer()
+        registerNetworkHandoffCallback()
                 }
             }
 
@@ -2087,6 +2160,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 refreshAvailableAudioDevices(defaultCallType = null)
                 if (_state.value.callDurationSeconds == 0) {
                     startCallTimer()
+        registerNetworkHandoffCallback()
                 }
             }
 
@@ -2336,6 +2410,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun startCallTimer() {
+        registerNetworkHandoffCallback()
         timerJob?.cancel()
         val startMillis = if (_state.value.callStartedAtMillis > 0L) {
             _state.value.callStartedAtMillis
@@ -2721,6 +2796,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         } catch (_: Exception) {}
         incomingCallWakeLock = null
         
+        unregisterNetworkHandoffCallback()
         cleanupMediaAndPeerConnection()
         val prevCall = _state.value.activeCall
 
