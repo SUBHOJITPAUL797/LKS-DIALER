@@ -530,16 +530,32 @@ fun ActiveAudioCallScreen(
                         state.networkQualityBars == 3 -> Color(0xFFF59E0B)
                         else -> Color(0xFFEF4444)
                     }
+                    val qualityText = when {
+                        state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
+                        state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Audio • ${state.roundTripTimeMs}ms" else "HD Audio"
+                        state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
+                        else -> "Weak Network"
+                    }
                     Surface(
                         color = qualityColor.copy(alpha = 0.2f),
                         shape = RoundedCornerShape(12.dp)
                     ) {
-                        Text(
-                            text = "📶 ${state.networkQualityBars}/5",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = qualityColor,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .background(qualityColor, CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = qualityText,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                color = qualityColor
+                            )
+                        }
                     }
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
@@ -1172,16 +1188,32 @@ fun ActiveVideoCallScreen(
                                 state.networkQualityBars == 3 -> Color(0xFFF59E0B)
                                 else -> Color(0xFFEF4444)
                             }
+                            val qualityText = when {
+                                state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
+                                state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Video • ${state.roundTripTimeMs}ms" else "HD Video"
+                                state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
+                                else -> "Weak Network"
+                            }
                             Surface(
                                 color = qualityColor.copy(alpha = 0.25f),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text(
-                                    text = "📶 ${state.networkQualityBars}/5",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = qualityColor,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(qualityColor, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = qualityText,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = qualityColor
+                                    )
+                                }
                             }
                         }
                         if (state.networkQualityBars < 2) {

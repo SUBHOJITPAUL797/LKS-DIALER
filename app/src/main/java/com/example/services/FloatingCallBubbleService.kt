@@ -185,6 +185,7 @@ class FloatingCallBubbleService : Service() {
     private var floatingView: View? = null
     private var currentMode: String? = null
     private var activeTimerView: TextView? = null
+    private var activeQualityBadgeView: TextView? = null
     private var activeMuteBtn: ImageView? = null
     private var activeSpeakerBtn: ImageView? = null
 
@@ -827,6 +828,11 @@ class FloatingCallBubbleService : Service() {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
 
+        val timerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
         val timerView = TextView(this).apply {
             text = "00:00"
             setTextColor(0xFF34D399.toInt()) // Emerald 400
@@ -834,8 +840,20 @@ class FloatingCallBubbleService : Service() {
             typeface = android.graphics.Typeface.MONOSPACE
         }
 
+        val qualityBadgeView = TextView(this).apply {
+            val eng = WebRtcEngine.getInstanceIfCreated()
+            val rtt = eng?.state?.value?.roundTripTimeMs ?: 0
+            text = if (rtt > 0) " • HD ${rtt}ms" else " • HD"
+            setTextColor(0xFF22C55E.toInt())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        timerRow.addView(timerView)
+        timerRow.addView(qualityBadgeView)
+
         infoCol.addView(nameView)
-        infoCol.addView(timerView)
+        infoCol.addView(timerRow)
 
         infoArea.addView(liveIndicator)
         infoArea.addView(infoCol)
@@ -999,6 +1017,7 @@ class FloatingCallBubbleService : Service() {
             isShowingPill = true
             currentMode = ACTION_SHOW_ACTIVE
             activeTimerView = timerView
+            activeQualityBadgeView = qualityBadgeView
             activeMuteBtn = muteBtn
             activeSpeakerBtn = speakerBtn
             timerRunnable?.let { handler.post(it) }
@@ -1007,6 +1026,7 @@ class FloatingCallBubbleService : Service() {
             timerRunnable?.let { handler.removeCallbacks(it) }
             timerRunnable = null
             activeTimerView = null
+            activeQualityBadgeView = null
             activeMuteBtn = null
             activeSpeakerBtn = null
             Log.e(TAG, "Failed to add active call pill to WindowManager", e)
@@ -1036,6 +1056,7 @@ class FloatingCallBubbleService : Service() {
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = null
         activeTimerView = null
+        activeQualityBadgeView = null
         activeMuteBtn = null
         activeSpeakerBtn = null
         callDocListener?.remove()
@@ -1077,6 +1098,24 @@ class FloatingCallBubbleService : Service() {
         }
         if (rtcState.callDurationSeconds > 0) {
             updateActivePillTimer(rtcState.callDurationSeconds)
+        }
+        activeQualityBadgeView?.let { qv ->
+            val bars = rtcState.networkQualityBars
+            val rtt = rtcState.roundTripTimeMs
+            when {
+                bars >= 4 -> {
+                    qv.text = if (rtt > 0) " • HD ${rtt}ms" else " • HD"
+                    qv.setTextColor(0xFF22C55E.toInt()) // Green
+                }
+                bars == 3 -> {
+                    qv.text = if (rtt > 0) " • ${rtt}ms" else " • Good"
+                    qv.setTextColor(0xFFF59E0B.toInt()) // Amber
+                }
+                else -> {
+                    qv.text = " • Weak"
+                    qv.setTextColor(0xFFEF4444.toInt()) // Red
+                }
+            }
         }
     }
 

@@ -33,6 +33,9 @@ data class WebRtcState(
     val callDurationSeconds: Int = 0,
     val callStartedAtMillis: Long = 0L,
     val networkQualityBars: Int = 5,
+    val callQualityBadge: String = "Connecting...",
+    val roundTripTimeMs: Int = 0,
+    val packetLossPercent: Int = 0,
     val connectionStatusText: String = "Idle",
     val localVideoTrack: VideoTrack? = null,
     val remoteVideoTrack: VideoTrack? = null,
@@ -446,23 +449,36 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
+    fun cacheIncomingOffer(callId: String, offerSdp: String) {
+        if (callId.isNotBlank() && offerSdp.isNotBlank()) {
+            cachedIncomingOfferSdp = offerSdp
+            val cur = _state.value.activeCall
+            if (cur?.callId == callId) {
+                _state.value = _state.value.copy(
+                    activeCall = cur.copy(offerSdp = offerSdp)
+                )
+            }
+            Log.i("WebRtcEngine", "⚡ In-band push SDP offer pre-cached in RAM (<0ms setup) for $callId (${offerSdp.length} chars)")
+        }
+    }
+
     /**
      * Triggered immediately when high-priority FCM 'call_answered' push arrives.
      * Bypasses any stalled gRPC listener on mobile data and connects the call in <200ms.
      */
-    fun onCallAnsweredFromPush(callId: String) {
+    fun onCallAnsweredFromPush(callId: String, answerSdp: String? = null) {
         val currentCall = _state.value.activeCall
         if (currentCall == null || currentCall.callId != callId) {
             Log.w("WebRtcEngine", "onCallAnsweredFromPush: ignored for non-matching callId $callId (active=${currentCall?.callId})")
             return
         }
-        Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId")
+        Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()})")
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
 
         if (_state.value.callStatus != CallStatus.ANSWERED) {
             _state.value = _state.value.copy(
                 callStatus = CallStatus.ANSWERED,
-                connectionStatusText = if (currentCall.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
+                connectionStatusText = if (currentCall.answerSdp != null || !answerSdp.isNullOrBlank()) "Connected • WebRTC" else "Connecting P2P..."
             )
             unmuteAllAudioTracks()
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -472,8 +488,27 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
             if (_state.value.callDurationSeconds == 0) {
                 startCallTimer()
-        registerNetworkHandoffCallback()
+                registerNetworkHandoffCallback()
             }
+        }
+
+        if (!answerSdp.isNullOrBlank() && !hasProcessedAnswer) {
+            Log.i("WebRtcEngine", "⚡ Fast-path answer: processing in-band push answerSdp immediately (<0ms)")
+            val updatedCall = currentCall.copy(status = CallStatus.ANSWERED, answerSdp = answerSdp)
+            _state.value = _state.value.copy(activeCall = updatedCall)
+            val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
+            peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                override fun onSetSuccess() {
+                    hasProcessedAnswer = true
+                    Log.i("WebRtcEngine", "⚡ Remote answer SDP set directly from push payload successfully!")
+                    drainQueuedRemoteIceCandidates()
+                    unmuteAllAudioTracks()
+                }
+                override fun onSetFailure(error: String?) {
+                    Log.w("WebRtcEngine", "Failed to set remote answer from push ($error) - will fallback to Firestore")
+                }
+            }, sessionDescription)
+            return
         }
 
         // Aggressively fetch answerSdp directly from Firestore with rapid retries & SERVER fallback
@@ -923,16 +958,28 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                 }
             
-            // Trigger Push Notification via external Worker (0ms direct token delivery)
-            triggerPushNotification(
-                calleeNumber = calleeNumber,
-                callerName = callerName,
-                callerNumber = callerNumber,
-                callType = callType.name,
-                callId = newCall.callId,
-                explicitFcmToken = calleeFcm,
-                explicitWebToken = calleeWeb
-            )
+            // ⚡ In-Band Push SDP Trigger (0ms setup): Embed local Offer SDP directly into FCM payload
+            val pushTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
+            val sendPushToCallee = { offer: String? ->
+                if (pushTriggered.compareAndSet(false, true)) {
+                    triggerPushNotification(
+                        calleeNumber = calleeNumber,
+                        callerName = callerName,
+                        callerNumber = callerNumber,
+                        callType = callType.name,
+                        callId = newCall.callId,
+                        explicitFcmToken = calleeFcm,
+                        explicitWebToken = calleeWeb,
+                        offerSdp = offer
+                    )
+                }
+            }
+
+            // Fallback: If local createOffer takes >180ms, push immediately anyway so callee never waits
+            scope.launch {
+                delay(180)
+                sendPushToCallee(null)
+            }
 
             // Fallback RINGING: If callee push acknowledgment is delayed, switch to RINGING after 3.5s
             scope.launch {
@@ -1022,6 +1069,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     } catch (_: Exception) {}
                                 }
                             }
+                        // ⚡ In-Band Push Offer: Embed offerSdp in FCM push payload (<0ms setup on Callee side)
+                        sendPushToCallee(tunedSdp)
                     }
                 }
                 override fun onSetSuccess() {}
@@ -1852,6 +1901,22 @@ class WebRtcEngine private constructor(private val context: Context) {
                                                 } catch (_: Exception) {}
                                             }
                                         }
+                                    // ⚡ In-Band Push Answer: Forward answerSdp directly to Caller via high-priority push
+                                    val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+                                    val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                                    if (call.callerNumber.isNotBlank()) {
+                                        triggerPushNotification(
+                                            calleeNumber = call.callerNumber,
+                                            callerName = myPhoneNumber,
+                                            callerNumber = myPhoneNumber,
+                                            callType = call.callType.name,
+                                            callId = call.callId,
+                                            type = "call_answered",
+                                            explicitFcmToken = targetFcm,
+                                            explicitWebToken = targetWeb,
+                                            answerSdp = tunedSdp
+                                        )
+                                    }
                                     drainQueuedRemoteIceCandidates()
                                     unmuteAllAudioTracks()
                                 }
@@ -2466,10 +2531,24 @@ class WebRtcEngine private constructor(private val context: Context) {
                         else -> 1
                     }
 
+                    val prefix = if (_state.value.callType == CallType.VIDEO) "HD Video" else "HD Audio"
+                    val badge = when {
+                        bars >= 4 -> if (rttMs > 0) "$prefix • ${rttMs.toInt()}ms" else prefix
+                        bars == 3 -> if (rttMs > 0) "Good • ${rttMs.toInt()}ms" else "Good"
+                        bars == 2 -> "Fair Connection"
+                        else -> "Weak Network"
+                    }
+
                     scope.launch(Dispatchers.Main) {
-                        if (_state.value.networkQualityBars != bars && _state.value.callStatus == CallStatus.ANSWERED) {
-                            _state.value = _state.value.copy(networkQualityBars = bars)
-                            if (_state.value.callType == CallType.VIDEO) {
+                        if (_state.value.callStatus == CallStatus.ANSWERED) {
+                            val oldBars = _state.value.networkQualityBars
+                            _state.value = _state.value.copy(
+                                networkQualityBars = bars,
+                                callQualityBadge = badge,
+                                roundTripTimeMs = rttMs.toInt(),
+                                packetLossPercent = lossRate.toInt()
+                            )
+                            if (oldBars != bars && _state.value.callType == CallType.VIDEO) {
                                 adaptVideoQuality(bars)
                             }
                         }
@@ -2952,7 +3031,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         callId: String,
         type: String = "incoming_call",
         explicitFcmToken: String? = null,
-        explicitWebToken: String? = null
+        explicitWebToken: String? = null,
+        offerSdp: String? = null,
+        answerSdp: String? = null
     ) {
         val variations = mutableListOf<String>()
         variations.add(calleeNumber)
@@ -3006,6 +3087,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                         put("type", type)
                         put("callerFcmToken", myFcm)
                         put("callerWebToken", myWeb)
+                        if (!offerSdp.isNullOrBlank() && offerSdp.length < 3500) {
+                            put("offerSdp", offerSdp)
+                        }
+                        if (!answerSdp.isNullOrBlank() && answerSdp.length < 3500) {
+                            put("answerSdp", answerSdp)
+                        }
                         val myPic = myUser?.profilePictureUrl ?: ""
                         // NEVER send Base64 image strings in FCM payload (hard 4096-byte limit will reject push).
                         // Only send external HTTP/HTTPS image URLs.

@@ -20,6 +20,8 @@ class ActiveCallService : Service() {
 
     private var headsetButtonManager: HeadsetButtonManager? = null
     private var proximityWakeLock: android.os.PowerManager.WakeLock? = null
+    private var cpuWakeLock: android.os.PowerManager.WakeLock? = null
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
     private val serviceJob = kotlinx.coroutines.SupervisorJob()
     private val serviceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + serviceJob)
 
@@ -60,6 +62,36 @@ class ActiveCallService : Service() {
         }
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        // Battery & Deep Sleep Armor: Prevent CPU suspension during call (MIUI/Samsung OneUI)
+        if (cpuWakeLock == null) {
+            try {
+                cpuWakeLock = powerManager?.newWakeLock(
+                    android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                    "LksDialer:ActiveCallCpuLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire(60 * 60 * 1000L) // 1-hour safety max timeout
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Full Performance / Low Latency Wi-Fi Armor: Prevent Wi-Fi radio sleep/packet batching
+        if (wifiLock == null) {
+            try {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                @Suppress("DEPRECATION")
+                val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager?.createWifiLock(wifiMode, "LksDialer:ActiveCallWifiLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (_: Exception) {}
+        }
+
         // PROXIMITY_SCREEN_OFF_WAKE_LOCK is 32 (added in API 21)
         if (powerManager?.isWakeLockLevelSupported(32) == true && proximityWakeLock == null) {
             try {
@@ -79,7 +111,7 @@ class ActiveCallService : Service() {
                     com.example.data.model.CallStatus.DECLINED,
                     com.example.data.model.CallStatus.MISSED,
                     com.example.data.model.CallStatus.IDLE -> {
-                        releaseProximityLock()
+                        releaseCallLocks()
                         stopSelf()
                     }
                     else -> {
@@ -153,6 +185,23 @@ class ActiveCallService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun releaseCallLocks() {
+        releaseProximityLock()
+        try {
+            if (cpuWakeLock?.isHeld == true) {
+                cpuWakeLock?.release()
+            }
+        } catch (_: Exception) {}
+        cpuWakeLock = null
+
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (_: Exception) {}
+        wifiLock = null
+    }
+
     private fun releaseProximityLock() {
         try {
             if (proximityWakeLock?.isHeld == true) {
@@ -163,7 +212,7 @@ class ActiveCallService : Service() {
 
     override fun onDestroy() {
         serviceJob.cancel()
-        releaseProximityLock()
+        releaseCallLocks()
         proximityWakeLock = null
         try {
             headsetButtonManager?.stopListening()

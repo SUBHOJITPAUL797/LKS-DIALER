@@ -102,6 +102,8 @@ export default {
               groupId: body.groupId || "",
               groupName: body.groupName || "",
               senderName: body.senderName || callerName || "",
+              offerSdp: (body.offerSdp && typeof body.offerSdp === "string" && body.offerSdp.length < 3500) ? body.offerSdp : "",
+              answerSdp: (body.answerSdp && typeof body.answerSdp === "string" && body.answerSdp.length < 3500) ? body.answerSdp : "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { 

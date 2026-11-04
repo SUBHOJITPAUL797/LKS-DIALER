@@ -106,10 +106,11 @@ class CallMessagingService : FirebaseMessagingService() {
             }
 
             if (type == "call_answered") {
-                Log.i("FCM", "Received call_answered push notification for callId: $callId")
+                val answerSdp = remoteMessage.data["answerSdp"]
+                Log.i("FCM", "Received call_answered push notification for callId: $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()})")
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.onCallAnsweredFromPush(callId)
+                engine?.onCallAnsweredFromPush(callId, answerSdp)
                 try {
                     if (wakeLock?.isHeld == true) wakeLock.release()
                 } catch (_: Exception) {}
@@ -189,6 +190,13 @@ class CallMessagingService : FirebaseMessagingService() {
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
+                val offerSdp     = remoteMessage.data["offerSdp"]     ?: ""
+
+                if (offerSdp.isNotBlank()) {
+                    val rtc = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                        ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
+                    rtc.cacheIncomingOffer(callId, offerSdp)
+                }
 
                 // Check Do Not Disturb (DND) and Blocklist
                 val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(this)
