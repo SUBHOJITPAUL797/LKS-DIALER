@@ -126,6 +126,9 @@ class CallMessagingService : FirebaseMessagingService() {
                 Log.d("FCM", "Received $type for callId: $callId, ending call immediately with status $endStatus")
                 val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 notificationManager.cancel(NOTIFICATION_ID)
+                try { notificationManager.cancel(2001) } catch (_: Exception) {}
+                try { notificationManager.cancel(2002) } catch (_: Exception) {}
+                ActiveCallService.stop(this)
                 
                 // Force end the call in WebRtcEngine to drop the ringing / calling UI immediately
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()

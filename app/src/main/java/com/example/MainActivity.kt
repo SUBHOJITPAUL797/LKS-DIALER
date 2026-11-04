@@ -215,7 +215,7 @@ class MainActivity : ComponentActivity() {
             }
             // User requested: When closing the PiP window via 'X', DO NOT end the call!
             // Continue the call in background and show the active floating pill instead!
-            if (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING) {
+            if (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING || (currentStatus == com.example.data.model.CallStatus.RINGING && com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.isCaller == true)) {
                 val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
                 val activeCall = rtcState?.activeCall
                 if (activeCall != null) {
@@ -234,7 +234,7 @@ class MainActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
-        if (rtcState != null && (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
+        if (rtcState != null && (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING || (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && rtcState.isCaller))) {
             if (rtcState.callType == com.example.data.model.CallType.VIDEO && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (enterPipMode()) return // Successfully triggered PiP; do NOT show overlapping floating pill
             }
@@ -298,11 +298,7 @@ class MainActivity : ComponentActivity() {
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
         val activeCall = rtcState.activeCall ?: return
 
-        val myPhone = com.example.data.repository.FirebaseManager.getInstance(this).currentUser.value?.phoneNumber ?: ""
-        val callerNum = activeCall.callerNumber
-        val isMyOutgoing = myPhone.isNotBlank() && callerNum.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(myPhone, callerNum)
-
-        if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing) {
+        if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !rtcState.isCaller) {
             // Show Draggable Incoming Call Pill over home screen when app is minimized during ring
             com.example.services.FloatingCallBubbleService.showIncoming(
                 this,
@@ -311,7 +307,9 @@ class MainActivity : ComponentActivity() {
                 activeCall.callerNumber,
                 activeCall.callType
             )
-        } else if ((rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED || rtcState.callStatus == com.example.data.model.CallStatus.CALLING)) {
+        } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
+                   rtcState.callStatus == com.example.data.model.CallStatus.CALLING ||
+                   (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && rtcState.isCaller)) {
             // Show Draggable Active Call Pill over other apps (suppressed only if native PiP window is currently visible)
             if (!isInPipMode) {
                 com.example.services.FloatingCallBubbleService.showActive(
@@ -428,12 +426,9 @@ class MainActivity : ComponentActivity() {
                 val currentUser by firebaseManager.currentUser.collectAsState()
                 val rtcState by webRtcEngine.state.collectAsState()
                 
-                LaunchedEffect(rtcState.callStatus, rtcState.activeCall) {
+                LaunchedEffect(rtcState.callStatus, rtcState.activeCall, rtcState.isCaller) {
                     val window = (context as? android.app.Activity)?.window
-                    val myPhone = currentUser?.phoneNumber ?: ""
-                    val callerNum = rtcState.activeCall?.callerNumber ?: ""
-                    val isMyOutgoing = myPhone.isNotBlank() && callerNum.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(myPhone, callerNum)
-                    val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isMyOutgoing
+                    val isIncomingRinging = rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !rtcState.isCaller
 
                     if (isIncomingRinging) {
                         if (isForeground) {
@@ -891,8 +886,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val isIncoming = (activeCall?.callerNumber != currentUser?.phoneNumber) ||
-                        (currentUser?.phoneNumber != null && com.example.util.ContactsHelper.numbersMatch(activeCall?.calleeNumber ?: "", currentUser?.phoneNumber ?: ""))
+                val isIncoming = !rtcState.isCaller
                 val otherPartyNumber = if (isIncoming) (activeCall?.callerNumber ?: "") else (activeCall?.calleeNumber ?: "")
                 val otherPartyUser = remember(otherPartyNumber) {
                     if (otherPartyNumber.isNotBlank()) firebaseManager.lookupUserByNumber(otherPartyNumber) else null

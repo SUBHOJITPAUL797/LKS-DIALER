@@ -63,7 +63,9 @@ class CallNotificationReceiver : BroadcastReceiver() {
             }
             ACTION_DECLINE -> {
                 // Dismiss any floating bubble notification
+                try { notificationManager.cancel(2001) } catch (_: Exception) {}
                 try { notificationManager.cancel(2002) } catch (_: Exception) {}
+                ActiveCallService.stop(context)
                 val callerNumber = intent.getStringExtra("caller_number") ?: ""
 
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 

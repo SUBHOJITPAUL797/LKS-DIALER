@@ -43,6 +43,7 @@ data class WebRtcState(
     val didIRequestVideoUpgrade: Boolean = false,
     val isOnHold: Boolean = false,
     val isHeldLocally: Boolean = false,
+    val isCaller: Boolean = false,
     val activeCallerTuneTitle: String? = null
 )
 
@@ -407,6 +408,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         try { _state.value.localVideoTrack?.dispose() } catch (_: Exception) {}
         try { _state.value.remoteVideoTrack?.dispose() } catch (_: Exception) {}
+        _state.value = _state.value.copy(localVideoTrack = null, remoteVideoTrack = null)
         
         try {
             videoCapturer?.stopCapture()
@@ -432,6 +434,10 @@ class WebRtcEngine private constructor(private val context: Context) {
      */
     fun unmuteAllAudioTracks() {
         try {
+            try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
+            if (!_state.value.isMuted) {
+                try { audioDeviceModule?.setMicrophoneMute(false) } catch (_: Exception) {}
+            }
             localAudioTrack?.setEnabled(!_state.value.isMuted && !_state.value.isOnHold)
             val receivers = peerConnection?.receivers ?: emptyList()
             for (receiver in receivers) {
@@ -938,6 +944,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 activeCall = newCall,
                 callStatus = CallStatus.CALLING,
                 callType = callType,
+                isCaller = true,
                 isSpeakerOn = callType == CallType.VIDEO,
                 connectionStatusText = "Calling ...",
                 activeCallerTuneTitle = calleeTuneTitle
@@ -1183,7 +1190,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     // Update new call in Firestore to RINGING
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     // Update local state to point to new call
-                    _state.value = _state.value.copy(activeCall = incomingCall)
+                    _state.value = _state.value.copy(activeCall = incomingCall, isCaller = false)
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                     listenForIceCandidates(incomingCall.callId, isCaller = false)
                     return@addSnapshotListener
@@ -1242,6 +1249,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         activeCall = incomingCall.copy(status = CallStatus.RINGING),
                         callStatus = CallStatus.RINGING,
                         callType = incomingCall.callType,
+                        isCaller = false,
                         connectionStatusText = "Incoming Call"
                     )
 
@@ -1407,6 +1415,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             activeCall = optimisticCall.copy(status = CallStatus.ANSWERED),
             callStatus = CallStatus.ANSWERED,
             callType = type,
+            isCaller = false,
             connectionStatusText = "Connecting P2P..."
         )
 
@@ -1558,6 +1567,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 ),
                 callStatus = CallStatus.RINGING,
                 callType = type,
+                isCaller = false,
                 connectionStatusText = "Incoming Call"
             )
             headsetButtonManager.startListening()
@@ -1671,6 +1681,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         activeCall = call.copy(status = resolvedStatus, offerSdp = mergedOffer),
                         callType = call.callType,
                         callStatus = resolvedStatus,
+                        isCaller = false,
                         connectionStatusText = "Incoming Call"
                     )
                     headsetButtonManager.startListening()
@@ -1701,6 +1712,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
+            isCaller = false,
             connectionStatusText = "Connecting P2P..."
         )
 
@@ -2606,6 +2618,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             localAudioTrack?.setEnabled(!_state.value.isMuted)
             _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
             com.example.util.CallSoundEffectsManager.playUnholdTone(context)
+            unmuteAllAudioTracks()
         }
         
         // 2. Update local UI state
@@ -2700,10 +2713,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
             
             val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
-            val isCaller = call != null && currentPhone.isNotBlank() && (
+            val isCaller = _state.value.isCaller || (call != null && currentPhone.isNotBlank() && (
                 currentPhone == call.callerNumber ||
                 currentPhone.replace(Regex("[^0-9]"), "") == call.callerNumber.replace(Regex("[^0-9]"), "")
-            )
+            ))
             if (isCaller && endStatus == CallStatus.MISSED && call != null) {
                 FirebaseManager.getInstance(context).logMissedCallForOfflineUser(
                     calleeNumber = call.calleeNumber,
@@ -2887,10 +2900,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Phase 3: Reliable call logs — record call ended for both caller and callee
         if (prevCall != null) {
             val userPhone = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
-            val isCaller = userPhone.isNotBlank() && (
+            val isCaller = _state.value.isCaller || (userPhone.isNotBlank() && (
                 userPhone == prevCall.callerNumber ||
                 userPhone.replace(Regex("[^0-9]"), "") == prevCall.callerNumber.replace(Regex("[^0-9]"), "")
-            )
+            ))
             val direction = if (status == CallStatus.MISSED) {
                 com.example.data.model.CallDirection.MISSED
             } else if (isCaller) {
@@ -2945,6 +2958,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         try {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             notificationManager.cancel(1001)
+            notificationManager.cancel(2001)
+            notificationManager.cancel(2002)
         } catch (_: Exception) {}
         
         try {

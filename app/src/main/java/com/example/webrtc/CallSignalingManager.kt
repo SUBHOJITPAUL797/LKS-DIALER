@@ -165,15 +165,22 @@ class CallSignalingManager(
         try {
             val callDoc = firestore.collection("calls").document(callId)
             callDoc.collection("candidates").get().addOnSuccessListener { snapshot ->
-                val batch = firestore.batch()
-                for (doc in snapshot.documents) {
-                    batch.delete(doc.reference)
+                val docs = snapshot.documents
+                if (docs.isEmpty()) {
+                    callDoc.delete()
+                    return@addOnSuccessListener
                 }
-                batch.delete(callDoc)
-                batch.commit().addOnSuccessListener {
-                    Log.i(TAG, "Successfully deleted call $callId and ${snapshot.size()} candidates from Firestore")
-                }.addOnFailureListener { e ->
-                    Log.w(TAG, "Failed to delete call document batch: ${e.message}")
+                docs.chunked(400).forEachIndexed { index, chunk ->
+                    val batch = firestore.batch()
+                    for (doc in chunk) {
+                        batch.delete(doc.reference)
+                    }
+                    if (index == (docs.size - 1) / 400) {
+                        batch.delete(callDoc)
+                    }
+                    batch.commit().addOnFailureListener { e ->
+                        Log.w(TAG, "Failed to delete call candidates batch: ${e.message}")
+                    }
                 }
             }.addOnFailureListener {
                 callDoc.delete()
