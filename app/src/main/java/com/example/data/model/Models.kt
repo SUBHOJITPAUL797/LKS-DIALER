@@ -70,7 +70,9 @@ data class CallDto(
     val callerFcmToken: String = "",
     val callerWebToken: String = "",
     val calleeFcmToken: String = "",
-    val calleeWebToken: String = ""
+    val calleeWebToken: String = "",
+    val callerCandidates: List<String> = emptyList(),
+    val calleeCandidates: List<String> = emptyList()
 )
 
 data class IceCandidateDto(

@@ -98,6 +98,13 @@ class CallSignalingManager(
         )
         firestore.collection("calls").document(callId)
             .collection("candidates").add(candidateDto)
+
+        val fieldName = if (isCaller) "callerCandidates" else "calleeCandidates"
+        val compactStr = "${candidate.sdpMid}|${candidate.sdpMLineIndex}|${candidate.sdp}"
+        try {
+            firestore.collection("calls").document(callId)
+                .update(fieldName, com.google.firebase.firestore.FieldValue.arrayUnion(compactStr))
+        } catch (_: Exception) {}
     }
 
     /**

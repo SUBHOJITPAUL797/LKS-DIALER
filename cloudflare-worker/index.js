@@ -168,15 +168,31 @@ async function handleTurnCredentials(env, corsHeaders) {
     // ICE server priority: STUN first (free P2P) → TURN last (relay fallback only)
     // WebRTC tries them in order — STUN succeeds ~80% of calls so TURN is rarely used
     const iceServers = [
-      // 1. Google STUN — globally distributed, zero cost, sub-10ms latency
-      { urls: ["stun:stun.l.google.com:19302"] },
+      // 1. Google STUN pool — 5 globally distributed endpoints
+      {
+        urls: [
+          "stun:stun.l.google.com:19302",
+          "stun:stun1.l.google.com:19302",
+          "stun:stun2.l.google.com:19302",
+          "stun:stun3.l.google.com:19302",
+          "stun:stun4.l.google.com:19302",
+        ],
+      },
       // 2. Cloudflare STUN — low latency on Cloudflare's edge network
       { urls: ["stun:stun.cloudflare.com:3478"] },
-      // 3. Metered.ca TURN relay — UDP 80 fastest, TCP 443 fallback for strict firewalls
+      // 3. Metered STUN
+      { urls: ["stun:stun.relay.metered.ca:80"] },
+      // 4. Metered.ca TURN relay — UDP & TCP across ports 80 and 443 for mobile CGNAT / symmetric NAT penetration
       {
         urls: [
           "turn:a.relay.metered.ca:80",
+          "turn:a.relay.metered.ca:80?transport=tcp",
+          "turn:a.relay.metered.ca:443",
           "turn:a.relay.metered.ca:443?transport=tcp",
+          "turn:global.relay.metered.ca:80",
+          "turn:global.relay.metered.ca:80?transport=tcp",
+          "turn:global.relay.metered.ca:443",
+          "turn:global.relay.metered.ca:443?transport=tcp",
         ],
         username: "openrelayproject",
         credential: "openrelayproject",

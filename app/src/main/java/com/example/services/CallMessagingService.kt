@@ -117,6 +117,16 @@ class CallMessagingService : FirebaseMessagingService() {
                 return
             }
             
+            if (type == "call_ringing") {
+                Log.d("FCM", "Received call_ringing push for callId: $callId")
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                engine?.onCallRingingFromPush(callId)
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (_: Exception) {}
+                return
+            }
+
             if (type == "cancel_call" || type == "missed_call" || type == "call_declined" || type == "call_ended") {
                 val endStatus = when (type) {
                     "call_declined" -> com.example.data.model.CallStatus.DECLINED
@@ -245,6 +255,17 @@ class CallMessagingService : FirebaseMessagingService() {
                     }
                 }
                 
+                // ⚡ Direct Fast-Ack: Send high-priority 'call_ringing' push back to Caller so Caller screen updates to RINGING instantly
+                val callerFcm = remoteMessage.data["callerFcmToken"] ?: ""
+                val callerWeb = remoteMessage.data["callerWebToken"] ?: ""
+                if (callerNumber.isNotBlank() && (callerFcm.isNotBlank() || callerWeb.isNotBlank())) {
+                    try {
+                        val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
+                            ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
+                        engine.sendRingingAckPush(callerNumber, callId, callerFcm, callerWeb)
+                    } catch (_: Exception) {}
+                }
+
                 showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)
             }
         }

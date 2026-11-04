@@ -140,19 +140,51 @@ class WebRtcEngine private constructor(private val context: Context) {
     // ICE servers: populated dynamically at call start via fetchIceServers().
     // Fallback list used if dynamic fetch fails (STUN-only — works for ~70% of networks).
     // TURN relay is fetched from Cloudflare Worker so credentials rotate and are not baked into APK.
+    // High-availability ICE servers: 5-endpoint Google STUN pool, Cloudflare STUN, Metered STUN,
+    // and multi-region Metered TURN relays (both UDP & TCP across ports 80 and 443).
+    // TCP 443 penetrates strict Carrier-Grade NAT (CGNAT) and mobile carrier firewalls (Jio, Airtel, etc.).
     private var iceServers = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-        // Lean high-performance TURN relay: UDP 80 first (sub-50ms), TCP 443 fallback
+        PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
             .createIceServer(),
         PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443?transport=tcp")
             .setUsername("openrelayproject")
             .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:443")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
+            .createIceServer(),
+        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:443?transport=tcp")
+            .setUsername("openrelayproject")
+            .setPassword("openrelayproject")
             .createIceServer()
     )
+    private val processedCandidateStrings = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun getIceServers(): List<PeerConnection.IceServer> = iceServers
 
@@ -472,6 +504,33 @@ class WebRtcEngine private constructor(private val context: Context) {
      * Triggered immediately when high-priority FCM 'call_answered' push arrives.
      * Bypasses any stalled gRPC listener on mobile data and connects the call in <200ms.
      */
+    /**
+     * Triggered immediately when high-priority FCM 'call_ringing' push arrives.
+     * Informs the caller that the callee's device is physically ringing right now.
+     */
+    fun onCallRingingFromPush(callId: String) {
+        val currentCall = _state.value.activeCall
+        if (currentCall == null || currentCall.callId != callId) return
+        if (_state.value.isCaller && _state.value.callStatus == CallStatus.CALLING) {
+            Log.i("WebRtcEngine", "⚡ High-priority FCM 'call_ringing' received: callee phone is ringing right now!")
+            _state.value = _state.value.copy(
+                callStatus = CallStatus.RINGING,
+                connectionStatusText = "Ringing..."
+            )
+            val callerTune = currentCall.callerTuneTitle
+            if (!callerTune.isNullOrBlank()) {
+                if (_state.value.activeCallerTuneTitle != callerTune) {
+                    _state.value = _state.value.copy(activeCallerTuneTitle = callerTune)
+                    com.example.util.CallSoundEffectsManager.startCallerTune(context, currentCall.callerTuneAudioBase64, currentCall.callerTuneUrl, callerTune, currentCall.callerTuneStartMs)
+                } else {
+                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                }
+            } else {
+                com.example.util.CallSoundEffectsManager.onCallRinging(context)
+            }
+        }
+    }
+
     fun onCallAnsweredFromPush(callId: String, answerSdp: String? = null) {
         val currentCall = _state.value.activeCall
         if (currentCall == null || currentCall.callId != callId) {
@@ -557,12 +616,24 @@ class WebRtcEngine private constructor(private val context: Context) {
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.DISABLED
-            iceCandidatePoolSize = 0
+            tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
+            iceCandidatePoolSize = 2
+            pruneTurnPorts = true
         }
         
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onSignalingChange(newState: PeerConnection.SignalingState?) {}
+            override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
+                Log.d("WebRtcEngine", "onConnectionChange: $newState")
+                if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    if (_state.value.callStatus == CallStatus.ANSWERED) {
+                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                        unmuteAllAudioTracks()
+                    }
+                }
+            }
             override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
                 Log.d("WebRtcEngine", "onIceConnectionChange: $newState")
                 when (newState) {
@@ -705,6 +776,19 @@ class WebRtcEngine private constructor(private val context: Context) {
         localAudioTrack?.let {
             peerConnection?.addTrack(it, listOf("ARDAMS"))
         }
+    }
+
+    fun sendRingingAckPush(callerNumber: String, callId: String, callerFcmToken: String?, callerWebToken: String?) {
+        triggerPushNotification(
+            calleeNumber = callerNumber,
+            callerName = "LKS Callee",
+            callerNumber = myPhoneNumber,
+            callType = "AUDIO",
+            callId = callId,
+            type = "call_ringing",
+            explicitFcmToken = callerFcmToken,
+            explicitWebToken = callerWebToken
+        )
     }
 
     private fun sendIceCandidate(callId: String, candidate: IceCandidate, isCaller: Boolean) {
@@ -988,26 +1072,6 @@ class WebRtcEngine private constructor(private val context: Context) {
                 sendPushToCallee(null)
             }
 
-            // Fallback RINGING: If callee push acknowledgment is delayed, switch to RINGING after 3.5s
-            scope.launch {
-                delay(3500)
-                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
-                    Log.i("WebRtcEngine", "Fallback RINGING: Callee acknowledgment delayed, switching to RINGING status")
-                    _state.value = _state.value.copy(
-                        callStatus = CallStatus.RINGING,
-                        connectionStatusText = "Ringing..."
-                    )
-                    val ringMap = mutableMapOf<String, Any>("status" to CallStatus.RINGING.name)
-                    if (!calleeTuneTitle.isNullOrBlank()) {
-                        ringMap["callerTuneTitle"] = calleeTuneTitle
-                        if (calleeTuneAudio.isNotBlank()) ringMap["callerTuneAudioBase64"] = calleeTuneAudio
-                        if (calleeTuneUrl.isNotBlank()) ringMap["callerTuneUrl"] = calleeTuneUrl
-                        ringMap["callerTuneStartMs"] = calleeTuneStartMs
-                    }
-                    firestore.collection("calls").document(newCall.callId).update(ringMap)
-                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
-                }
-            }
             
             com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
             headsetButtonManager.startListening()
@@ -2248,6 +2312,28 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
 
+            // ⚡ Fast Candidate Ingestion from main Call document (zero-latency across mobile cellular NAT)
+            val remoteCandidates = if (isCaller) call.calleeCandidates else call.callerCandidates
+            if (remoteCandidates.isNotEmpty()) {
+                val pc = peerConnection
+                for (candStr in remoteCandidates) {
+                    if (processedCandidateStrings.add(candStr)) {
+                        val parts = candStr.split("|", limit = 3)
+                        if (parts.size == 3) {
+                            val lineIndex = parts[1].toIntOrNull() ?: 0
+                            val candidate = IceCandidate(parts[0], lineIndex, parts[2])
+                            if (pc != null && pc.remoteDescription != null) {
+                                pc.addIceCandidate(candidate)
+                            } else {
+                                synchronized(queuedRemoteIceCandidates) {
+                                    queuedRemoteIceCandidates.add(candidate)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Hold State synchronization
             val remoteHold = snapshot?.getBoolean("isOnHold") == true || snapshot?.getBoolean("onHold") == true || call.isOnHold
             val heldBy = snapshot?.getString("heldBy") ?: call.heldBy ?: ""
@@ -2879,6 +2965,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         prebuiltCallId = null
         preWarmDone = false
         try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
+        processedCandidateStrings.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
