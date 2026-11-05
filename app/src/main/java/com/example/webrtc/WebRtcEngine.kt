@@ -621,7 +621,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.w("WebRtcEngine", "Failed to set remote answer from push ($error) - will fallback to Firestore")
                 }
             }, sessionDescription)
-            return
+            // Note: Do NOT return early. Launch background candidate sync to ingest any Cloudflare TURN relay candidates uploaded after initial push
         }
 
         // Aggressively fetch answerSdp directly from Firestore with rapid retries & SERVER fallback
@@ -2036,9 +2036,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 override fun onSetSuccess() {
                                     Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing comprehensive in-band push & Firestore sync")
                                     scope.launch(Dispatchers.IO) {
-                                        // Brief 50ms window allows host and Cloudflare STUN/TURN candidates to gather
-                                        delay(50)
-                                        val candidatesList = localGatheredCandidates.take(10).toList()
+                                        // Smart gathering window: wait up to 220ms or until at least one Cloudflare TURN relay/srflx candidate gathers
+                                        val gatherStart = System.currentTimeMillis()
+                                        while (System.currentTimeMillis() - gatherStart < 220) {
+                                            if (localGatheredCandidates.any { it.contains("typ relay") || it.contains("typ srflx") }) {
+                                                break
+                                            }
+                                            delay(20)
+                                        }
+                                        val candidatesList = localGatheredCandidates.take(12).toList()
                                         val calleeCandidatesStr = candidatesList.joinToString(";;;").ifBlank { null }
 
                                         val answerMap = mutableMapOf<String, Any>(
@@ -2186,13 +2192,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
                                 }
                                 break
-                            } else if (isCaller && !hasProcessedAnswer) {
-                                // Caller pre-answer: deliver updates waiting for answerSdp
-                                withContext(Dispatchers.Main) {
-                                    handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
-                                }
-                            } else if (!isCaller && !hasProcessedOffer) {
-                                // Callee pre-offer: deliver updates waiting for offerSdp
+                            } else {
+                                // Continuously deliver updates (pre-answer and post-answer) to ingest Cloudflare TURN candidates in real-time
                                 withContext(Dispatchers.Main) {
                                     handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
                                 }

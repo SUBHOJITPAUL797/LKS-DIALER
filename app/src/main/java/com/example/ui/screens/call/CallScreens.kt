@@ -147,7 +147,7 @@ fun OutgoingCallScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(36.dp))
 
             // Profile & Call Info
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -509,10 +509,10 @@ fun ActiveAudioCallScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Header: Name, Duration, Quality
+            // Top Header: Name, Duration, Quality (Safe padding for deep notches like POCO F1)
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 8.dp)
+                modifier = Modifier.padding(top = 28.dp)
             ) {
                 Text(
                     // BUG-26 FIX: Show the other party's name (passed from MainActivity based on direction)
@@ -1093,7 +1093,7 @@ fun ActiveVideoCallScreen(
                                 .align(Alignment.TopEnd)
                                 .statusBarsPadding()
                                 .displayCutoutPadding()
-                                .padding(top = 82.dp, end = 16.dp)
+                                .padding(top = 96.dp, end = 16.dp)
                                 .offset { IntOffset(localPipOffsetX.roundToInt(), localPipOffsetY.roundToInt()) }
                                 .pointerInput(Unit) {
                                     detectDragGestures { change, dragAmount ->
@@ -1168,7 +1168,7 @@ fun ActiveVideoCallScreen(
                     )
                     .statusBarsPadding()
                     .displayCutoutPadding()
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 12.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1323,7 +1323,26 @@ fun ActiveVideoCallScreen(
                 }
             }
 
-            // Bottom Controls Overlay with Navigation Bar padding and glassmorphic scrim
+            // Bottom Controls Overlay with Navigation Bar padding, 2-tier comfortable layout and glassmorphic scrim
+            val audioIcon = when (state.selectedAudioDevice) {
+                com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+                com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+                com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+                com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+            }
+            val audioLabel = when (state.selectedAudioDevice) {
+                com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
+                com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
+                com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
+                com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
+            }
+            val holdLabel = when {
+                !state.isOnHold -> "Hold"
+                state.isHeldLocally -> "Resume"
+                else -> "On Hold"
+            }
+            val isVideoRec by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1332,122 +1351,112 @@ fun ActiveVideoCallScreen(
                         androidx.compose.ui.graphics.Brush.verticalGradient(
                             listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.60f),
-                                Color.Black.copy(alpha = 0.88f)
+                                Color.Black.copy(alpha = 0.65f),
+                                Color.Black.copy(alpha = 0.92f)
                             )
                         )
                     )
                     .navigationBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 18.dp)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
             ) {
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                // Camera Flip (Front <-> Rear)
-                InCallControlButton(
-                    icon = Icons.Default.Cameraswitch,
-                    label = if (state.isFrontCamera) "Front" else "Rear",
-                    isActive = false,
-                    size = 48.dp,
-                    onClick = { webRtcEngine.switchCamera() }
-                )
+                    // Tier 1: Primary in-call media controls (Flip, Cam, Mic, Speaker)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InCallControlButton(
+                            icon = Icons.Default.Cameraswitch,
+                            label = if (state.isFrontCamera) "Flip" else "Rear",
+                            isActive = false,
+                            size = 46.dp,
+                            onClick = { webRtcEngine.switchCamera() }
+                        )
 
-                // Camera On/Off Toggle
-                InCallControlButton(
-                    icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
-                    label = if (state.isCameraOn) "Cam On" else "Cam Off",
-                    isActive = state.isCameraOn,
-                    size = 48.dp,
-                    onClick = { webRtcEngine.toggleCamera() }
-                )
+                        InCallControlButton(
+                            icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                            label = if (state.isCameraOn) "Cam On" else "Cam Off",
+                            isActive = state.isCameraOn,
+                            size = 46.dp,
+                            onClick = { webRtcEngine.toggleCamera() }
+                        )
 
-                // Mute Mic
-                InCallControlButton(
-                    icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                    label = if (state.isMuted) "Muted" else "Mute",
-                    isActive = state.isMuted,
-                    size = 48.dp,
-                    onClick = { webRtcEngine.toggleMute() }
-                )
+                        InCallControlButton(
+                            icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                            label = if (state.isMuted) "Muted" else "Mute",
+                            isActive = state.isMuted,
+                            size = 46.dp,
+                            onClick = { webRtcEngine.toggleMute() }
+                        )
 
-                // Audio Output Switcher
-                val audioIcon = when (state.selectedAudioDevice) {
-                    com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
-                    com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
-                    com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
-                    com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
-                }
-                val audioLabel = when (state.selectedAudioDevice) {
-                    com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
-                    com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
-                    com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
-                    com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
-                }
-
-                InCallControlButton(
-                    icon = audioIcon,
-                    label = audioLabel,
-                    isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
-                    size = 48.dp,
-                    onClick = {
-                        webRtcEngine.refreshAvailableAudioDevices()
-                        showAudioDialog = true
-                    }
-                )
-
-                // Hold / Resume Call
-                val holdLabel = when {
-                    !state.isOnHold -> "Hold"
-                    state.isHeldLocally -> "Resume"
-                    else -> "On Hold"
-                }
-                InCallControlButton(
-                    icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
-                    label = holdLabel,
-                    isActive = state.isOnHold,
-                    size = 48.dp,
-                    onClick = {
-                        if (state.isOnHold) {
-                            if (state.isHeldLocally) {
-                                webRtcEngine.putCallOnHold(false)
+                        InCallControlButton(
+                            icon = audioIcon,
+                            label = audioLabel,
+                            isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
+                            size = 46.dp,
+                            onClick = {
+                                webRtcEngine.refreshAvailableAudioDevices()
+                                showAudioDialog = true
                             }
-                        } else {
-                            webRtcEngine.putCallOnHold(true)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Tier 2: Call actions & prominent End Call button (Hold, End Call, Record)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(0.92f),
+                        horizontalArrangement = Arrangement.SpaceAround,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        InCallControlButton(
+                            icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            label = holdLabel,
+                            isActive = state.isOnHold,
+                            size = 46.dp,
+                            onClick = {
+                                if (state.isOnHold) {
+                                    if (state.isHeldLocally) {
+                                        webRtcEngine.putCallOnHold(false)
+                                    }
+                                } else {
+                                    webRtcEngine.putCallOnHold(true)
+                                }
+                            }
+                        )
+
+                        Button(
+                            onClick = { if (!endCallClicked) { endCallClicked = true; onEndCall() } },
+                            shape = CircleShape,
+                            modifier = Modifier.size(56.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
+                        ) {
+                            Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
                         }
-                    }
-                )
 
-                // Record Call Toggle
-                val isVideoRec by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
-                InCallControlButton(
-                    icon = if (isVideoRec) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                    label = if (isVideoRec) "Stop Rec" else "Record",
-                    isActive = isVideoRec,
-                    activeColor = Color(0xFFEF4444),
-                    size = 48.dp,
-                    onClick = {
-                        val started = webRtcEngine.toggleCallRecording()
-                        android.widget.Toast.makeText(
-                            context,
-                            if (started) "Call recording started" else "Call recording saved to Call History",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        InCallControlButton(
+                            icon = if (isVideoRec) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                            label = if (isVideoRec) "Stop Rec" else "Record",
+                            isActive = isVideoRec,
+                            activeColor = Color(0xFFEF4444),
+                            size = 46.dp,
+                            onClick = {
+                                val started = webRtcEngine.toggleCallRecording()
+                                android.widget.Toast.makeText(
+                                    context,
+                                    if (started) "Call recording started" else "Call recording saved to Call History",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        )
                     }
-                )
-
-                // Red End Call
-                Button(
-                    onClick = { if (!endCallClicked) { endCallClicked = true; onEndCall() } },
-                    shape = CircleShape,
-                    modifier = Modifier.size(54.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
-            }
             }
         }
     }

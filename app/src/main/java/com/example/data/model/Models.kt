@@ -11,6 +11,8 @@ data class UserDto(
     val webToken: String = "",
     @get:PropertyName("isOnline") @set:PropertyName("isOnline")
     var isOnline: Boolean = true,
+    @get:PropertyName("online") @set:PropertyName("online")
+    var online: Boolean? = null,
     val lastSeen: Long = 0L,
     val createdAt: Long = 0L,
     val privacyWhoCanCall: String = "EVERYONE",
