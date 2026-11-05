@@ -391,6 +391,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression2", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googAudioMirroring", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googJitterBufferFastAccelerate", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googJitterBufferMinDelayMs", "0"))
         }
         audioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
         localAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", audioSource)
@@ -663,7 +665,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
-            iceCandidatePoolSize = 2
+            iceCandidatePoolSize = 3
             pruneTurnPorts = true
         }
         
@@ -948,6 +950,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (!newLine.contains("useinbandfec=")) newLine += ";useinbandfec=1"
                 if (!newLine.contains("maxaveragebitrate=")) newLine += ";maxaveragebitrate=64000"
                 if (!newLine.contains("minptime=")) newLine += ";minptime=10"
+                if (!newLine.contains("maxptime=")) newLine += ";maxptime=20"
                 if (!newLine.contains("usedtx=")) newLine += ";usedtx=1"
                 if (!newLine.contains("stereo=")) newLine += ";stereo=0;sprop-stereo=0"
                 if (!newLine.contains("cbr=")) newLine += ";cbr=0"
@@ -1507,23 +1510,11 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
 
-        // 0. High-Priority FCM Push Notification to Caller (0ms direct token delivery):
+        // 0. Prepare caller tokens for instant in-band push when answerSdp is produced
         val currentCall = _state.value.activeCall
         val callerNum = callerNumber ?: currentCall?.callerNumber ?: ""
         val targetFcm = currentCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.first ?: ""
         val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
-        if (callerNum.isNotBlank()) {
-            triggerPushNotification(
-                calleeNumber = callerNum,
-                callerName = myPhoneNumber,
-                callerNumber = myPhoneNumber,
-                callType = type.name,
-                callId = callId,
-                type = "call_answered",
-                explicitFcmToken = targetFcm,
-                explicitWebToken = targetWeb
-            )
-        }
 
         // 1. Instantly mark status as ANSWERED in Firestore so the CALLER screen updates immediately (<50ms)
         try {
@@ -1857,21 +1848,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         val call = _state.value.activeCall ?: return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
 
-        // 0. High-Priority FCM Push Notification to Caller (0ms direct token delivery):
+        // 0. Cache caller tokens for instant in-band push when answerSdp is ready
         val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
         val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
-        val calleeCandidatesStr = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
-        triggerPushNotification(
-            calleeNumber = call.callerNumber,
-            callerName = myPhoneNumber,
-            callerNumber = myPhoneNumber,
-            callType = call.callType.name,
-            callId = call.callId,
-            type = "call_answered",
-            explicitFcmToken = targetFcm,
-            explicitWebToken = targetWeb,
-            candidates = calleeCandidatesStr
-        )
 
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
@@ -2055,44 +2034,57 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val tunedDesc = SessionDescription(desc.type, tunedSdp)
                             pc.setLocalDescription(object : SimpleSdpObserver() {
                                 override fun onSetSuccess() {
-                                    Log.i("WebRtcEngine", "Local answer SDP set successfully, uploading to Firestore")
-                                    val answerMap = mapOf(
-                                        "answerSdp" to tunedSdp,
-                                        "status" to CallStatus.ANSWERED.name,
-                                        "answeredAt" to System.currentTimeMillis()
-                                    )
-                                    firestore.collection("calls").document(call.callId)
-                                        .set(answerMap, com.google.firebase.firestore.SetOptions.merge())
-                                        .addOnSuccessListener {
-                                            Log.i("WebRtcEngine", "⚡ Callee answerSdp successfully uploaded to Firestore for ${call.callId}")
-                                        }
-                                        .addOnFailureListener { e ->
-                                            Log.w("WebRtcEngine", "Failed to update answerSdp, retrying: ${e.message}")
-                                            scope.launch {
-                                                delay(200)
-                                                try {
-                                                    firestore.collection("calls").document(call.callId)
-                                                        .set(answerMap, com.google.firebase.firestore.SetOptions.merge())
-                                                } catch (_: Exception) {}
-                                            }
-                                        }
-                                    // ⚡ In-Band Push Answer: Forward answerSdp directly to Caller via high-priority push
-                                    val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-                                    val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
-                                    if (call.callerNumber.isNotBlank()) {
-                                        val calleeCandidatesStr = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
-                                        triggerPushNotification(
-                                            calleeNumber = call.callerNumber,
-                                            callerName = myPhoneNumber,
-                                            callerNumber = myPhoneNumber,
-                                            callType = call.callType.name,
-                                            callId = call.callId,
-                                            type = "call_answered",
-                                            explicitFcmToken = targetFcm,
-                                            explicitWebToken = targetWeb,
-                                            answerSdp = tunedSdp,
-                                            candidates = calleeCandidatesStr
+                                    Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing comprehensive in-band push & Firestore sync")
+                                    scope.launch(Dispatchers.IO) {
+                                        // Brief 50ms window allows host and Cloudflare STUN/TURN candidates to gather
+                                        delay(50)
+                                        val candidatesList = localGatheredCandidates.take(10).toList()
+                                        val calleeCandidatesStr = candidatesList.joinToString(";;;").ifBlank { null }
+
+                                        val answerMap = mutableMapOf<String, Any>(
+                                            "answerSdp" to tunedSdp,
+                                            "status" to CallStatus.ANSWERED.name,
+                                            "answeredAt" to System.currentTimeMillis()
                                         )
+                                        if (candidatesList.isNotEmpty()) {
+                                            answerMap["calleeCandidates"] = candidatesList
+                                        }
+
+                                        try {
+                                            firestore.collection("calls").document(call.callId)
+                                                .set(answerMap, com.google.firebase.firestore.SetOptions.merge())
+                                                .addOnSuccessListener {
+                                                    Log.i("WebRtcEngine", "⚡ Callee answerSdp + candidates (${candidatesList.size}) uploaded to Firestore for ${call.callId}")
+                                                }
+                                                .addOnFailureListener { e ->
+                                                    Log.w("WebRtcEngine", "Failed to update answerSdp, retrying: ${e.message}")
+                                                    scope.launch {
+                                                        delay(200)
+                                                        try {
+                                                            firestore.collection("calls").document(call.callId)
+                                                                .set(answerMap, com.google.firebase.firestore.SetOptions.merge())
+                                                        } catch (_: Exception) {}
+                                                    }
+                                                }
+                                        } catch (_: Exception) {}
+
+                                        // ⚡ In-Band Push Answer: Forward complete answerSdp AND initial candidates directly to Caller via high-priority push
+                                        val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+                                        val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                                        if (call.callerNumber.isNotBlank()) {
+                                            triggerPushNotification(
+                                                calleeNumber = call.callerNumber,
+                                                callerName = myPhoneNumber,
+                                                callerNumber = myPhoneNumber,
+                                                callType = call.callType.name,
+                                                callId = call.callId,
+                                                type = "call_answered",
+                                                explicitFcmToken = targetFcm,
+                                                explicitWebToken = targetWeb,
+                                                answerSdp = tunedSdp,
+                                                candidates = calleeCandidatesStr
+                                            )
+                                        }
                                     }
                                     drainQueuedRemoteIceCandidates()
                                     unmuteAllAudioTracks()
