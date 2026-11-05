@@ -104,6 +104,7 @@ export default {
               senderName: body.senderName || callerName || "",
               offerSdp: (body.offerSdp && typeof body.offerSdp === "string" && body.offerSdp.length < 3500) ? body.offerSdp : "",
               answerSdp: (body.answerSdp && typeof body.answerSdp === "string" && body.answerSdp.length < 3500) ? body.answerSdp : "",
+              candidates: (body.candidates && typeof body.candidates === "string" && body.candidates.length < 1500) ? body.candidates : "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { 
@@ -158,17 +159,57 @@ export default {
   },
 };
 
+// In-memory Cloudflare TURN credential cache (12-hour TTL to eliminate API latency on call setup)
+let cachedCfTurnServers = null;
+let cachedCfTurnExpiry = 0;
+
 // TURN Credential Generation
-// Uses short-lived credentials (12h rotation for tighter security)
+// Generates official Cloudflare Anycast TURN relay credentials via Cloudflare Calls API
 async function handleTurnCredentials(env, corsHeaders) {
   try {
-    const ttl = 43200; // 12 hours — tighter rotation, harder to abuse if intercepted
-    const timestamp = Math.floor(Date.now() / 1000) + ttl;
+    const turnKeyId = env.CLOUDFLARE_TURN_KEY_ID || "e7adc4a279b7329330e094df917be4d1";
+    const turnKeyToken = env.CLOUDFLARE_TURN_KEY_TOKEN || "adf6a3fc7185059564e78daf381a12be7fa5fecef0eb2c9cfcfd39d599b9e07d";
 
-    // ICE server priority: STUN first (free P2P) → TURN last (relay fallback only)
-    // WebRTC tries them in order — STUN succeeds ~80% of calls so TURN is rarely used
+    const now = Math.floor(Date.now() / 1000);
+    let cfIceServers = [];
+
+    if (turnKeyId && turnKeyToken) {
+      if (cachedCfTurnServers && now < cachedCfTurnExpiry) {
+        cfIceServers = cachedCfTurnServers;
+      } else {
+        try {
+          const cfTurnRes = await fetch(
+            `https://rtc.live.cloudflare.com/v1/turn/keys/${turnKeyId}/credentials/generate-ice-servers`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${turnKeyToken}`,
+                "Content-Type": "application/json",
+                "User-Agent": "curl/8.4.0",
+              },
+              body: JSON.stringify({ ttl: 86400 }),
+            }
+          );
+          if (cfTurnRes.ok) {
+            const cfData = await cfTurnRes.json();
+            if (Array.isArray(cfData.iceServers) && cfData.iceServers.length > 0) {
+              cfIceServers = cfData.iceServers;
+              cachedCfTurnServers = cfIceServers;
+              cachedCfTurnExpiry = now + 43200; // Cache for 12 hours
+            }
+          } else {
+            console.warn(`Cloudflare TURN API returned ${cfTurnRes.status}: ${await cfTurnRes.text()}`);
+          }
+        } catch (cfErr) {
+          console.warn(`Failed to generate Cloudflare TURN credentials: ${cfErr.message}`);
+        }
+      }
+    }
+
+    // High-availability ICE server pool:
+    // 1. Google STUN pool — 5 globally distributed endpoints
+    // 2. Cloudflare Calls Official Anycast TURN Relays (UDP & TCP across 3478, 80, 443, 5349)
     const iceServers = [
-      // 1. Google STUN pool — 5 globally distributed endpoints
       {
         urls: [
           "stun:stun.l.google.com:19302",
@@ -178,29 +219,17 @@ async function handleTurnCredentials(env, corsHeaders) {
           "stun:stun4.l.google.com:19302",
         ],
       },
-      // 2. Cloudflare STUN — low latency on Cloudflare's edge network
-      { urls: ["stun:stun.cloudflare.com:3478"] },
-      // 3. Metered STUN
-      { urls: ["stun:stun.relay.metered.ca:80"] },
-      // 4. Metered.ca TURN relay — UDP & TCP across ports 80 and 443 for mobile CGNAT / symmetric NAT penetration
-      {
-        urls: [
-          "turn:a.relay.metered.ca:80",
-          "turn:a.relay.metered.ca:80?transport=tcp",
-          "turn:a.relay.metered.ca:443",
-          "turn:a.relay.metered.ca:443?transport=tcp",
-          "turn:global.relay.metered.ca:80",
-          "turn:global.relay.metered.ca:80?transport=tcp",
-          "turn:global.relay.metered.ca:443",
-          "turn:global.relay.metered.ca:443?transport=tcp",
-        ],
-        username: "openrelayproject",
-        credential: "openrelayproject",
-      },
+      ...(cfIceServers.length > 0
+        ? cfIceServers
+        : [
+            { urls: ["stun:stun.cloudflare.com:3478", "stun:stun.cloudflare.com:443"] },
+          ]),
     ];
 
     // Self-hosted Coturn / TURN (set TURN_HOST secret in Cloudflare dashboard if available)
     if (env.TURN_HOST) {
+      const ttl = 43200;
+      const timestamp = Math.floor(Date.now() / 1000) + ttl;
       const username = `${timestamp}:lksdialer`;
       const turnSecret = env.TURN_SECRET || "lks-dialer-turn-secret-change-me";
 
@@ -223,7 +252,7 @@ async function handleTurnCredentials(env, corsHeaders) {
     }
 
     return new Response(
-      JSON.stringify({ iceServers, expiresAt: timestamp }),
+      JSON.stringify({ iceServers, expiresAt: now + 43200 }),
       { status: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders } }
     );
   } catch (err) {

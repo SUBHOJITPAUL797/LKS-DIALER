@@ -143,48 +143,69 @@ class WebRtcEngine private constructor(private val context: Context) {
     // High-availability ICE servers: 5-endpoint Google STUN pool, Cloudflare STUN, Metered STUN,
     // and multi-region Metered TURN relays (both UDP & TCP across ports 80 and 443).
     // TCP 443 penetrates strict Carrier-Grade NAT (CGNAT) and mobile carrier firewalls (Jio, Airtel, etc.).
+    // High-availability ICE servers: Google STUN pool & Cloudflare STUN.
+    // Official Cloudflare Anycast TURN relays are dynamically fetched from Cloudflare Worker
+    // and persisted locally in encrypted SharedPreferences for 0ms offline-ready call setup.
     private var iceServers = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun.relay.metered.ca:80").createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:80?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:a.relay.metered.ca:443?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:80?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:443")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer(),
-        PeerConnection.IceServer.builder("turn:global.relay.metered.ca:443?transport=tcp")
-            .setUsername("openrelayproject")
-            .setPassword("openrelayproject")
-            .createIceServer()
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()
     )
     private val processedCandidateStrings = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val localGatheredCandidates = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    private fun parseIceServersFromJson(jsonStr: String): List<PeerConnection.IceServer>? {
+        return try {
+            val json = org.json.JSONObject(jsonStr)
+            val serversJson = json.getJSONArray("iceServers")
+            val servers = mutableListOf<PeerConnection.IceServer>()
+            for (i in 0 until serversJson.length()) {
+                val s = serversJson.getJSONObject(i)
+                val urls = s.getJSONArray("urls")
+                val username = if (s.has("username")) s.getString("username") else null
+                val credential = if (s.has("credential")) s.getString("credential") else null
+                val urlList = mutableListOf<String>()
+                for (j in 0 until urls.length()) {
+                    urlList.add(urls.getString(j))
+                }
+                if (urlList.isNotEmpty()) {
+                    val builder = PeerConnection.IceServer.builder(urlList)
+                    if (username != null) builder.setUsername(username)
+                    if (credential != null) builder.setPassword(credential)
+                    servers.add(builder.createIceServer())
+                }
+            }
+            if (servers.isNotEmpty()) servers else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun saveCachedIceServers(jsonStr: String) {
+        try {
+            val prefs = context.getSharedPreferences("lks_webrtc_cache", Context.MODE_PRIVATE)
+            prefs.edit()
+                .putString("cached_ice_servers", jsonStr)
+                .putLong("cached_ice_servers_time", System.currentTimeMillis())
+                .apply()
+        } catch (_: Exception) {}
+    }
+
+    private fun loadCachedIceServers(): List<PeerConnection.IceServer>? {
+        return try {
+            val prefs = context.getSharedPreferences("lks_webrtc_cache", Context.MODE_PRIVATE)
+            val jsonStr = prefs.getString("cached_ice_servers", null) ?: return null
+            val time = prefs.getLong("cached_ice_servers_time", 0L)
+            // Cache valid for 12 hours
+            if (System.currentTimeMillis() - time > 12 * 60 * 60 * 1000L) return null
+            parseIceServersFromJson(jsonStr)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     fun getIceServers(): List<PeerConnection.IceServer> = iceServers
 
@@ -228,7 +249,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 if (servers.isNotEmpty()) {
                     iceServers = servers
-                    Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers")
+                    saveCachedIceServers(body)
+                    Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers (Cloudflare Anycast TURN ready)")
                     return@withContext servers
                 }
             }
@@ -253,6 +275,10 @@ class WebRtcEngine private constructor(private val context: Context) {
 
 
     init {
+        loadCachedIceServers()?.let {
+            iceServers = it
+            Log.i("WebRtcEngine", "⚡ Loaded ${it.size} cached ICE servers (including Cloudflare Anycast TURN) from storage")
+        }
         initWebRtc()
         fetchIceServersAsync {}
     }
@@ -284,8 +310,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
 
         val audioDeviceModule: JavaAudioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(false) // Enables WebRTC native C++ AEC3 (gold-standard software echo canceler)
-            .setUseHardwareNoiseSuppressor(false)      // Enables WebRTC native multi-band spectral noise suppression
+            .setUseHardwareAcousticEchoCanceler(isAecSupported) // Hardware DSP Acoustic Echo Canceler cancels YouTube / media & speaker feedback
+            .setUseHardwareNoiseSuppressor(isNsSupported)      // Hardware DSP Noise Suppressor cancels fan / ambient noise
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
             .setAudioAttributes(
@@ -531,14 +557,18 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
-    fun onCallAnsweredFromPush(callId: String, answerSdp: String? = null) {
+    fun onCallAnsweredFromPush(callId: String, answerSdp: String? = null, candidatesStr: String? = null) {
         val currentCall = _state.value.activeCall
         if (currentCall == null || currentCall.callId != callId) {
             Log.w("WebRtcEngine", "onCallAnsweredFromPush: ignored for non-matching callId $callId (active=${currentCall?.callId})")
             return
         }
-        Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()})")
+        Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()}, hasCandidates=${!candidatesStr.isNullOrBlank()})")
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
+
+        if (!candidatesStr.isNullOrBlank()) {
+            addCandidatesFromPush(candidatesStr)
+        }
 
         if (_state.value.callStatus != CallStatus.ANSWERED) {
             _state.value = _state.value.copy(
@@ -709,6 +739,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidate(candidate: IceCandidate?) {
                 if (candidate != null) {
+                    val compact = "${candidate.sdpMid}|${candidate.sdpMLineIndex}|${candidate.sdp}"
+                    localGatheredCandidates.add(compact)
+                    val candType = candidate.sdp.split(" ").getOrNull(7) ?: "unknown"
+                    Log.i("WebRtcEngine", "❄️ Local ICE candidate gathered: mid=${candidate.sdpMid} idx=${candidate.sdpMLineIndex} type=$candType sdp=${candidate.sdp}")
                     sendIceCandidate(callId, candidate, isCaller)
                 }
             }
@@ -795,18 +829,37 @@ class WebRtcEngine private constructor(private val context: Context) {
         signalingManager.sendIceCandidate(callId, candidate, isCaller)
     }
 
-    private fun listenForIceCandidates(callId: String, isCaller: Boolean) {
-        signalingManager.listenForIceCandidates(callId, isCaller) { dto ->
-            val candidate = IceCandidate(dto.sdpMid, dto.sdpMLineIndex, dto.sdpCandidate)
+    fun addCandidateDirect(compactStr: String) {
+        if (compactStr.isBlank() || !processedCandidateStrings.add(compactStr)) return
+        val parts = compactStr.split("|", limit = 3)
+        if (parts.size == 3) {
+            val lineIndex = parts[1].toIntOrNull() ?: 0
+            val candidate = IceCandidate(parts[0], lineIndex, parts[2])
             val pc = peerConnection
             if (pc != null && pc.remoteDescription != null) {
+                Log.i("WebRtcEngine", "❄️ Added remote candidate directly: mid=${parts[0]} sdp=${parts[2]}")
                 pc.addIceCandidate(candidate)
             } else {
                 synchronized(queuedRemoteIceCandidates) {
                     queuedRemoteIceCandidates.add(candidate)
                 }
-                Log.d("WebRtcEngine", "Queued ICE candidate until remote description is set: ${candidate.sdpMid}")
+                Log.i("WebRtcEngine", "❄️ Queued remote candidate: mid=${parts[0]} (awaiting remoteDescription)")
             }
+        }
+    }
+
+    fun addCandidatesFromPush(candidatesStr: String) {
+        if (candidatesStr.isBlank()) return
+        Log.i("WebRtcEngine", "⚡ Ingesting in-band push ICE candidates: $candidatesStr")
+        val list = candidatesStr.split(";;;")
+        for (item in list) {
+            addCandidateDirect(item)
+        }
+    }
+
+    private fun listenForIceCandidates(callId: String, isCaller: Boolean) {
+        signalingManager.listenForIceCandidates(callId, isCaller) { dto ->
+            addCandidateDirect("${dto.sdpMid}|${dto.sdpMLineIndex}|${dto.sdpCandidate}")
         }
     }
 
@@ -816,6 +869,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (queuedRemoteIceCandidates.isNotEmpty()) {
                 Log.i("WebRtcEngine", "⚡ Draining ${queuedRemoteIceCandidates.size} queued ICE candidates to PeerConnection")
                 for (candidate in queuedRemoteIceCandidates) {
+                    Log.d("WebRtcEngine", "❄️ Draining candidate: mid=${candidate.sdpMid} sdp=${candidate.sdp}")
                     pc.addIceCandidate(candidate)
                 }
                 queuedRemoteIceCandidates.clear()
@@ -1049,10 +1103,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                 }
             
-            // ⚡ In-Band Push SDP Trigger (0ms setup): Embed local Offer SDP directly into FCM payload
+            // ⚡ In-Band Push SDP Trigger (0ms setup): Embed local Offer SDP and gathered ICE candidates directly into FCM payload
             val pushTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
             val sendPushToCallee = { offer: String? ->
                 if (pushTriggered.compareAndSet(false, true)) {
+                    val initialCandidates = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
                     triggerPushNotification(
                         calleeNumber = calleeNumber,
                         callerName = callerName,
@@ -1061,7 +1116,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         callId = newCall.callId,
                         explicitFcmToken = calleeFcm,
                         explicitWebToken = calleeWeb,
-                        offerSdp = offer
+                        offerSdp = offer,
+                        candidates = initialCandidates
                     )
                 }
             }
@@ -1763,6 +1819,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         // 0. High-Priority FCM Push Notification to Caller (0ms direct token delivery):
         val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
         val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+        val calleeCandidatesStr = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
         triggerPushNotification(
             calleeNumber = call.callerNumber,
             callerName = myPhoneNumber,
@@ -1771,7 +1828,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             callId = call.callId,
             type = "call_answered",
             explicitFcmToken = targetFcm,
-            explicitWebToken = targetWeb
+            explicitWebToken = targetWeb,
+            candidates = calleeCandidatesStr
         )
 
         _state.value = _state.value.copy(
@@ -1981,6 +2039,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                                     val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
                                     val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
                                     if (call.callerNumber.isNotBlank()) {
+                                        val calleeCandidatesStr = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
                                         triggerPushNotification(
                                             calleeNumber = call.callerNumber,
                                             callerName = myPhoneNumber,
@@ -1990,7 +2049,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                             type = "call_answered",
                                             explicitFcmToken = targetFcm,
                                             explicitWebToken = targetWeb,
-                                            answerSdp = tunedSdp
+                                            answerSdp = tunedSdp,
+                                            candidates = calleeCandidatesStr
                                         )
                                     }
                                     drainQueuedRemoteIceCandidates()
@@ -2276,18 +2336,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                 activeCallPollingJob?.cancel()
                 activeCallPollingJob = null
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
-                hasProcessedAnswer = true
-                val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
-                peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
-                    override fun onSetSuccess() {
-                        Log.i("WebRtcEngine", "Remote answer SDP set successfully")
-                        drainQueuedRemoteIceCandidates()
-                        unmuteAllAudioTracks()
-                    }
-                    override fun onSetFailure(error: String?) {
-                        Log.e("WebRtcEngine", "Failed to set remote answer: $error")
-                    }
-                }, sessionDescription)
+                if (peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                    hasProcessedAnswer = true
+                    val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
+                    peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+                        override fun onSetSuccess() {
+                            Log.i("WebRtcEngine", "Remote answer SDP set successfully")
+                            drainQueuedRemoteIceCandidates()
+                            unmuteAllAudioTracks()
+                        }
+                        override fun onSetFailure(error: String?) {
+                            Log.e("WebRtcEngine", "Failed to set remote answer: $error")
+                        }
+                    }, sessionDescription)
+                } else {
+                    hasProcessedAnswer = true
+                    Log.i("WebRtcEngine", "Skipping setRemoteDescription: PeerConnection state is already ${peerConnection?.signalingState()}")
+                }
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
                     connectionStatusText = "Connected • WebRTC"
@@ -2301,7 +2366,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 refreshAvailableAudioDevices(defaultCallType = null)
                 if (_state.value.callDurationSeconds == 0) {
                     startCallTimer()
-        registerNetworkHandoffCallback()
+                    registerNetworkHandoffCallback()
                 }
             }
 
@@ -2314,24 +2379,8 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             // ⚡ Fast Candidate Ingestion from main Call document (zero-latency across mobile cellular NAT)
             val remoteCandidates = if (isCaller) call.calleeCandidates else call.callerCandidates
-            if (remoteCandidates.isNotEmpty()) {
-                val pc = peerConnection
-                for (candStr in remoteCandidates) {
-                    if (processedCandidateStrings.add(candStr)) {
-                        val parts = candStr.split("|", limit = 3)
-                        if (parts.size == 3) {
-                            val lineIndex = parts[1].toIntOrNull() ?: 0
-                            val candidate = IceCandidate(parts[0], lineIndex, parts[2])
-                            if (pc != null && pc.remoteDescription != null) {
-                                pc.addIceCandidate(candidate)
-                            } else {
-                                synchronized(queuedRemoteIceCandidates) {
-                                    queuedRemoteIceCandidates.add(candidate)
-                                }
-                            }
-                        }
-                    }
-                }
+            for (candStr in remoteCandidates) {
+                addCandidateDirect(candStr)
             }
 
             // Hold State synchronization
@@ -2966,6 +3015,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         preWarmDone = false
         try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
         processedCandidateStrings.clear()
+        localGatheredCandidates.clear()
         synchronized(queuedRemoteIceCandidates) {
             queuedRemoteIceCandidates.clear()
         }
@@ -3135,7 +3185,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         explicitFcmToken: String? = null,
         explicitWebToken: String? = null,
         offerSdp: String? = null,
-        answerSdp: String? = null
+        answerSdp: String? = null,
+        candidates: String? = null
     ) {
         val variations = mutableListOf<String>()
         variations.add(calleeNumber)
@@ -3194,6 +3245,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         if (!answerSdp.isNullOrBlank() && answerSdp.length < 3500) {
                             put("answerSdp", answerSdp)
+                        }
+                        if (!candidates.isNullOrBlank() && candidates.length < 1500) {
+                            put("candidates", candidates)
                         }
                         val myPic = myUser?.profilePictureUrl ?: ""
                         // NEVER send Base64 image strings in FCM payload (hard 4096-byte limit will reject push).
