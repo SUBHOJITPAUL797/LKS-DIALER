@@ -119,9 +119,12 @@ class CallMessagingService : FirebaseMessagingService() {
             }
             
             if (type == "call_ringing") {
-                Log.d("FCM", "Received call_ringing push for callId: $callId")
+                val callerTuneTitle = remoteMessage.data["callerTuneTitle"]
+                val callerTuneUrl = remoteMessage.data["callerTuneUrl"]
+                val callerTuneStartMs = remoteMessage.data["callerTuneStartMs"]?.toLongOrNull() ?: 0L
+                Log.d("FCM", "Received call_ringing push for callId: $callId (tune: $callerTuneTitle)")
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.onCallRingingFromPush(callId)
+                engine?.onCallRingingFromPush(callId, callerTuneTitle, callerTuneUrl, callerTuneStartMs)
                 try {
                     if (wakeLock?.isHeld == true) wakeLock.release()
                 } catch (_: Exception) {}
@@ -264,14 +267,31 @@ class CallMessagingService : FirebaseMessagingService() {
                 }
                 
                 // ⚡ Direct Fast-Ack: Send high-priority 'call_ringing' push back to Caller so Caller screen updates to RINGING instantly
-                val callerFcm = remoteMessage.data["callerFcmToken"] ?: ""
-                val callerWeb = remoteMessage.data["callerWebToken"] ?: ""
+                val fallbackFcm = com.example.webrtc.WebRtcEngine.pushTokenCache[callerNumber]?.first
+                    ?: com.example.data.repository.FirebaseManager.getInstance(applicationContext).lookupUserByNumber(callerNumber)?.fcmToken ?: ""
+                val fallbackWeb = com.example.webrtc.WebRtcEngine.pushTokenCache[callerNumber]?.second
+                    ?: com.example.data.repository.FirebaseManager.getInstance(applicationContext).lookupUserByNumber(callerNumber)?.webToken ?: ""
+                val callerFcm = remoteMessage.data["callerFcmToken"]?.ifBlank { null } ?: fallbackFcm
+                val callerWeb = remoteMessage.data["callerWebToken"]?.ifBlank { null } ?: fallbackWeb
+
                 if (callerNumber.isNotBlank() && (callerFcm.isNotBlank() || callerWeb.isNotBlank())) {
                     try {
                         val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
                             ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
-                        engine.sendRingingAckPush(callerNumber, callId, callerFcm, callerWeb)
-                    } catch (_: Exception) {}
+                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                        engine.sendRingingAckPush(
+                            callerNumber = callerNumber,
+                            callId = callId,
+                            callerFcmToken = callerFcm,
+                            callerWebToken = callerWeb,
+                            callerTuneTitle = if (myTune.isConfigured) myTune.title else null,
+                            callerTuneUrl = if (myTune.isConfigured && myTune.audioUrl.isNotBlank()) myTune.audioUrl else null,
+                            callerTuneStartMs = if (myTune.isConfigured) myTune.startMs else 0L
+                        )
+                        Log.i("FCM", "⚡ Dispatched call_ringing push ack to caller $callerNumber (tune=${myTune.title})")
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to dispatch call_ringing push ack: ${e.message}")
+                    }
                 }
 
                 showIncomingCallNotification(callerName, callerNumber, callType, callId, callerProfilePic)

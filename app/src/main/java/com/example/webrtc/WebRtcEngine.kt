@@ -534,23 +534,39 @@ class WebRtcEngine private constructor(private val context: Context) {
      * Triggered immediately when high-priority FCM 'call_ringing' push arrives.
      * Informs the caller that the callee's device is physically ringing right now.
      */
-    fun onCallRingingFromPush(callId: String) {
+    fun onCallRingingFromPush(
+        callId: String,
+        pushTuneTitle: String? = null,
+        pushTuneUrl: String? = null,
+        pushTuneStartMs: Long = 0L
+    ) {
         val currentCall = _state.value.activeCall
         if (currentCall == null || currentCall.callId != callId) return
         if (_state.value.isCaller && _state.value.callStatus == CallStatus.CALLING) {
-            Log.i("WebRtcEngine", "⚡ High-priority FCM 'call_ringing' received: callee phone is ringing right now!")
+            Log.i("WebRtcEngine", "⚡ High-priority FCM 'call_ringing' received: callee phone is ringing right now! (tune=$pushTuneTitle)")
+            val resolvedTune = pushTuneTitle?.ifBlank { null } ?: currentCall.callerTuneTitle
+            val resolvedUrl = pushTuneUrl?.ifBlank { null } ?: currentCall.callerTuneUrl
+            val resolvedStart = if (pushTuneStartMs > 0) pushTuneStartMs else currentCall.callerTuneStartMs
+
             _state.value = _state.value.copy(
                 callStatus = CallStatus.RINGING,
-                connectionStatusText = "Ringing..."
+                connectionStatusText = "Ringing...",
+                activeCall = currentCall.copy(
+                    status = CallStatus.RINGING,
+                    callerTuneTitle = resolvedTune,
+                    callerTuneUrl = resolvedUrl,
+                    callerTuneStartMs = resolvedStart
+                )
             )
-            val callerTune = currentCall.callerTuneTitle
-            if (!callerTune.isNullOrBlank()) {
-                if (_state.value.activeCallerTuneTitle != callerTune) {
-                    _state.value = _state.value.copy(activeCallerTuneTitle = callerTune)
-                    com.example.util.CallSoundEffectsManager.startCallerTune(context, currentCall.callerTuneAudioBase64, currentCall.callerTuneUrl, callerTune, currentCall.callerTuneStartMs)
-                } else {
-                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
-                }
+            if (!resolvedTune.isNullOrBlank()) {
+                _state.value = _state.value.copy(activeCallerTuneTitle = resolvedTune)
+                com.example.util.CallSoundEffectsManager.startCallerTune(
+                    context,
+                    currentCall.callerTuneAudioBase64,
+                    resolvedUrl,
+                    resolvedTune,
+                    resolvedStart
+                )
             } else {
                 com.example.util.CallSoundEffectsManager.onCallRinging(context)
             }
@@ -812,7 +828,15 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
-    fun sendRingingAckPush(callerNumber: String, callId: String, callerFcmToken: String?, callerWebToken: String?) {
+    fun sendRingingAckPush(
+        callerNumber: String,
+        callId: String,
+        callerFcmToken: String?,
+        callerWebToken: String?,
+        callerTuneTitle: String? = null,
+        callerTuneUrl: String? = null,
+        callerTuneStartMs: Long = 0L
+    ) {
         triggerPushNotification(
             calleeNumber = callerNumber,
             callerName = "LKS Callee",
@@ -821,7 +845,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             callId = callId,
             type = "call_ringing",
             explicitFcmToken = callerFcmToken,
-            explicitWebToken = callerWebToken
+            explicitWebToken = callerWebToken,
+            callerTuneTitle = callerTuneTitle,
+            callerTuneUrl = callerTuneUrl,
+            callerTuneStartMs = callerTuneStartMs
         )
     }
 
@@ -1346,6 +1373,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                             ringUpdates["callerTuneEndMs"] = myTune.endMs
                         }
                         firestore.collection("calls").document(incomingCall.callId).update(ringUpdates)
+
+                        val callerFcm = incomingCall.callerFcmToken.ifBlank { pushTokenCache[incomingCall.callerNumber]?.first ?: "" }
+                        val callerWeb = incomingCall.callerWebToken.ifBlank { pushTokenCache[incomingCall.callerNumber]?.second ?: "" }
+                        if (incomingCall.callerNumber.isNotBlank() && (callerFcm.isNotBlank() || callerWeb.isNotBlank())) {
+                            sendRingingAckPush(
+                                callerNumber = incomingCall.callerNumber,
+                                callId = incomingCall.callId,
+                                callerFcmToken = callerFcm,
+                                callerWebToken = callerWeb,
+                                callerTuneTitle = if (myTune.isConfigured) myTune.title else null,
+                                callerTuneUrl = if (myTune.isConfigured && myTune.audioUrl.isNotBlank()) myTune.audioUrl else null,
+                                callerTuneStartMs = if (myTune.isConfigured) myTune.startMs else 0L
+                            )
+                        }
                     }
                     headsetButtonManager.startListening()
 
@@ -3186,7 +3227,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         explicitWebToken: String? = null,
         offerSdp: String? = null,
         answerSdp: String? = null,
-        candidates: String? = null
+        candidates: String? = null,
+        callerTuneTitle: String? = null,
+        callerTuneUrl: String? = null,
+        callerTuneStartMs: Long = 0L
     ) {
         val variations = mutableListOf<String>()
         variations.add(calleeNumber)
@@ -3248,6 +3292,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         if (!candidates.isNullOrBlank() && candidates.length < 1500) {
                             put("candidates", candidates)
+                        }
+                        if (!callerTuneTitle.isNullOrBlank()) {
+                            put("callerTuneTitle", callerTuneTitle)
+                        }
+                        if (!callerTuneUrl.isNullOrBlank()) {
+                            put("callerTuneUrl", callerTuneUrl)
+                        }
+                        if (callerTuneStartMs > 0L) {
+                            put("callerTuneStartMs", callerTuneStartMs)
                         }
                         val myPic = myUser?.profilePictureUrl ?: ""
                         // NEVER send Base64 image strings in FCM payload (hard 4096-byte limit will reject push).

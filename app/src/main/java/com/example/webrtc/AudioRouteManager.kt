@@ -570,22 +570,26 @@ class AudioRouteManager(
                                 it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                             }
                         if (speaker != null) {
-                            val res = audioManager.setCommunicationDevice(speaker)
-                            Log.d(TAG, "setCommunicationDevice(SPEAKER): $res")
-                            if (!res) {
-                                mainHandler.postDelayed({
-                                    if (currentSelectedDevice == AudioDeviceType.SPEAKERPHONE) {
-                                        val retrySpeaker = audioManager.availableCommunicationDevices.firstOrNull {
-                                            it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                            if (audioManager.communicationDevice?.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                                val res = audioManager.setCommunicationDevice(speaker)
+                                Log.d(TAG, "setCommunicationDevice(SPEAKER): $res")
+                                if (!res) {
+                                    mainHandler.postDelayed({
+                                        if (currentSelectedDevice == AudioDeviceType.SPEAKERPHONE) {
+                                            val retrySpeaker = audioManager.availableCommunicationDevices.firstOrNull {
+                                                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                                            }
+                                            if (retrySpeaker != null && audioManager.communicationDevice?.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                                                val r2 = audioManager.setCommunicationDevice(retrySpeaker)
+                                                Log.d(TAG, "Retry setCommunicationDevice(SPEAKER): $r2")
+                                            }
+                                            @Suppress("DEPRECATION")
+                                            audioManager.isSpeakerphoneOn = true
                                         }
-                                        if (retrySpeaker != null) {
-                                            val r2 = audioManager.setCommunicationDevice(retrySpeaker)
-                                            Log.d(TAG, "Retry setCommunicationDevice(SPEAKER): $r2")
-                                        }
-                                        @Suppress("DEPRECATION")
-                                        audioManager.isSpeakerphoneOn = true
-                                    }
-                                }, 300L)
+                                    }, 300L)
+                                }
+                            } else {
+                                Log.d(TAG, "setCommunicationDevice(SPEAKER): already active on hardware, skipping redundant binder call")
                             }
                         }
                     }
@@ -608,11 +612,15 @@ class AudioRouteManager(
                                 it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
                             }
                         if (earpiece != null) {
-                            val res = audioManager.setCommunicationDevice(earpiece)
-                            Log.d(TAG, "setCommunicationDevice(EARPIECE): $res")
-                            if (!res) {
-                                audioManager.clearCommunicationDevice()
-                                audioManager.setCommunicationDevice(earpiece)
+                            if (audioManager.communicationDevice?.type != AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
+                                val res = audioManager.setCommunicationDevice(earpiece)
+                                Log.d(TAG, "setCommunicationDevice(EARPIECE): $res")
+                                if (!res) {
+                                    audioManager.clearCommunicationDevice()
+                                    audioManager.setCommunicationDevice(earpiece)
+                                }
+                            } else {
+                                Log.d(TAG, "setCommunicationDevice(EARPIECE): already active on hardware, skipping redundant binder call")
                             }
                         } else {
                             audioManager.clearCommunicationDevice()

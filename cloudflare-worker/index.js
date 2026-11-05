@@ -105,6 +105,11 @@ export default {
               offerSdp: (body.offerSdp && typeof body.offerSdp === "string" && body.offerSdp.length < 3500) ? body.offerSdp : "",
               answerSdp: (body.answerSdp && typeof body.answerSdp === "string" && body.answerSdp.length < 3500) ? body.answerSdp : "",
               candidates: (body.candidates && typeof body.candidates === "string" && body.candidates.length < 1500) ? body.candidates : "",
+              callerFcmToken: body.callerFcmToken || "",
+              callerWebToken: body.callerWebToken || "",
+              callerTuneTitle: body.callerTuneTitle || "",
+              callerTuneUrl: body.callerTuneUrl || "",
+              callerTuneStartMs: body.callerTuneStartMs != null ? String(body.callerTuneStartMs) : "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { 
