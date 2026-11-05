@@ -29,6 +29,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import com.example.util.ImageUtils
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.input.pointer.pointerInput
 import com.example.data.model.CallType
 import com.example.data.model.CallStatus
@@ -138,11 +141,13 @@ fun OutgoingCallScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(32.dp),
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Profile & Call Info
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -498,14 +503,16 @@ fun ActiveAudioCallScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Top Header: Name, Duration, Quality
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 24.dp)
+                modifier = Modifier.padding(top = 8.dp)
             ) {
                 Text(
                     // BUG-26 FIX: Show the other party's name (passed from MainActivity based on direction)
@@ -1071,13 +1078,36 @@ fun ActiveVideoCallScreen(
 
         // Local Camera Preview (Rendered both in fullscreen and inside PiP floating window)
         if (state.isCameraOn && state.localVideoTrack != null) {
+            var localPipOffsetX by remember { mutableFloatStateOf(0f) }
+            var localPipOffsetY by remember { mutableFloatStateOf(0f) }
+
             Surface(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(if (isPipMode) 6.dp else 12.dp)
-                    .size(width = if (isPipMode) 46.dp else 110.dp, height = if (isPipMode) 70.dp else 160.dp),
+                    .then(
+                        if (isPipMode) {
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                        } else {
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .displayCutoutPadding()
+                                .padding(top = 82.dp, end = 16.dp)
+                                .offset { IntOffset(localPipOffsetX.roundToInt(), localPipOffsetY.roundToInt()) }
+                                .pointerInput(Unit) {
+                                    detectDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        localPipOffsetX += dragAmount.x
+                                        localPipOffsetY += dragAmount.y
+                                    }
+                                }
+                        }
+                    )
+                    .size(width = if (isPipMode) 46.dp else 105.dp, height = if (isPipMode) 70.dp else 150.dp),
                 shape = RoundedCornerShape(if (isPipMode) 8.dp else 16.dp),
-                shadowElevation = if (isPipMode) 4.dp else 8.dp,
+                border = if (!isPipMode) BorderStroke(1.5.dp, Color.White.copy(alpha = 0.35f)) else null,
+                shadowElevation = if (isPipMode) 4.dp else 10.dp,
                 color = Color.Black
             ) {
                 Box(
@@ -1122,116 +1152,137 @@ fun ActiveVideoCallScreen(
         }
 
         if (!isPipMode) {
-            // Top Overlay Header
-            Row(
+            // Top Overlay Header with gentle dark gradient scrim for readability under all lighting & notch safety
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.TopStart)
-                    .padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .align(Alignment.TopCenter)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                Color.Black.copy(alpha = 0.85f),
+                                Color.Black.copy(alpha = 0.45f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
             ) {
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f, fill = false)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // Minimize to in-app ongoing call bar button
-                    if (onMinimize != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        // Minimize to in-app ongoing call bar button
+                        if (onMinimize != null) {
+                            IconButton(
+                                onClick = onMinimize,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.50f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Minimize Call",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+
+                        // Minimize to Floating Window (PiP) button
                         IconButton(
-                            onClick = onMinimize,
+                            onClick = {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
+                                }
+                            },
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.45f))
+                                .background(Color.Black.copy(alpha = 0.50f))
                         ) {
                             Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Minimize Call",
+                                imageVector = Icons.Default.PictureInPictureAlt,
+                                contentDescription = "Floating Window",
                                 tint = Color.White,
-                                modifier = Modifier.size(26.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-
-                    // Minimize to Floating Window (PiP) button
-                    IconButton(
-                        onClick = {
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
-                            }
-                        },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.45f))
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PictureInPictureAlt,
-                            contentDescription = "Floating Window",
-                            tint = Color.White,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = activeCall.calleeName.ifBlank { activeCall.callerName },
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             Text(
-                                text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = GreenCall
+                                text = displayName.ifBlank { displayNumber },
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                ),
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            val qualityColor = when {
-                                state.networkQualityBars >= 4 -> Color(0xFF22C55E)
-                                state.networkQualityBars == 3 -> Color(0xFFF59E0B)
-                                else -> Color(0xFFEF4444)
-                            }
-                            val qualityText = when {
-                                state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
-                                state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Video • ${state.roundTripTimeMs}ms" else "HD Video"
-                                state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
-                                else -> "Weak Network"
-                            }
-                            Surface(
-                                color = qualityColor.copy(alpha = 0.25f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                    color = GreenCall
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                val qualityColor = when {
+                                    state.networkQualityBars >= 4 -> Color(0xFF22C55E)
+                                    state.networkQualityBars == 3 -> Color(0xFFF59E0B)
+                                    else -> Color(0xFFEF4444)
+                                }
+                                val qualityText = when {
+                                    state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
+                                    state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Video • ${state.roundTripTimeMs}ms" else "HD Video"
+                                    state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
+                                    else -> "Weak Network"
+                                }
+                                Surface(
+                                    color = qualityColor.copy(alpha = 0.25f),
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .background(qualityColor, CircleShape)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = qualityText,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = qualityColor
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .background(qualityColor, CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = qualityText,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                            color = qualityColor
+                                        )
+                                    }
                                 }
                             }
-                        }
-                        if (state.networkQualityBars < 2) {
-                            Surface(
-                                color = Color(0xFFEF4444).copy(alpha = 0.35f),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.padding(top = 4.dp)
-                            ) {
-                                Text(
-                                    text = "⚠️ Weak network — video quality reduced",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFFFCA5A5),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                )
+                            if (state.networkQualityBars < 2) {
+                                Surface(
+                                    color = Color(0xFFEF4444).copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "⚠️ Weak network — video quality reduced",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFFCA5A5),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1243,7 +1294,9 @@ fun ActiveVideoCallScreen(
                 visible = state.isOnHold,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 80.dp)
+                    .statusBarsPadding()
+                    .displayCutoutPadding()
+                    .padding(top = 74.dp)
             ) {
                 Surface(
                     color = Color(0xFFE53935).copy(alpha = 0.88f),
@@ -1270,15 +1323,28 @@ fun ActiveVideoCallScreen(
                 }
             }
 
-            // Bottom Controls Overlay
-            Row(
+            // Bottom Controls Overlay with Navigation Bar padding and glassmorphic scrim
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 8.dp, vertical = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.60f),
+                                Color.Black.copy(alpha = 0.88f)
+                            )
+                        )
+                    )
+                    .navigationBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 18.dp)
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                 // Camera Flip (Front <-> Rear)
                 InCallControlButton(
                     icon = Icons.Default.Cameraswitch,
@@ -1381,6 +1447,7 @@ fun ActiveVideoCallScreen(
                 ) {
                     Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
+            }
             }
         }
     }
