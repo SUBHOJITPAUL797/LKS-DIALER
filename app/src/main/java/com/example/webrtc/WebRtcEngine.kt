@@ -666,7 +666,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             tcpCandidatePolicy = PeerConnection.TcpCandidatePolicy.ENABLED
             iceCandidatePoolSize = 3
-            pruneTurnPorts = true
+            pruneTurnPorts = false
         }
         
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {

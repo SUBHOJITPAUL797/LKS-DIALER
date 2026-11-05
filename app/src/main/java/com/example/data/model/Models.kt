@@ -72,7 +72,9 @@ data class CallDto(
     val calleeFcmToken: String = "",
     val calleeWebToken: String = "",
     val callerCandidates: List<String> = emptyList(),
-    val calleeCandidates: List<String> = emptyList()
+    val calleeCandidates: List<String> = emptyList(),
+    @get:PropertyName("iceRestartRequested") @set:PropertyName("iceRestartRequested")
+    var iceRestartRequested: Long = 0L
 )
 
 data class IceCandidateDto(

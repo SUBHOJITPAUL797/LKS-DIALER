@@ -230,14 +230,48 @@ class GitHubUpdater(context: Context) {
                     .header("Connection", "Keep-Alive")
                     .build()
 
-                downloadClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
+                var response: okhttp3.Response? = null
+                var attempt = 0
+                val maxAttempts = 3
+                while (attempt < maxAttempts) {
+                    attempt++
+                    try {
+                        val res = downloadClient.newCall(request).execute()
+                        if (res.isSuccessful && res.body != null) {
+                            response = res
+                            break
+                        } else {
+                            val code = res.code
+                            res.close()
+                            if (code in listOf(502, 503, 504) && attempt < maxAttempts) {
+                                Log.w(TAG, "Transient HTTP $code from GitHub CDN edge, retrying in ${attempt * 2}s (attempt $attempt/$maxAttempts)...")
+                                delay(attempt * 2000L)
+                                continue
+                            }
+                            notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
+                            _downloadState.value = DownloadState.Error("Server returned HTTP $code (CDN Gateway Timeout). Tap Retry or open browser link.")
+                            return@launch
+                        }
+                    } catch (e: Exception) {
+                        if (attempt < maxAttempts) {
+                            Log.w(TAG, "Download attempt $attempt failed (${e.message}), retrying in ${attempt * 2}s...")
+                            delay(attempt * 2000L)
+                            continue
+                        }
                         notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
-                        _downloadState.value = DownloadState.Error("Server returned HTTP ${response.code}")
+                        _downloadState.value = DownloadState.Error(e.message ?: "Download connection failed")
                         return@launch
                     }
+                }
 
-                    val body = response.body ?: run {
+                val safeResponse = response ?: run {
+                    notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
+                    _downloadState.value = DownloadState.Error("Download failed after retries")
+                    return@launch
+                }
+
+                safeResponse.use { resp ->
+                    val body = resp.body ?: run {
                         notificationManager.cancel(UPDATE_DOWNLOAD_NOTIFICATION_ID)
                         _downloadState.value = DownloadState.Error("Empty response body from server")
                         return@launch

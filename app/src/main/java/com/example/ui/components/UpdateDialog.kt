@@ -166,15 +166,31 @@ fun UpdateDialog(
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.labelMedium
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            OutlinedButton(
-                                onClick = onDownloadClick,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Retry Fast Download")
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = onDownloadClick,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Retry")
+                                }
+                                val context = androidx.compose.ui.platform.LocalContext.current
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(updateInfo.downloadUrl))
+                                            browserIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            context.startActivity(browserIntent)
+                                        } catch (_: Exception) {}
+                                    },
+                                    modifier = Modifier.weight(1.1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("🌐 Browser")
+                                }
                             }
                         }
                     }
