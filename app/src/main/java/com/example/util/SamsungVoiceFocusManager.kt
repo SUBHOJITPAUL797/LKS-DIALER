@@ -33,22 +33,10 @@ object SamsungVoiceFocusManager {
      * Dynamically update Samsung Voice Focus parameters when switching between Earpiece and Speakerphone (Loudspeaker).
      */
     fun updateRoute(isSpeaker: Boolean, context: Context) {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        // Rock-solid OEM guard: Only apply Samsung proprietary Voice Focus parameters on Samsung hardware
-        if (!android.os.Build.MANUFACTURER.contains("samsung", ignoreCase = true)) {
-            return
-        }
-        Log.i(TAG, "Updating Samsung Voice Focus parameters: isSpeaker=$isSpeaker")
-        try {
-            if (isSpeaker) {
-                // Single consolidated parameter write to eliminate Binder IPC latency on Samsung
-                audioManager.setParameters("situation=voip;device=speaker;mic_mode=voice_focus;sec_audio_mic_mode=1;voice_focus=on;samsung_voice_focus=on;samsung_voice_focus=speaker;call_state=incall;voip=on;g_call_mode=voip")
-            } else {
-                audioManager.setParameters("situation=voip;device=earpiece;mic_mode=voice_focus;sec_audio_mic_mode=1;voice_focus=on;samsung_voice_focus=on;samsung_voice_focus=earpiece;dual_mic_noise_reduction=on;sec_rx_noise_reduction=on;two_mic_solution=on;call_state=incall;voip=on;g_call_mode=voip")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to update Voice Focus route parameters: ${e.message}")
-        }
+        // Safe no-op on user builds: setting vendor parameters like 'situation=voip;call_state=incall'
+        // requires system permission MODIFY_PHONE_STATE which non-system apps do not possess.
+        // Calling audioManager.setParameters causes synchronous Binder IPC failure (-1) and blocks the main thread.
+        // WebRTC JavaAudioDeviceModule's hardware AEC/NS already provides full DSP cancellation.
     }
 
     /**

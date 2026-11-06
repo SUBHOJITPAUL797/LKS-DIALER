@@ -41,9 +41,12 @@ class AudioRouteManager(
     private var headsetReceiver: BroadcastReceiver? = null
 
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val debouncedRefreshRunnable = Runnable { refreshAvailableAudioDevices() }
     private val delayedRefreshRunnable400 = Runnable { refreshAvailableAudioDevices() }
     private val delayedRefreshRunnable1000 = Runnable { refreshAvailableAudioDevices() }
     private val pendingBtRetries = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
+    @Volatile
+    private var lastSetTelecomRoute: Int? = null
 
     private fun cancelPendingBtRetries() {
         for (r in pendingBtRetries) {
@@ -53,11 +56,8 @@ class AudioRouteManager(
     }
 
     private fun triggerHardwareDeviceRefresh() {
-        refreshAvailableAudioDevices()
-        mainHandler.removeCallbacks(delayedRefreshRunnable400)
-        mainHandler.removeCallbacks(delayedRefreshRunnable1000)
-        mainHandler.postDelayed(delayedRefreshRunnable400, 400L)
-        mainHandler.postDelayed(delayedRefreshRunnable1000, 1000L)
+        mainHandler.removeCallbacks(debouncedRefreshRunnable)
+        mainHandler.postDelayed(debouncedRefreshRunnable, 150L)
     }
 
     private var lastNonBluetoothAudioDevice: AudioDeviceType = AudioDeviceType.EARPIECE
@@ -441,10 +441,13 @@ class AudioRouteManager(
                 it.copy(isSelected = it.id == target.id || it.type == target.type)
             }
             currentAvailableDevices = updatedList
+            val routeChanged = currentSelectedDevice != target.type
             currentSelectedDevice = target.type
             onRouteChanged(target, updatedList, target.type == AudioDeviceType.SPEAKERPHONE)
-            // Re-assert audio routing to hardware so Android HAL/Telecom doesn't reset to earpiece
-            selectAudioDevice(target, updateDeviceList = false)
+            // Only re-assert audio routing if the target device type actually changed to prevent recursive Telecom loop
+            if (routeChanged) {
+                selectAudioDevice(target, updateDeviceList = false)
+            }
             return
         }
 
@@ -545,7 +548,10 @@ class AudioRouteManager(
                         AudioDeviceType.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
                         AudioDeviceType.WIRED_HEADSET -> android.telecom.CallAudioState.ROUTE_WIRED_HEADSET
                     }
-                    com.example.services.LksConnectionService.setAudioRoute(telecomRoute)
+                    if (lastSetTelecomRoute != telecomRoute) {
+                        lastSetTelecomRoute = telecomRoute
+                        com.example.services.LksConnectionService.setAudioRoute(telecomRoute)
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to set Telecom audio route: ${e.message}")
                 }
@@ -795,6 +801,14 @@ class AudioRouteManager(
             Log.d(TAG, "Ignoring Telecom automatic transition to BLUETOOTH because user explicitly chose EARPIECE")
             return
         }
+
+        val telecomRoute = when (targetType) {
+            AudioDeviceType.SPEAKERPHONE -> android.telecom.CallAudioState.ROUTE_SPEAKER
+            AudioDeviceType.BLUETOOTH -> android.telecom.CallAudioState.ROUTE_BLUETOOTH
+            AudioDeviceType.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
+            AudioDeviceType.WIRED_HEADSET -> android.telecom.CallAudioState.ROUTE_WIRED_HEADSET
+        }
+        lastSetTelecomRoute = telecomRoute
 
         if (current != targetType) {
             Log.i(TAG, "Syncing route from Telecom: $targetType")
