@@ -3489,6 +3489,9 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         fun getCachedFcmToken(context: Context): String {
             return try {
+                val dialerToken = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+                    .getString("fcm_token", "") ?: ""
+                if (dialerToken.isNotBlank()) return dialerToken
                 context.getSharedPreferences("lks_prefs", Context.MODE_PRIVATE)
                     .getString("fcm_token", "") ?: ""
             } catch (_: Exception) { "" }

@@ -459,7 +459,10 @@ class AudioRouteManager(
                 userExplicitSelectedDevice == AudioDeviceType.SPEAKERPHONE || currentSelected == AudioDeviceType.SPEAKERPHONE -> speakerOption ?: earpieceOption ?: deviceList.first()
                 else -> earpieceOption ?: speakerOption ?: deviceList.first()
             }
-            selectAudioDevice(targetDevice, updateDeviceList = false)
+            val routeChanged = currentSelectedDevice != targetDevice.type
+            if (routeChanged) {
+                selectAudioDevice(targetDevice, updateDeviceList = false)
+            }
         } else {
             targetDevice = when {
                 !hadBluetoothBefore && hasBluetoothNow && btOption != null -> {
@@ -483,7 +486,10 @@ class AudioRouteManager(
                         ?: deviceList.first()
                 }
             }
-            selectAudioDevice(targetDevice, updateDeviceList = false)
+            val routeChanged = currentSelectedDevice != targetDevice.type
+            if (routeChanged) {
+                selectAudioDevice(targetDevice, updateDeviceList = false)
+            }
         }
 
         val updatedList = deviceList.map {
@@ -649,62 +655,73 @@ class AudioRouteManager(
                             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
                         }
 
+                        var btSetSuccess = false
                         if (validCommBt != null) {
-                            val res = audioManager.setCommunicationDevice(validCommBt)
-                            Log.d(TAG, "setCommunicationDevice(BLUETOOTH - ${validCommBt.productName}): $res")
-                            if (!res) {
-                                @Suppress("DEPRECATION")
-                                try {
-                                    audioManager.startBluetoothSco()
-                                    audioManager.isBluetoothScoOn = true
-                                } catch (_: Exception) {}
+                            if (audioManager.communicationDevice?.id != validCommBt.id) {
+                                val res = audioManager.setCommunicationDevice(validCommBt)
+                                btSetSuccess = res
+                                Log.d(TAG, "setCommunicationDevice(BLUETOOTH - ${validCommBt.productName}): $res")
+                                if (!res) {
+                                    @Suppress("DEPRECATION")
+                                    try {
+                                        audioManager.startBluetoothSco()
+                                        audioManager.isBluetoothScoOn = true
+                                    } catch (_: Exception) {}
+                                }
+                            } else {
+                                btSetSuccess = true
+                                Log.d(TAG, "setCommunicationDevice(BLUETOOTH): already active on hardware, skipping redundant binder call")
                             }
                         } else {
                             @Suppress("DEPRECATION")
                             try {
-                                audioManager.startBluetoothSco()
-                                audioManager.isBluetoothScoOn = true
+                                if (!audioManager.isBluetoothScoOn) {
+                                    audioManager.startBluetoothSco()
+                                    audioManager.isBluetoothScoOn = true
+                                }
                             } catch (_: Exception) {}
                         }
 
-                        // Deduplicated Bluetooth retry: cancel pending retries to avoid looper pileup
+                        // Deduplicated Bluetooth retry: only schedule retries if initial setCommunicationDevice failed
                         cancelPendingBtRetries()
-                        val r250 = object : Runnable {
-                            override fun run() {
-                                pendingBtRetries.remove(this)
-                                if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
-                                    val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
-                                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                        it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                                    }
-                                    if (retryBt != null) {
-                                        val r = audioManager.setCommunicationDevice(retryBt)
-                                        Log.d(TAG, "Delayed retry 250ms setCommunicationDevice: $r (${retryBt.productName})")
-                                    }
-                                }
-                            }
-                        }
-                        val r700 = object : Runnable {
-                            override fun run() {
-                                pendingBtRetries.remove(this)
-                                if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
-                                    val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
-                                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
-                                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                                        it.type == AudioDeviceInfo.TYPE_HEARING_AID
-                                    }
-                                    if (retryBt != null) {
-                                        val r = audioManager.setCommunicationDevice(retryBt)
-                                        Log.d(TAG, "Delayed retry 700ms setCommunicationDevice: $r (${retryBt.productName})")
+                        if (!btSetSuccess && validCommBt != null) {
+                            val r250 = object : Runnable {
+                                override fun run() {
+                                    pendingBtRetries.remove(this)
+                                    if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                        val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                            it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                        }
+                                        if (retryBt != null && audioManager.communicationDevice?.id != retryBt.id) {
+                                            val r = audioManager.setCommunicationDevice(retryBt)
+                                            Log.d(TAG, "Delayed retry 250ms setCommunicationDevice: $r (${retryBt.productName})")
+                                        }
                                     }
                                 }
                             }
+                            val r700 = object : Runnable {
+                                override fun run() {
+                                    pendingBtRetries.remove(this)
+                                    if (currentSelectedDevice == AudioDeviceType.BLUETOOTH) {
+                                        val retryBt = audioManager.availableCommunicationDevices.firstOrNull {
+                                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                            it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                            it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                                        }
+                                        if (retryBt != null && audioManager.communicationDevice?.id != retryBt.id) {
+                                            val r = audioManager.setCommunicationDevice(retryBt)
+                                            Log.d(TAG, "Delayed retry 700ms setCommunicationDevice: $r (${retryBt.productName})")
+                                        }
+                                    }
+                                }
+                            }
+                            pendingBtRetries.add(r250)
+                            pendingBtRetries.add(r700)
+                            mainHandler.postDelayed(r250, 250L)
+                            mainHandler.postDelayed(r700, 700L)
                         }
-                        pendingBtRetries.add(r250)
-                        pendingBtRetries.add(r700)
-                        mainHandler.postDelayed(r250, 250L)
-                        mainHandler.postDelayed(r700, 700L)
                     } else {
                         @Suppress("DEPRECATION")
                         try {
