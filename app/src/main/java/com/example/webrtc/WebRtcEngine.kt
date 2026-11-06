@@ -616,6 +616,61 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.i("WebRtcEngine", "⚡ Remote answer SDP set directly from push payload successfully!")
                     drainQueuedRemoteIceCandidates()
                     unmuteAllAudioTracks()
+                    // ⚡ Caller -> Callee reverse candidate push:
+                    // Immediately send caller's gathered TURN relay candidates to callee via FCM
+                    // (callee on Wi-Fi has fast Firestore, but cellular caller's candidates must arrive fast)
+                    scope.launch(Dispatchers.IO) {
+                        val callerRelayCands = localGatheredCandidates.filter { it.contains("typ relay") }
+                        if (callerRelayCands.isNotEmpty()) {
+                            val candsStr = callerRelayCands.joinToString(";;;")
+                            val callId = currentCall.callId
+                            val calleeNum = currentCall.calleeNumber
+                            val tFcm = currentCall.calleeFcmToken.ifBlank { pushTokenCache[calleeNum]?.first ?: "" }
+                            val tWeb = currentCall.calleeWebToken.ifBlank { pushTokenCache[calleeNum]?.second ?: "" }
+                            Log.i("WebRtcEngine", "⚡ Pushing ${callerRelayCands.size} caller TURN relay candidates to callee via FCM")
+                            if (calleeNum.isNotBlank()) {
+                                triggerPushNotification(
+                                    calleeNumber = calleeNum,
+                                    callerName = myPhoneNumber,
+                                    callerNumber = myPhoneNumber,
+                                    callType = currentCall.callType.name,
+                                    callId = callId,
+                                    type = "call_candidates",
+                                    explicitFcmToken = tFcm,
+                                    explicitWebToken = tWeb,
+                                    candidates = candsStr
+                                )
+                            }
+                        }
+                        // Also watch for new TURN relay candidates gathered after answer (cellular may be slower)
+                        val alreadySent = localGatheredCandidates.toMutableSet()
+                        val watchEnd = System.currentTimeMillis() + 8000L
+                        while (System.currentTimeMillis() < watchEnd && !isCallTerminated(currentCall.callId)) {
+                            delay(150)
+                            val newRelay = localGatheredCandidates.filter { it.contains("typ relay") && !alreadySent.contains(it) }
+                            if (newRelay.isNotEmpty()) {
+                                alreadySent.addAll(newRelay)
+                                val newCandsStr = newRelay.joinToString(";;;")
+                                val calleeNum2 = _state.value.activeCall?.calleeNumber ?: currentCall.calleeNumber
+                                val tFcm2 = pushTokenCache[calleeNum2]?.first ?: ""
+                                val tWeb2 = pushTokenCache[calleeNum2]?.second ?: ""
+                                Log.i("WebRtcEngine", "⚡ Pushing ${newRelay.size} new caller TURN relay candidates to callee via FCM")
+                                if (calleeNum2.isNotBlank()) {
+                                    triggerPushNotification(
+                                        calleeNumber = calleeNum2,
+                                        callerName = myPhoneNumber,
+                                        callerNumber = myPhoneNumber,
+                                        callType = currentCall.callType.name,
+                                        callId = currentCall.callId,
+                                        type = "call_candidates",
+                                        explicitFcmToken = tFcm2,
+                                        explicitWebToken = tWeb2,
+                                        candidates = newCandsStr
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
                 override fun onSetFailure(error: String?) {
                     Log.w("WebRtcEngine", "Failed to set remote answer from push ($error) - will fallback to Firestore")
@@ -2036,14 +2091,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 override fun onSetSuccess() {
                                     Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing comprehensive in-band push & Firestore sync")
                                     scope.launch(Dispatchers.IO) {
-                                        // Smart gathering window: wait up to 220ms or until at least one Cloudflare TURN relay/srflx candidate gathers
+                                        // Smart gathering window: wait up to 500ms or until a Cloudflare TURN *relay* candidate gathers
+                                        // 500ms is needed because TURN relay candidates on POCO F1 Wi-Fi arrive ~300-450ms after answer
                                         val gatherStart = System.currentTimeMillis()
-                                        while (System.currentTimeMillis() - gatherStart < 220) {
-                                            if (localGatheredCandidates.any { it.contains("typ relay") || it.contains("typ srflx") }) {
+                                        while (System.currentTimeMillis() - gatherStart < 500) {
+                                            if (localGatheredCandidates.any { it.contains("typ relay") }) {
                                                 break
                                             }
                                             delay(20)
                                         }
+                                        Log.i("WebRtcEngine", "⚡ Gathering window closed after ${System.currentTimeMillis() - gatherStart}ms, hasRelay=${localGatheredCandidates.any { it.contains("typ relay") }}")
                                         val candidatesList = localGatheredCandidates.take(12).toList()
                                         val calleeCandidatesStr = candidatesList.joinToString(";;;").ifBlank { null }
 
@@ -2090,6 +2147,38 @@ class WebRtcEngine private constructor(private val context: Context) {
                                                 answerSdp = tunedSdp,
                                                 candidates = calleeCandidatesStr
                                             )
+                                        }
+                                        // ⚡ Continuous TURN relay push: after initial answer, keep watching for new relay candidates
+                                        // and push them immediately via FCM (don't rely on Firestore which is slow on cellular)
+                                        scope.launch(Dispatchers.IO) {
+                                            val alreadySent = localGatheredCandidates.toMutableSet()
+                                            val watchEnd = System.currentTimeMillis() + 8000L // watch for up to 8s
+                                            while (System.currentTimeMillis() < watchEnd && !isCallTerminated(call.callId)) {
+                                                delay(100)
+                                                val newRelayCands = localGatheredCandidates.filter { 
+                                                    it.contains("typ relay") && !alreadySent.contains(it) 
+                                                }
+                                                if (newRelayCands.isNotEmpty()) {
+                                                    alreadySent.addAll(newRelayCands)
+                                                    val newCandsStr = newRelayCands.joinToString(";;;")
+                                                    Log.i("WebRtcEngine", "⚡ Pushing ${newRelayCands.size} new TURN relay candidates to caller via FCM")
+                                                    if (call.callerNumber.isNotBlank()) {
+                                                        val tFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+                                                        val tWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                                                        triggerPushNotification(
+                                                            calleeNumber = call.callerNumber,
+                                                            callerName = myPhoneNumber,
+                                                            callerNumber = myPhoneNumber,
+                                                            callType = call.callType.name,
+                                                            callId = call.callId,
+                                                            type = "call_candidates",
+                                                            explicitFcmToken = tFcm,
+                                                            explicitWebToken = tWeb,
+                                                            candidates = newCandsStr
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                     drainQueuedRemoteIceCandidates()

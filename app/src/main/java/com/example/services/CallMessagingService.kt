@@ -118,6 +118,19 @@ class CallMessagingService : FirebaseMessagingService() {
                 return
             }
             
+            if (type == "call_candidates") {
+                val candidatesStr = remoteMessage.data["candidates"]
+                Log.i("FCM", "Received call_candidates push for callId: $callId (candidates=${candidatesStr?.take(60)})")
+                if (!candidatesStr.isNullOrBlank()) {
+                    val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                    engine?.addCandidatesFromPush(candidatesStr)
+                }
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (_: Exception) {}
+                return
+            }
+
             if (type == "call_ringing") {
                 val callerTuneTitle = remoteMessage.data["callerTuneTitle"]
                 val callerTuneUrl = remoteMessage.data["callerTuneUrl"]
