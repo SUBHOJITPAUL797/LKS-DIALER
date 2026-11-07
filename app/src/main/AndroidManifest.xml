@@ -147,7 +147,7 @@
         <!-- Active Call Foreground Service -->
         <service
             android:name=".services.ActiveCallService"
-            android:foregroundServiceType="microphone|camera"
+            android:foregroundServiceType="phoneCall|microphone|camera"
             android:exported="false" />
 
         <!-- Telecom ConnectionService — enables Bluetooth Earbuds/Headset HFP call answer & hangup -->

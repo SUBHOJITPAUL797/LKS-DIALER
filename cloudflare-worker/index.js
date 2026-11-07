@@ -110,6 +110,7 @@ export default {
               callerTuneTitle: body.callerTuneTitle || "",
               callerTuneUrl: body.callerTuneUrl || "",
               callerTuneStartMs: body.callerTuneStartMs != null ? String(body.callerTuneStartMs) : "",
+              reason: body.reason || "",
             },
             android: { priority: "HIGH", ttl: ttlSeconds, direct_boot_ok: true },
             webpush: { 

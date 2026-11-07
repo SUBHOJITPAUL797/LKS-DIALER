@@ -380,6 +380,43 @@ object CallSoundEffectsManager {
     /**
      * Play the professional Call Ended / Hangup tone (1 single crisp disconnect beep).
      */
+    /**
+     * Play standard telecom busy tone ("tu-tu-tu...") when the callee is on another call.
+     */
+    fun playBusyTone(context: Context) {
+        stopConnectingTone()
+        stopRingbackTone()
+        stopHoldReminder()
+
+        Thread {
+            try {
+                val toneGen = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 90)
+                toneGen.startTone(ToneGenerator.TONE_SUP_BUSY, 1200)
+                Thread.sleep(1300)
+                toneGen.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to play busy tone: ${e.message}")
+            }
+        }.start()
+    }
+
+    /**
+     * Play a gentle in-ear call waiting pip when a second call arrives while already in a call.
+     * Does not interrupt ongoing speech or play through loud speaker.
+     */
+    fun playCallWaitingBeep(context: Context) {
+        Thread {
+            try {
+                val toneGen = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 70)
+                toneGen.startTone(ToneGenerator.TONE_SUP_CALL_WAITING, 250)
+                Thread.sleep(300)
+                toneGen.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to play call waiting beep: ${e.message}")
+            }
+        }.start()
+    }
+
     fun playCallEndedTone(context: Context) {
         stopRingbackTone()
         stopHoldReminder()

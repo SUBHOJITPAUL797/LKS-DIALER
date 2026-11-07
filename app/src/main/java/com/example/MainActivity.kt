@@ -701,13 +701,17 @@ class MainActivity : ComponentActivity() {
                                     callTypeStr = callType
                                 )
                             } else if (rtcState.activeCall?.callId != callId) {
-                                webRtcEngine.attachToCall(
-                                    callId = callId, 
-                                    autoAnswer = false,
-                                    callerName = callerName,
-                                    callerNumber = callerNumber,
-                                    callTypeStr = callType
-                                )
+                                val isBusy = rtcState.activeCall != null &&
+                                    (rtcState.callStatus == CallStatus.ANSWERED || rtcState.callStatus == CallStatus.CALLING || rtcState.callStatus == CallStatus.RINGING)
+                                if (!isBusy) {
+                                    webRtcEngine.attachToCall(
+                                        callId = callId, 
+                                        autoAnswer = false,
+                                        callerName = callerName,
+                                        callerNumber = callerNumber,
+                                        callTypeStr = callType
+                                    )
+                                }
                             }
                         } else if (autoAnswer && rtcState.activeCall != null && hasMicPermission) {
                             webRtcEngine.answerCall()
@@ -1302,7 +1306,7 @@ class MainActivity : ComponentActivity() {
                                         calleeNumber = otherPartyNumber,
                                         profilePicUrl = otherPartyProfilePic,
                                         callType = activeCall.callType,
-                                        statusText = "Call Declined",
+                                        statusText = rtcState.connectionStatusText.ifBlank { "Call Declined" },
                                         webRtcEngine = webRtcEngine,
                                         onMinimize = null,
                                         onEndCall = {}
@@ -1315,7 +1319,7 @@ class MainActivity : ComponentActivity() {
                                         calleeNumber = otherPartyNumber,
                                         profilePicUrl = otherPartyProfilePic,
                                         callType = activeCall.callType,
-                                        statusText = if (rtcState.callStatus == CallStatus.MISSED) "Call Missed" else "Call Ended",
+                                        statusText = rtcState.connectionStatusText.ifBlank { if (rtcState.callStatus == CallStatus.MISSED) "Call Missed" else "Call Ended" },
                                         webRtcEngine = webRtcEngine,
                                         onMinimize = null,
                                         onEndCall = {}

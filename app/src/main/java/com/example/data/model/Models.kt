@@ -75,6 +75,7 @@ data class CallDto(
     val calleeWebToken: String = "",
     val callerCandidates: List<String> = emptyList(),
     val calleeCandidates: List<String> = emptyList(),
+    val reason: String? = null,
     @get:PropertyName("iceRestartRequested") @set:PropertyName("iceRestartRequested")
     var iceRestartRequested: Long = 0L
 )

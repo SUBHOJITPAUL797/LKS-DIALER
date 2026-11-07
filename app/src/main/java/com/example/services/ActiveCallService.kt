@@ -171,6 +171,9 @@ class ActiveCallService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                }
                 if (callType.equals("VIDEO", ignoreCase = true)) {
                     type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
                 }

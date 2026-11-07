@@ -930,6 +930,27 @@ class WebRtcEngine private constructor(private val context: Context) {
         )
     }
 
+    fun sendBusyAckPush(
+        callerNumber: String,
+        callId: String,
+        callerFcmToken: String?,
+        callerWebToken: String?
+    ) {
+        val myNumber = getEffectivePhoneNumber()
+        val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: myNumber
+        triggerPushNotification(
+            calleeNumber = callerNumber,
+            callerName = currentName,
+            callerNumber = myNumber,
+            callType = "AUDIO",
+            callId = callId,
+            type = "call_declined",
+            reason = "busy",
+            explicitFcmToken = callerFcmToken,
+            explicitWebToken = callerWebToken
+        )
+    }
+
     private fun sendIceCandidate(callId: String, candidate: IceCandidate, isCaller: Boolean) {
         signalingManager.sendIceCandidate(callId, candidate, isCaller)
     }
@@ -1841,10 +1862,16 @@ class WebRtcEngine private constructor(private val context: Context) {
             _state.value.callStatus == CallStatus.IDLE || 
             _state.value.callStatus == CallStatus.ENDED || 
             _state.value.callStatus == CallStatus.DECLINED || 
-            _state.value.callStatus == CallStatus.MISSED ||
-            _state.value.activeCall?.callId != callId
+            _state.value.callStatus == CallStatus.MISSED
 
-        val existingOfferSdp = if (_state.value.activeCall?.callId == callId) {
+        val isSameCall = _state.value.activeCall?.callId == callId
+
+        if (!isNotCurrentlyInCall && !isSameCall) {
+            Log.w("WebRtcEngine", "attachToCall rejected: already in call ${_state.value.activeCall?.callId} (status=${_state.value.callStatus}), cannot attach to new call $callId")
+            return
+        }
+
+        val existingOfferSdp = if (isSameCall) {
             _state.value.activeCall?.offerSdp ?: cachedIncomingOfferSdp
         } else cachedIncomingOfferSdp
 
@@ -2641,10 +2668,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
                 activeCallPollingJob?.cancel()
                 activeCallPollingJob = null
-                Log.i("WebRtcEngine", "handleCallDocumentUpdate: call ${call.callId} remote status is ${call.status} -> ending call immediately")
+                Log.i("WebRtcEngine", "handleCallDocumentUpdate: call ${call.callId} remote status is ${call.status} (reason=${call.reason}) -> ending call immediately")
                 markCallTerminated(call.callId)
                 if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
-                    endCallInternalLocal(call.status)
+                    endCallInternalLocal(call.status, call.reason)
                 }
             }
         }
@@ -3124,7 +3151,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         endCallInternalLocal(CallStatus.ENDED)
     }
 
-    fun declineCall(targetCallId: String? = null, targetCallerNumber: String? = null) {
+    fun declineCall(targetCallId: String? = null, targetCallerNumber: String? = null, reason: String? = null) {
         val call = _state.value.activeCall
         val callId = targetCallId?.takeIf { it.isNotBlank() } ?: call?.callId
         val callerNumber = targetCallerNumber?.takeIf { it.isNotBlank() } ?: call?.callerNumber ?: ""
@@ -3134,16 +3161,19 @@ class WebRtcEngine private constructor(private val context: Context) {
             markCallTerminated(callId)
             
             // 1. Update Firestore immediately with merge so it never fails
+            val declineMap = mutableMapOf<String, Any>(
+                "status" to CallStatus.DECLINED.name,
+                "endedAt" to System.currentTimeMillis()
+            )
+            if (!reason.isNullOrBlank()) {
+                declineMap["reason"] = reason
+            }
             firestore.collection("calls").document(callId).set(
-                mapOf(
-                    "status" to CallStatus.DECLINED.name,
-                    "endedAt" to System.currentTimeMillis()
-                ),
+                declineMap,
                 com.google.firebase.firestore.SetOptions.merge()
             ).addOnFailureListener {
                 firestore.collection("calls").document(callId).update(
-                    "status", CallStatus.DECLINED.name,
-                    "endedAt", System.currentTimeMillis()
+                    declineMap
                 )
             }
 
@@ -3160,6 +3190,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callType = callType.name,
                     callId = callId,
                     type = "call_declined",
+                    reason = reason,
                     explicitFcmToken = targetFcm.ifBlank { pushTokenCache[callerNumber]?.first },
                     explicitWebToken = targetWeb.ifBlank { pushTokenCache[callerNumber]?.second }
                 )
@@ -3171,7 +3202,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 deleteCallAndCandidates(callIdToDelete)
             }
         }
-        endCallInternalLocal(CallStatus.DECLINED)
+        endCallInternalLocal(CallStatus.DECLINED, reason)
     }
 
     private fun deleteCallAndCandidates(callId: String) {
@@ -3182,27 +3213,27 @@ class WebRtcEngine private constructor(private val context: Context) {
      * Forces the engine to end the call immediately when a 'cancel_call', 'missed_call',
      * 'call_declined', or 'call_ended' push notification is received.
      */
-    fun forceEndCallFromPush(callId: String, status: CallStatus = CallStatus.MISSED) {
+    fun forceEndCallFromPush(callId: String, status: CallStatus = CallStatus.MISSED, reason: String? = null) {
         markCallTerminated(callId)
         scope.launch {
             val activeCallId = _state.value.activeCall?.callId
             // Industry Standard: ONLY end the call if the push callId matches the active call.
             // Prevents stale pushes from a previous call killing a live call with a different person.
             if (activeCallId != null && activeCallId == callId) {
-                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status")
-                endCallInternalLocal(status)
+                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status, reason $reason")
+                endCallInternalLocal(status, reason)
             } else if (activeCallId == null && (_state.value.callStatus == CallStatus.IDLE || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING)) {
                 // Bug fix v2.9.45: also handle CALLING/RINGING when activeCall not yet set
                 // (race: listener may not have populated activeCall before push arrives)
                 Log.d("WebRtcEngine", "forceEndCallFromPush: no active call (status=${_state.value.callStatus}), processing cleanup for push $callId")
-                endCallInternalLocal(status)
+                endCallInternalLocal(status, reason)
             } else {
                 Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId, status=${_state.value.callStatus})")
             }
         }
     }
 
-    private fun endCallInternalLocal(status: CallStatus) {
+    private fun endCallInternalLocal(status: CallStatus, reason: String? = null) {
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status")
@@ -3289,13 +3320,17 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Keep prevCall for UI display (so "Call Ended" screen shows caller name/number for 1500ms).
         // The Firestore listener guard has been fixed to check callStatus (not activeCall == null)
         // so the next incoming call can arrive during this window without being blocked.
+        val effectiveReason = reason ?: prevCall?.reason
+        val isBusy = effectiveReason.equals("busy", ignoreCase = true)
+
         _state.value = _state.value.copy(
             callStatus = status,
             activeCall = prevCall,   // ← keep for UI display during the 1500ms end screen
-            connectionStatusText = when (status) {
-                CallStatus.ENDED -> "Call Ended"
-                CallStatus.DECLINED -> "Call Declined"
-                CallStatus.MISSED -> "Call Missed"
+            connectionStatusText = when {
+                isBusy -> "User Busy / On Another Call"
+                status == CallStatus.ENDED -> "Call Ended"
+                status == CallStatus.DECLINED -> "Call Declined"
+                status == CallStatus.MISSED -> "Call Missed"
                 else -> status.name
             },
             activeCallerTuneTitle = null,
@@ -3341,7 +3376,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
         com.example.util.CallSoundEffectsManager.stopHoldReminder()
         if (status != CallStatus.IDLE) {
-            com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
+            if (isBusy) {
+                com.example.util.CallSoundEffectsManager.playBusyTone(context)
+            } else {
+                com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
+            }
         }
         // NOTE: 30s Firestore cleanup is scheduled by endCall()/declineCall() — not duplicated here.
     }
@@ -3413,7 +3452,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         candidates: String? = null,
         callerTuneTitle: String? = null,
         callerTuneUrl: String? = null,
-        callerTuneStartMs: Long = 0L
+        callerTuneStartMs: Long = 0L,
+        reason: String? = null
     ) {
         val variations = mutableListOf<String>()
         variations.add(calleeNumber)
@@ -3465,6 +3505,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         put("callType", callType)
                         put("callId", callId)
                         put("type", type)
+                        if (!reason.isNullOrBlank()) {
+                            put("reason", reason)
+                        }
                         put("callerFcmToken", myFcm)
                         put("callerWebToken", myWeb)
                         if (!offerSdp.isNullOrBlank() && offerSdp.length < 3500) {

@@ -168,24 +168,33 @@ class CallMessagingService : FirebaseMessagingService() {
                     "missed_call", "cancel_call" -> com.example.data.model.CallStatus.MISSED
                     else -> com.example.data.model.CallStatus.ENDED
                 }
-                Log.d("FCM", "Received $type for callId: $callId, ending call immediately with status $endStatus")
-                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                notificationManager.cancel(NOTIFICATION_ID)
-                try { notificationManager.cancel(2001) } catch (_: Exception) {}
-                try { notificationManager.cancel(2002) } catch (_: Exception) {}
-                ActiveCallService.stop(this)
-                
-                // Force end the call in WebRtcEngine to drop the ringing / calling UI immediately
+                val reason = remoteMessage.data["reason"]
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.forceEndCallFromPush(callId, endStatus)
-                com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
-                FloatingCallBubbleService.silenceRingtone(this)
-                FloatingCallBubbleService.hide(this)
-                com.example.util.LksIncomingRingtonePlayer.stop()
-                com.example.util.CallSoundEffectsManager.stopRingbackTone()
-                LksKeepAliveService.stopRingtone(this)
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                val currentActiveCallId = engine?.state?.value?.activeCall?.callId
+                val isCurrentCall = currentActiveCallId == null || currentActiveCallId == callId
+
+                if (isCurrentCall) {
+                    Log.d("FCM", "Received $type for callId: $callId, ending call immediately with status $endStatus (reason=$reason)")
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.cancel(NOTIFICATION_ID)
+                    try { notificationManager.cancel(2001) } catch (_: Exception) {}
+                    try { notificationManager.cancel(2002) } catch (_: Exception) {}
+                    ActiveCallService.stop(this)
+                    
+                    // Force end the call in WebRtcEngine to drop the ringing / calling UI immediately
+                    engine?.forceEndCallFromPush(callId, endStatus, reason)
+                    com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
+                    FloatingCallBubbleService.silenceRingtone(this)
+                    FloatingCallBubbleService.hide(this)
+                    com.example.util.LksIncomingRingtonePlayer.stop()
+                    com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                    LksKeepAliveService.stopRingtone(this)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
+                    }
+                } else {
+                    Log.d("FCM", "Received $type for non-active callId: $callId (current is $currentActiveCallId) - ignoring active call teardown")
+                    com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
                 }
                 
                 if (type == "cancel_call" || type == "missed_call") {
@@ -234,11 +243,89 @@ class CallMessagingService : FirebaseMessagingService() {
                     return
                 }
 
+                // Call Collision / Call Waiting Guard:
+                // If user is already on an active or ringing/calling call with someone else, auto-reject with 'busy'
+                val activeCall = engine?.state?.value?.activeCall
+                val activeStatus = engine?.state?.value?.callStatus
+                val isUserBusy = activeCall != null && activeCall.callId != callId &&
+                    (activeStatus == com.example.data.model.CallStatus.ANSWERED ||
+                     activeStatus == com.example.data.model.CallStatus.CALLING ||
+                     activeStatus == com.example.data.model.CallStatus.RINGING)
+
                 val callerName   = remoteMessage.data["callerName"]   ?: "Unknown Caller"
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
                 val offerSdp     = remoteMessage.data["offerSdp"]     ?: ""
+
+                if (isUserBusy) {
+                    val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
+                    Log.i("FCM", "🛡️ User is BUSY on call ${activeCall?.callId} ($activeStatus). Auto-rejecting incoming call $callId from $callerNumber with reason 'busy'.")
+
+                    // 1. Mark call terminated locally
+                    com.example.webrtc.WebRtcEngine.markCallTerminated(callId)
+
+                    // 2. Update Firestore doc to DECLINED with reason: busy
+                    try {
+                        val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+                        db.collection("calls").document(callId).set(
+                            mapOf(
+                                "status" to com.example.data.model.CallStatus.DECLINED.name,
+                                "reason" to "busy",
+                                "endedAt" to System.currentTimeMillis()
+                            ),
+                            com.google.firebase.firestore.SetOptions.merge()
+                        )
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to update busy status in Firestore for $callId: ${e.message}")
+                    }
+
+                    // 3. Fast-Ack call_declined push back to Caller with reason: busy
+                    val fallbackFcm = com.example.webrtc.WebRtcEngine.pushTokenCache[callerNumber]?.first
+                        ?: com.example.data.repository.FirebaseManager.getInstance(applicationContext).lookupUserByNumber(callerNumber)?.fcmToken ?: ""
+                    val fallbackWeb = com.example.webrtc.WebRtcEngine.pushTokenCache[callerNumber]?.second
+                        ?: com.example.data.repository.FirebaseManager.getInstance(applicationContext).lookupUserByNumber(callerNumber)?.webToken ?: ""
+                    val callerFcm = remoteMessage.data["callerFcmToken"]?.ifBlank { null } ?: fallbackFcm
+                    val callerWeb = remoteMessage.data["callerWebToken"]?.ifBlank { null } ?: fallbackWeb
+
+                    if (callerNumber.isNotBlank() && engine != null) {
+                        try {
+                            engine.sendBusyAckPush(
+                                callerNumber = callerNumber,
+                                callId = callId,
+                                callerFcmToken = callerFcm,
+                                callerWebToken = callerWeb
+                            )
+                            Log.i("FCM", "⚡ Dispatched busy ack push to caller $callerNumber for call $callId")
+                        } catch (e: Exception) {
+                            Log.w("FCM", "Failed to dispatch busy ack push: ${e.message}")
+                        }
+                    }
+
+                    // 4. Play gentle in-ear call waiting pip to the user
+                    com.example.util.CallSoundEffectsManager.playCallWaitingBeep(applicationContext)
+
+                    // 5. Log missed call locally and post non-intrusive missed call notification
+                    try {
+                        com.example.data.repository.FirebaseManager.getInstance(this).logCall(
+                            direction = com.example.data.model.CallDirection.MISSED,
+                            otherPartyNumber = callerNumber,
+                            otherPartyName = callerName,
+                            callType = callTypeEnum,
+                            status = com.example.data.model.CallStatus.MISSED,
+                            durationSeconds = 0
+                        )
+                    } catch (e: Exception) {
+                        Log.w("FCM", "Failed to log busy missed call: ${e.message}")
+                    }
+                    com.example.data.repository.FirebaseManager.getInstance(this).showMissedCallNotification(
+                        callerNumber = callerNumber,
+                        callerName = callerName,
+                        callType = callTypeEnum,
+                        callId = callId
+                    )
+                    return
+                }
 
                 if (offerSdp.isNotBlank()) {
                     val rtc = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
