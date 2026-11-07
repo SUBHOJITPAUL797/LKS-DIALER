@@ -648,10 +648,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val tWeb = currentCall.calleeWebToken.ifBlank { pushTokenCache[calleeNum]?.second ?: "" }
                             Log.i("WebRtcEngine", "⚡ Pushing ${callerRelayCands.size} caller TURN relay candidates to callee via FCM")
                             if (calleeNum.isNotBlank()) {
+                                val myPhoneNum = getEffectivePhoneNumber()
                                 triggerPushNotification(
                                     calleeNumber = calleeNum,
-                                    callerName = myPhoneNumber,
-                                    callerNumber = myPhoneNumber,
+                                    callerName = myPhoneNum,
+                                    callerNumber = myPhoneNum,
                                     callType = currentCall.callType.name,
                                     callId = callId,
                                     type = "call_candidates",
@@ -2233,10 +2234,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                                         val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
                                         val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
                                         if (call.callerNumber.isNotBlank()) {
+                                            val myPhoneNum = getEffectivePhoneNumber()
                                             triggerPushNotification(
                                                 calleeNumber = call.callerNumber,
-                                                callerName = myPhoneNumber,
-                                                callerNumber = myPhoneNumber,
+                                                callerName = myPhoneNum,
+                                                callerNumber = myPhoneNum,
                                                 callType = call.callType.name,
                                                 callId = call.callId,
                                                 type = "call_answered",
@@ -2263,10 +2265,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                                                     if (call.callerNumber.isNotBlank()) {
                                                         val tFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
                                                         val tWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                                                        val myPhoneNum = getEffectivePhoneNumber()
                                                         triggerPushNotification(
                                                             calleeNumber = call.callerNumber,
-                                                            callerName = myPhoneNumber,
-                                                            callerNumber = myPhoneNumber,
+                                                            callerName = myPhoneNum,
+                                                            callerNumber = myPhoneNum,
                                                             callType = call.callType.name,
                                                             callId = call.callId,
                                                             type = "call_candidates",
@@ -3068,7 +3071,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 )
             }
             
-            val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+            val currentPhone = getEffectivePhoneNumber()
             val isCaller = _state.value.isCaller || (call != null && currentPhone.isNotBlank() && (
                 currentPhone == call.callerNumber ||
                 currentPhone.replace(Regex("[^0-9]"), "") == call.callerNumber.replace(Regex("[^0-9]"), "")
@@ -3146,7 +3149,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             // 2. CRITICAL: Trigger instant push to caller so caller stops ringing in <200ms
             if (callerNumber.isNotBlank()) {
-                val currentPhone = FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+                val currentPhone = getEffectivePhoneNumber()
                 val currentName = FirebaseManager.getInstance(context).currentUser.value?.displayName ?: currentPhone
                 val targetFcm = call?.callerFcmToken ?: ""
                 val targetWeb = call?.callerWebToken ?: ""
@@ -3257,7 +3260,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         // Phase 3: Reliable call logs — record call ended for both caller and callee
         if (prevCall != null) {
-            val userPhone = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: myPhoneNumber
+            val userPhone = getEffectivePhoneNumber()
             val isCaller = _state.value.isCaller || (userPhone.isNotBlank() && (
                 userPhone == prevCall.callerNumber ||
                 userPhone.replace(Regex("[^0-9]"), "") == prevCall.callerNumber.replace(Regex("[^0-9]"), "")
