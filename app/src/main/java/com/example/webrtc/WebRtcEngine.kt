@@ -608,9 +608,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
 
         if (_state.value.callStatus != CallStatus.ANSWERED) {
+            val hasAnswer = !answerSdp.isNullOrBlank() || currentCall.answerSdp != null
             _state.value = _state.value.copy(
                 callStatus = CallStatus.ANSWERED,
-                connectionStatusText = if (currentCall.answerSdp != null || !answerSdp.isNullOrBlank()) "Connected • WebRTC" else "Connecting P2P..."
+                connectionStatusText = if (hasAnswer) "Connected • WebRTC" else "Connecting P2P..."
             )
             unmuteAllAudioTracks()
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -618,7 +619,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     com.example.services.LksConnectionService.setCallActive()
                 } catch (_: Exception) {}
             }
-            if (_state.value.callDurationSeconds == 0) {
+            if (hasAnswer && _state.value.callDurationSeconds == 0) {
                 startCallTimer()
                 registerNetworkHandoffCallback()
             }
@@ -699,19 +700,21 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Note: Do NOT return early. Launch background candidate sync to ingest any Cloudflare TURN relay candidates uploaded after initial push
         }
 
-        // Aggressively fetch answerSdp directly from Firestore with rapid retries & SERVER fallback
+        // Aggressively fetch answerSdp directly from Firestore if push did not include it
         scope.launch(Dispatchers.IO) {
             for (attempt in 1..60) {
                 if (hasProcessedAnswer || isCallTerminated(callId)) break
                 try {
-                    var doc = firestore.collection("calls").document(callId).get().await()
-                    var call = doc.toObject(CallDto::class.java)
-                    if (call?.answerSdp.isNullOrBlank()) {
+                    val doc = if (attempt > 15) {
                         try {
-                            doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                            call = doc.toObject(CallDto::class.java)
-                        } catch (_: Exception) {}
+                            firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                        } catch (_: Exception) {
+                            firestore.collection("calls").document(callId).get().await()
+                        }
+                    } else {
+                        firestore.collection("calls").document(callId).get().await()
                     }
+                    val call = doc.toObject(CallDto::class.java)
                     if (doc.exists() && call != null) {
                         withContext(Dispatchers.Main) {
                             handleCallDocumentUpdate(call, doc, isCaller = true)
@@ -724,7 +727,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 } catch (e: Exception) {
                     Log.w("WebRtcEngine", "onCallAnsweredFromPush fetch attempt $attempt failed: ${e.message}")
                 }
-                delay(if (attempt <= 10) 100L else 200L)
+                delay(if (attempt <= 10) 80L else 150L)
             }
         }
     }
@@ -1712,22 +1715,6 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         } catch (_: Exception) {}
 
-        // ⚡ Direct Fast-Ack FCM Push: Immediately inform Caller that Callee pressed answer (<100ms)
-        // This stops caller's ringtone and switches caller screen to "Connecting P2P..." immediately!
-        if (callerNum.isNotBlank() && (targetFcm.isNotBlank() || targetWeb.isNotBlank())) {
-            triggerPushNotification(
-                calleeNumber = callerNum,
-                callerName = myEffectiveNum,
-                callerNumber = myEffectiveNum,
-                callType = type.name,
-                callId = callId,
-                type = "call_answered",
-                explicitFcmToken = targetFcm,
-                explicitWebToken = targetWeb
-            )
-            Log.i("WebRtcEngine", "⚡ Fast-ack 'call_answered' push dispatched to caller $callerNum (<0ms)")
-        }
-
         // 2. Ensure real-time active call & ICE listeners are attached immediately
         listenToActiveCall(callId, isCaller = false)
         listenForIceCandidates(callId, isCaller = false)
@@ -1758,9 +1745,25 @@ class WebRtcEngine private constructor(private val context: Context) {
                     connectionStatusText = "Connecting P2P..."
                 )
             }
-            Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp in RAM")
+            Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp in RAM -> answering immediately")
             answerCall()
             return
+        }
+
+        // ⚡ Direct Fast-Ack FCM Push: Only needed when offerSdp is NOT yet in RAM (0.1% edge case).
+        // Immediately inform Caller that Callee pressed answer (<100ms) to stop ringing while fetching offer.
+        if (callerNum.isNotBlank() && (targetFcm.isNotBlank() || targetWeb.isNotBlank())) {
+            triggerPushNotification(
+                calleeNumber = callerNum,
+                callerName = myEffectiveNum,
+                callerNumber = myEffectiveNum,
+                callType = type.name,
+                callId = callId,
+                type = "call_answered",
+                explicitFcmToken = targetFcm,
+                explicitWebToken = targetWeb
+            )
+            Log.i("WebRtcEngine", "⚡ Fallback fast-ack 'call_answered' push dispatched to caller $callerNum (offer pending)")
         }
 
         // 4. Immediate background answer path (offerSdp being fetched or arriving):
@@ -2121,6 +2124,27 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } catch (_: Exception) {}
                 }
             }
+
+            // ⚡ In-Band Push Answer: Forward complete pre-warmed answerSdp directly to Caller via high-priority push!
+            val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+            val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+            if (call.callerNumber.isNotBlank()) {
+                val myPhoneNum = getEffectivePhoneNumber()
+                val initialCands = localGatheredCandidates.take(12).joinToString(";;;").ifBlank { null }
+                triggerPushNotification(
+                    calleeNumber = call.callerNumber,
+                    callerName = myPhoneNum,
+                    callerNumber = myPhoneNum,
+                    callType = call.callType.name,
+                    callId = call.callId,
+                    type = "call_answered",
+                    explicitFcmToken = targetFcm,
+                    explicitWebToken = targetWeb,
+                    answerSdp = cachedAnswer,
+                    candidates = initialCands
+                )
+                Log.i("WebRtcEngine", "⚡ Dispatched pre-warmed answerSdp push to caller ${call.callerNumber}")
+            }
         } else {
             // 🔁 FALLBACK PATH: Pre-warm not ready (e.g. offer arrived late, or pre-warm failed).
             // Reset pre-warm flags so processOfferSdpIfAvailable() runs the full negotiation.
@@ -2260,19 +2284,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                             val tunedDesc = SessionDescription(desc.type, tunedSdp)
                             pc.setLocalDescription(object : SimpleSdpObserver() {
                                 override fun onSetSuccess() {
-                                    Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing comprehensive in-band push & Firestore sync")
+                                    Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing zero-delay in-band push & Firestore sync")
                                     scope.launch(Dispatchers.IO) {
-                                        // Smart gathering window: wait up to 500ms or until a Cloudflare TURN *relay* candidate gathers
-                                        // 500ms is needed because TURN relay candidates on POCO F1 Wi-Fi arrive ~300-450ms after answer
-                                        val gatherStart = System.currentTimeMillis()
-                                        while (System.currentTimeMillis() - gatherStart < 500) {
-                                            if (localGatheredCandidates.any { it.contains("typ relay") } ||
-                                                (System.currentTimeMillis() - gatherStart > 150 && localGatheredCandidates.any { it.contains("typ srflx") })) {
-                                                break
-                                            }
-                                            delay(20)
-                                        }
-                                        Log.i("WebRtcEngine", "⚡ Gathering window closed after ${System.currentTimeMillis() - gatherStart}ms, hasRelay=${localGatheredCandidates.any { it.contains("typ relay") }}")
+                                        // ⚡ ZERO-DELAY CANDIDATE GATHERING:
+                                        // Host candidates are already gathered (<2ms).
+                                        // Dispatch answerSdp and initial candidates to Caller IMMEDIATELY (0ms delay).
+                                        // Any additional TURN relay candidates trickle continuously via FCM and Firestore below.
                                         val candidatesList = localGatheredCandidates.take(12).toList()
                                         val calleeCandidatesStr = candidatesList.joinToString(";;;").ifBlank { null }
 
@@ -2432,10 +2449,16 @@ class WebRtcEngine private constructor(private val context: Context) {
         activeCallPollingJob?.cancel()
         activeCallPollingJob = scope.launch(Dispatchers.IO) {
             delay(150)
+            var pollCounter = 0
             while (isActive && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
                 try {
+                    pollCounter++
                     val serverDoc = try {
-                        firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                        if (pollCounter % 8 == 0) {
+                            firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                        } else {
+                            firestore.collection("calls").document(callId).get().await()
+                        }
                     } catch (_: Exception) {
                         firestore.collection("calls").document(callId).get().await()
                     }
@@ -2626,9 +2649,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                         com.example.services.LksConnectionService.setCallActive()
                     } catch (_: Exception) {}
                 }
-                if (_state.value.callDurationSeconds == 0) {
+                if (call.answerSdp != null && _state.value.callDurationSeconds == 0) {
                     startCallTimer()
-        registerNetworkHandoffCallback()
+                    registerNetworkHandoffCallback()
                 }
             }
 
