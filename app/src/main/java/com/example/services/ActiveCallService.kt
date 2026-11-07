@@ -115,13 +115,20 @@ class ActiveCallService : Service() {
                         stopSelf()
                     }
                     else -> {
-                        val shouldLock = s.callStatus == com.example.data.model.CallStatus.ANSWERED &&
+                        val shouldLock = (s.callStatus == com.example.data.model.CallStatus.ANSWERED ||
+                            s.callStatus == com.example.data.model.CallStatus.CALLING ||
+                            s.callStatus == com.example.data.model.CallStatus.RINGING) &&
                             s.callType == com.example.data.model.CallType.AUDIO &&
                             s.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE
                         if (shouldLock) {
                             try { proximityWakeLock?.acquire() } catch (_: Exception) {}
                         } else {
                             try { if (proximityWakeLock?.isHeld == true) proximityWakeLock?.release() } catch (_: Exception) {}
+                        }
+
+                        // Update notification with live chronometer when answered
+                        if (s.callStatus == com.example.data.model.CallStatus.ANSWERED && s.callStartedAtMillis > 0L) {
+                            updateOngoingNotification(s.callStartedAtMillis)
                         }
                     }
                 }
@@ -147,26 +154,15 @@ class ActiveCallService : Service() {
 
         createNotificationChannel()
 
-        val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-            this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("incoming_call", true)
-            putExtra("call_id", callId)
-        }
-        
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, fullScreenIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        currentCallId = callId
+        currentCallType = callType
+        val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+        val activeCall = engine?.state?.value?.activeCall
+        val isCaller = engine?.state?.value?.isCaller == true
+        currentPeerName = if (isCaller) activeCall?.calleeName else activeCall?.callerName
+        currentPeerNumber = if (isCaller) activeCall?.calleeNumber else activeCall?.callerNumber
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Ongoing $callType Call")
-            .setContentText("Tap to return to call screen")
-            .setSmallIcon(android.R.drawable.ic_menu_call)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .build()
+        val notification = buildOngoingNotification(callStartedAtMillis = engine?.state?.value?.callStartedAtMillis ?: 0L)
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -186,6 +182,62 @@ class ActiveCallService : Service() {
         }
 
         return START_NOT_STICKY
+    }
+
+    private var currentCallId: String = ""
+    private var currentCallType: String = "Audio"
+    private var currentPeerName: String? = null
+    private var currentPeerNumber: String? = null
+
+    private fun buildOngoingNotification(callStartedAtMillis: Long = 0L): android.app.Notification {
+        val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
+            this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("incoming_call", true)
+            putExtra("call_id", currentCallId)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val hangupIntent = Intent(this, CallNotificationReceiver::class.java).apply {
+            action = CallNotificationReceiver.ACTION_HANGUP
+            putExtra("call_id", currentCallId)
+        }
+        val hangupPendingIntent = PendingIntent.getBroadcast(
+            this, 1, hangupIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = currentPeerName?.ifBlank { null } ?: "Ongoing $currentCallType Call"
+        val text = currentPeerNumber?.ifBlank { null } ?: "Tap to return to call screen"
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Hang Up",
+                hangupPendingIntent
+            )
+
+        if (callStartedAtMillis > 0L) {
+            builder.setWhen(callStartedAtMillis)
+            builder.setUsesChronometer(true)
+        }
+        return builder.build()
+    }
+
+    private fun updateOngoingNotification(callStartedAtMillis: Long) {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.notify(NOTIFICATION_ID, buildOngoingNotification(callStartedAtMillis))
+        } catch (_: Exception) {}
     }
 
     private fun releaseCallLocks() {

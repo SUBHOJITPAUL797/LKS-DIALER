@@ -1198,6 +1198,23 @@ fun ActiveVideoCallScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                         }
 
+                        // Switch to Audio Call button
+                        IconButton(
+                            onClick = { webRtcEngine.revertToAudioCall("Switched to Audio Call") },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.50f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Phone,
+                                contentDescription = "Switch to Audio",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+
                         // Minimize to Floating Window (PiP) button
                         IconButton(
                             onClick = {

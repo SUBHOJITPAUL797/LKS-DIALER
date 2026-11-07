@@ -178,6 +178,7 @@
             <intent-filter>
                 <action android:name="com.example.ACTION_ACCEPT_CALL" />
                 <action android:name="com.example.ACTION_DECLINE_CALL" />
+                <action android:name="com.example.ACTION_HANGUP_CALL" />
             </intent-filter>
         </receiver>
 

@@ -2686,9 +2686,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Hold State synchronization
             val remoteHold = snapshot?.getBoolean("isOnHold") == true || snapshot?.getBoolean("onHold") == true || call.isOnHold
             val heldBy = snapshot?.getString("heldBy") ?: call.heldBy ?: ""
-            val myPhone = myPhoneNumber.ifBlank {
-                com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
-            }
+            val myPhone = getEffectivePhoneNumber()
             val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
             
             if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
@@ -2825,10 +2823,24 @@ class WebRtcEngine private constructor(private val context: Context) {
         videoUpgradeWatchdogJob?.cancel()
         videoUpgradeWatchdogJob = null
 
-        // 1. Stop video capturer and dispose local video track
+        val currentCall = _state.value.activeCall
+
+        // 1. Stop and completely dispose video capturer, sources, and helpers to free hardware
         try {
             videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
         } catch (_: Exception) {}
+        videoCapturer = null
+
+        try {
+            videoSource?.dispose()
+        } catch (_: Exception) {}
+        videoSource = null
+
+        try {
+            surfaceTextureHelper?.dispose()
+        } catch (_: Exception) {}
+        surfaceTextureHelper = null
 
         try {
             _state.value.localVideoTrack?.setEnabled(false)
@@ -2853,11 +2865,21 @@ class WebRtcEngine private constructor(private val context: Context) {
             connectionStatusText = reason
         )
 
-        // 4. Reconfigure audio routing for audio call
+        // 4. Update Firestore so peer device immediately knows to revert to AUDIO
+        if (currentCall != null) {
+            try {
+                firestore.collection("calls").document(currentCall.callId).update(
+                    "callType", CallType.AUDIO.name,
+                    "videoUpgradeStatus", null
+                )
+            } catch (_: Exception) {}
+        }
+
+        // 5. Reconfigure audio routing for audio call (re-enable earpiece and proximity sensor)
         configureAudio(CallType.AUDIO)
         refreshAvailableAudioDevices(defaultCallType = CallType.AUDIO)
 
-        // 5. Restore connection status text after 3 seconds
+        // 6. Restore connection status text after 3 seconds
         scope.launch {
             delay(3000)
             if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
@@ -3030,19 +3052,22 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
 
-    fun toggleMute() {
-        val newMuted = !_state.value.isMuted
+    fun setMicrophoneMute(muted: Boolean) {
+        if (_state.value.isMuted == muted) return
         if (!_state.value.isOnHold) {
-            localAudioTrack?.setEnabled(!newMuted)
+            localAudioTrack?.setEnabled(!muted)
         }
-        _state.value = _state.value.copy(isMuted = newMuted)
+        _state.value = _state.value.copy(isMuted = muted)
+        Log.i("WebRtcEngine", "Microphone mute state changed to: $muted")
+    }
+
+    fun toggleMute() {
+        setMicrophoneMute(!_state.value.isMuted)
     }
 
     fun putCallOnHold(onHold: Boolean, isCellularInterruption: Boolean = false) {
         val currentCall = _state.value.activeCall ?: return
-        val myNumber = myPhoneNumber.ifBlank {
-            com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber ?: ""
-        }
+        val myNumber = getEffectivePhoneNumber()
         
         // 1. Mute or restore local audio and video tracks
         if (onHold) {
@@ -3118,11 +3143,32 @@ class WebRtcEngine private constructor(private val context: Context) {
         _state.value = _state.value.copy(isCameraOn = newCameraOn)
     }
 
+    @Volatile
+    private var isSwitchingCamera: Boolean = false
+
     fun switchCamera() {
-        if (videoCapturer is CameraVideoCapturer) {
-            val cameraCapturer = videoCapturer as CameraVideoCapturer
-            cameraCapturer.switchCamera(null)
-            _state.value = _state.value.copy(isFrontCamera = !_state.value.isFrontCamera)
+        val capturer = videoCapturer as? CameraVideoCapturer ?: return
+        if (isSwitchingCamera) {
+            Log.d("WebRtcEngine", "Camera switch already in progress, ignoring duplicate click")
+            return
+        }
+        isSwitchingCamera = true
+        try {
+            capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                    isSwitchingCamera = false
+                    _state.value = _state.value.copy(isFrontCamera = isFrontCamera)
+                    Log.i("WebRtcEngine", "Camera switched successfully: isFrontCamera=$isFrontCamera")
+                }
+
+                override fun onCameraSwitchError(errorDescription: String?) {
+                    isSwitchingCamera = false
+                    Log.w("WebRtcEngine", "Camera switch error from HAL: $errorDescription")
+                }
+            })
+        } catch (e: Exception) {
+            isSwitchingCamera = false
+            Log.w("WebRtcEngine", "Exception while switching camera: ${e.message}")
         }
     }
 

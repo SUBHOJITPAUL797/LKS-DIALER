@@ -267,6 +267,11 @@ class LksCallConnection(
         val route = state?.route ?: return
         Log.d("LksCallConnection", "Telecom onCallAudioStateChanged: route=$route, isMuted=${state.isMuted}")
 
+        val engine = WebRtcEngine.getInstanceIfCreated() ?: return
+        if (engine.state.value.callStatus == com.example.data.model.CallStatus.ANSWERED) {
+            engine.setMicrophoneMute(state.isMuted)
+        }
+
         // 🛡️ CRITICAL GUARD: During incoming ringing, Telecom defaults to ROUTE_EARPIECE on Samsung/Xiaomi.
         // We MUST NOT pass this route change to WebRtcEngine/AudioRouteManager while ringing,
         // otherwise Android forces AudioManager.MODE_IN_COMMUNICATION with EARPIECE,
@@ -275,8 +280,6 @@ class LksCallConnection(
             Log.d("LksCallConnection", "🛡️ Suppressing onCallAudioStateChanged during STATE_RINGING / INITIALIZING")
             return
         }
-
-        val engine = WebRtcEngine.getInstanceIfCreated() ?: return
         if (engine.state.value.callStatus == com.example.data.model.CallStatus.RINGING ||
             engine.state.value.callStatus == com.example.data.model.CallStatus.IDLE) {
             Log.d("LksCallConnection", "🛡️ Suppressing onCallAudioStateChanged because WebRtcEngine callStatus is ${engine.state.value.callStatus}")
