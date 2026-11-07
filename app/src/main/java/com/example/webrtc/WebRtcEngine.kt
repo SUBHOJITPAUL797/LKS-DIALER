@@ -772,8 +772,46 @@ class WebRtcEngine private constructor(private val context: Context) {
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
                         if (reconnectJob == null || reconnectJob?.isActive == false) {
                             reconnectJob = scope.launch {
-                                delay(25000)
-                                if (_state.value.callStatus == CallStatus.ANSWERED) {
+                                // Proactive recovery: after 3.5s of disconnection, trigger proactive ICE restart
+                                delay(3500)
+                                if (isActive && _state.value.callStatus == CallStatus.ANSWERED &&
+                                    (peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.DISCONNECTED ||
+                                     peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.FAILED)) {
+                                    Log.i("WebRtcEngine", "ICE DISCONNECTED for 3.5s ── triggering proactive ICE restart")
+                                    val activeCallId = _state.value.activeCall?.callId
+                                    if (activeCallId != null) {
+                                        if (isCaller) {
+                                            try {
+                                                peerConnection?.restartIce()
+                                                val constraints = MediaConstraints().apply {
+                                                    mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+                                                }
+                                                peerConnection?.createOffer(object : SimpleSdpObserver() {
+                                                    override fun onCreateSuccess(desc: SessionDescription?) {
+                                                        if (desc != null) {
+                                                            val tunedSdp = preferOpusAndEnableFec(desc.description)
+                                                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                                                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                                                            firestore.collection("calls").document(activeCallId)
+                                                                .set(mapOf("offerSdp" to tunedSdp), com.google.firebase.firestore.SetOptions.merge())
+                                                            Log.i("WebRtcEngine", "Caller uploaded proactive ICE restart offerSdp")
+                                                        }
+                                                    }
+                                                }, constraints)
+                                            } catch (e: Exception) {
+                                                Log.w("WebRtcEngine", "Proactive ICE restart failed: ${e.message}")
+                                            }
+                                        } else {
+                                            firestore.collection("calls").document(activeCallId)
+                                                .set(mapOf("iceRestartRequested" to System.currentTimeMillis()), com.google.firebase.firestore.SetOptions.merge())
+                                            Log.i("WebRtcEngine", "Callee requested proactive ICE restart from caller")
+                                        }
+                                    }
+                                }
+                                delay(21500)
+                                if (_state.value.callStatus == CallStatus.ANSWERED &&
+                                    peerConnection?.iceConnectionState() != PeerConnection.IceConnectionState.CONNECTED &&
+                                    peerConnection?.iceConnectionState() != PeerConnection.IceConnectionState.COMPLETED) {
                                     Log.w("WebRtcEngine", "ICE DISCONNECTED 25s timeout — ending call")
                                     endCallInternalLocal(CallStatus.ENDED)
                                 }
@@ -1081,28 +1119,36 @@ class WebRtcEngine private constructor(private val context: Context) {
                     if (activeNet != null && activeNet != network && _state.value.callStatus == CallStatus.ANSWERED) {
                         Log.i("WebRtcEngine", "Default network switch detected ($activeNet -> $network) ── initiating seamless ICE restart")
                         scope.launch {
-                            try {
-                                peerConnection?.restartIce()
-                                val constraints = MediaConstraints().apply {
-                                    mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
-                                }
-                                peerConnection?.createOffer(object : SimpleSdpObserver() {
-                                    override fun onCreateSuccess(desc: SessionDescription?) {
-                                        if (desc != null) {
-                                            val tunedSdp = preferOpusAndEnableFec(desc.description)
-                                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
-                                            val activeId = _state.value.activeCall?.callId ?: return
-                                            firestore.collection("calls").document(activeId)
-                                                .set(mapOf(
-                                                    "offerSdp" to tunedSdp,
-                                                    "iceRestartRequested" to System.currentTimeMillis()
-                                                ), com.google.firebase.firestore.SetOptions.merge())
-                                        }
+                            val activeId = _state.value.activeCall?.callId ?: return@launch
+                            if (_state.value.isCaller) {
+                                try {
+                                    peerConnection?.restartIce()
+                                    val constraints = MediaConstraints().apply {
+                                        mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
                                     }
-                                }, constraints)
-                            } catch (e: Exception) {
-                                Log.w("WebRtcEngine", "ICE restart on network switch failed: ${e.message}")
+                                    peerConnection?.createOffer(object : SimpleSdpObserver() {
+                                        override fun onCreateSuccess(desc: SessionDescription?) {
+                                            if (desc != null) {
+                                                val tunedSdp = preferOpusAndEnableFec(desc.description)
+                                                val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                                                peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                                                firestore.collection("calls").document(activeId)
+                                                    .set(mapOf("offerSdp" to tunedSdp), com.google.firebase.firestore.SetOptions.merge())
+                                                Log.i("WebRtcEngine", "Caller uploaded handoff ICE restart offerSdp")
+                                            }
+                                        }
+                                    }, constraints)
+                                } catch (e: Exception) {
+                                    Log.w("WebRtcEngine", "Caller ICE restart on network switch failed: ${e.message}")
+                                }
+                            } else {
+                                Log.i("WebRtcEngine", "Callee requesting ICE restart from caller on network switch")
+                                try {
+                                    firestore.collection("calls").document(activeId)
+                                        .set(mapOf("iceRestartRequested" to System.currentTimeMillis()), com.google.firebase.firestore.SetOptions.merge())
+                                } catch (e: Exception) {
+                                    Log.w("WebRtcEngine", "Failed to request ICE restart on network switch: ${e.message}")
+                                }
                             }
                         }
                     }
@@ -2547,10 +2593,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                     peerConnection?.createOffer(object : SimpleSdpObserver() {
                         override fun onCreateSuccess(desc: SessionDescription?) {
-                            peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
-                            desc?.let {
+                            if (desc != null) {
+                                val tunedSdp = preferOpusAndEnableFec(desc.description)
+                                val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                                peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
                                 firestore.collection("calls").document(call.callId)
-                                    .update("offerSdp", it.description)
+                                    .set(mapOf("offerSdp" to tunedSdp), com.google.firebase.firestore.SetOptions.merge())
+                                Log.i("WebRtcEngine", "Caller uploaded ICE restart offerSdp in response to peer request")
                             }
                         }
                     }, constraints)

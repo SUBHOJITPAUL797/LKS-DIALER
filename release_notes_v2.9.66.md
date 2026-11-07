@@ -1,0 +1,5 @@
+### Changes in v2.9.66 (Build 224):
+- **SDP Glare-Free Network Handoff**: Fixed simultaneous dual-offer collisions during Wi-Fi $\leftrightarrow$ 4G/LTE handover. When Callee switches networks, it requests ICE restart via Firestore signaling rather than creating a competing offer, ensuring only the Caller generates the re-offer and eliminating WebRTC glare.
+- **Proactive 3.5s Cellular ICE Recovery**: Replaced the passive 25-second `DISCONNECTED` delay with proactive ICE restart triggered after 3.5s of sustained packet loss, rapidly restoring live call audio during cellular tower transitions and elevator signal drops.
+- **Opus FEC on ICE Restart**: Ensured all ICE restart offers and answers retain Opus In-Band Forward Error Correction (`useinbandfec=1`) and optimal bitrate constraints (`maxaveragebitrate=64000`, `minptime=10`).
+- **Resilient Background Call Logging**: Added `getEffectiveUserPhone()` fallback in `FirebaseManager.kt` using persisted preferences so that missed and cancelled calls occurring while the app is backgrounded or killed never fail to persist to Firestore.

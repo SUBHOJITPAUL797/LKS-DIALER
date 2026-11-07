@@ -1052,6 +1052,13 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    fun getEffectiveUserPhone(): String? {
+        val phone = _currentUser.value?.phoneNumber?.ifBlank { null }
+        if (phone != null) return phone
+        val sp = context.getSharedPreferences("lks_prefs", Context.MODE_PRIVATE)
+        return sp.getString("user_phone", null)?.ifBlank { null }
+    }
+
     /**
      * Records an active call start in local state and Firestore as soon as it's answered.
      * Guarantees that even if the app crashes, is force-killed, or loses power mid-call,
@@ -1064,7 +1071,7 @@ class FirebaseManager private constructor(private val context: Context) {
         otherPartyName: String,
         callType: CallType
     ) {
-        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val userPhone = getEffectiveUserPhone() ?: return
         val logId = UUID.randomUUID().toString()
         activeCallLogIds[callId] = logId
 
@@ -1098,7 +1105,7 @@ class FirebaseManager private constructor(private val context: Context) {
      * Records a cellular call placed via SIM card so it appears in recent call logs.
      */
     fun recordCellularCall(otherPartyNumber: String, otherPartyName: String, simDisplayName: String) {
-        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val userPhone = getEffectiveUserPhone() ?: return
         val logId = UUID.randomUUID().toString()
         val cellularCallId = "sim_${UUID.randomUUID().toString().take(8)}"
 
@@ -1145,7 +1152,7 @@ class FirebaseManager private constructor(private val context: Context) {
         fallbackCallType: CallType = CallType.AUDIO,
         recordingPath: String? = null
     ) {
-        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val userPhone = getEffectiveUserPhone() ?: return
         val logId = activeCallLogIds.remove(callId)
 
         if (logId != null) {
@@ -1202,7 +1209,7 @@ class FirebaseManager private constructor(private val context: Context) {
         callId: String? = null,
         recordingPath: String? = null
     ) {
-        val userPhone = _currentUser.value?.phoneNumber ?: return
+        val userPhone = getEffectiveUserPhone() ?: return
         val resolvedCallId = callId ?: "${userPhone}_${System.currentTimeMillis()}"
 
         // Deduplication: if already tracked in activeCallLogIds, update instead
