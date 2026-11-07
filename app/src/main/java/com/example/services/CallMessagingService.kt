@@ -131,6 +131,24 @@ class CallMessagingService : FirebaseMessagingService() {
                 return
             }
 
+            if (type == "call_offer") {
+                val offerSdp = remoteMessage.data["offerSdp"] ?: ""
+                val callerCandidates = remoteMessage.data["candidates"] ?: ""
+                Log.i("FCM", "Received call_offer push for callId: $callId (offerLen=${offerSdp.length})")
+                if (offerSdp.isNotBlank()) {
+                    val rtc = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                        ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
+                    rtc.cacheIncomingOffer(callId, offerSdp)
+                    if (callerCandidates.isNotBlank()) {
+                        rtc.addCandidatesFromPush(callerCandidates)
+                    }
+                }
+                try {
+                    if (wakeLock?.isHeld == true) wakeLock.release()
+                } catch (_: Exception) {}
+                return
+            }
+
             if (type == "call_ringing") {
                 val callerTuneTitle = remoteMessage.data["callerTuneTitle"]
                 val callerTuneUrl = remoteMessage.data["callerTuneUrl"]
@@ -269,11 +287,7 @@ class CallMessagingService : FirebaseMessagingService() {
                             ringUpdates["callerTuneEndMs"] = myTune.endMs
                             Log.i("FCM", "📻 Attaching caller tune '${myTune.title}' (start=${myTune.startMs}ms) to RINGING update (early)")
                         }
-                        docRef.update(ringUpdates).addOnFailureListener {
-                            if (!com.example.webrtc.WebRtcEngine.isCallTerminated(callId)) {
-                                docRef.set(ringUpdates, com.google.firebase.firestore.SetOptions.merge())
-                            }
-                        }
+                        docRef.set(ringUpdates, com.google.firebase.firestore.SetOptions.merge())
                     } catch (e: Exception) {
                         Log.w("FCM", "Failed to update call status to RINGING: ${e.message}")
                     }

@@ -90,6 +90,21 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private val firestore = FirebaseFirestore.getInstance()
     private var myPhoneNumber: String = ""
+
+    fun getEffectivePhoneNumber(): String {
+        if (myPhoneNumber.isNotBlank()) return myPhoneNumber
+        val fromUser = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+        if (!fromUser.isNullOrBlank()) {
+            myPhoneNumber = fromUser
+            return fromUser
+        }
+        val fromPrefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE).getString("user_phone", "") ?: ""
+        if (fromPrefs.isNotBlank()) {
+            myPhoneNumber = fromPrefs
+            return fromPrefs
+        }
+        return ""
+    }
     
     private var incomingCallListener: ListenerRegistration? = null
     private var activeCallListener: ListenerRegistration? = null
@@ -523,6 +538,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                 _state.value = _state.value.copy(
                     activeCall = cur.copy(offerSdp = offerSdp)
                 )
+                if (_state.value.callStatus == CallStatus.ANSWERED && !hasProcessedOffer) {
+                    Log.i("WebRtcEngine", "⚡ cacheIncomingOffer: call is already answered, immediately processing offer SDP (<0ms)")
+                    processOfferSdpIfAvailable()
+                }
             }
             Log.i("WebRtcEngine", "⚡ In-band push SDP offer pre-cached in RAM (<0ms setup) for $callId (${offerSdp.length} chars)")
         }
@@ -894,10 +913,11 @@ class WebRtcEngine private constructor(private val context: Context) {
         callerTuneUrl: String? = null,
         callerTuneStartMs: Long = 0L
     ) {
+        val myNumber = getEffectivePhoneNumber()
         triggerPushNotification(
             calleeNumber = callerNumber,
             callerName = "LKS Callee",
-            callerNumber = myPhoneNumber,
+            callerNumber = myNumber,
             callType = "AUDIO",
             callId = callId,
             type = "call_ringing",
@@ -1189,16 +1209,42 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             
             // ⚡ In-Band Push SDP Trigger (0ms setup): Embed local Offer SDP and gathered ICE candidates directly into FCM payload
-            val pushTriggered = java.util.concurrent.atomic.AtomicBoolean(false)
+            var hasSentPushWithOffer = false
+            var hasSentInitialPush = false
+            val pushLock = Any()
+
             val sendPushToCallee = { offer: String? ->
-                if (pushTriggered.compareAndSet(false, true)) {
+                var shouldSend = false
+                var sendOfferPush = false
+                synchronized(pushLock) {
+                    if (offer != null) {
+                        // Real SDP offer ready!
+                        if (!hasSentPushWithOffer) {
+                            hasSentPushWithOffer = true
+                            sendOfferPush = hasSentInitialPush // if initial was already sent, this is an update push
+                            hasSentInitialPush = true
+                            shouldSend = true
+                        }
+                    } else {
+                        // Safety fallback triggered without SDP (only if real offer hasn't been sent yet)
+                        if (!hasSentInitialPush && !hasSentPushWithOffer) {
+                            hasSentInitialPush = true
+                            shouldSend = true
+                        }
+                    }
+                }
+
+                if (shouldSend) {
                     val initialCandidates = localGatheredCandidates.take(6).joinToString(";;;").ifBlank { null }
+                    val pushType = if (sendOfferPush) "call_offer" else "incoming_call"
+                    Log.i("WebRtcEngine", "⚡ Dispatching ${if (offer != null) "in-band offer SDP" else "fallback"} push to callee $calleeNumber (type=$pushType)")
                     triggerPushNotification(
                         calleeNumber = calleeNumber,
                         callerName = callerName,
                         callerNumber = callerNumber,
                         callType = callType.name,
                         callId = newCall.callId,
+                        type = pushType,
                         explicitFcmToken = calleeFcm,
                         explicitWebToken = calleeWeb,
                         offerSdp = offer,
@@ -1207,9 +1253,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
 
-            // Fallback: If local createOffer takes >180ms, push immediately anyway so callee never waits
+            // Safety fallback: Give createOffer up to 550ms to finish local SDP synthesis.
+            // If device is under extreme CPU pressure and exceeds 550ms, wake the callee anyway.
             scope.launch {
-                delay(180)
+                delay(550)
                 sendPushToCallee(null)
             }
 
@@ -1570,6 +1617,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         val callerNum = callerNumber ?: currentCall?.callerNumber ?: ""
         val targetFcm = currentCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.first ?: ""
         val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
+        val myEffectiveNum = getEffectivePhoneNumber()
 
         // 1. Instantly mark status as ANSWERED in Firestore so the CALLER screen updates immediately (<50ms)
         try {
@@ -1596,13 +1644,53 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         } catch (_: Exception) {}
 
+        // ⚡ Direct Fast-Ack FCM Push: Immediately inform Caller that Callee pressed answer (<100ms)
+        // This stops caller's ringtone and switches caller screen to "Connecting P2P..." immediately!
+        if (callerNum.isNotBlank() && (targetFcm.isNotBlank() || targetWeb.isNotBlank())) {
+            triggerPushNotification(
+                calleeNumber = callerNum,
+                callerName = myEffectiveNum,
+                callerNumber = myEffectiveNum,
+                callType = type.name,
+                callId = callId,
+                type = "call_answered",
+                explicitFcmToken = targetFcm,
+                explicitWebToken = targetWeb
+            )
+            Log.i("WebRtcEngine", "⚡ Fast-ack 'call_answered' push dispatched to caller $callerNum (<0ms)")
+        }
+
         // 2. Ensure real-time active call & ICE listeners are attached immediately
         listenToActiveCall(callId, isCaller = false)
         listenForIceCandidates(callId, isCaller = false)
 
         // 3. Fast-path: Check if WebRtcEngine already has this call cached with offerSdp!
-        if (currentCall != null && currentCall.callId == callId && !currentCall.offerSdp.isNullOrBlank()) {
-            Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp")
+        val offerFromMem = currentCall?.offerSdp ?: cachedIncomingOfferSdp
+        if (!offerFromMem.isNullOrBlank()) {
+            if (_state.value.activeCall == null || _state.value.activeCall?.callId != callId) {
+                _state.value = _state.value.copy(
+                    activeCall = CallDto(
+                        callId = callId,
+                        callerName = callerName ?: "LKS User",
+                        callerNumber = callerNumber ?: "",
+                        calleeNumber = myEffectiveNum,
+                        callType = type,
+                        status = CallStatus.ANSWERED,
+                        offerSdp = offerFromMem
+                    ),
+                    callStatus = CallStatus.ANSWERED,
+                    callType = type,
+                    isCaller = false,
+                    connectionStatusText = "Connecting P2P..."
+                )
+            } else {
+                _state.value = _state.value.copy(
+                    activeCall = _state.value.activeCall?.copy(offerSdp = offerFromMem, status = CallStatus.ANSWERED),
+                    callStatus = CallStatus.ANSWERED,
+                    connectionStatusText = "Connecting P2P..."
+                )
+            }
+            Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp in RAM")
             answerCall()
             return
         }
@@ -1613,7 +1701,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             callId = callId,
             callerName = callerName ?: "LKS User",
             callerNumber = callerNumber ?: "",
-            calleeNumber = myPhoneNumber,
+            calleeNumber = myEffectiveNum,
             callType = type,
             status = CallStatus.ANSWERED
         )
@@ -1938,20 +2026,23 @@ class WebRtcEngine private constructor(private val context: Context) {
             prebuiltCallId = null
             preWarmDone = false
 
-            // Write status + answerSdp atomically in one Firestore document update
-            firestore.collection("calls").document(call.callId).update(
-                "status", CallStatus.ANSWERED.name,
-                "answeredAt", System.currentTimeMillis(),
-                "answerSdp", cachedAnswer
+            // Write status + answerSdp atomically in one Firestore document set
+            val prebuiltMap = mapOf(
+                "status" to CallStatus.ANSWERED.name,
+                "answeredAt" to System.currentTimeMillis(),
+                "answerSdp" to cachedAnswer
+            )
+            firestore.collection("calls").document(call.callId).set(
+                prebuiltMap,
+                com.google.firebase.firestore.SetOptions.merge()
             ).addOnFailureListener { e ->
-                Log.w("WebRtcEngine", "Failed to update status and answerSdp, retrying: ${e.message}")
+                Log.w("WebRtcEngine", "Failed to set status and answerSdp, retrying: ${e.message}")
                 scope.launch {
                     delay(300)
                     try {
-                        firestore.collection("calls").document(call.callId).update(
-                            "status", CallStatus.ANSWERED.name,
-                            "answeredAt", System.currentTimeMillis(),
-                            "answerSdp", cachedAnswer
+                        firestore.collection("calls").document(call.callId).set(
+                            prebuiltMap,
+                            com.google.firebase.firestore.SetOptions.merge()
                         )
                     } catch (_: Exception) {}
                 }
@@ -1965,17 +2056,23 @@ class WebRtcEngine private constructor(private val context: Context) {
             preWarmDone = false
             hasProcessedOffer = false
 
-            firestore.collection("calls").document(call.callId).update(
-                "status", CallStatus.ANSWERED.name,
-                "answeredAt", System.currentTimeMillis()
+            firestore.collection("calls").document(call.callId).set(
+                mapOf(
+                    "status" to CallStatus.ANSWERED.name,
+                    "answeredAt" to System.currentTimeMillis()
+                ),
+                com.google.firebase.firestore.SetOptions.merge()
             ).addOnFailureListener { e ->
-                Log.w("WebRtcEngine", "Failed to update status to ANSWERED, retrying: ${e.message}")
+                Log.w("WebRtcEngine", "Failed to set status to ANSWERED, retrying: ${e.message}")
                 scope.launch {
                     delay(300)
                     try {
-                        firestore.collection("calls").document(call.callId).update(
-                            "status", CallStatus.ANSWERED.name,
-                            "answeredAt", System.currentTimeMillis()
+                        firestore.collection("calls").document(call.callId).set(
+                            mapOf(
+                                "status" to CallStatus.ANSWERED.name,
+                                "answeredAt" to System.currentTimeMillis()
+                            ),
+                            com.google.firebase.firestore.SetOptions.merge()
                         )
                     } catch (_: Exception) {}
                 }
@@ -2095,7 +2192,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                         // 500ms is needed because TURN relay candidates on POCO F1 Wi-Fi arrive ~300-450ms after answer
                                         val gatherStart = System.currentTimeMillis()
                                         while (System.currentTimeMillis() - gatherStart < 500) {
-                                            if (localGatheredCandidates.any { it.contains("typ relay") }) {
+                                            if (localGatheredCandidates.any { it.contains("typ relay") } ||
+                                                (System.currentTimeMillis() - gatherStart > 150 && localGatheredCandidates.any { it.contains("typ srflx") })) {
                                                 break
                                             }
                                             delay(20)
