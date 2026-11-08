@@ -446,12 +446,12 @@ fun ActiveAudioCallScreen(
             title = { Text("Video Call Request") },
             text = { Text("The other person wants to switch to a video call. Do you accept?") },
             confirmButton = {
-                TextButton(onClick = { webRtcEngine.acceptVideoUpgrade() }) {
+                TextButton(onClick = { try { webRtcEngine.acceptVideoUpgrade() } catch (_: Exception) {} }) {
                     Text("Accept", color = TealPrimary)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { webRtcEngine.declineVideoUpgrade() }) {
+                TextButton(onClick = { try { webRtcEngine.declineVideoUpgrade() } catch (_: Exception) {} }) {
                     Text("Decline", color = RedEndCall)
                 }
             },
@@ -735,7 +735,13 @@ fun ActiveAudioCallScreen(
                         icon = Icons.Default.Videocam,
                         label = "Video",
                         isActive = false,
-                        onClick = { webRtcEngine.requestVideoUpgrade() }
+                        onClick = {
+                            try {
+                                webRtcEngine.requestVideoUpgrade()
+                            } catch (e: Exception) {
+                                android.util.Log.e("CallScreens", "Error requesting video upgrade: ${e.message}")
+                            }
+                        }
                     )
                 }
 

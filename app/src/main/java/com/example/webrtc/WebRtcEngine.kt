@@ -158,6 +158,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     // Pre-warm state: answer SDP prepared during ringing so Accept tap is instant
     @Volatile private var prebuiltAnswerSdp: String? = null
     @Volatile private var prebuiltCallId: String? = null
+    @Volatile private var activeCallSessionId: String? = null
     @Volatile private var preWarmDone = false
     @Volatile private var cachedIncomingOfferSdp: String? = null
     private var incomingOfferFetchJob: Job? = null
@@ -739,8 +740,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } else {
                         firestore.collection("calls").document(callId).get().await()
                     }
-                    val call = doc.toObject(CallDto::class.java)
-                    if (doc.exists() && call != null) {
+                    val rawCall = doc.toObject(CallDto::class.java)
+                    if (doc.exists() && rawCall != null) {
+                        val call = if (rawCall.callId.isBlank()) rawCall.copy(callId = doc.id.ifBlank { callId }) else rawCall
                         withContext(Dispatchers.Main) {
                             handleCallDocumentUpdate(call, doc, isCaller = true)
                         }
@@ -1286,6 +1288,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 calleeWebToken = calleeWeb
             )
 
+            activeCallSessionId = newCall.callId
             _state.value = WebRtcState(
                 activeCall = newCall,
                 callStatus = CallStatus.CALLING,
@@ -1472,7 +1475,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             .addSnapshotListener { snapshot, e ->
                 if (e != null) return@addSnapshotListener
                 val now = System.currentTimeMillis()
-                val activeCalls = snapshot?.documents?.mapNotNull { it.toObject(CallDto::class.java) } ?: emptyList()
+                val activeCalls = snapshot?.documents?.mapNotNull { doc ->
+                    doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id) else it }
+                } ?: emptyList()
 
                 // Auto-cleanup finished calls (>5 minutes old) from Firestore to keep DB lean & fast
                 for (call in activeCalls) {
@@ -1710,6 +1715,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             return
         }
 
+        activeCallSessionId = callId
         resetIdleJob?.cancel()
         resetIdleJob = null
         reconnectJob?.cancel()
@@ -1854,7 +1860,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             } catch (_: Exception) {}
                         }
                         if (doc.exists()) {
-                            val docCall = doc.toObject(CallDto::class.java)
+                            val docCall = doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
                             if (!docOffer.isNullOrBlank()) {
                                 cachedIncomingOfferSdp = docOffer
                                 Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via fast fetch (attempt $attempt) for $callId -> processing SDP answer")
@@ -2024,7 +2030,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 Log.d("WebRtcEngine", "attachToCall doc callback: call $callId was already ended/declined locally. Aborting.")
                 return@addOnSuccessListener
             }
-            val call = doc.toObject(CallDto::class.java)
+            val rawCall = doc.toObject(CallDto::class.java)
+            val call = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
             if (call != null) {
                 if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
                     Log.d("WebRtcEngine", "attachToCall: call $callId already finished with status ${call.status}")
@@ -2423,7 +2430,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                     return@addSnapshotListener
                 }
                 hasSeenActiveDoc = true
-                val call = snapshot.toObject(CallDto::class.java)
+                val rawCall = snapshot.toObject(CallDto::class.java)
+                val call = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = snapshot.id.ifBlank { callId }) else it }
                 if (call != null) {
                     if (call.callerNumber.isNotBlank() && (call.callerFcmToken.isNotBlank() || call.callerWebToken.isNotBlank())) {
                         pushTokenCache[call.callerNumber] = Pair(call.callerFcmToken, call.callerWebToken)
@@ -2462,7 +2470,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         firestore.collection("calls").document(callId).get().await()
                     }
                     if (serverDoc.exists()) {
-                        val serverCall = serverDoc.toObject(CallDto::class.java)
+                        val rawServerCall = serverDoc.toObject(CallDto::class.java)
+                        val serverCall = rawServerCall?.let { if (it.callId.isBlank()) it.copy(callId = serverDoc.id.ifBlank { callId }) else it }
                         if (serverCall != null) {
                             if (serverCall.callerNumber.isNotBlank() && (serverCall.callerFcmToken.isNotBlank() || serverCall.callerWebToken.isNotBlank())) {
                                 pushTokenCache[serverCall.callerNumber] = Pair(serverCall.callerFcmToken, serverCall.callerWebToken)
@@ -2506,6 +2515,11 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun handleCallDocumentUpdate(call: CallDto, snapshot: com.google.firebase.firestore.DocumentSnapshot?, isCaller: Boolean) {
+        val effectiveCallId = call.callId.takeIf { it.isNotBlank() } ?: snapshot?.id?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (effectiveCallId.isNotBlank()) {
+            activeCallSessionId = effectiveCallId
+        }
+        val safeCall = if (call.callId.isBlank() && effectiveCallId.isNotBlank()) call.copy(callId = effectiveCallId) else call
         // ⚡ Priority Terminal Status Check: If call was ended remotely, hang up immediately!
         if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
             activeCallPollingJob?.cancel()
@@ -2531,11 +2545,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Strictly enforce monotonic call state progression:
             // IDLE -> CALLING -> RINGING -> ANSWERED -> ENDED.
             // If the local call is already ANSWERED, NEVER revert activeCall.status to RINGING or CALLING
+            val baseCall = safeCall
             val effectiveCall = if (_state.value.callStatus == CallStatus.ANSWERED && 
-                call.status != CallStatus.ENDED && call.status != CallStatus.DECLINED) {
-                call.copy(status = CallStatus.ANSWERED, offerSdp = mergedOffer)
+                baseCall.status != CallStatus.ENDED && baseCall.status != CallStatus.DECLINED) {
+                baseCall.copy(callId = baseCall.callId.ifBlank { effectiveCallId }, status = CallStatus.ANSWERED, offerSdp = mergedOffer)
             } else {
-                call.copy(offerSdp = mergedOffer)
+                baseCall.copy(callId = baseCall.callId.ifBlank { effectiveCallId }, offerSdp = mergedOffer)
             }
             _state.value = _state.value.copy(activeCall = effectiveCall)
             
@@ -2759,24 +2774,60 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun requestVideoUpgrade() {
-        val currentCall = _state.value.activeCall ?: return
+        val currentCall = _state.value.activeCall
+        val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (callId.isBlank()) {
+            Log.w("WebRtcEngine", "Cannot request video upgrade: callId is blank!")
+            return
+        }
         _state.value = _state.value.copy(didIRequestVideoUpgrade = true)
-        firestore.collection("calls").document(currentCall.callId)
-            .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.REQUESTED.name)
+        try {
+            firestore.collection("calls").document(callId)
+                .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.REQUESTED.name)
+                .addOnFailureListener { e ->
+                    Log.w("WebRtcEngine", "Failed to update videoUpgradeStatus: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Exception in requestVideoUpgrade: ${e.message}", e)
+        }
     }
 
     fun acceptVideoUpgrade() {
-        val currentCall = _state.value.activeCall ?: return
+        val currentCall = _state.value.activeCall
+        val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (callId.isBlank()) {
+            Log.w("WebRtcEngine", "Cannot accept video upgrade: callId is blank!")
+            return
+        }
         _state.value = _state.value.copy(isVideoUpgradeRequested = false)
-        firestore.collection("calls").document(currentCall.callId)
-            .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.ACCEPTED.name)
+        try {
+            firestore.collection("calls").document(callId)
+                .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.ACCEPTED.name)
+                .addOnFailureListener { e ->
+                    Log.w("WebRtcEngine", "Failed to update videoUpgradeStatus: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Exception in acceptVideoUpgrade: ${e.message}", e)
+        }
     }
 
     fun declineVideoUpgrade() {
-        val currentCall = _state.value.activeCall ?: return
+        val currentCall = _state.value.activeCall
+        val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (callId.isBlank()) {
+            Log.w("WebRtcEngine", "Cannot decline video upgrade: callId is blank!")
+            return
+        }
         _state.value = _state.value.copy(isVideoUpgradeRequested = false)
-        firestore.collection("calls").document(currentCall.callId)
-            .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
+        try {
+            firestore.collection("calls").document(callId)
+                .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
+                .addOnFailureListener { e ->
+                    Log.w("WebRtcEngine", "Failed to update videoUpgradeStatus: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Exception in declineVideoUpgrade: ${e.message}", e)
+        }
     }
 
     private fun resolveAndPrepareCalleeTune(calleeNumber: String) {
@@ -2900,9 +2951,10 @@ class WebRtcEngine private constructor(private val context: Context) {
         )
 
         // 4. Update Firestore so peer device immediately knows to revert to AUDIO
-        if (currentCall != null) {
+        val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (callId.isNotBlank()) {
             try {
-                firestore.collection("calls").document(currentCall.callId).update(
+                firestore.collection("calls").document(callId).update(
                     "callType", CallType.AUDIO.name,
                     "videoUpgradeStatus", null
                 )
@@ -2923,16 +2975,33 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun executeVideoUpgrade(isCaller: Boolean) {
-        val currentCall = _state.value.activeCall ?: return
+        val currentCall = _state.value.activeCall
+        val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
+        if (callId.isBlank()) {
+            Log.w("WebRtcEngine", "Cannot execute video upgrade: callId is blank!")
+            return
+        }
         
-        // 1. Create and add local video track
-        createVideoTrack()
-        _state.value.localVideoTrack?.let {
-            peerConnection?.addTrack(it, listOf("ARDAMS"))
+        // 1. Create and add local video track safely
+        try {
+            createVideoTrack(startCaptureNow = true)
+            _state.value.localVideoTrack?.let { track ->
+                try {
+                    peerConnection?.addTrack(track, listOf("ARDAMS"))
+                } catch (e: Exception) {
+                    Log.w("WebRtcEngine", "peerConnection.addTrack for video failed: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("WebRtcEngine", "Failed to create/add local video track: ${e.message}", e)
         }
         
         // 2. Update UI state to video
-        _state.value = _state.value.copy(callType = CallType.VIDEO, connectionStatusText = "Connecting Video...")
+        _state.value = _state.value.copy(
+            callType = CallType.VIDEO,
+            isCameraOn = true,
+            connectionStatusText = "Connecting Video..."
+        )
         if (_state.value.selectedAudioDevice != AudioDeviceType.BLUETOOTH && _state.value.selectedAudioDevice != AudioDeviceType.WIRED_HEADSET) {
             selectAudioDeviceType(AudioDeviceType.SPEAKERPHONE)
         }
@@ -2945,7 +3014,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 Log.w("WebRtcEngine", "Video renegotiation watchdog timed out after 10s — safely reverting to audio")
                 revertToAudioCall("Video Timeout • Continued on Audio")
                 try {
-                    firestore.collection("calls").document(currentCall.callId)
+                    firestore.collection("calls").document(callId)
                         .update(
                             "videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name,
                             "callType", CallType.AUDIO.name
@@ -2960,20 +3029,29 @@ class WebRtcEngine private constructor(private val context: Context) {
             constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             constraints.mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
             
-            peerConnection?.createOffer(object : SimpleSdpObserver() {
-                override fun onCreateSuccess(desc: SessionDescription?) {
-                    if (desc != null) {
-                        val tunedSdp = preferOpusAndEnableFec(desc.description)
-                        val tunedDesc = SessionDescription(desc.type, tunedSdp)
-                        peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
-                        firestore.collection("calls").document(currentCall.callId)
-                            .update(
-                                "offerSdp", tunedSdp,
-                                "callType", CallType.VIDEO.name
-                            )
+            try {
+                peerConnection?.createOffer(object : SimpleSdpObserver() {
+                    override fun onCreateSuccess(desc: SessionDescription?) {
+                        if (desc != null) {
+                            val tunedSdp = preferOpusAndEnableFec(desc.description)
+                            val tunedDesc = SessionDescription(desc.type, tunedSdp)
+                            peerConnection?.setLocalDescription(SimpleSdpObserver(), tunedDesc)
+                            try {
+                                firestore.collection("calls").document(callId)
+                                    .update(
+                                        "offerSdp", tunedSdp,
+                                        "callType", CallType.VIDEO.name
+                                    )
+                            } catch (_: Exception) {}
+                        }
                     }
-                }
-            }, constraints)
+                    override fun onCreateFailure(error: String?) {
+                        Log.e("WebRtcEngine", "createOffer for video renegotiation failed: $error")
+                    }
+                }, constraints)
+            } catch (e: Exception) {
+                Log.e("WebRtcEngine", "Failed to create offer for video upgrade: ${e.message}", e)
+            }
         }
     }
 
@@ -3362,6 +3440,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun endCallInternalLocal(status: CallStatus, reason: String? = null) {
+        activeCallSessionId = null
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status")

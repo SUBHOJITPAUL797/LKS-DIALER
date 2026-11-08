@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import com.google.firebase.firestore.DocumentId
 import com.google.firebase.firestore.PropertyName
 
 data class UserDto(
@@ -43,6 +44,7 @@ enum class VideoUpgradeStatus {
 }
 
 data class CallDto(
+    @DocumentId
     val callId: String = "",
     val callerNumber: String = "",
     val calleeNumber: String = "",

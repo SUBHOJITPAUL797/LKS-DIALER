@@ -40,8 +40,9 @@ class CallSignalingManager(
         activeCallListener = firestore.collection("calls").document(callId)
             .addSnapshotListener { snapshot, e ->
                 if (e != null || snapshot == null) return@addSnapshotListener
-                val call = snapshot.toObject(CallDto::class.java)
-                if (call != null) {
+                val rawCall = snapshot.toObject(CallDto::class.java)
+                if (rawCall != null) {
+                    val call = if (rawCall.callId.isBlank()) rawCall.copy(callId = snapshot.id.ifBlank { callId }) else rawCall
                     onCallUpdate(call)
                 }
             }
