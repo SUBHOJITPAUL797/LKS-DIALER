@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.webrtc.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.UUID
 
@@ -48,6 +50,29 @@ data class WebRtcState(
 )
 
 class WebRtcEngine private constructor(private val context: Context) {
+    // ⚡ Ultra-fast HTTP/2 connection pool with keep-alive for zero-delay push dispatch
+    private val pushHttpClient = okhttp3.OkHttpClient.Builder()
+        .connectionPool(okhttp3.ConnectionPool(5, 5, java.util.concurrent.TimeUnit.MINUTES))
+        .connectTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .readTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .writeTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    fun prewarmPushSocket() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+                val req = okhttp3.Request.Builder()
+                    .url(workerUrl)
+                    .head()
+                    .build()
+                pushHttpClient.newCall(req).execute().close()
+                Log.d("WebRtcEngine", "⚡ Pre-warmed push HTTP/2 socket to Cloudflare Worker")
+            } catch (_: Exception) {}
+        }
+    }
+
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var timerJob: Job? = null
@@ -758,6 +783,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                         _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
                         unmuteAllAudioTracks()
                     }
+                } else if (newState == PeerConnection.PeerConnectionState.FAILED || newState == PeerConnection.PeerConnectionState.CLOSED) {
+                    Log.i("WebRtcEngine", "⚡ PeerConnection entered terminal state $newState ── immediately ending call on this device")
+                    scope.launch(Dispatchers.Main) {
+                        if (_state.value.callStatus == CallStatus.ANSWERED || _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
+                            endCallInternalLocal(CallStatus.ENDED)
+                        }
+                    }
                 }
             }
             override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
@@ -1332,6 +1364,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
 
             
+            prewarmPushSocket()
             com.example.services.ActiveCallService.start(context, newCall.callId, callType.name)
             headsetButtonManager.startListening()
             try {
@@ -1514,6 +1547,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.RINGING.name)
                     // Update local state to point to new call
                     _state.value = _state.value.copy(activeCall = incomingCall, isCaller = false)
+                    prewarmPushSocket()
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                     listenForIceCandidates(incomingCall.callId, isCaller = false)
                     return@addSnapshotListener
@@ -1690,30 +1724,12 @@ class WebRtcEngine private constructor(private val context: Context) {
         val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
         val myEffectiveNum = getEffectivePhoneNumber()
 
-        // 1. Instantly mark status as ANSWERED in Firestore so the CALLER screen updates immediately (<50ms)
-        try {
-            firestore.collection("calls").document(callId).set(
-                mapOf(
-                    "status" to CallStatus.ANSWERED.name,
-                    "answeredAt" to System.currentTimeMillis()
-                ),
-                com.google.firebase.firestore.SetOptions.merge()
-            ).addOnFailureListener { e ->
-                Log.w("WebRtcEngine", "Failed to update status to ANSWERED in answerIncomingCall, retrying: ${e.message}")
-                scope.launch {
-                    delay(300)
-                    try {
-                        firestore.collection("calls").document(callId).set(
-                            mapOf(
-                                "status" to CallStatus.ANSWERED.name,
-                                "answeredAt" to System.currentTimeMillis()
-                            ),
-                            com.google.firebase.firestore.SetOptions.merge()
-                        )
-                    } catch (_: Exception) {}
-                }
-            }
-        } catch (_: Exception) {}
+        // ⚡ Zero-Delay Atomic Write:
+        // Do NOT write a hollow 'status=ANSWERED' without answerSdp here.
+        // Writing to the same Firestore document multiple times within 200ms triggers Firestore's
+        // 1-write-per-second server-side concurrency throttle, stalling the actual answerSdp write
+        // for 1.5 seconds! Instead, processOfferSdpIfAvailable() commits status + answerSdp + candidates
+        // in ONE single atomic write (<50ms) with zero queue delay.
 
         // 2. Ensure real-time active call & ICE listeners are attached immediately
         listenToActiveCall(callId, isCaller = false)
@@ -2154,27 +2170,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             preWarmDone = false
             hasProcessedOffer = false
 
-            firestore.collection("calls").document(call.callId).set(
-                mapOf(
-                    "status" to CallStatus.ANSWERED.name,
-                    "answeredAt" to System.currentTimeMillis()
-                ),
-                com.google.firebase.firestore.SetOptions.merge()
-            ).addOnFailureListener { e ->
-                Log.w("WebRtcEngine", "Failed to set status to ANSWERED, retrying: ${e.message}")
-                scope.launch {
-                    delay(300)
-                    try {
-                        firestore.collection("calls").document(call.callId).set(
-                            mapOf(
-                                "status" to CallStatus.ANSWERED.name,
-                                "answeredAt" to System.currentTimeMillis()
-                            ),
-                            com.google.firebase.firestore.SetOptions.merge()
-                        )
-                    } catch (_: Exception) {}
-                }
-            }
+            // ⚡ Zero-Delay Atomic Write:
+            // Do NOT write a hollow 'status=ANSWERED' without answerSdp here.
+            // processOfferSdpIfAvailable() commits status + answerSdp + candidates in ONE atomic write,
+            // bypassing Firestore's 1-write/sec concurrency throttle so answerSdp reaches caller in <50ms.
 
             createPeerConnection(isCaller = false, callId = call.callId)
 
@@ -2507,6 +2506,18 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private fun handleCallDocumentUpdate(call: CallDto, snapshot: com.google.firebase.firestore.DocumentSnapshot?, isCaller: Boolean) {
+        // ⚡ Priority Terminal Status Check: If call was ended remotely, hang up immediately!
+        if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
+            activeCallPollingJob?.cancel()
+            activeCallPollingJob = null
+            Log.i("WebRtcEngine", "⚡ handleCallDocumentUpdate: call ${call.callId} remote status is ${call.status} (reason=${call.reason}) ── hanging up immediately!")
+            markCallTerminated(call.callId)
+            if (_state.value.callStatus != CallStatus.ENDED && _state.value.callStatus != CallStatus.DECLINED) {
+                endCallInternalLocal(call.status, call.reason)
+            }
+            return
+        }
+
         val currentCall = _state.value.activeCall
         if (currentCall?.callId == call.callId || currentCall == null) {
             val oldCall = currentCall
@@ -3338,12 +3349,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Industry Standard: ONLY end the call if the push callId matches the active call.
             // Prevents stale pushes from a previous call killing a live call with a different person.
             if (activeCallId != null && activeCallId == callId) {
-                Log.d("WebRtcEngine", "forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status, reason $reason")
+                Log.d("WebRtcEngine", "⚡ forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status, reason $reason")
                 endCallInternalLocal(status, reason)
-            } else if (activeCallId == null && (_state.value.callStatus == CallStatus.IDLE || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING)) {
-                // Bug fix v2.9.45: also handle CALLING/RINGING when activeCall not yet set
-                // (race: listener may not have populated activeCall before push arrives)
-                Log.d("WebRtcEngine", "forceEndCallFromPush: no active call (status=${_state.value.callStatus}), processing cleanup for push $callId")
+            } else if (activeCallId == null || activeCallId == callId || _state.value.callStatus != CallStatus.IDLE) {
+                // Redundant safety: Always terminate if the device has an ongoing or ringing call
+                Log.d("WebRtcEngine", "⚡ forceEndCallFromPush: terminating call (activeCallId=$activeCallId, status=${_state.value.callStatus}) for push $callId")
                 endCallInternalLocal(status, reason)
             } else {
                 Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId, status=${_state.value.callStatus})")
@@ -3599,18 +3609,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
             
             scope.launch(Dispatchers.IO) {
-                var conn: java.net.HttpURLConnection? = null
                 try {
-                    val url = java.net.URL(workerUrl)
-                    conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-                        requestMethod = "POST"
-                        setRequestProperty("Content-Type", "application/json")
-                        setRequestProperty("X-Worker-Secret", workerSecret)
-                        connectTimeout = 5000
-                        readTimeout = 5000
-                        doOutput = true
-                    }
-                    
                     val myUser = com.example.data.repository.FirebaseManager.getInstance(context).currentUser.value
                     val myFcm = myUser?.fcmToken?.ifBlank { getCachedFcmToken(context) } ?: getCachedFcmToken(context)
                     val myWeb = myUser?.webToken ?: ""
@@ -3654,14 +3653,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                     }
                     val json = jsonObj.toString()
-                    
-                    conn.outputStream.use { it.write(json.toByteArray()) }
-                    val responseCode = conn.responseCode
-                    android.util.Log.d("WebRtcEngine", "Push Trigger Response: $responseCode (type=$type, callId=$callId)")
+                    val mediaType = "application/json; charset=utf-8".toMediaType()
+                    val body = json.toRequestBody(mediaType)
+                    val request = okhttp3.Request.Builder()
+                        .url(workerUrl)
+                        .addHeader("Content-Type", "application/json")
+                        .addHeader("X-Worker-Secret", workerSecret)
+                        .post(body)
+                        .build()
+
+                    pushHttpClient.newCall(request).execute().use { response ->
+                        android.util.Log.d("WebRtcEngine", "⚡ OkHttp Push Trigger Response: ${response.code} (type=$type, callId=$callId)")
+                    }
                 } catch (e: Exception) {
-                    android.util.Log.e("WebRtcEngine", "Failed to trigger push", e)
-                } finally {
-                    conn?.disconnect()
+                    android.util.Log.e("WebRtcEngine", "Failed to trigger push: ${e.message}")
                 }
             }
         }

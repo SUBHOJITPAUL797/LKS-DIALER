@@ -542,8 +542,8 @@ fun ActiveAudioCallScreen(
                     }
                     val qualityText = when {
                         state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
-                        state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Audio • ${state.roundTripTimeMs}ms" else "HD Audio"
-                        state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
+                        state.networkQualityBars >= 4 -> "HD Audio"
+                        state.networkQualityBars == 3 -> "Good"
                         else -> "Weak Network"
                     }
                     Surface(
@@ -1261,8 +1261,8 @@ fun ActiveVideoCallScreen(
                                 }
                                 val qualityText = when {
                                     state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
-                                    state.networkQualityBars >= 4 -> if (state.roundTripTimeMs > 0) "HD Video • ${state.roundTripTimeMs}ms" else "HD Video"
-                                    state.networkQualityBars == 3 -> if (state.roundTripTimeMs > 0) "Good • ${state.roundTripTimeMs}ms" else "Good"
+                                    state.networkQualityBars >= 4 -> "HD Video"
+                                    state.networkQualityBars == 3 -> "Good"
                                     else -> "Weak Network"
                                 }
                                 Surface(
