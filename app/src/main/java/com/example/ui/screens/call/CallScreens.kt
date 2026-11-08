@@ -733,13 +733,16 @@ fun ActiveAudioCallScreen(
                     // Switch to Video Button
                     InCallControlButton(
                         icon = Icons.Default.Videocam,
-                        label = "Video",
-                        isActive = false,
+                        label = if (state.didIRequestVideoUpgrade) "Requesting..." else "Video",
+                        isActive = state.didIRequestVideoUpgrade,
+                        activeColor = TealPrimary,
                         onClick = {
-                            try {
-                                webRtcEngine.requestVideoUpgrade()
-                            } catch (e: Exception) {
-                                android.util.Log.e("CallScreens", "Error requesting video upgrade: ${e.message}")
+                            if (!state.didIRequestVideoUpgrade) {
+                                try {
+                                    webRtcEngine.requestVideoUpgrade()
+                                } catch (e: Exception) {
+                                    android.util.Log.e("CallScreens", "Error requesting video upgrade: ${e.message}")
+                                }
                             }
                         }
                     )
@@ -1098,8 +1101,7 @@ fun ActiveVideoCallScreen(
                             Modifier
                                 .align(Alignment.TopEnd)
                                 .statusBarsPadding()
-                                .displayCutoutPadding()
-                                .padding(top = 96.dp, end = 16.dp)
+                                .padding(top = 76.dp, end = 16.dp)
                                 .offset { IntOffset(localPipOffsetX.roundToInt(), localPipOffsetY.roundToInt()) }
                                 .pointerInput(Unit) {
                                     detectDragGestures { change, dragAmount ->
@@ -1158,7 +1160,7 @@ fun ActiveVideoCallScreen(
         }
 
         if (!isPipMode) {
-            // Top Overlay Header with gentle dark gradient scrim for readability under all lighting & notch safety
+            // Top Overlay Header with gentle dark gradient scrim for readability under all lighting
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1173,42 +1175,104 @@ fun ActiveVideoCallScreen(
                         )
                     )
                     .statusBarsPadding()
-                    .displayCutoutPadding()
-                    .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
+                    // Left: Minimize button
+                    if (onMinimize != null) {
+                        IconButton(
+                            onClick = onMinimize,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.50f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Minimize Call",
+                                tint = Color.White,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+
+                    // Center: Contact Name & Call Duration / Status
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 12.dp),
+                        horizontalAlignment = Alignment.Start
+                    ) {
+                        Text(
+                            text = displayName.ifBlank { displayNumber },
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 19.sp
+                            ),
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val cleanStatus = state.connectionStatusText.replace(" • WebRTC", "")
+                            Text(
+                                text = "${webRtcEngine.formatDuration(state.callDurationSeconds)} • $cleanStatus",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = GreenCall
+                            )
+                            if (state.networkQualityBars in 1..4) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                val qualityColor = when {
+                                    state.networkQualityBars >= 4 -> Color(0xFF22C55E)
+                                    state.networkQualityBars == 3 -> Color(0xFFF59E0B)
+                                    else -> Color(0xFFEF4444)
+                                }
+                                val qualityText = when {
+                                    state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
+                                    state.networkQualityBars >= 4 -> "HD"
+                                    state.networkQualityBars == 3 -> "Good"
+                                    else -> "Weak"
+                                }
+                                Surface(
+                                    color = qualityColor.copy(alpha = 0.25f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(5.dp)
+                                                .background(qualityColor, CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = qualityText,
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 10.sp),
+                                            color = qualityColor
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right: Secondary Actions (Switch to Audio, PiP)
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Minimize to in-app ongoing call bar button
-                        if (onMinimize != null) {
-                            IconButton(
-                                onClick = onMinimize,
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.50f))
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Minimize Call",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(26.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
-
                         // Switch to Audio Call button
                         IconButton(
                             onClick = { webRtcEngine.revertToAudioCall("Switched to Audio Call") },
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.50f))
                         ) {
@@ -1219,7 +1283,6 @@ fun ActiveVideoCallScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
 
                         // Minimize to Floating Window (PiP) button
                         IconButton(
@@ -1229,7 +1292,7 @@ fun ActiveVideoCallScreen(
                                 }
                             },
                             modifier = Modifier
-                                .size(38.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.50f))
                         ) {
@@ -1239,74 +1302,6 @@ fun ActiveVideoCallScreen(
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
-                            Text(
-                                text = displayName.ifBlank { displayNumber },
-                                style = MaterialTheme.typography.titleLarge.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp
-                                ),
-                                color = Color.White,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = webRtcEngine.formatDuration(state.callDurationSeconds) + " • " + state.connectionStatusText,
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                    color = GreenCall
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                val qualityColor = when {
-                                    state.networkQualityBars >= 4 -> Color(0xFF22C55E)
-                                    state.networkQualityBars == 3 -> Color(0xFFF59E0B)
-                                    else -> Color(0xFFEF4444)
-                                }
-                                val qualityText = when {
-                                    state.callQualityBadge.isNotBlank() && state.callQualityBadge != "Connecting..." -> state.callQualityBadge
-                                    state.networkQualityBars >= 4 -> "HD Video"
-                                    state.networkQualityBars == 3 -> "Good"
-                                    else -> "Weak Network"
-                                }
-                                Surface(
-                                    color = qualityColor.copy(alpha = 0.25f),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .background(qualityColor, CircleShape)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = qualityText,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                                            color = qualityColor
-                                        )
-                                    }
-                                }
-                            }
-                            if (state.networkQualityBars < 2) {
-                                Surface(
-                                    color = Color(0xFFEF4444).copy(alpha = 0.35f),
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.padding(top = 4.dp)
-                                ) {
-                                    Text(
-                                        text = "⚠️ Weak network — video quality reduced",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFFFCA5A5),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
                         }
                     }
                 }
@@ -1318,7 +1313,6 @@ fun ActiveVideoCallScreen(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
-                    .displayCutoutPadding()
                     .padding(top = 74.dp)
             ) {
                 Surface(
@@ -1380,7 +1374,7 @@ fun ActiveVideoCallScreen(
                         )
                     )
                     .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
+                    .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 28.dp)
             ) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -1452,15 +1446,19 @@ fun ActiveVideoCallScreen(
                             }
                         )
 
-                        Button(
-                            onClick = { if (!endCallClicked) { endCallClicked = true; onEndCall() } },
-                            shape = CircleShape,
-                            modifier = Modifier.size(56.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
-                            contentPadding = PaddingValues(0.dp),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
-                        ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Button(
+                                onClick = { if (!endCallClicked) { endCallClicked = true; onEndCall() } },
+                                shape = CircleShape,
+                                modifier = Modifier.size(58.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
+                                contentPadding = PaddingValues(0.dp),
+                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
+                            ) {
+                                Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(text = "End", color = Color.White, fontSize = 12.sp)
                         }
 
                         InCallControlButton(

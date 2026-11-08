@@ -60,6 +60,7 @@ data class CallDto(
     val durationSeconds: Int = 0,
     val endedBy: String? = null,
     val videoUpgradeStatus: VideoUpgradeStatus? = null,
+    val videoUpgradeRequestedBy: String? = null,
     @get:PropertyName("isOnHold") @set:PropertyName("isOnHold")
     var isOnHold: Boolean = false,
     @get:PropertyName("heldBy") @set:PropertyName("heldBy")

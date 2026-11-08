@@ -637,7 +637,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val hasAnswer = !answerSdp.isNullOrBlank() || currentCall.answerSdp != null
             _state.value = _state.value.copy(
                 callStatus = CallStatus.ANSWERED,
-                connectionStatusText = if (hasAnswer) "Connected • WebRTC" else "Connecting P2P..."
+                connectionStatusText = if (hasAnswer) "Connected" else "Connecting P2P..."
             )
             unmuteAllAudioTracks()
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -782,7 +782,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     reconnectJob?.cancel()
                     reconnectJob = null
                     if (_state.value.callStatus == CallStatus.ANSWERED) {
-                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                        _state.value = _state.value.copy(connectionStatusText = "Connected")
                         unmuteAllAudioTracks()
                     }
                 } else if (newState == PeerConnection.PeerConnectionState.FAILED || newState == PeerConnection.PeerConnectionState.CLOSED) {
@@ -801,7 +801,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         reconnectJob?.cancel()
                         reconnectJob = null
                         if (_state.value.callStatus == CallStatus.ANSWERED) {
-                            _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                            _state.value = _state.value.copy(connectionStatusText = "Connected")
                             unmuteAllAudioTracks()
                         }
                     }
@@ -939,7 +939,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 scope.launch {
                     val shouldEnable = _state.value.callStatus == CallStatus.ANSWERED
                     if (shouldEnable) {
-                        _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                        _state.value = _state.value.copy(connectionStatusText = "Connected")
                     }
                     if (track is VideoTrack) {
                         videoUpgradeWatchdogJob?.cancel()
@@ -947,7 +947,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         _state.value = _state.value.copy(
                             remoteVideoTrack = track,
                             callType = CallType.VIDEO,
-                            connectionStatusText = "Connected • WebRTC"
+                            connectionStatusText = "Connected"
                         )
                     } else if (track is AudioTrack) {
                         try {
@@ -2579,10 +2579,27 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
 
             // Video Upgrade Logic
+            val requesterNumber = call.videoUpgradeRequestedBy ?: snapshot?.getString("videoUpgradeRequestedBy")
+            val myNumber = getEffectivePhoneNumber()
+            val didIRequest = _state.value.didIRequestVideoUpgrade || (!requesterNumber.isNullOrBlank() && (
+                requesterNumber == myNumber ||
+                requesterNumber.replace(Regex("[^0-9]"), "") == myNumber.replace(Regex("[^0-9]"), "")
+            ))
+
             if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED) {
-                if (!_state.value.didIRequestVideoUpgrade && call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
-                    // If I didn't request it, someone else did, so I am being requested!
-                    _state.value = _state.value.copy(isVideoUpgradeRequested = true)
+                if (didIRequest) {
+                    // I am the requester: NEVER show accept dialog to myself!
+                    _state.value = _state.value.copy(
+                        didIRequestVideoUpgrade = true,
+                        isVideoUpgradeRequested = false,
+                        connectionStatusText = "Requesting video..."
+                    )
+                } else if (call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
+                    // Remote party requested: show accept dialog only to recipient!
+                    _state.value = _state.value.copy(
+                        isVideoUpgradeRequested = true,
+                        didIRequestVideoUpgrade = false
+                    )
                 }
             } else {
                 _state.value = _state.value.copy(
@@ -2607,16 +2624,22 @@ class WebRtcEngine private constructor(private val context: Context) {
                     // Show a toast or update state so the requester knows it was declined
                     _state.value = _state.value.copy(
                         connectionStatusText = "Video Request Declined",
-                        didIRequestVideoUpgrade = false
+                        didIRequestVideoUpgrade = false,
+                        isVideoUpgradeRequested = false
                     )
                     scope.launch {
                         delay(3000)
                         if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
-                            _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                            _state.value = _state.value.copy(connectionStatusText = "Connected")
                         }
                     }
                     // Reset the status so we can request again
-                    firestore.collection("calls").document(call.callId).update("videoUpgradeStatus", null)
+                    firestore.collection("calls").document(call.callId).update(
+                        mapOf(
+                            "videoUpgradeStatus" to null,
+                            "videoUpgradeRequestedBy" to null
+                        )
+                    )
                 }
             }
 
@@ -2659,7 +2682,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = if (call.answerSdp != null) "Connected • WebRTC" else "Connecting P2P..."
+                    connectionStatusText = if (call.answerSdp != null) "Connected" else "Connecting P2P..."
                 )
                 unmuteAllAudioTracks()
                 // Phase 3: Reliable call logs — record outgoing call start immediately on answer
@@ -2704,7 +2727,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = "Connected • WebRTC"
+                    connectionStatusText = "Connected"
                 )
                 unmuteAllAudioTracks()
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -2740,7 +2763,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             
             if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
                 val statusMsg = when {
-                    !remoteHold -> "Connected • WebRTC"
+                    !remoteHold -> "Connected"
                     isHeldByMe -> "Call On Hold"
                     else -> "Call On Hold (Other Party)"
                 }
@@ -2780,10 +2803,20 @@ class WebRtcEngine private constructor(private val context: Context) {
             Log.w("WebRtcEngine", "Cannot request video upgrade: callId is blank!")
             return
         }
-        _state.value = _state.value.copy(didIRequestVideoUpgrade = true)
+        val myNumber = getEffectivePhoneNumber()
+        _state.value = _state.value.copy(
+            didIRequestVideoUpgrade = true,
+            isVideoUpgradeRequested = false,
+            connectionStatusText = "Requesting video..."
+        )
         try {
             firestore.collection("calls").document(callId)
-                .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.REQUESTED.name)
+                .update(
+                    mapOf(
+                        "videoUpgradeStatus" to com.example.data.model.VideoUpgradeStatus.REQUESTED.name,
+                        "videoUpgradeRequestedBy" to myNumber
+                    )
+                )
                 .addOnFailureListener { e ->
                     Log.w("WebRtcEngine", "Failed to update videoUpgradeStatus: ${e.message}")
                 }
@@ -2969,7 +3002,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         scope.launch {
             delay(3000)
             if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
-                _state.value = _state.value.copy(connectionStatusText = "Connected • WebRTC")
+                _state.value = _state.value.copy(connectionStatusText = "Connected")
             }
         }
     }
@@ -3195,7 +3228,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         
         // 2. Update local UI state
         val statusText = when {
-            !onHold -> "Connected • WebRTC"
+            !onHold -> "Connected"
             isCellularInterruption -> "On Hold (Cellular Call)"
             else -> "Call On Hold"
         }
