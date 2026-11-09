@@ -1,5 +1,6 @@
 package com.example.ui.screens.chat
 
+import java.util.Locale
 import android.content.pm.PackageManager
 import android.util.Log
 import android.view.HapticFeedbackConstants
@@ -7,6 +8,7 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -177,15 +179,37 @@ fun WhatsAppCameraScreen(
             .build()
     }
 
-    // Gallery Picker launcher for direct gallery access from camera
+    // Gallery Picker launcher for direct gallery access from camera (Photos & Videos)
     val galleryLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNotEmpty()) {
             val files = mutableListOf<File>()
             uris.forEach { uri ->
                 try {
-                    val tempFile = File(context.cacheDir, "gallery_${System.currentTimeMillis()}_${files.size}.jpg")
+                    var displayName = "media_${System.currentTimeMillis()}"
+                    var mimeType = context.contentResolver.getType(uri) ?: ""
+                    try {
+                        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                if (nameIdx != -1) {
+                                    val name = cursor.getString(nameIdx)
+                                    if (!name.isNullOrBlank()) displayName = name
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+
+                    val extFromName = displayName.substringAfterLast('.', "")
+                    val ext = if (extFromName.isNotBlank() && extFromName.length <= 5) {
+                        extFromName.lowercase(Locale.getDefault())
+                    } else {
+                        android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "jpg"
+                    }
+
+                    val prefix = if (mimeType.startsWith("video/") || ext in listOf("mp4", "mkv", "webm", "mov", "3gp", "avi", "m4v")) "video" else "gallery"
+                    val tempFile = File(context.cacheDir, "${prefix}_${System.currentTimeMillis()}_${files.size}.$ext")
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                     }
@@ -193,7 +217,7 @@ fun WhatsAppCameraScreen(
                         files.add(tempFile)
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed reading image from URI: ${e.message}")
+                    Log.w(TAG, "Failed reading media from URI: ${e.message}")
                 }
             }
             if (files.isNotEmpty()) {
@@ -430,7 +454,15 @@ fun WhatsAppCameraScreen(
         ) {
             // Gallery Shortcut Button (Bottom Left)
             IconButton(
-                onClick = { galleryLauncher.launch("image/*") },
+                onClick = {
+                    try {
+                        galleryLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "PickMultipleVisualMedia failed: ${e.message}")
+                    }
+                },
                 modifier = Modifier
                     .size(54.dp)
                     .clip(CircleShape)

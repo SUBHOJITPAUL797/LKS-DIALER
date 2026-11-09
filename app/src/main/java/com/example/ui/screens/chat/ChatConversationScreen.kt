@@ -9,6 +9,7 @@ import android.util.Base64
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -530,31 +531,90 @@ fun ChatConversationScreen(
         }
     }
 
-    // Gallery Multiple Picker Launcher (WhatsApp multi-photo selection)
-    val galleryMultipleLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
-    ) { uris ->
+    // Media Processing Helper for Gallery Selection (Supports Both Photos & Videos)
+    val handlePickedMediaUris: (List<Uri>) -> Unit = { uris ->
         if (uris.isNotEmpty()) {
             coroutineScope.launch {
                 try {
-                    val files = mutableListOf<File>()
+                    val photoFiles = mutableListOf<File>()
+                    val videoFiles = mutableListOf<Pair<File, String>>()
+
                     uris.forEach { uri ->
-                        val tempFile = File(context.cacheDir, "gallery_${System.currentTimeMillis()}_${files.size}.jpg")
+                        var displayName = "media_${System.currentTimeMillis()}"
+                        var mimeType = context.contentResolver.getType(uri) ?: ""
+                        try {
+                            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                                if (cursor.moveToFirst()) {
+                                    val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                    if (nameIdx != -1) {
+                                        val name = cursor.getString(nameIdx)
+                                        if (!name.isNullOrBlank()) displayName = name
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+
+                        val extFromName = displayName.substringAfterLast('.', "")
+                        val ext = if (extFromName.isNotBlank() && extFromName.length <= 5) {
+                            extFromName.lowercase(Locale.getDefault())
+                        } else {
+                            android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType) ?: "jpg"
+                        }
+
+                        val isVideo = mimeType.startsWith("video/") || ext in listOf("mp4", "mkv", "webm", "mov", "3gp", "avi", "m4v")
+                        val prefix = if (isVideo) "video" else "gallery"
+                        val tempFile = File(context.cacheDir, "${prefix}_${System.currentTimeMillis()}_${photoFiles.size + videoFiles.size}.$ext")
+
                         context.contentResolver.openInputStream(uri)?.use { input ->
                             FileOutputStream(tempFile).use { output -> input.copyTo(output) }
                         }
+
                         if (tempFile.exists() && tempFile.length() > 0) {
-                            files.add(tempFile)
+                            if (isVideo) {
+                                val finalName = if (displayName.endsWith(".$ext", ignoreCase = true)) displayName else "$displayName.$ext"
+                                videoFiles.add(Pair(tempFile, finalName))
+                            } else {
+                                photoFiles.add(tempFile)
+                            }
                         }
                     }
-                    if (files.isNotEmpty()) {
-                        photosToPreview = files
+
+                    // Send videos immediately as media documents (with inline video player)
+                    videoFiles.forEach { (videoFile, videoName) ->
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = videoName,
+                            mediaType = ChatMediaType.DOCUMENT,
+                            mediaFile = videoFile
+                        )
+                    }
+                    if (videoFiles.isNotEmpty()) {
+                        listState.animateScrollToItem(0)
+                    }
+
+                    // Open photo review carousel for any selected photos
+                    if (photoFiles.isNotEmpty()) {
+                        photosToPreview = photoFiles
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(context, "Failed to load images: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Failed to load media: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
+    }
+
+    // Modern Android Photo & Video Picker (with Fallback for all devices)
+    val galleryMultipleLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        handlePickedMediaUris(uris)
+    }
+
+    val galleryFallbackLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        handlePickedMediaUris(uris)
     }
 
     // Document Picker Launcher (PDFs, Word docs, Excel, TXT, etc.)
@@ -2313,14 +2373,20 @@ fun ChatConversationScreen(
                         }
                     )
 
-                    // Gallery (Multi-photo picker just like WhatsApp)
+                    // Gallery (Multi-photo & Video picker just like WhatsApp)
                     AttachmentOptionItem(
-                        icon = Icons.Default.Image,
+                        icon = Icons.Default.PhotoLibrary,
                         label = "Gallery",
                         backgroundColor = Color(0xFF9C27B0),
                         onClick = {
                             showAttachmentMenu = false
-                            galleryMultipleLauncher.launch("image/*")
+                            try {
+                                galleryMultipleLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                )
+                            } catch (e: Exception) {
+                                galleryFallbackLauncher.launch(arrayOf("image/*", "video/*"))
+                            }
                         }
                     )
 
@@ -2356,7 +2422,27 @@ fun ChatConversationScreen(
             },
             onPhotosSelectedFromGallery = { files ->
                 showNativeCamera = false
-                photosToPreview = files
+                val (videos, photos) = files.partition { file ->
+                    val ext = file.extension.lowercase(Locale.getDefault())
+                    ext in listOf("mp4", "mkv", "webm", "mov", "3gp", "avi", "m4v")
+                }
+                videos.forEach { videoFile ->
+                    coroutineScope.launch {
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = videoFile.name,
+                            mediaType = ChatMediaType.DOCUMENT,
+                            mediaFile = videoFile
+                        )
+                    }
+                }
+                if (videos.isNotEmpty()) {
+                    coroutineScope.launch { listState.animateScrollToItem(0) }
+                }
+                if (photos.isNotEmpty()) {
+                    photosToPreview = photos
+                }
             },
             onClose = { showNativeCamera = false }
         )
