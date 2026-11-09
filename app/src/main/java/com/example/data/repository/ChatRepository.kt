@@ -1524,6 +1524,7 @@ class ChatRepository private constructor(private val context: Context) {
                 myPhone = myPhone,
                 recipientPhone = canonicalRecipient,
                 file = savedFile,
+                fileName = fileNameToSend,
                 onOfferReady = { offerSdp ->
                     val offerPayload = JSONObject().apply {
                         put("sessionId", messageId)
@@ -1677,9 +1678,27 @@ class ChatRepository private constructor(private val context: Context) {
 
             // ── FALLBACK: Firestore 128KB Chunk Relay with Auto-Switch to P2P ───────────────
             val chunkSize = 128 * 1024
-            val fileBytes = savedFile.readBytes()
-            val totalChunks = (fileBytes.size + chunkSize - 1) / chunkSize
+            val fileLength = savedFile.length()
+            if (fileLength > 60 * 1024 * 1024L) {
+                Log.w(TAG, "File size ($fileLength bytes) exceeds Firestore relay limit (60MB) and P2P failed")
+                _activeTransfers.value = _activeTransfers.value - messageId
+                activeTransferJobs.remove(messageId)
+                messageDao.updateMessageStatus(messageId, MessageStatus.FAILED.name)
+                return@withContext Result.failure(Exception("File exceeds 60MB relay limit without P2P"))
+            }
+            val totalChunks = ((fileLength + chunkSize - 1) / chunkSize).toInt()
             val myPublicKey = cryptoManager.getMyPublicKeyBase64()
+
+            fun readChunk(index: Int): ByteArray {
+                java.io.RandomAccessFile(savedFile, "r").use { raf ->
+                    val offset = index.toLong() * chunkSize
+                    raf.seek(offset)
+                    val bytesToRead = minOf(chunkSize.toLong(), fileLength - offset).toInt()
+                    val dest = ByteArray(bytesToRead)
+                    raf.readFully(dest)
+                    return dest
+                }
+            }
 
             try {
                 var relayUploadedBytes = 0L
@@ -1753,6 +1772,7 @@ class ChatRepository private constructor(private val context: Context) {
                             myPhone = myPhone,
                             recipientPhone = canonicalRecipient,
                             file = savedFile,
+                            fileName = fileNameToSend,
                             onOfferReady = { offerSdp ->
                                 val offerPayload = JSONObject().apply {
                                     put("sessionId", messageId)
@@ -1831,9 +1851,7 @@ class ChatRepository private constructor(private val context: Context) {
                         }
                     }
 
-                    val start = i * chunkSize
-                    val end = minOf(start + chunkSize, fileBytes.size)
-                    val slice = fileBytes.copyOfRange(start, end)
+                    val slice = readChunk(i)
                     val base64Chunk = Base64.encodeToString(slice, Base64.NO_WRAP)
 
                     val chunkPayload = JSONObject().apply {
