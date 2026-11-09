@@ -14,6 +14,13 @@ enum class AppThemeColor(
     val accent: Color,
     val previewColor: Color
 ) {
+    SWIGGY(
+        title = "Swiggy Orange",
+        primary = Color(0xFFFC8019),
+        primaryDark = Color(0xFFFF5200),
+        accent = Color(0xFFFFA726),
+        previewColor = Color(0xFFFC8019)
+    ),
     PURPLE(
         title = "Royal Purple",
         primary = Color(0xFF8B5CF6),
@@ -72,11 +79,11 @@ class ThemeManager private constructor(context: Context) {
     val currentTheme: StateFlow<AppThemeColor> = _currentTheme.asStateFlow()
 
     private fun loadSavedTheme(): AppThemeColor {
-        val savedName = prefs.getString("selected_theme_color", AppThemeColor.PURPLE.name)
+        val savedName = prefs.getString("selected_theme_color", AppThemeColor.SWIGGY.name)
         return try {
-            AppThemeColor.valueOf(savedName ?: AppThemeColor.PURPLE.name)
+            AppThemeColor.valueOf(savedName ?: AppThemeColor.SWIGGY.name)
         } catch (_: Exception) {
-            AppThemeColor.PURPLE
+            AppThemeColor.SWIGGY
         }
     }
 
@@ -97,4 +104,4 @@ class ThemeManager private constructor(context: Context) {
     }
 }
 
-val LocalThemeColor = compositionLocalOf { AppThemeColor.PURPLE }
+val LocalThemeColor = compositionLocalOf { AppThemeColor.SWIGGY }

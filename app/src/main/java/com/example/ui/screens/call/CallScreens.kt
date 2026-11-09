@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -39,6 +40,11 @@ import com.example.ui.theme.BackgroundDark
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.RedEndCall
 import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.Avatar3dHelper
+import com.example.ui.theme.SwiggyOrange
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.Shadow
+
 import com.example.webrtc.WebRtcEngine
 import com.example.webrtc.WebRtcState
 
@@ -171,7 +177,7 @@ fun OutgoingCallScreen(
                     Icon(
                         imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
                         contentDescription = null,
-                        tint = GreenCall,
+                        tint = SwiggyOrange,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -180,6 +186,50 @@ fun OutgoingCallScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = Color.White
                     )
+                }
+            }
+
+            // Central Pulsing Avatar with 3D Character Fallback
+            Box(
+                modifier = Modifier.size(150.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(150.dp)
+                        .graphicsLayer {
+                            scaleX = pulseAlpha * 0.25f + 0.95f
+                            scaleY = pulseAlpha * 0.25f + 0.95f
+                            alpha = pulseAlpha * 0.5f
+                        }
+                        .clip(CircleShape)
+                        .background(SwiggyOrange.copy(alpha = 0.35f))
+                )
+                Surface(
+                    modifier = Modifier.size(118.dp),
+                    shape = CircleShape,
+                    color = Color(0xFF1E293B),
+                    border = BorderStroke(2.dp, Color.White.copy(alpha = 0.25f)),
+                    shadowElevation = 10.dp
+                ) {
+                    if (decodedBitmap != null) {
+                        Image(
+                            bitmap = decodedBitmap,
+                            contentDescription = calleeName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        val avatar3dRes = remember(calleeName, calleeNumber) {
+                            Avatar3dHelper.getAvatarResId(calleeName, calleeNumber)
+                        }
+                        Image(
+                            painter = painterResource(avatar3dRes),
+                            contentDescription = calleeName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
@@ -208,6 +258,7 @@ fun OutgoingCallScreen(
                         icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                         label = if (state.isMuted) "Muted" else "Mute",
                         isActive = state.isMuted,
+                        activeColor = Color(0xFFEF4444),
                         onClick = { webRtcEngine.toggleMute() }
                     )
 
@@ -343,6 +394,45 @@ fun IncomingCallOverlay(
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White.copy(alpha = 0.7f)
                 )
+            }
+
+            // Central Pulsing Avatar with 3D Character Fallback
+            Box(
+                modifier = Modifier.size(150.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(150.dp)
+                        .clip(CircleShape)
+                        .background(GreenCall.copy(alpha = 0.22f))
+                )
+                Surface(
+                    modifier = Modifier.size(118.dp),
+                    shape = CircleShape,
+                    color = Color(0xFF1E293B),
+                    border = BorderStroke(2.dp, Color.White.copy(alpha = 0.25f)),
+                    shadowElevation = 10.dp
+                ) {
+                    if (decodedBitmap != null) {
+                        Image(
+                            bitmap = decodedBitmap,
+                            contentDescription = callerName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        val avatar3dRes = remember(callerName, callerNumber) {
+                            Avatar3dHelper.getAvatarResId(callerName, callerNumber)
+                        }
+                        Image(
+                            painter = painterResource(avatar3dRes),
+                            contentDescription = callerName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
             }
 
             // Answer & Decline Row
@@ -672,7 +762,48 @@ fun ActiveAudioCallScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            // Central Avatar (Profile Picture or 3D Character)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .size(150.dp)
+                            .clip(CircleShape)
+                            .background(SwiggyOrange.copy(alpha = 0.18f))
+                    )
+                    Surface(
+                        modifier = Modifier.size(118.dp),
+                        shape = CircleShape,
+                        color = Color(0xFF1E293B),
+                        border = BorderStroke(2.dp, Color.White.copy(alpha = 0.25f)),
+                        shadowElevation = 12.dp
+                    ) {
+                        if (decodedBitmap != null) {
+                            Image(
+                                bitmap = decodedBitmap,
+                                contentDescription = displayName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            val avatar3dRes = remember(displayName, displayNumber) {
+                                Avatar3dHelper.getAvatarResId(displayName, displayNumber)
+                            }
+                            Image(
+                                painter = painterResource(avatar3dRes),
+                                contentDescription = displayName,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
             
             var showAudioDialog by remember { mutableStateOf(false) }
 
@@ -699,6 +830,7 @@ fun ActiveAudioCallScreen(
                         icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                         label = if (state.isMuted) "Muted" else "Mute",
                         isActive = state.isMuted,
+                        activeColor = Color(0xFFEF4444),
                         onClick = { webRtcEngine.toggleMute() }
                     )
 
@@ -814,22 +946,31 @@ fun ActiveVideoCallScreen(
     onEndCall: () -> Unit
 ) {
     var endCallClicked by remember { mutableStateOf(false) }
+    var areControlsVisible by remember { mutableStateOf(true) }
+    var isSwapped by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showAudioDialog by remember { mutableStateOf(false) }
+    var isRemoteFirstFrameRendered by remember(state.remoteVideoTrack) { mutableStateOf(false) }
+
     val activeCall = state.activeCall
     if (activeCall == null) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black))
         return
     }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isPipMode = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
         context.findActivity()?.isInPictureInPictureMode == true
     } else false
 
-    var showAudioDialog by remember { mutableStateOf(false) }
-    var isRemoteFirstFrameRendered by remember(state.remoteVideoTrack) { mutableStateOf(false) }
     val avatarImageBitmap = remember(profilePicUrl) {
         if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
     }
+    val avatar3dRes = remember(displayName, displayNumber) {
+        Avatar3dHelper.getAvatarResId(displayName, displayNumber)
+    }
+
+    val isVideoRec by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
+    val recordingDuration by com.example.util.CallAudioRecorder.getInstance(context).recordingDurationSeconds.collectAsState()
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
     val pulseScale by infiniteTransition.animateFloat(
@@ -863,18 +1004,16 @@ fun ActiveVideoCallScreen(
     DisposableEffect(state.callStatus, state.selectedAudioDevice) {
         val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
         var wakeLock: android.os.PowerManager.WakeLock? = null
-        
         val proximityLockLevel = 32
         if (powerManager.isWakeLockLevelSupported(proximityLockLevel)) {
             wakeLock = powerManager.newWakeLock(proximityLockLevel, "LksDialer:VideoProximitySensor").apply {
                 setReferenceCounted(false)
             }
-            if (state.callStatus == CallStatus.ANSWERED && 
+            if (state.callStatus == CallStatus.ANSWERED &&
                 state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.EARPIECE) {
                 wakeLock.acquire()
             }
         }
-        
         onDispose {
             try {
                 if (wakeLock?.isHeld == true) {
@@ -884,21 +1023,46 @@ fun ActiveVideoCallScreen(
         }
     }
 
+    val audioIcon = when (state.selectedAudioDevice) {
+        com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
+        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
+        com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
+        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
+    }
+    val audioLabel = when (state.selectedAudioDevice) {
+        com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
+        com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
+        com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
+        com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
+    }
+    val isAudioHighlighted = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH ||
+        state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE
+
+    // Dynamic Video Tracks for Fullscreen vs Floating PiP (Tap-to-Swap)
+    val fullscreenTrack = if (!isSwapped) state.remoteVideoTrack else (if (state.isCameraOn) state.localVideoTrack else null)
+    val pipTrack = if (!isSwapped) (if (state.isCameraOn) state.localVideoTrack else null) else state.remoteVideoTrack
+    val isFullscreenMirrored = if (!isSwapped) false else state.isFrontCamera
+    val isPipMirrored = if (!isSwapped) state.isFrontCamera else false
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) { detectTapGestures { } }
+            .pointerInput(Unit) {
+                detectTapGestures {
+                    areControlsVisible = !areControlsVisible
+                }
+            }
     ) {
-        // Remote Video Preview or Dedicated On-Hold Screen
+        // Fullscreen Video Surface or Dedicated On-Hold Screen
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF1C2826)),
+                .background(Color(0xFF0F172A)),
             contentAlignment = Alignment.Center
         ) {
             if (state.isOnHold) {
-                // Dedicated On-Hold Screen to prevent frozen/blurred video surface
+                // Dedicated On-Hold Screen
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -929,15 +1093,15 @@ fun ActiveVideoCallScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (state.isHeldLocally) 
-                            "Microphone and camera are paused" 
-                        else 
+                        text = if (state.isHeldLocally)
+                            "Microphone and camera are paused"
+                        else
                             "${activeCall.calleeName.ifBlank { activeCall.callerName }} placed the call on hold",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White.copy(alpha = 0.75f),
                         textAlign = TextAlign.Center
                     )
-                    
+
                     if (state.isHeldLocally) {
                         Spacer(modifier = Modifier.height(24.dp))
                         Button(
@@ -962,24 +1126,25 @@ fun ActiveVideoCallScreen(
                     }
                 }
             } else {
-                // Remote Video Renderer: Mounted as soon as track arrives so WebRTC starts decoding
-                if (state.remoteVideoTrack != null) {
+                // Fullscreen Video Renderer
+                if (fullscreenTrack != null) {
                     WebRtcVideoRenderer(
-                        videoTrack = state.remoteVideoTrack,
+                        videoTrack = fullscreenTrack,
                         eglBaseContext = webRtcEngine.eglBaseContext,
                         modifier = Modifier.fillMaxSize(),
-                        mirror = false,
+                        mirror = isFullscreenMirrored,
                         onFirstFrameRendered = {
-                            isRemoteFirstFrameRendered = true
+                            if (!isSwapped) {
+                                isRemoteFirstFrameRendered = true
+                            }
                         }
                     )
                 }
 
-                // WhatsApp-Grade Connecting Overlay: stays on top of the black SurfaceViewRenderer
-                // until the very millisecond the first video frame is decoded and painted, then fades out smoothly.
-                // Absolutely ZERO black screen at any point!
+                // Connecting Overlay (fades out smoothly when video starts rendering)
                 AnimatedVisibility(
-                    visible = !isRemoteFirstFrameRendered || state.remoteVideoTrack == null,
+                    visible = (!isSwapped && (!isRemoteFirstFrameRendered || state.remoteVideoTrack == null)) ||
+                        (isSwapped && (!state.isCameraOn || state.localVideoTrack == null)),
                     enter = fadeIn(tween(200)),
                     exit = fadeOut(tween(400)),
                     modifier = Modifier.fillMaxSize()
@@ -1002,7 +1167,7 @@ fun ActiveVideoCallScreen(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            // Pulsing Avatar
+                            // Pulsing Avatar with 3D Character Fallback
                             Box(contentAlignment = Alignment.Center) {
                                 Box(
                                     modifier = Modifier
@@ -1013,7 +1178,7 @@ fun ActiveVideoCallScreen(
                                             alpha = pulseAlpha
                                         }
                                         .clip(CircleShape)
-                                        .background(TealPrimary.copy(alpha = 0.4f))
+                                        .background(SwiggyOrange.copy(alpha = 0.4f))
                                 )
                                 Surface(
                                     modifier = Modifier.size(108.dp),
@@ -1029,19 +1194,12 @@ fun ActiveVideoCallScreen(
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(TealPrimary.copy(alpha = 0.4f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.VideocamOff,
-                                                contentDescription = "Camera Off",
-                                                tint = Color.White.copy(alpha = 0.85f),
-                                                modifier = Modifier.size(48.dp)
-                                            )
-                                        }
+                                        Image(
+                                            painter = painterResource(avatar3dRes),
+                                            contentDescription = displayName,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
                                     }
                                 }
                             }
@@ -1056,7 +1214,7 @@ fun ActiveVideoCallScreen(
 
                             Spacer(modifier = Modifier.height(14.dp))
 
-                            // Glassmorphic "Connecting video..." pill badge with spinner
+                            // Glassmorphic "Connecting video..." pill badge
                             Surface(
                                 shape = RoundedCornerShape(20.dp),
                                 color = Color.White.copy(alpha = 0.12f),
@@ -1069,11 +1227,11 @@ fun ActiveVideoCallScreen(
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(13.dp),
                                         strokeWidth = 2.dp,
-                                        color = TealPrimary
+                                        color = SwiggyOrange
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Connecting video...",
+                                        text = if (isSwapped) "Your camera is off" else "Connecting video...",
                                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                         color = Color.White.copy(alpha = 0.9f)
                                     )
@@ -1085,73 +1243,81 @@ fun ActiveVideoCallScreen(
             }
         }
 
-        // Local Camera Preview (Rendered both in fullscreen and inside PiP floating window)
-        if (state.isCameraOn && state.localVideoTrack != null) {
-            var localPipOffsetX by remember { mutableFloatStateOf(0f) }
-            var localPipOffsetY by remember { mutableFloatStateOf(0f) }
+        // Floating PiP Window (Local or Remote Preview, Draggable, Tap-to-Swap)
+        var localPipOffsetX by remember { mutableFloatStateOf(0f) }
+        var localPipOffsetY by remember { mutableFloatStateOf(0f) }
 
-            Surface(
-                modifier = Modifier
-                    .then(
-                        if (isPipMode) {
-                            Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(6.dp)
-                        } else {
-                            Modifier
-                                .align(Alignment.TopEnd)
-                                .statusBarsPadding()
-                                .padding(top = 76.dp, end = 16.dp)
-                                .offset { IntOffset(localPipOffsetX.roundToInt(), localPipOffsetY.roundToInt()) }
-                                .pointerInput(Unit) {
-                                    detectDragGestures { change, dragAmount ->
-                                        change.consume()
-                                        localPipOffsetX += dragAmount.x
-                                        localPipOffsetY += dragAmount.y
-                                    }
+        Surface(
+            modifier = Modifier
+                .then(
+                    if (isPipMode) {
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                    } else {
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .statusBarsPadding()
+                            .displayCutoutPadding()
+                            .padding(top = 76.dp, end = 16.dp)
+                            .offset { IntOffset(localPipOffsetX.roundToInt(), localPipOffsetY.roundToInt()) }
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    localPipOffsetX += dragAmount.x
+                                    localPipOffsetY += dragAmount.y
                                 }
+                            }
+                    }
+                )
+                .size(
+                    width = if (isPipMode) 46.dp else 100.dp,
+                    height = if (isPipMode) 70.dp else 145.dp
+                )
+                .clip(RoundedCornerShape(if (isPipMode) 8.dp else 18.dp)),
+            shape = RoundedCornerShape(if (isPipMode) 8.dp else 18.dp),
+            border = if (!isPipMode) BorderStroke(1.5.dp, Color.White.copy(alpha = 0.35f)) else null,
+            shadowElevation = if (isPipMode) 4.dp else 12.dp,
+            color = Color.Black
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            isSwapped = !isSwapped
                         }
-                    )
-                    .size(width = if (isPipMode) 46.dp else 105.dp, height = if (isPipMode) 70.dp else 150.dp),
-                shape = RoundedCornerShape(if (isPipMode) 8.dp else 16.dp),
-                border = if (!isPipMode) BorderStroke(1.5.dp, Color.White.copy(alpha = 0.35f)) else null,
-                shadowElevation = if (isPipMode) 4.dp else 10.dp,
-                color = Color.Black
+                    }
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(if (isPipMode) 8.dp else 16.dp))
-                ) {
+                if (pipTrack != null) {
                     WebRtcVideoRenderer(
-                        videoTrack = state.localVideoTrack,
+                        videoTrack = pipTrack,
                         eglBaseContext = webRtcEngine.eglBaseContext,
                         modifier = Modifier.fillMaxSize(),
-                        mirror = state.isFrontCamera,
+                        mirror = isPipMirrored,
                         isOverlay = true
                     )
-                    if (state.isOnHold) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.8f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.Pause,
-                                    contentDescription = "Paused",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(if (isPipMode) 14.dp else 24.dp)
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF1E293B)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.VideocamOff,
+                                contentDescription = "Cam Off",
+                                tint = Color.White.copy(alpha = 0.6f),
+                                modifier = Modifier.size(if (isPipMode) 14.dp else 24.dp)
+                            )
+                            if (!isPipMode) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Cam Off",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                    color = Color.White.copy(alpha = 0.6f)
                                 )
-                                if (!isPipMode) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Paused",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White
-                                    )
-                                }
                             }
                         }
                     }
@@ -1159,12 +1325,18 @@ fun ActiveVideoCallScreen(
             }
         }
 
-        if (!isPipMode) {
-            // Top Overlay Header with gentle dark gradient scrim for readability under all lighting
+        // Top Header Overlay (Animated with tap-to-hide)
+        AnimatedVisibility(
+            visible = areControlsVisible && !isPipMode,
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(200)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.TopCenter)
                     .background(
                         androidx.compose.ui.graphics.Brush.verticalGradient(
                             listOf(
@@ -1175,6 +1347,7 @@ fun ActiveVideoCallScreen(
                         )
                     )
                     .statusBarsPadding()
+                    .displayCutoutPadding()
                     .padding(horizontal = 16.dp, vertical = 10.dp)
             ) {
                 Row(
@@ -1187,9 +1360,10 @@ fun ActiveVideoCallScreen(
                         IconButton(
                             onClick = onMinimize,
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(42.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.50f))
+                                .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowDown,
@@ -1200,18 +1374,22 @@ fun ActiveVideoCallScreen(
                         }
                     }
 
-                    // Center: Contact Name & Call Duration / Status
+                    // Center: Contact Name & Clean Call Duration / HD Quality
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 12.dp),
-                        horizontalAlignment = Alignment.Start
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
                             text = displayName.ifBlank { displayNumber },
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 19.sp
+                                fontSize = 18.sp,
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = Color.Black.copy(alpha = 0.7f),
+                                    blurRadius = 8f
+                                )
                             ),
                             color = Color.White,
                             maxLines = 1,
@@ -1219,11 +1397,10 @@ fun ActiveVideoCallScreen(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val cleanStatus = state.connectionStatusText.replace(" • WebRTC", "")
                             Text(
-                                text = "${webRtcEngine.formatDuration(state.callDurationSeconds)} • $cleanStatus",
+                                text = webRtcEngine.formatDuration(state.callDurationSeconds),
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                                color = GreenCall
+                                color = Color.White.copy(alpha = 0.9f)
                             )
                             if (state.networkQualityBars in 1..4) {
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1263,18 +1440,18 @@ fun ActiveVideoCallScreen(
                         }
                     }
 
-                    // Right: Secondary Actions (Switch to Audio, PiP)
+                    // Right: Switch to Audio & More Options Menu
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Switch to Audio Call button
                         IconButton(
                             onClick = { webRtcEngine.revertToAudioCall("Switched to Audio Call") },
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(42.dp)
                                 .clip(CircleShape)
                                 .background(Color.Black.copy(alpha = 0.50f))
+                                .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Phone,
@@ -1284,198 +1461,274 @@ fun ActiveVideoCallScreen(
                             )
                         }
 
-                        // Minimize to Floating Window (PiP) button
-                        IconButton(
-                            onClick = {
+                        Box {
+                            IconButton(
+                                onClick = { showMoreMenu = true },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.50f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.15f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More Options",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = showMoreMenu,
+                                onDismissRequest = { showMoreMenu = false },
+                                modifier = Modifier.background(Color(0xFF1E293B))
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (state.isOnHold) "Resume Call" else "Put On Hold", color = Color.White) },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                            contentDescription = null,
+                                            tint = Color.White
+                                        )
+                                    },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        if (state.isOnHold) {
+                                            if (state.isHeldLocally) webRtcEngine.putCallOnHold(false)
+                                        } else {
+                                            webRtcEngine.putCallOnHold(true)
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (isVideoRec) "Stop Recording" else "Record Call", color = Color.White) },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (isVideoRec) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                                            contentDescription = null,
+                                            tint = if (isVideoRec) Color(0xFFEF4444) else Color.White
+                                        )
+                                    },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        val started = webRtcEngine.toggleCallRecording()
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            if (started) "Call recording started" else "Call recording saved to Call History",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                )
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                    (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
+                                    DropdownMenuItem(
+                                        text = { Text("Floating Window (PiP)", color = Color.White) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.PictureInPictureAlt,
+                                                contentDescription = null,
+                                                tint = Color.White
+                                            )
+                                        },
+                                        onClick = {
+                                            showMoreMenu = false
+                                            (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
+                                        }
+                                    )
                                 }
-                            },
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(Color.Black.copy(alpha = 0.50f))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PictureInPictureAlt,
-                                contentDescription = "Floating Window",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            }
                         }
                     }
                 }
             }
+        }
 
-            // Call On Hold Banner (shown during cellular interruption or manual hold)
-            androidx.compose.animation.AnimatedVisibility(
-                visible = state.isOnHold,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 74.dp)
+        // Call On Hold Banner
+        androidx.compose.animation.AnimatedVisibility(
+            visible = state.isOnHold && !isPipMode,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .padding(top = 74.dp)
+        ) {
+            Surface(
+                color = Color(0xFFE53935).copy(alpha = 0.88f),
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 8.dp
             ) {
-                Surface(
-                    color = Color(0xFFE53935).copy(alpha = 0.88f),
-                    shape = RoundedCornerShape(20.dp),
-                    shadowElevation = 8.dp
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Pause,
-                            contentDescription = "Hold",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (state.isHeldLocally) "Call On Hold" else "Call On Hold (Other Party)",
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White
-                        )
-                    }
+                    Icon(
+                        Icons.Default.Pause,
+                        contentDescription = "Hold",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (state.isHeldLocally) "Call On Hold" else "Call On Hold (Other Party)",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
                 }
             }
+        }
 
-            // Bottom Controls Overlay with Navigation Bar padding, 2-tier comfortable layout and glassmorphic scrim
-            val audioIcon = when (state.selectedAudioDevice) {
-                com.example.webrtc.AudioDeviceType.BLUETOOTH -> Icons.Default.BluetoothAudio
-                com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> Icons.Default.VolumeUp
-                com.example.webrtc.AudioDeviceType.EARPIECE -> Icons.Default.PhoneInTalk
-                com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> Icons.Default.Headphones
-            }
-            val audioLabel = when (state.selectedAudioDevice) {
-                com.example.webrtc.AudioDeviceType.BLUETOOTH -> "Bluetooth"
-                com.example.webrtc.AudioDeviceType.SPEAKERPHONE -> "Speaker"
-                com.example.webrtc.AudioDeviceType.EARPIECE -> "Earpiece"
-                com.example.webrtc.AudioDeviceType.WIRED_HEADSET -> "Headset"
-            }
-            val holdLabel = when {
-                !state.isOnHold -> "Hold"
-                state.isHeldLocally -> "Resume"
-                else -> "On Hold"
-            }
-            val isVideoRec by com.example.util.CallAudioRecorder.getInstance(context).isRecording.collectAsState()
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .background(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(
-                            listOf(
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.65f),
-                                Color.Black.copy(alpha = 0.92f)
-                            )
-                        )
-                    )
-                    .navigationBarsPadding()
-                    .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 28.dp)
+        // Recording Indicator Banner
+        androidx.compose.animation.AnimatedVisibility(
+            visible = isVideoRec && !isPipMode,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .displayCutoutPadding()
+                .padding(top = if (state.isOnHold) 124.dp else 74.dp)
+        ) {
+            Surface(
+                color = Color(0xFFEF4444).copy(alpha = 0.9f),
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 8.dp
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Tier 1: Primary in-call media controls (Flip, Cam, Mic, Speaker)
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color.White, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "REC ${com.example.util.CallAudioRecorder.formatDuration(recordingDuration)}",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+
+        // Bottom Controls Dock: Single Sleek Horizontal Glassmorphic Capsule
+        AnimatedVisibility(
+            visible = areControlsVisible && !isPipMode,
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(200)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(start = 16.dp, end = 16.dp, bottom = 24.dp)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(38.dp),
+                    color = Color(0xDD111827),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                    shadowElevation = 16.dp
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        InCallControlButton(
-                            icon = Icons.Default.Cameraswitch,
-                            label = if (state.isFrontCamera) "Flip" else "Rear",
-                            isActive = false,
-                            size = 46.dp,
-                            onClick = { webRtcEngine.switchCamera() }
-                        )
+                        // 1. Flip Camera
+                        IconButton(
+                            onClick = { webRtcEngine.switchCamera() },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.12f))
+                        ) {
+                            Icon(
+                                Icons.Default.Cameraswitch,
+                                contentDescription = "Flip Camera",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
 
-                        InCallControlButton(
-                            icon = if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
-                            label = if (state.isCameraOn) "Cam On" else "Cam Off",
-                            isActive = state.isCameraOn,
-                            size = 46.dp,
-                            onClick = { webRtcEngine.toggleCamera() }
-                        )
+                        // 2. Camera On / Off
+                        val camBg = if (state.isCameraOn) Color.White.copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.25f)
+                        val camTint = if (state.isCameraOn) Color.White else Color(0xFFEF4444)
+                        IconButton(
+                            onClick = { webRtcEngine.toggleCamera() },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(camBg)
+                        ) {
+                            Icon(
+                                if (state.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                                contentDescription = "Camera Toggle",
+                                tint = camTint,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
 
-                        InCallControlButton(
-                            icon = if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                            label = if (state.isMuted) "Muted" else "Mute",
-                            isActive = state.isMuted,
-                            size = 46.dp,
-                            onClick = { webRtcEngine.toggleMute() }
-                        )
+                        // 3. Mic Mute / Unmute
+                        val micBg = if (state.isMuted) Color(0xFFEF4444) else Color.White.copy(alpha = 0.12f)
+                        IconButton(
+                            onClick = { webRtcEngine.toggleMute() },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(micBg)
+                        ) {
+                            Icon(
+                                if (state.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = "Mute Toggle",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
 
-                        InCallControlButton(
-                            icon = audioIcon,
-                            label = audioLabel,
-                            isActive = state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.BLUETOOTH || state.selectedAudioDevice == com.example.webrtc.AudioDeviceType.SPEAKERPHONE,
-                            size = 46.dp,
+                        // 4. Audio Output Switcher
+                        val audioBg = if (isAudioHighlighted) SwiggyOrange.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.12f)
+                        val audioTint = if (isAudioHighlighted) SwiggyOrange else Color.White
+                        IconButton(
                             onClick = {
                                 webRtcEngine.refreshAvailableAudioDevices()
                                 showAudioDialog = true
-                            }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // Tier 2: Call actions & prominent End Call button (Hold, End Call, Record)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(0.92f),
-                        horizontalArrangement = Arrangement.SpaceAround,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        InCallControlButton(
-                            icon = if (state.isOnHold) Icons.Default.PlayArrow else Icons.Default.Pause,
-                            label = holdLabel,
-                            isActive = state.isOnHold,
-                            size = 46.dp,
-                            onClick = {
-                                if (state.isOnHold) {
-                                    if (state.isHeldLocally) {
-                                        webRtcEngine.putCallOnHold(false)
-                                    }
-                                } else {
-                                    webRtcEngine.putCallOnHold(true)
-                                }
-                            }
-                        )
-
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Button(
-                                onClick = { if (!endCallClicked) { endCallClicked = true; onEndCall() } },
-                                shape = CircleShape,
-                                modifier = Modifier.size(58.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
-                                contentPadding = PaddingValues(0.dp),
-                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
-                            ) {
-                                Icon(Icons.Default.CallEnd, contentDescription = "End", tint = Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(text = "End", color = Color.White, fontSize = 12.sp)
+                            },
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(audioBg)
+                        ) {
+                            Icon(
+                                audioIcon,
+                                contentDescription = audioLabel,
+                                tint = audioTint,
+                                modifier = Modifier.size(22.dp)
+                            )
                         }
 
-                        InCallControlButton(
-                            icon = if (isVideoRec) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                            label = if (isVideoRec) "Stop Rec" else "Record",
-                            isActive = isVideoRec,
-                            activeColor = Color(0xFFEF4444),
-                            size = 46.dp,
+                        // 5. End Call Button
+                        Button(
                             onClick = {
-                                val started = webRtcEngine.toggleCallRecording()
-                                android.widget.Toast.makeText(
-                                    context,
-                                    if (started) "Call recording started" else "Call recording saved to Call History",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        )
+                                if (!endCallClicked) {
+                                    endCallClicked = true
+                                    onEndCall()
+                                }
+                            },
+                            shape = CircleShape,
+                            modifier = Modifier.size(54.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = RedEndCall),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 8.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CallEnd,
+                                contentDescription = "End Call",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -1524,7 +1777,7 @@ fun AudioOutputSelectionDialog(
                             onDismiss()
                         },
                         shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected) TealPrimary.copy(alpha = 0.25f) else Color.Transparent,
+                        color = if (isSelected) SwiggyOrange.copy(alpha = 0.22f) else Color.Transparent,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
@@ -1543,7 +1796,7 @@ fun AudioOutputSelectionDialog(
                                 Icon(
                                     imageVector = icon,
                                     contentDescription = device.name,
-                                    tint = if (isSelected) GreenCall else Color.White,
+                                    tint = if (isSelected) SwiggyOrange else Color.White,
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Spacer(modifier = Modifier.width(16.dp))
@@ -1552,14 +1805,14 @@ fun AudioOutputSelectionDialog(
                                     style = MaterialTheme.typography.bodyLarge.copy(
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                     ),
-                                    color = if (isSelected) GreenCall else Color.White
+                                    color = if (isSelected) SwiggyOrange else Color.White
                                 )
                             }
                             if (isSelected) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Selected",
-                                    tint = GreenCall,
+                                    tint = SwiggyOrange,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -1570,7 +1823,7 @@ fun AudioOutputSelectionDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = GreenCall)
+                Text("Cancel", color = SwiggyOrange)
             }
         }
     )

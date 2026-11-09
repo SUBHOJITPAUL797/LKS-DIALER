@@ -40,6 +40,8 @@ import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.Avatar3dHelper
+import com.example.ui.theme.LocalThemeColor
 import kotlinx.coroutines.launch
 import android.widget.Toast
 import java.text.SimpleDateFormat
@@ -209,34 +211,40 @@ fun ChatListScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(32.dp),
+                        .padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Surface(
-                            shape = CircleShape,
-                            color = TealPrimary.copy(alpha = 0.1f),
-                            modifier = Modifier.size(72.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    Icons.Default.MarkChatRead,
-                                    contentDescription = null,
-                                    tint = TealPrimary,
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-                        }
+                    val themeColor = LocalThemeColor.current
+                    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(28.dp))
+                            .background(
+                                if (isDark) Color(0xFF181C24) else Color.White
+                            )
+                            .padding(24.dp)
+                    ) {
+                        Image(
+                            painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.character_3d_wave),
+                            contentDescription = "Welcome to LKS Chat",
+                            modifier = Modifier
+                                .size(130.dp)
+                                .clip(RoundedCornerShape(20.dp)),
+                            contentScale = ContentScale.Fit
+                        )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = if (searchQuery.isBlank()) "No chats yet" else "No matching chats",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            text = if (searchQuery.isBlank()) "Welcome to LKS Chat! 👋" else "No matching chats",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = if (searchQuery.isBlank())
-                                "Your messages are end-to-end encrypted and deleted from the server once delivered."
-                            else "Try searching for a different name or number.",
+                                "Private, end-to-end encrypted messaging & direct P2P heavy file transfers with zero server retention."
+                            else "Try searching for a different contact name or phone number.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -244,12 +252,13 @@ fun ChatListScreen(
                         Spacer(modifier = Modifier.height(20.dp))
                         Button(
                             onClick = { showNewChatDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
-                            shape = RoundedCornerShape(20.dp)
+                            colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.height(48.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Start a New Chat")
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Start a New Chat", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                         }
                     }
                 }
@@ -442,6 +451,7 @@ private fun ConversationItem(
             ChatAvatar(
                 name = conversation.contactName,
                 profilePic = avatarPic,
+                phoneNumber = conversation.phoneNumber,
                 size = 52.dp,
                 fontSize = 20.sp
             )
@@ -597,11 +607,11 @@ private fun ConversationItem(
 }
 
 @Composable
-fun StatusTickIcon(status: String) {
+fun StatusTickIcon(status: String, isOutgoingBubble: Boolean = false) {
     val tickColor = when (status) {
-        MessageStatus.READ.name -> Color(0xFF34B7F1) // WhatsApp blue
-        MessageStatus.DELIVERED.name -> Color.Gray
-        MessageStatus.SENT.name -> Color.Gray
+        MessageStatus.READ.name -> if (isOutgoingBubble) Color(0xFFB3E5FC) else Color(0xFF34B7F1)
+        MessageStatus.DELIVERED.name -> if (isOutgoingBubble) Color(0xFFE2E8F0) else Color.Gray
+        MessageStatus.SENT.name -> if (isOutgoingBubble) Color(0xFFCBD5E1) else Color.Gray
         else -> Color.LightGray
     }
 

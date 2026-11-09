@@ -88,6 +88,8 @@ import com.example.ui.components.ChatMediaGalleryDialog
 import com.example.ui.components.ClearChatDialog
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
+import com.example.ui.theme.Avatar3dHelper
+import com.example.ui.theme.LocalThemeColor
 import com.example.util.ChatWallpaperManager
 import com.example.util.ContactsHelper
 import com.example.util.WallpaperType
@@ -763,7 +765,8 @@ fun ChatConversationScreen(
                             ChatAvatar(
                                 name = peerDisplayName,
                                 profilePic = peerProfilePic,
-                                size = 40.dp,
+                                phoneNumber = normPeer,
+                                size = 42.dp,
                                 fontSize = 16.sp,
                                 isGroup = isGroup
                             )
@@ -1095,7 +1098,12 @@ fun ChatConversationScreen(
                     // Top of conversation history (oldest items in reverseLayout)
                     if (messages.isEmpty()) {
                         item(key = "empty_e2ee_banner") {
-                            E2eeInfoBanner()
+                            EmptyChatWelcomeCard(
+                                peerName = peerDisplayName,
+                                onQuickAction = { starter ->
+                                    inputText = starter
+                                }
+                            )
                         }
                     } else if (messages.size < totalMessageCount) {
                         item(key = "pagination_loader") {
@@ -1733,7 +1741,7 @@ fun ChatConversationScreen(
                                     modifier = Modifier
                                         .size(44.dp)
                                         .clip(CircleShape)
-                                        .background(GreenCall)
+                                        .background(Brush.horizontalGradient(listOf(LocalThemeColor.current.primary, LocalThemeColor.current.primaryDark)))
                                 ) {
                                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
                                 }
@@ -3051,18 +3059,19 @@ private fun MessageBubble(
 
     val isFrameless = isStickerMessage || isPureEmojiMsg
 
+    val themeColor = LocalThemeColor.current
     val bubbleColor = when {
         isFrameless            -> Color.Transparent
-        isOutgoing && isDark  -> Color(0xFF005D4B)
-        isOutgoing && !isDark -> Color(0xFFE7FFDB)
-        !isOutgoing && isDark -> Color(0xFF1F2C34)
+        isOutgoing && isDark  -> themeColor.primary
+        isOutgoing && !isDark -> themeColor.primary
+        !isOutgoing && isDark -> Color(0xFF1B1F27)
         else                   -> Color.White
     }
 
     val bubbleShape = when {
         isFrameless -> RoundedCornerShape(0.dp)
-        isOutgoing  -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
-        else        -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
+        isOutgoing  -> RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
+        else        -> RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
     }
 
     // Try to parse reply context from message text
@@ -3109,9 +3118,11 @@ private fun MessageBubble(
                 isHighlighted -> BorderStroke(2.5.dp, if (isOutgoing) TealPrimary else GreenCall)
                 isCurrentSearchMatch -> BorderStroke(2.5.dp, Color(0xFFFF3366))
                 isSearchMatch -> BorderStroke(2.dp, Color(0xFF00B4D8))
+                !isOutgoing && !isFrameless && isDark -> BorderStroke(0.5.dp, Color(0xFF282E3A))
+                !isOutgoing && !isFrameless && !isDark -> BorderStroke(0.5.dp, Color(0xFFE2E8F0))
                 else -> null
             },
-            shadowElevation = if (isFrameless) 0.dp else if (isHighlighted || isCurrentSearchMatch) 4.dp else 1.dp,
+            shadowElevation = if (isFrameless) 0.dp else if (isHighlighted || isCurrentSearchMatch) 4.dp else 1.5.dp,
             modifier = Modifier
                 .widthIn(
                     min = when {
@@ -3998,11 +4009,11 @@ private fun MessageBubble(
                         Text(
                             text = timeString,
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            color = if (isOutgoing) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                         )
                         if (isOutgoing) {
                             Spacer(modifier = Modifier.width(4.dp))
-                            StatusTickIcon(status = message.status)
+                            StatusTickIcon(status = message.status, isOutgoingBubble = true)
                         }
                     }
                 }
@@ -4023,20 +4034,20 @@ private fun ClickableMessageText(
 ) {
     val urls = remember(text) { LinkPreviewHelper.URL_REGEX.findAll(text).toList() }
 
+    val themeColor = LocalThemeColor.current
     if (urls.isEmpty()) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = if (isOutgoing) Color.White else MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
         )
     } else {
         val isDark = isSystemInDarkTheme()
         val linkColor = when {
-            isOutgoing && isDark  -> Color(0xFF86EFAC) // Mint green on dark green bubble
-            isOutgoing && !isDark -> Color(0xFF0F5132) // Forest green on light green bubble
-            !isOutgoing && isDark -> Color(0xFF53BDEB) // Soft blue on dark slate bubble
-            else                  -> Color(0xFF0D6EFD) // Vibrant link blue on white bubble
+            isOutgoing            -> Color(0xFFFFF3CD) // Warm light cream underline on orange bubble
+            !isOutgoing && isDark -> themeColor.accent // Soft amber on dark slate bubble
+            else                  -> themeColor.primaryDark // Vibrant link orange on white bubble
         }
         val annotatedString = remember(text, isOutgoing, isDark) {
             androidx.compose.ui.text.buildAnnotatedString {
@@ -4079,7 +4090,7 @@ private fun ClickableMessageText(
         Text(
             text = annotatedString,
             style = MaterialTheme.typography.bodyMedium.copy(
-                color = MaterialTheme.colorScheme.onSurface
+                color = if (isOutgoing) Color.White else MaterialTheme.colorScheme.onSurface
             ),
             modifier = Modifier
                 .padding(horizontal = 4.dp, vertical = 2.dp)
@@ -4390,6 +4401,7 @@ private fun LinkPreviewCard(
 fun ChatAvatar(
     name: String,
     profilePic: String,
+    phoneNumber: String = "",
     size: androidx.compose.ui.unit.Dp = 40.dp,
     fontSize: androidx.compose.ui.unit.TextUnit = 16.sp,
     isGroup: Boolean = false
@@ -4440,20 +4452,16 @@ fun ChatAvatar(
             }
         }
     } else {
-        Surface(
-            modifier = Modifier.size(size),
-            shape = CircleShape,
-            color = TealPrimary.copy(alpha = 0.15f)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = name.take(1).uppercase().ifBlank { "?" },
-                    fontSize = fontSize,
-                    fontWeight = FontWeight.Bold,
-                    color = TealPrimary
-                )
-            }
-        }
+        // Vibrant 3D Stylized Character Avatar
+        val charRes = Avatar3dHelper.getAvatarResId(name, phoneNumber)
+        Image(
+            painter = androidx.compose.ui.res.painterResource(id = charRes),
+            contentDescription = name,
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
     }
 }
 
@@ -4819,4 +4827,69 @@ private fun GroupInfoDialog(
             }
         }
     )
+}
+
+
+@Composable
+fun EmptyChatWelcomeCard(
+    peerName: String,
+    onQuickAction: (String) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 20.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Image(
+                painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.character_3d_wave),
+                contentDescription = "Say Hello",
+                modifier = Modifier
+                    .size(120.dp)
+                    .clip(RoundedCornerShape(16.dp)),
+                contentScale = ContentScale.Fit
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = "Say Hello to $peerName! 👋",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "Messages are end-to-end encrypted. No one outside of this chat can read them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("👋 Hi!", "🍕 Free to chat?", "📞 Quick call?").forEach { starter ->
+                    Surface(
+                        onClick = { onQuickAction(starter) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = com.example.ui.theme.SwiggyOrange.copy(alpha = 0.15f),
+                        border = BorderStroke(1.dp, com.example.ui.theme.SwiggyOrange.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = starter,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                            color = com.example.ui.theme.SwiggyOrange,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }

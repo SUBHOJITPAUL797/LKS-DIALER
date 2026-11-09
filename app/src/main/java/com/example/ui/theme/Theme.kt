@@ -11,7 +11,7 @@ import androidx.compose.ui.graphics.Color
 @Composable
 fun LksDialerTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    themeColor: AppThemeColor = AppThemeColor.PURPLE,
+    themeColor: AppThemeColor = AppThemeColor.SWIGGY,
     content: @Composable () -> Unit
 ) {
     val darkColorScheme = darkColorScheme(
