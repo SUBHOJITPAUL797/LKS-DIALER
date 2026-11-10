@@ -38,10 +38,11 @@ import com.example.data.model.ContactDto
 import com.example.data.model.UserDto
 import com.example.data.repository.ChatRepository
 import com.example.data.repository.FirebaseManager
-import com.example.ui.theme.GreenCall
-import com.example.ui.theme.TealPrimary
-import com.example.ui.theme.Avatar3dHelper
-import com.example.ui.theme.LocalThemeColor
+import com.example.ui.theme.*
+import com.example.ui.components.QuickStartGuideCard
+import com.example.ui.components.QuickStartStep
+import com.example.ui.components.TacticalStatusPill
+import androidx.compose.foundation.BorderStroke
 import kotlinx.coroutines.launch
 import android.widget.Toast
 import java.text.SimpleDateFormat
@@ -71,6 +72,18 @@ fun ChatListScreen(
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showClearAllConfirm by remember { mutableStateOf(false) }
     var selectedConversationForOptions by remember { mutableStateOf<ConversationEntity?>(null) }
+    var showQuickCamera by remember { mutableStateOf(false) }
+    var pendingCapturedFile by remember { mutableStateOf<java.io.File?>(null) }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showQuickCamera = true
+        } else {
+            Toast.makeText(context, "Camera permission required", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val filteredConversations = remember(conversations, searchQuery) {
         if (searchQuery.isBlank()) conversations
@@ -83,73 +96,95 @@ fun ChatListScreen(
     }
 
     Scaffold(
+        containerColor = HudBackgroundPrimary,
         topBar = {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "LKS Chat",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = TealPrimary
+                            text = "SECURE CHATS",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 19.sp,
+                            color = HudTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            color = GreenCall.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text(
-                                text = "E2EE",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = TealPrimary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                            )
-                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        TacticalStatusPill(
+                            text = "E2EE • P2P",
+                            dotColor = CyberMint
+                        )
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            val hasPerm = androidx.core.content.ContextCompat.checkSelfPermission(
+                                context,
+                                android.Manifest.permission.CAMERA
+                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                            if (hasPerm) {
+                                showQuickCamera = true
+                            } else {
+                                cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                            }
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.CameraAlt,
+                            contentDescription = "Open Camera",
+                            tint = CyberMint
+                        )
+                    }
                     Box {
-                        IconButton(onClick = { showOptionsMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = TealPrimary)
+                        IconButton(
+                            onClick = { showOptionsMenu = true },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = SignalAmber)
                         }
                         DropdownMenu(
                             expanded = showOptionsMenu,
-                            onDismissRequest = { showOptionsMenu = false }
+                            onDismissRequest = { showOptionsMenu = false },
+                            modifier = Modifier.background(HudSurfaceContainer)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("New Group") },
-                                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
+                                text = { Text("New Group", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = SignalAmber) },
                                 onClick = {
                                     showOptionsMenu = false
                                     showNewGroupDialog = true
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Linked Devices") },
-                                leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = TealPrimary) },
+                                text = { Text("Linked Devices", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = SignalAmber) },
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToLinkedDevices()
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Manage Storage") },
-                                leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = TealPrimary) },
+                                text = { Text("Manage Storage", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = SignalAmber) },
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToStorage()
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Chat Wallpaper & Theme") },
-                                leadingIcon = { Icon(Icons.Default.Wallpaper, contentDescription = null, tint = TealPrimary) },
+                                text = { Text("Chat Wallpaper & Theme", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Default.Wallpaper, contentDescription = null, tint = SignalAmber) },
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToSettings()
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Clear All Chats") },
-                                leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                text = { Text("Clear All Chats", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold, color = CrimsonAlert) },
+                                leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = CrimsonAlert) },
                                 onClick = {
                                     showOptionsMenu = false
                                     showClearAllConfirm = true
@@ -159,16 +194,17 @@ fun ChatListScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = HudBackgroundPrimary
                 )
             )
         },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { showNewChatDialog = true },
-                containerColor = GreenCall,
-                contentColor = Color.White,
-                shape = CircleShape
+                containerColor = SignalAmber,
+                contentColor = HudTextPrimary,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.defaultMinSize(minWidth = 56.dp, minHeight = 56.dp)
             ) {
                 Icon(Icons.Default.Chat, contentDescription = "New Chat")
             }
@@ -177,89 +213,110 @@ fun ChatListScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(HudBackgroundPrimary)
                 .padding(innerPadding)
         ) {
-            // Search Bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search chats or contacts...") },
-                leadingIcon = {
-                    Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear search")
+            // ZERO CLUTTER RULE: Hide search bar when conversations is empty (0 items)
+            if (conversations.isNotEmpty()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("Search chats or numbers...", color = HudTextSecondary) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = "Search", tint = HudTextSecondary)
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(
+                                onClick = { searchQuery = "" },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear search", tint = HudTextSecondary)
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = HudSurfaceContainer,
+                        focusedContainerColor = HudSurfaceContainer,
+                        unfocusedBorderColor = HudBorderSubtle,
+                        focusedBorderColor = SignalAmber
+                    )
+                )
+            }
+
+            if (conversations.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.ChatBubbleOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(56.dp),
+                            tint = HudTextSecondary.copy(alpha = 0.5f)
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "No conversations yet",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = HudTextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Start an end-to-end encrypted chat with any contact",
+                            fontSize = 13.sp,
+                            color = HudTextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = { showNewChatDialog = true },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = CyberMint)
+                        ) {
+                            Icon(Icons.Default.AddComment, contentDescription = null, tint = Color(0xFF0A101E), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Start New Chat",
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0A101E)
+                            )
                         }
                     }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    unfocusedBorderColor = Color.Transparent,
-                    focusedBorderColor = TealPrimary
-                )
-            )
-
-            if (filteredConversations.isEmpty()) {
+                }
+            } else if (filteredConversations.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    val themeColor = LocalThemeColor.current
-                    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(
-                                if (isDark) Color(0xFF181C24) else Color.White
-                            )
-                            .padding(24.dp)
-                    ) {
-                        Image(
-                            painter = androidx.compose.ui.res.painterResource(id = com.example.R.drawable.character_3d_wave),
-                            contentDescription = "Welcome to LKS Chat",
-                            modifier = Modifier
-                                .size(130.dp)
-                                .clip(RoundedCornerShape(20.dp)),
-                            contentScale = ContentScale.Fit
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.SearchOff,
+                            contentDescription = null,
+                            tint = HudTextSecondary,
+                            modifier = Modifier.size(48.dp)
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (searchQuery.isBlank()) "Welcome to LKS Chat! 👋" else "No matching chats",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            text = "No matching conversations",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = HudTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = if (searchQuery.isBlank())
-                                "Private, end-to-end encrypted messaging & direct P2P heavy file transfers with zero server retention."
-                            else "Try searching for a different contact name or phone number.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(20.dp))
-                        Button(
-                            onClick = { showNewChatDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Start a New Chat", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        }
                     }
                 }
             } else {
@@ -302,19 +359,69 @@ fun ChatListScreen(
         }
     }
 
+    if (showQuickCamera) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showQuickCamera = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            WhatsAppCameraScreen(
+                onPhotoCaptured = { capturedFile ->
+                    showQuickCamera = false
+                    pendingCapturedFile = capturedFile
+                    Toast.makeText(context, "Captured! Select a contact to send or dismiss to keep.", Toast.LENGTH_SHORT).show()
+                    showNewChatDialog = true
+                },
+                onPhotosSelectedFromGallery = { files ->
+                    showQuickCamera = false
+                    val first = files.firstOrNull()
+                    if (first != null) {
+                        pendingCapturedFile = first
+                        showNewChatDialog = true
+                    }
+                },
+                onClose = { showQuickCamera = false }
+            )
+        }
+    }
+
     if (showNewChatDialog) {
         NewChatPickerModal(
             registeredUsers = registeredUsers,
             syncedContacts = syncedContacts,
             onUserSelected = { phone, name, avatar ->
                 showNewChatDialog = false
+                val fileToSend = pendingCapturedFile
+                pendingCapturedFile = null
+                if (fileToSend != null) {
+                    coroutineScope.launch {
+                        val ext = fileToSend.extension.lowercase(Locale.getDefault())
+                        val mediaType = if (ext in listOf("mp4", "mkv", "webm", "mov", "3gp")) {
+                            ChatMediaType.DOCUMENT
+                        } else {
+                            ChatMediaType.IMAGE
+                        }
+                        chatRepository.sendMessage(
+                            recipientNumber = phone,
+                            recipientName = name,
+                            text = if (mediaType == ChatMediaType.DOCUMENT) fileToSend.name else "",
+                            mediaType = mediaType,
+                            mediaFile = fileToSend
+                        )
+                    }
+                }
                 onOpenConversation(phone, name, avatar)
             },
             onOpenNewGroup = {
                 showNewChatDialog = false
                 showNewGroupDialog = true
             },
-            onDismiss = { showNewChatDialog = false }
+            onDismiss = {
+                showNewChatDialog = false
+                pendingCapturedFile = null
+            }
         )
     }
 
@@ -530,11 +637,13 @@ private fun ConversationItem(
                         Spacer(modifier = Modifier.width(4.dp))
                     }
                     Text(
-                        text = if (isInActiveCall) "In call" else formatChatTimestamp(conversation.lastMessageTimestamp),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = if (isInActiveCall) FontWeight.SemiBold else FontWeight.Normal
-                        ),
-                        color = if (isInActiveCall || conversation.unreadCount > 0) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
+                        text = if (isInActiveCall) "IN CALL" else formatChatTimestamp(conversation.lastMessageTimestamp),
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = if (isInActiveCall || conversation.unreadCount > 0) CyberMint else HudTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -554,14 +663,16 @@ private fun ConversationItem(
                         Icon(
                             imageVector = if (activeCallType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
                             contentDescription = null,
-                            tint = GreenCall,
+                            tint = CyberMint,
                             modifier = Modifier.size(15.dp)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = if (activeCallType == CallType.VIDEO) "Video call • In call" else "Voice call • In call",
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = GreenCall,
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = CyberMint,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -572,9 +683,10 @@ private fun ConversationItem(
                         }
                         Text(
                             text = ChatRepository.extractCleanText(conversation.lastMessageText),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (conversation.unreadCount > 0) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = if (conversation.unreadCount > 0) FontWeight.Medium else FontWeight.Normal,
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontSize = 13.sp,
+                            color = if (conversation.unreadCount > 0) HudTextPrimary else HudTextSecondary,
+                            fontWeight = if (conversation.unreadCount > 0) FontWeight.Bold else FontWeight.Normal,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -584,7 +696,7 @@ private fun ConversationItem(
                 if (conversation.unreadCount > 0) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Surface(
-                        color = GreenCall,
+                        color = CyberMint,
                         shape = CircleShape,
                         modifier = Modifier.height(20.dp).defaultMinSize(minWidth = 20.dp)
                     ) {
@@ -594,9 +706,11 @@ private fun ConversationItem(
                         ) {
                             Text(
                                 text = if (conversation.unreadCount > 99) "99+" else conversation.unreadCount.toString(),
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = Color.White,
-                                fontSize = 11.sp
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = HudBackgroundPrimary,
+                                fontSize = 10.sp,
+                                maxLines = 1
                             )
                         }
                     }
@@ -663,13 +777,8 @@ private fun NewChatPickerModal(
     var manualPhone by remember { mutableStateOf("") }
     var filterQuery by remember { mutableStateOf("") }
 
-    val eligibleContacts = remember(registeredUsers, syncedContacts, filterQuery) {
+    val eligibleContacts = remember(syncedContacts, filterQuery) {
         val merged = mutableMapOf<String, String>() // normalizedPhone -> Name
-        registeredUsers.forEach { user ->
-            if (user.phoneNumber.isNotBlank()) {
-                merged[user.phoneNumber] = user.displayName.ifBlank { user.phoneNumber }
-            }
-        }
         syncedContacts.forEach { contact ->
             if (contact.phoneNumber.isNotBlank() && !merged.containsKey(contact.phoneNumber)) {
                 merged[contact.phoneNumber] = contact.name.ifBlank { contact.phoneNumber }
@@ -850,13 +959,8 @@ private fun NewGroupDialog(
         }
     }
 
-    val eligibleContacts = remember(registeredUsers, syncedContacts, filterQuery) {
+    val eligibleContacts = remember(syncedContacts, filterQuery) {
         val merged = mutableMapOf<String, String>() // normalizedPhone -> Name
-        registeredUsers.forEach { user ->
-            if (user.phoneNumber.isNotBlank()) {
-                merged[user.phoneNumber] = user.displayName.ifBlank { user.phoneNumber }
-            }
-        }
         syncedContacts.forEach { contact ->
             if (contact.phoneNumber.isNotBlank() && !merged.containsKey(contact.phoneNumber)) {
                 merged[contact.phoneNumber] = contact.name.ifBlank { contact.phoneNumber }

@@ -35,6 +35,7 @@ object CallSoundEffectsManager {
     private var ringbackToneGenerator: ToneGenerator? = null
     @Volatile
     private var isRingbackActive = false
+    private var ringbackRunnable: Runnable? = null
 
     @Volatile
     private var callerTunePlayer: MediaPlayer? = null
@@ -75,13 +76,17 @@ object CallSoundEffectsManager {
         Log.i(TAG, "Starting outgoing connecting tone (tuk... tuk...)")
 
         try {
-            connectingToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 75)
+            connectingToneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to start connecting ToneGenerator on STREAM_VOICE_CALL: ${e.message}")
+            Log.w(TAG, "Primary STREAM_MUSIC ToneGenerator error: ${e.message}")
             try {
-                connectingToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 70)
+                connectingToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
             } catch (e2: Exception) {
-                Log.e(TAG, "Secondary connecting ToneGenerator fallback failed: ${e2.message}")
+                try {
+                    connectingToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 75)
+                } catch (e3: Exception) {
+                    Log.e(TAG, "All ToneGenerator fallbacks failed: ${e3.message}")
+                }
             }
         }
 
@@ -89,14 +94,14 @@ object CallSoundEffectsManager {
             override fun run() {
                 if (!isConnectingActive) return
                 try {
-                    // Pulse 1: "tuk" (60ms)
-                    connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 60)
+                    // Pulse 1: "tuk" (65ms)
+                    connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 65)
 
-                    // Pulse 2: "tuk" (60ms) after 160ms
+                    // Pulse 2: "tuk" (65ms) after 160ms
                     handler.postDelayed({
                         if (isConnectingActive) {
                             try {
-                                connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 60)
+                                connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 65)
                             } catch (_: Exception) {}
                         }
                     }, 160L)
@@ -296,7 +301,15 @@ object CallSoundEffectsManager {
         }
 
         if (pendingTune != null && player != null) {
-            Log.i(TAG, "Caller Tune is currently buffering in background, will start immediately on prepared")
+            Log.i(TAG, "Caller Tune is buffering in background; setting 1.2s timeout fallback to ringback tone")
+            handler.postDelayed({
+                synchronized(this) {
+                    if (isRingingState && !isCallAnswered && !isCallerTunePrepared && !isRingbackActive) {
+                        Log.i(TAG, "Caller Tune buffer timeout reached, falling back to standard ringback tone")
+                        startRingbackTone(context)
+                    }
+                }
+            }, 1200L)
             return
         }
 
@@ -305,7 +318,8 @@ object CallSoundEffectsManager {
 
     /**
      * Start the outgoing supervisory ringback tone ("tuuut... tuuut... / ring ring").
-     * Played to the caller ONLY when recipient is physically RINGING and has NO caller tune.
+     * Played to the caller while the recipient is ringing.
+     * Uses STREAM_MUSIC for clear speaker/emulator playback with STREAM_VOICE_CALL fallback.
      */
     @Synchronized
     fun startRingbackTone(context: Context) {
@@ -316,20 +330,40 @@ object CallSoundEffectsManager {
         internalStopToneGenerator()
 
         isRingbackActive = true
-        Log.i(TAG, "Starting outgoing supervisory ringback tone (ring ring)")
+        Log.i(TAG, "Starting outgoing supervisory ringback tone cadence (ring ring)")
 
         try {
-            ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
-            ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+            ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 85)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to start ToneGenerator ringback tone on STREAM_VOICE_CALL: ${e.message}")
+            Log.w(TAG, "Failed to start ToneGenerator on STREAM_MUSIC: ${e.message}")
             try {
-                ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 80)
-                ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+                ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 85)
             } catch (e2: Exception) {
-                Log.e(TAG, "Secondary ToneGenerator fallback also failed: ${e2.message}")
+                try {
+                    ringbackToneGenerator = ToneGenerator(AudioManager.STREAM_RING, 80)
+                } catch (e3: Exception) {
+                    Log.e(TAG, "All ringback ToneGenerators failed: ${e3.message}")
+                }
             }
         }
+
+        ringbackRunnable = object : Runnable {
+            override fun run() {
+                if (!isRingbackActive || isCallAnswered) return
+                try {
+                    // Play 1.6 second standard supervisory ring tone
+                    ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1600)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Ringback tone start error: ${e.message}")
+                }
+
+                // Standard telecom supervisory cycle: 1.6s ring + 2.2s silence = 3.8s cadence
+                if (isRingbackActive && !isCallAnswered) {
+                    handler.postDelayed(this, 3800L)
+                }
+            }
+        }
+        ringbackRunnable?.let { handler.post(it) }
     }
 
     @Synchronized
@@ -364,8 +398,9 @@ object CallSoundEffectsManager {
     }
 
     private fun internalStopToneGenerator() {
-        if (!isRingbackActive && ringbackToneGenerator == null) return
         isRingbackActive = false
+        ringbackRunnable?.let { handler.removeCallbacks(it) }
+        ringbackRunnable = null
         Log.d(TAG, "Stopping outgoing ringback tone")
         try {
             ringbackToneGenerator?.stopTone()

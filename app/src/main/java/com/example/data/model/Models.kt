@@ -6,7 +6,7 @@ data class UserDto(
     val phoneNumber: String = "",
     val displayName: String = "",
     val profilePictureUrl: String = "",
-    val statusMessage: String = "Available on LKS DIALER",
+    val statusMessage: String = "Available on RB DIALER",
     val fcmToken: String = "",
     val webToken: String = "",
     @get:PropertyName("isOnline") @set:PropertyName("isOnline")

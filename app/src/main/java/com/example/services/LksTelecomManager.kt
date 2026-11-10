@@ -32,11 +32,11 @@ object LksTelecomManager {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
             val handle = getPhoneAccountHandle(context)
 
-            val phoneAccount = PhoneAccount.builder(handle, "LKS DIALER")
+            val phoneAccount = PhoneAccount.builder(handle, "RB DIALER")
                 .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
                 .setIcon(android.graphics.drawable.Icon.createWithResource(context, com.example.R.mipmap.ic_launcher))
                 .setHighlightColor(0xFF00ADB5.toInt())
-                .setShortDescription("LKS VoIP Calls")
+                .setShortDescription("RB VoIP Calls")
                 .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
                 .build()

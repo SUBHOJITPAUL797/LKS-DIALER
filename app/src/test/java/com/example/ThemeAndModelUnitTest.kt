@@ -14,7 +14,7 @@ class ThemeAndModelUnitTest {
     @Test
     fun default_theme_is_purple() {
         val defaultTheme = AppThemeColor.PURPLE
-        assertEquals("Royal Purple", defaultTheme.title)
+        assertEquals("Spectre Violet", defaultTheme.title)
     }
 
     @Test

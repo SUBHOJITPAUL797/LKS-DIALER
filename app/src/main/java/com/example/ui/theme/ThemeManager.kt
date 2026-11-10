@@ -15,60 +15,119 @@ enum class AppThemeColor(
     val previewColor: Color
 ) {
     SWIGGY(
-        title = "Swiggy Orange",
-        primary = Color(0xFFFC8019),
-        primaryDark = Color(0xFFFF5200),
-        accent = Color(0xFFFFA726),
-        previewColor = Color(0xFFFC8019)
-    ),
-    PURPLE(
-        title = "Royal Purple",
-        primary = Color(0xFF8B5CF6),
-        primaryDark = Color(0xFF7C3AED),
-        accent = Color(0xFFA78BFA),
-        previewColor = Color(0xFF8B5CF6)
+        title = "Signal Amber",
+        primary = SignalAmber,
+        primaryDark = SignalAmberDeep,
+        accent = SignalAmberGlow,
+        previewColor = SignalAmber
     ),
     EMERALD(
-        title = "Emerald Green",
-        primary = Color(0xFF00A884),
-        primaryDark = Color(0xFF008069),
-        accent = Color(0xFF25D366),
-        previewColor = Color(0xFF00A884)
+        title = "Cyber Mint",
+        primary = CyberMint,
+        primaryDark = Color(0xFF00966C),
+        accent = Color(0xFF34D399),
+        previewColor = CyberMint
     ),
     BLUE(
-        title = "Ocean Blue",
-        primary = Color(0xFF3B82F6),
-        primaryDark = Color(0xFF2563EB),
-        accent = Color(0xFF60A5FA),
-        previewColor = Color(0xFF3B82F6)
+        title = "Telemetry Blue",
+        primary = TelemetryBlue,
+        primaryDark = Color(0xFF3B82F6),
+        accent = Color(0xFF93C5FD),
+        previewColor = TelemetryBlue
     ),
     CRIMSON(
-        title = "Ruby Crimson",
-        primary = Color(0xFFE11D48),
-        primaryDark = Color(0xFFBE123C),
-        accent = Color(0xFFF43F5E),
-        previewColor = Color(0xFFE11D48)
+        title = "Crimson Alert",
+        primary = CrimsonAlert,
+        primaryDark = Color(0xFFD32F2F),
+        accent = Color(0xFFFF8A80),
+        previewColor = CrimsonAlert
     ),
     AMBER(
-        title = "Cyber Amber",
+        title = "Tactical Gold",
         primary = Color(0xFFF59E0B),
         primaryDark = Color(0xFFD97706),
         accent = Color(0xFFFBBF24),
         previewColor = Color(0xFFF59E0B)
     ),
-    PINK(
-        title = "Neon Pink",
-        primary = Color(0xFFEC4899),
-        primaryDark = Color(0xFFDB2777),
-        accent = Color(0xFFF472B6),
-        previewColor = Color(0xFFEC4899)
-    ),
     CYAN(
-        title = "Midnight Cyan",
+        title = "Radar Cyan",
         primary = Color(0xFF06B6D4),
         primaryDark = Color(0xFF0891B2),
         accent = Color(0xFF22D3EE),
         previewColor = Color(0xFF06B6D4)
+    ),
+    PURPLE(
+        title = "Spectre Violet",
+        primary = Color(0xFF8B5CF6),
+        primaryDark = Color(0xFF7C3AED),
+        accent = Color(0xFFA78BFA),
+        previewColor = Color(0xFF8B5CF6)
+    ),
+    PINK(
+        title = "Laser Magenta",
+        primary = Color(0xFFEC4899),
+        primaryDark = Color(0xFFDB2777),
+        accent = Color(0xFFF472B6),
+        previewColor = Color(0xFFEC4899)
+    )
+}
+
+/**
+ * Selectable UI Surface Material Styles requested by the user:
+ * - CLAY_3D: Tactile 3D Soft Claymorphism with warm sculpted volume & soft inner rim
+ * - FROSTED_GLASS: Translucent Frosted Acrylic Glass with icy diffused refraction
+ * - LIQUID_GLASS: High-gloss Liquid Glass with iridescent cyan/amber specular sheen
+ * - TACTICAL_HUD: Clean Tactical Gunmetal HUD with crisp 1dp border
+ */
+enum class AppSurfaceStyle(
+    val title: String,
+    val subtitle: String,
+    val badge: String,
+    val cardColor: Color,
+    val elevatedColor: Color,
+    val borderColor: Color,
+    val highlightColor: Color,
+    val cornerRadiusDp: Int
+) {
+    CLAY_3D(
+        title = "3D Soft Clay",
+        subtitle = "Sculpted matte clay cards with warm tactile depth",
+        badge = "CLAY 3D",
+        cardColor = Color(0xFFFFFFFF),
+        elevatedColor = Color(0xFFF8FAFC),
+        borderColor = Color(0xFFE2E8F0),
+        highlightColor = Color(0xFFFF9800),
+        cornerRadiusDp = 22
+    ),
+    FROSTED_GLASS(
+        title = "Frosted Glass",
+        subtitle = "Translucent icy acrylic glass with soft frost border",
+        badge = "FROSTED",
+        cardColor = Color(0xF5FFFFFF),
+        elevatedColor = Color(0xFAFFFFFF),
+        borderColor = Color(0x6638BDF8),
+        highlightColor = Color(0xFF0284C7),
+        cornerRadiusDp = 20
+    ),
+    LIQUID_GLASS(
+        title = "Liquid Glass",
+        subtitle = "High-gloss refractive glass with iridescent sheen",
+        badge = "LIQUID",
+        cardColor = Color(0xF5FFFFFF),
+        elevatedColor = Color(0xFAFFFFFF),
+        borderColor = Color(0x66A855F7),
+        highlightColor = Color(0xFF8B5CF6),
+        cornerRadiusDp = 24
+    ),
+    TACTICAL_HUD(
+        title = "Clean Utility",
+        subtitle = "Clean precision field utility with crisp borders",
+        badge = "UTILITY",
+        cardColor = HudSurfaceContainer,
+        elevatedColor = HudElevatedCard,
+        borderColor = HudBorderSubtle,
+        highlightColor = SignalAmber,
+        cornerRadiusDp = 16
     )
 }
 
@@ -77,6 +136,9 @@ class ThemeManager private constructor(context: Context) {
     
     private val _currentTheme = MutableStateFlow(loadSavedTheme())
     val currentTheme: StateFlow<AppThemeColor> = _currentTheme.asStateFlow()
+
+    private val _currentSurfaceStyle = MutableStateFlow(loadSavedSurfaceStyle())
+    val currentSurfaceStyle: StateFlow<AppSurfaceStyle> = _currentSurfaceStyle.asStateFlow()
 
     private fun loadSavedTheme(): AppThemeColor {
         val savedName = prefs.getString("selected_theme_color", AppThemeColor.SWIGGY.name)
@@ -87,9 +149,23 @@ class ThemeManager private constructor(context: Context) {
         }
     }
 
+    private fun loadSavedSurfaceStyle(): AppSurfaceStyle {
+        val savedName = prefs.getString("selected_surface_style", AppSurfaceStyle.CLAY_3D.name)
+        return try {
+            AppSurfaceStyle.valueOf(savedName ?: AppSurfaceStyle.CLAY_3D.name)
+        } catch (_: Exception) {
+            AppSurfaceStyle.CLAY_3D
+        }
+    }
+
     fun setTheme(theme: AppThemeColor) {
         prefs.edit().putString("selected_theme_color", theme.name).apply()
         _currentTheme.value = theme
+    }
+
+    fun setSurfaceStyle(style: AppSurfaceStyle) {
+        prefs.edit().putString("selected_surface_style", style.name).apply()
+        _currentSurfaceStyle.value = style
     }
 
     companion object {
@@ -105,3 +181,4 @@ class ThemeManager private constructor(context: Context) {
 }
 
 val LocalThemeColor = compositionLocalOf { AppThemeColor.SWIGGY }
+val LocalSurfaceStyle = compositionLocalOf { AppSurfaceStyle.CLAY_3D }

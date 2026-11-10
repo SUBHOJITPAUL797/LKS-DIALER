@@ -665,10 +665,16 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                // BUG-06 FIX: Navigate to MAIN automatically if user is restored and we're on WELCOME
+                // BUG-06 FIX: Navigate to MAIN automatically if user is restored, or back to WELCOME on logout
                 LaunchedEffect(currentUser) {
                     if (currentUser != null && navState == AppNavState.WELCOME) {
                         navState = AppNavState.MAIN
+                    } else if (currentUser == null &&
+                        navState != AppNavState.WELCOME &&
+                        navState != AppNavState.PHONE_INPUT &&
+                        navState != AppNavState.PROFILE_SETUP
+                    ) {
+                        navState = AppNavState.WELCOME
                     }
                 }
 
@@ -820,7 +826,7 @@ class MainActivity : ComponentActivity() {
                         val action = incoming.action
                         if (action == android.content.Intent.ACTION_SEND || action == android.content.Intent.ACTION_SEND_MULTIPLE) {
                             if (currentUser == null) {
-                                android.widget.Toast.makeText(context, "Please sign in to LKS Dialer to share", android.widget.Toast.LENGTH_SHORT).show()
+                                android.widget.Toast.makeText(context, "Please sign in to RB Dialer to share", android.widget.Toast.LENGTH_SHORT).show()
                             } else {
                                 val payload = com.example.util.SharePayloadHelper.extractSharedPayload(context, incoming)
                                 if (payload != null) {
@@ -900,6 +906,10 @@ class MainActivity : ComponentActivity() {
                 val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
                 val direction = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
 
+                var settingsInitialCategory by remember {
+                    mutableStateOf(com.example.ui.screens.settings.SettingsCategory.ALL)
+                }
+
                 Box(modifier = Modifier.fillMaxSize()) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         // WhatsApp-style persistent in-app ongoing call banner when call is minimized
@@ -934,6 +944,9 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 AppNavState.PHONE_INPUT -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.WELCOME
+                                    }
                                     PhoneInputScreen(
                                         firebaseManager = firebaseManager,
                                         onLoginSuccess = { user ->
@@ -948,18 +961,26 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 AppNavState.PROFILE_SETUP -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.PHONE_INPUT
+                                    }
                                     ProfileSetupScreen(
                                         phoneNumber = newPhoneNumber,
                                         deviceId = newDeviceId,
                                         onProfileComplete = { name, status ->
                                             firebaseManager.loginWithPhone(newPhoneNumber, name, newDeviceId, status)
                                             navState = AppNavState.MAIN
-                                        }
+                                        },
+                                        onBackClick = { navState = AppNavState.PHONE_INPUT }
                                     )
                                 }
                                 AppNavState.SETTINGS -> {
+                                    androidx.activity.compose.BackHandler {
+                                        navState = AppNavState.MAIN
+                                    }
                                     SettingsScreen(
                                         firebaseManager = firebaseManager,
+                                        initialCategory = settingsInitialCategory,
                                         onBackClick = { navState = AppNavState.MAIN },
                                         onNavigateToStorage = { navState = AppNavState.STORAGE_MANAGEMENT },
                                         onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES }
@@ -970,47 +991,61 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.fillMaxSize(),
                                         contentWindowInsets = WindowInsets(0, 0, 0, 0),
                                         bottomBar = {
-                                            NavigationBar(
-                                                containerColor = MaterialTheme.colorScheme.surface,
-                                                tonalElevation = 6.dp
-                                            ) {
-                                                MainTab.entries.forEach { tab ->
-                                                    val isSelected = selectedTab == tab
-                                                    NavigationBarItem(
-                                                        selected = isSelected,
-                                                        onClick = { selectedTab = tab },
-                                                        icon = {
-                                                            if (tab == MainTab.CHATS && totalUnreadChats > 0) {
-                                                                BadgedBox(
-                                                                    badge = {
-                                                                        Badge(
-                                                                            containerColor = com.example.ui.theme.GreenCall,
-                                                                            contentColor = Color.White
-                                                                        ) {
-                                                                            Text(if (totalUnreadChats > 99) "99+" else totalUnreadChats.toString())
+                                            Column {
+                                                HorizontalDivider(
+                                                    thickness = 1.dp,
+                                                    color = com.example.ui.theme.HudBorderSubtle
+                                                )
+                                                NavigationBar(
+                                                    containerColor = com.example.ui.theme.HudSurfaceContainer,
+                                                    tonalElevation = 0.dp
+                                                ) {
+                                                    MainTab.entries.forEach { tab ->
+                                                        val isSelected = selectedTab == tab
+                                                        NavigationBarItem(
+                                                            selected = isSelected,
+                                                            onClick = { selectedTab = tab },
+                                                            icon = {
+                                                                if (tab == MainTab.CHATS && totalUnreadChats > 0) {
+                                                                    BadgedBox(
+                                                                        badge = {
+                                                                            Badge(
+                                                                                containerColor = com.example.ui.theme.CyberMint,
+                                                                                contentColor = com.example.ui.theme.HudBackgroundPrimary
+                                                                            ) {
+                                                                                Text(
+                                                                                    text = if (totalUnreadChats > 99) "99+" else totalUnreadChats.toString(),
+                                                                                    fontFamily = com.example.ui.theme.JetBrainsMonoFontFamily,
+                                                                                    fontWeight = FontWeight.Bold,
+                                                                                    maxLines = 1
+                                                                                )
+                                                                            }
                                                                         }
+                                                                    ) {
+                                                                        Icon(tab.icon, contentDescription = tab.title)
                                                                     }
-                                                                ) {
+                                                                } else {
                                                                     Icon(tab.icon, contentDescription = tab.title)
                                                                 }
-                                                            } else {
-                                                                Icon(tab.icon, contentDescription = tab.title)
-                                                            }
-                                                        },
-                                                        label = { 
-                                                            Text(
-                                                                text = tab.title,
-                                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                                                            ) 
-                                                        },
-                                                        colors = NavigationBarItemDefaults.colors(
-                                                            selectedIconColor = currentThemeColor.primary,
-                                                            selectedTextColor = currentThemeColor.primary,
-                                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            indicatorColor = currentThemeColor.primary.copy(alpha = 0.18f)
+                                                            },
+                                                            label = { 
+                                                                Text(
+                                                                    text = tab.title,
+                                                                    fontFamily = com.example.ui.theme.SpaceGroteskFontFamily,
+                                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                                    maxLines = 1,
+                                                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                                                ) 
+                                                            },
+                                                            colors = NavigationBarItemDefaults.colors(
+                                                                selectedIconColor = currentThemeColor.primary,
+                                                                selectedTextColor = com.example.ui.theme.HudTextPrimary,
+                                                                unselectedIconColor = com.example.ui.theme.HudTextSecondary,
+                                                                unselectedTextColor = com.example.ui.theme.HudTextSecondary,
+                                                                indicatorColor = currentThemeColor.primary.copy(alpha = 0.22f)
+                                                            )
                                                         )
-                                                    )
+                                                    }
                                                 }
                                             }
                                         }
@@ -1025,7 +1060,14 @@ class MainActivity : ComponentActivity() {
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
                                                     onNavigateToSettings = { navState = AppNavState.SETTINGS },
-                                                    onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES }
+                                                    onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES },
+                                                    onNavigateToChats = { selectedTab = MainTab.CHATS },
+                                                    onNavigateToContacts = { selectedTab = MainTab.CONTACTS },
+                                                    onOpenDirectChat = { number, name ->
+                                                        chatPeerNumber = number
+                                                        chatPeerName = name
+                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                    }
                                                 )
                                                 MainTab.RECENTS -> CallHistoryScreen(
                                                     firebaseManager = firebaseManager,
@@ -1034,7 +1076,8 @@ class MainActivity : ComponentActivity() {
                                                         chatPeerNumber = number
                                                         chatPeerName = name
                                                         navState = AppNavState.CHAT_CONVERSATION
-                                                    }
+                                                    },
+                                                    onNavigateToDialer = { selectedTab = MainTab.DIALER }
                                                 )
                                                 MainTab.CHATS -> ChatListScreen(
                                                     firebaseManager = firebaseManager,
@@ -1066,7 +1109,11 @@ class MainActivity : ComponentActivity() {
                                                     }
                                                 )
                                                 MainTab.PROFILE -> ProfileScreen(
-                                                    firebaseManager = firebaseManager
+                                                    firebaseManager = firebaseManager,
+                                                    onOpenSettingsCategory = { category ->
+                                                        settingsInitialCategory = category
+                                                        navState = AppNavState.SETTINGS
+                                                    }
                                                 )
                                             }
                                         }
@@ -1357,6 +1404,16 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { _showShakeDialog.value = false }
                         )
                     }
+
+                    // Smooth RB DIALER Launch Splash Reveal Animation
+                    var showLaunchSplash by remember { mutableStateOf(true) }
+                    LaunchedEffect(Unit) {
+                        kotlinx.coroutines.delay(1250L)
+                        showLaunchSplash = false
+                    }
+                    com.example.ui.components.RbAppLaunchSplashOverlay(
+                        visible = showLaunchSplash && !isCallActive
+                    )
                 }
             }
         }

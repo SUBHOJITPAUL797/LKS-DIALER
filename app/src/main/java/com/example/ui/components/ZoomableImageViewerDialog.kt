@@ -92,15 +92,63 @@ fun ZoomableImageViewerDialog(
     }
 
     val context = LocalContext.current
+
+    // Smooth WhatsApp-style entry zoom animation on open
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        entered = true
+    }
+    val entryScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (entered) 1f else 0.86f,
+        animationSpec = androidx.compose.animation.core.spring(
+            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+        ),
+        label = "viewer_entry_scale"
+    )
+    val entryAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(durationMillis = 180),
+        label = "viewer_entry_alpha"
+    )
+
+    // Decode raw Base64 strings or data:image/... URIs if needed (e.g. profile photos or inline Base64 media)
+    val decodedBase64Bitmap = remember(imageModel) {
+        val str = imageModel as? String ?: return@remember null
+        val trimmed = str.trim()
+        val isUrlOrPath = trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("content://", ignoreCase = true) ||
+                trimmed.startsWith("file://", ignoreCase = true) ||
+                trimmed.startsWith("android.resource://", ignoreCase = true) ||
+                (trimmed.startsWith("/") && java.io.File(trimmed).exists())
+        if (isUrlOrPath) {
+            null
+        } else {
+            com.example.util.ImageUtils.decodeBase64ToImageBitmap(trimmed)
+        }
+    }
+
     val finalImageModel = remember(imageModel, isViewOnce) {
+        val resolvedData = when (val raw = imageModel) {
+            is String -> {
+                val trimmed = raw.trim()
+                val f = java.io.File(trimmed)
+                if (f.exists()) f else trimmed
+            }
+            else -> raw
+        }
         if (isViewOnce) {
             ImageRequest.Builder(context)
-                .data(imageModel)
+                .data(resolvedData)
                 .memoryCachePolicy(CachePolicy.DISABLED)
                 .diskCachePolicy(CachePolicy.DISABLED)
                 .build()
         } else {
-            imageModel
+            ImageRequest.Builder(context)
+                .data(resolvedData)
+                .crossfade(true)
+                .build()
         }
     }
 
@@ -125,7 +173,7 @@ fun ZoomableImageViewerDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(Color.Black.copy(alpha = entryAlpha))
                 .onSizeChanged { containerSize = it }
                 .pointerInput(Unit) {
                     // Two-finger pinch-to-zoom and pan gesture
@@ -176,20 +224,38 @@ fun ZoomableImageViewerDialog(
                 },
             contentAlignment = Alignment.Center
         ) {
-            // Main Zoomable Image
-            AsyncImage(
-                model = finalImageModel,
-                contentDescription = "Fullscreen Photo",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offsetX
-                        translationY = offsetY
-                    }
-            )
+            // Main Zoomable Image (Supports both decoded Base64 Bitmaps and Coil File/URL models)
+            if (decodedBase64Bitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = decodedBase64Bitmap,
+                    contentDescription = "Fullscreen Photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale * entryScale
+                            scaleY = scale * entryScale
+                            alpha = entryAlpha
+                            translationX = offsetX
+                            translationY = offsetY
+                        }
+                )
+            } else {
+                AsyncImage(
+                    model = finalImageModel,
+                    contentDescription = "Fullscreen Photo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale * entryScale
+                            scaleY = scale * entryScale
+                            alpha = entryAlpha
+                            translationX = offsetX
+                            translationY = offsetY
+                        }
+                )
+            }
 
             // Top Bar Overlay
             AnimatedVisibility(

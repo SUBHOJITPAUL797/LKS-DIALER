@@ -62,7 +62,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     fun prewarmPushSocket() {
         scope.launch(Dispatchers.IO) {
             try {
-                val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+                val workerUrl = getEffectiveWorkerUrl()
                 val req = okhttp3.Request.Builder()
                     .url(workerUrl)
                     .head()
@@ -80,6 +80,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var resetIdleJob: Job? = null
     private var videoUpgradeWatchdogJob: Job? = null
     private var activeCallPollingJob: Job? = null
+    private var callerRingWatchdogJob: Job? = null
 
     private var hasProcessedOffer = false
     private var hasProcessedAnswer = false
@@ -257,12 +258,12 @@ class WebRtcEngine private constructor(private val context: Context) {
      */
     suspend fun getFreshIceServers(): List<PeerConnection.IceServer> = withContext(Dispatchers.IO) {
         try {
-            val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
+            val workerUrl = getEffectiveWorkerUrl()
                 .removeSuffix("/").let { if (it.endsWith("/call")) it.dropLast(5) else it }
             val url = java.net.URL("$workerUrl/turn-credentials")
             val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
                 requestMethod = "GET"
-                setRequestProperty("X-Worker-Secret", com.example.BuildConfig.CALL_WORKER_SECRET)
+                setRequestProperty("X-Worker-Secret", getEffectiveWorkerSecret())
                 setRequestProperty("User-Agent", "LKS-Dialer-Android")
                 connectTimeout = 4000
                 readTimeout = 4000
@@ -734,6 +735,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                     val doc = if (attempt > 15) {
                         try {
                             firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            throw ce
                         } catch (_: Exception) {
                             firestore.collection("calls").document(callId).get().await()
                         }
@@ -751,6 +754,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             break
                         }
                     }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
                     Log.w("WebRtcEngine", "onCallAnsweredFromPush fetch attempt $attempt failed: ${e.message}")
                 }
@@ -1382,6 +1387,24 @@ class WebRtcEngine private constructor(private val context: Context) {
             } else {
                 resolveAndPrepareCalleeTune(calleeNumber)
             }
+
+            // Supervisory Progression: After initial SDP synthesis & network dispatch (2.2s),
+            // transition caller to RINGING state so caller sees "Ringing..." and hears the ringback tone.
+            scope.launch {
+                delay(2200)
+                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
+                    Log.i("WebRtcEngine", "Initial route established -> transitioning to Ringing state with ringback tone")
+                    _state.value = _state.value.copy(
+                        callStatus = CallStatus.RINGING,
+                        connectionStatusText = "Ringing...",
+                        activeCall = _state.value.activeCall?.copy(status = CallStatus.RINGING)
+                    )
+                    try {
+                        firestore.collection("calls").document(newCall.callId).update("status", CallStatus.RINGING.name)
+                    } catch (_: Exception) {}
+                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
+                }
+            }
             
             // Timeout logic: if it stays in CALLING (offline) for 15s, or RINGING (no answer) for 45s, hang up.
             scope.launch {
@@ -1456,19 +1479,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         myPhoneNumber = phoneNumber
         incomingCallListener?.remove()
 
-        val variations = mutableListOf<String>()
-        variations.add(phoneNumber)
         val cleanDigits = phoneNumber.replace(Regex("[^0-9]"), "")
-        if (cleanDigits.isNotBlank()) {
-            variations.add(cleanDigits)
-            if (cleanDigits.length > 10) {
-                variations.add(cleanDigits.takeLast(10))
-            }
-            if (!phoneNumber.startsWith("+")) {
-                variations.add("+$phoneNumber")
-            }
-        }
-        val distinctVariations = variations.distinct().take(10)
+        val distinctVariations = com.example.util.ContactsHelper.generateNumberVariations(phoneNumber)
 
         incomingCallListener = firestore.collection("calls")
             .whereIn("calleeNumber", distinctVariations)
@@ -1857,6 +1869,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             try {
                                 doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
                                 docOffer = doc.getString("offerSdp")
+                            } catch (ce: kotlinx.coroutines.CancellationException) {
+                                throw ce
                             } catch (_: Exception) {}
                         }
                         if (doc.exists()) {
@@ -1880,6 +1894,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 break
                             }
                         }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
                     } catch (e: Exception) {
                         Log.d("WebRtcEngine", "answerIncomingCall offer fetch attempt $attempt failed: ${e.message}")
                     }
@@ -1995,6 +2011,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             try {
                                 snap = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
                                 offer = snap.getString("offerSdp")
+                            } catch (ce: kotlinx.coroutines.CancellationException) {
+                                throw ce
                             } catch (_: Exception) {}
                         }
                         if (!offer.isNullOrBlank()) {
@@ -2013,6 +2031,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                             break
                         }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
                     } catch (e: Exception) {
                         Log.d("WebRtcEngine", "Callee offer fetch attempt $attempt: ${e.message}")
                     }
@@ -2216,6 +2236,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 try {
                                     snap = firestore.collection("calls").document(call.callId).get(com.google.firebase.firestore.Source.SERVER).await()
                                     offer = snap.getString("offerSdp")
+                                } catch (ce: kotlinx.coroutines.CancellationException) {
+                                    throw ce
                                 } catch (_: Exception) {}
                             }
                             if (!offer.isNullOrBlank()) {
@@ -2233,6 +2255,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 }
                                 break
                             }
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            throw ce
                         } catch (_: Exception) {}
                         delay(if (attempt <= 10) 100L else 200L)
                     }
@@ -2466,6 +2490,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         } else {
                             firestore.collection("calls").document(callId).get().await()
                         }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
                     } catch (_: Exception) {
                         firestore.collection("calls").document(callId).get().await()
                     }
@@ -2494,6 +2520,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                             }
                         }
                     }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
                 } catch (e: Throwable) {
                     Log.d("WebRtcEngine", "Active call polling error: ${e.message}")
                 }
@@ -2502,12 +2530,14 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
         if (isCaller) {
-            // Bug fix v2.9.45 ── Hard 90-second watchdog: if caller is still in RINGING/CALLING
-            // after 90 s with no answer, force-end the call as MISSED (safety net).
-            scope.launch {
+            // Hard 90-second watchdog scoped strictly to this callId
+            callerRingWatchdogJob?.cancel()
+            callerRingWatchdogJob = scope.launch {
                 delay(90_000L)
-                if (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
-                    Log.w("WebRtcEngine", "listenToActiveCall watchdog: caller stuck in ${_state.value.callStatus} for 90s ── force ending")
+                if (_state.value.activeCall?.callId == callId &&
+                    !isCallTerminated(callId) &&
+                    (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING)) {
+                    Log.w("WebRtcEngine", "listenToActiveCall watchdog: caller stuck in ${_state.value.callStatus} for 90s on $callId ── force ending")
                     endCallInternalLocal(CallStatus.MISSED)
                 }
             }
@@ -3462,9 +3492,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (activeCallId != null && activeCallId == callId) {
                 Log.d("WebRtcEngine", "⚡ forceEndCallFromPush: ending active call $activeCallId for push $callId with status $status, reason $reason")
                 endCallInternalLocal(status, reason)
-            } else if (activeCallId == null || activeCallId == callId || _state.value.callStatus != CallStatus.IDLE) {
-                // Redundant safety: Always terminate if the device has an ongoing or ringing call
-                Log.d("WebRtcEngine", "⚡ forceEndCallFromPush: terminating call (activeCallId=$activeCallId, status=${_state.value.callStatus}) for push $callId")
+            } else if (activeCallId == null && (currentListeningCallId == callId || _state.value.callStatus != CallStatus.IDLE)) {
+                Log.d("WebRtcEngine", "⚡ forceEndCallFromPush: terminating unattached call (status=${_state.value.callStatus}) for push $callId")
                 endCallInternalLocal(status, reason)
             } else {
                 Log.w("WebRtcEngine", "forceEndCallFromPush: IGNORED stale push for $callId (active call is $activeCallId, status=${_state.value.callStatus})")
@@ -3486,6 +3515,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         timerJob = null
         activeCallPollingJob?.cancel()
         activeCallPollingJob = null
+        callerRingWatchdogJob?.cancel()
+        callerRingWatchdogJob = null
         reconnectJob?.cancel()
         reconnectJob = null
         videoUpgradeWatchdogJob?.cancel()
@@ -3695,19 +3726,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         callerTuneStartMs: Long = 0L,
         reason: String? = null
     ) {
-        val variations = mutableListOf<String>()
-        variations.add(calleeNumber)
-        val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
-        if (cleanDigits.isNotBlank()) {
-            variations.add(cleanDigits)
-            if (cleanDigits.length > 10) {
-                variations.add(cleanDigits.takeLast(10))
-            }
-            if (!calleeNumber.startsWith("+")) {
-                variations.add("+$calleeNumber")
-            }
-        }
-        val distinctVariations = variations.distinct().take(10)
+        val distinctVariations = com.example.util.ContactsHelper.generateNumberVariations(calleeNumber)
 
         fun cacheTokens(fcm: String, web: String) {
             if (fcm.isNotBlank() || web.isNotBlank()) {
@@ -3717,8 +3736,8 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
 
         fun sendPush(fcmToken: String, webToken: String) {
-            val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
-            val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
+            val workerUrl = getEffectiveWorkerUrl()
+            val workerSecret = getEffectiveWorkerSecret()
             
             scope.launch(Dispatchers.IO) {
                 try {
@@ -3777,8 +3796,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                     pushHttpClient.newCall(request).execute().use { response ->
                         android.util.Log.d("WebRtcEngine", "⚡ OkHttp Push Trigger Response: ${response.code} (type=$type, callId=$callId)")
                     }
+                } catch (uhe: java.net.UnknownHostException) {
+                    android.util.Log.w("WebRtcEngine", "Push server host unreachable: ${uhe.message}")
                 } catch (e: Exception) {
-                    android.util.Log.e("WebRtcEngine", "Failed to trigger push: ${e.message}")
+                    android.util.Log.w("WebRtcEngine", "Failed to trigger push: ${e.message}")
                 }
             }
         }
@@ -3863,6 +3884,25 @@ class WebRtcEngine private constructor(private val context: Context) {
     companion object {
         @Volatile
         private var INSTANCE: WebRtcEngine? = null
+
+        const val DEFAULT_CALL_WORKER_URL = "https://lks-dialer-call-notifier.subhojit.workers.dev/call"
+        const val DEFAULT_CALL_WORKER_SECRET = "LKS_DIALER_EsA2u7uNJMiE0ZhbtRUnzs7tkZPe4WvJ"
+
+        fun getEffectiveWorkerUrl(): String {
+            val url = try { com.example.BuildConfig.CALL_WORKER_URL.trim() } catch (_: Exception) { "" }
+            if (url.isNotBlank() && !url.contains("YOUR_SUBDOMAIN", ignoreCase = true) && !url.contains("<your", ignoreCase = true)) {
+                return url
+            }
+            return DEFAULT_CALL_WORKER_URL
+        }
+
+        fun getEffectiveWorkerSecret(): String {
+            val sec = try { com.example.BuildConfig.CALL_WORKER_SECRET.trim() } catch (_: Exception) { "" }
+            if (sec.isNotBlank() && !sec.contains("REPLACE_", ignoreCase = true) && !sec.contains("<your", ignoreCase = true)) {
+                return sec
+            }
+            return DEFAULT_CALL_WORKER_SECRET
+        }
 
         val pushTokenCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, String>>()
 

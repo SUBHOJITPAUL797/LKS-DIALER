@@ -34,11 +34,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.repository.FirebaseManager
-import com.example.ui.theme.AppThemeColor
-import com.example.ui.theme.GreenCall
-import com.example.ui.theme.TealPrimary
-import com.example.ui.theme.LocalThemeColor
-import com.example.ui.theme.ThemeManager
+import com.example.ui.components.TacticalStatusPill
+import com.example.ui.components.surfaceFinishOverlay
+import com.example.ui.theme.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.launch
 
 import android.media.RingtoneManager
@@ -58,10 +58,26 @@ import com.example.util.GitHubUpdater
 import com.example.util.UpdateInfo
 import com.example.ui.components.UpdateDialog
 
+enum class SettingsCategory(
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val accent: Color
+) {
+    ALL("All Categories", "Complete overview", Icons.Default.GridView, SignalAmber),
+    APPEARANCE("Clay & Glass UI", "3D Clay, Frosted & Liquid Glass", Icons.Default.AutoAwesome, Color(0xFF38BDF8)),
+    CALLS_AUDIO("Calls & Audio", "Ringtone, Hello Tune & WebRTC", Icons.Default.RingVolume, CyberMint),
+    PRIVACY("Privacy & DND", "Do Not Disturb, Blocking & E2EE", Icons.Default.Shield, CrimsonAlert),
+    BATTERY_OEM("24/7 Readiness", "Battery Saver & OEM Autostart", Icons.Default.BatteryChargingFull, SignalAmber),
+    STORAGE_WEB("Storage & Web", "Linked Devices QR & Chat Storage", Icons.Default.QrCodeScanner, TelemetryBlue),
+    SYSTEM("System & Updates", "Live Logs, Updates & Creator", Icons.Default.SystemUpdate, Color(0xFFE879F9))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     firebaseManager: FirebaseManager,
+    initialCategory: SettingsCategory = SettingsCategory.ALL,
     onBackClick: (() -> Unit)? = null,
     onNavigateToStorage: () -> Unit = {},
     onNavigateToLinkedDevices: () -> Unit = {}
@@ -70,6 +86,8 @@ fun SettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val themeManager = remember { ThemeManager.getInstance(context) }
     val currentThemeColor = LocalThemeColor.current
+    val surfaceStyle = LocalSurfaceStyle.current
+    var selectedCategory by remember(initialCategory) { mutableStateOf(initialCategory) }
 
     val wallpaperManager = remember { com.example.util.ChatWallpaperManager.getInstance(context) }
     val wallpaperConfig by wallpaperManager.config.collectAsState()
@@ -239,23 +257,39 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = HudBackgroundPrimary,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "Settings",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "SETTINGS HUB",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = HudTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        TacticalStatusPill(
+                            text = surfaceStyle.badge,
+                            dotColor = CyberMint
+                        )
+                    }
                 },
                 navigationIcon = {
                     if (onBackClick != null) {
-                        IconButton(onClick = onBackClick) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        IconButton(
+                            onClick = onBackClick,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = HudTextPrimary)
                         }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                    containerColor = HudBackgroundPrimary
                 )
             )
         }
@@ -263,358 +297,533 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(HudBackgroundPrimary)
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
-            // Linked Devices & Web Login Section
-            SettingsSectionHeader("Linked Devices & Web")
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            // ── 1. Horizontal Category Filter Strip ─────────────────────────────
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onNavigateToLinkedDevices() }
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                SettingsCategory.entries.forEach { cat ->
+                    val isSelected = selectedCategory == cat
                     Surface(
-                        shape = CircleShape,
-                        color = currentThemeColor.primary.copy(alpha = 0.15f),
-                        modifier = Modifier.size(46.dp)
+                        onClick = { selectedCategory = cat },
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 44.dp)
+                            .surfaceFinishOverlay(surfaceStyle, 14.dp, cat.accent),
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) cat.accent.copy(alpha = 0.22f) else surfaceStyle.cardColor,
+                        border = BorderStroke(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) cat.accent else surfaceStyle.borderColor
+                        )
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
-                                Icons.Default.QrCodeScanner,
-                                contentDescription = null,
-                                tint = currentThemeColor.primary,
-                                modifier = Modifier.size(24.dp)
+                                imageVector = cat.icon,
+                                contentDescription = cat.title,
+                                tint = if (isSelected) cat.accent else HudTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = cat.title,
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (isSelected) HudTextPrimary else HudTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // ── 2. Category Quick-Jump Grid (When viewing ALL) or Back-to-All Banner ──
+            if (selectedCategory == SettingsCategory.ALL) {
+                SettingsSectionHeader("1. ORGANIZED CATEGORIES (TAP TO FOCUS)")
+                val categoryRows = remember {
+                    SettingsCategory.entries.filter { it != SettingsCategory.ALL }.chunked(2)
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    categoryRows.forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowItems.forEach { cat ->
+                                Surface(
+                                    onClick = { selectedCategory = cat },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 62.dp)
+                                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, cat.accent),
+                                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                                    color = surfaceStyle.cardColor,
+                                    border = BorderStroke(1.dp, surfaceStyle.borderColor)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = cat.accent.copy(alpha = 0.18f),
+                                            border = BorderStroke(1.dp, cat.accent.copy(alpha = 0.45f)),
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = cat.icon,
+                                                    contentDescription = cat.title,
+                                                    tint = cat.accent,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = cat.title,
+                                                fontFamily = SpaceGroteskFontFamily,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = HudTextPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = cat.subtitle,
+                                                fontFamily = SpaceGroteskFontFamily,
+                                                fontSize = 10.sp,
+                                                color = HudTextSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(22.dp))
+            } else {
+                Surface(
+                    onClick = { selectedCategory = SettingsCategory.ALL },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, 14.dp, selectedCategory.accent),
+                    shape = RoundedCornerShape(14.dp),
+                    color = selectedCategory.accent.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, selectedCategory.accent)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = selectedCategory.icon,
+                                contentDescription = null,
+                                tint = selectedCategory.accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Category: ${selectedCategory.title}",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = HudTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Text(
-                            text = "Linked Devices",
+                            text = "SHOW ALL",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = selectedCategory.accent,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(18.dp))
+            }
+
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: CLAY & GLASS UI APPEARANCE
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.APPEARANCE) {
+                SettingsSectionHeader("UI SURFACE FINISH (CLAY 3D • FROSTED GLASS • LIQUID GLASS)")
+                Surface(
+                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                    color = surfaceStyle.cardColor,
+                    border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = SignalAmber,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "3D Clay & Glass UI Finish",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = HudTextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Switch between 3D Soft Clay, Frosted Glass, Liquid Glass & Tactical HUD",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontSize = 12.sp,
+                                    color = HudTextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        val styleRows = remember { AppSurfaceStyle.entries.chunked(2) }
+                        styleRows.forEach { rowStyles ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                rowStyles.forEach { styleOption ->
+                                    val isSelected = surfaceStyle == styleOption
+                                    Surface(
+                                        onClick = { themeManager.setSurfaceStyle(styleOption) },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .defaultMinSize(minHeight = 64.dp)
+                                            .surfaceFinishOverlay(styleOption, styleOption.cornerRadiusDp.dp, styleOption.highlightColor),
+                                        shape = RoundedCornerShape(styleOption.cornerRadiusDp.dp),
+                                        color = if (isSelected) styleOption.highlightColor.copy(alpha = 0.20f) else styleOption.cardColor,
+                                        border = BorderStroke(
+                                            if (isSelected) 1.8.dp else 1.dp,
+                                            if (isSelected) styleOption.highlightColor else styleOption.borderColor
+                                        )
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalArrangement = Arrangement.Center
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = styleOption.title,
+                                                    fontFamily = SpaceGroteskFontFamily,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    color = HudTextPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CheckCircle,
+                                                        contentDescription = "Active",
+                                                        tint = styleOption.highlightColor,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = styleOption.subtitle,
+                                                fontFamily = SpaceGroteskFontFamily,
+                                                fontSize = 10.sp,
+                                                color = HudTextSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // App Theme & Appearance Section
+                SettingsSectionHeader("THEME ACCENT COLOR")
+                Surface(
+                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                    color = surfaceStyle.cardColor,
+                    border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Palette,
+                                contentDescription = null,
+                                tint = currentThemeColor.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Theme Accent Color",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = "Choose your favorite app look & feel",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Horizontal scrolling list of theme swatches
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            AppThemeColor.entries.forEach { theme ->
+                                val isSelected = currentThemeColor == theme
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { themeManager.setTheme(theme) }
+                                        .padding(4.dp)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = theme.previewColor,
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .border(
+                                                width = if (isSelected) 3.dp else 1.dp,
+                                                color = if (isSelected) Color.White else Color.Transparent,
+                                                shape = CircleShape
+                                            )
+                                    ) {
+                                        if (isSelected) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    Text(
+                                        text = theme.title.split(" ").last(),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                        ),
+                                        color = if (isSelected) theme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // ── Chat Wallpaper & Theme Section ──────────────────────────────────
+                SettingsSectionHeader("CHAT WALLPAPER & PRESETS")
+                Surface(
+                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                    color = surfaceStyle.cardColor,
+                    border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Chat Wallpaper",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
-                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Scan QR code to log into LKS Dialer Web on your computer",
+                            text = "Customize the backdrop behind chat bubbles",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    }
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
 
-            Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
 
-            // App Theme & Appearance Section
-            SettingsSectionHeader("App Theme & Appearance")
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Palette,
-                            contentDescription = null,
-                            tint = currentThemeColor.primary,
-                            modifier = Modifier.size(22.dp)
+                        // Live Interactive Mini Preview
+                        ChatWallpaperMiniPreview(
+                            config = wallpaperConfig,
+                            wallpaperManager = wallpaperManager
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Theme Accent Color",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = "Choose your favorite app look & feel",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                    // Horizontal scrolling list of theme swatches
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        AppThemeColor.entries.forEach { theme ->
-                            val isSelected = currentThemeColor == theme
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { themeManager.setTheme(theme) }
-                                    .padding(4.dp)
-                            ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = theme.previewColor,
-                                    modifier = Modifier
-                                        .size(46.dp)
-                                        .border(
-                                            width = if (isSelected) 3.dp else 1.dp,
-                                            color = if (isSelected) Color.White else Color.Transparent,
-                                            shape = CircleShape
-                                        )
-                                ) {
-                                    if (isSelected) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = "Selected",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(22.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(6.dp))
-
-                                Text(
-                                    text = theme.title.split(" ").last(),
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    ),
-                                    color = if (isSelected) theme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // ── Chat Wallpaper & Theme Section ──────────────────────────────────
-            SettingsSectionHeader("Chat Wallpaper & Theme")
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Chat Wallpaper",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Customize the backdrop behind chat bubbles",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    // Live Interactive Mini Preview
-                    ChatWallpaperMiniPreview(
-                        config = wallpaperConfig,
-                        wallpaperManager = wallpaperManager
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Actions Row: Choose from Photos & Reset to Default
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = { wallpaperPickerLauncher.launch("image/*") },
-                            colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f)
+                        // Actions Row: Choose from Photos & Reset to Default
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Choose Photo", fontWeight = FontWeight.Bold)
-                        }
-
-                        if (wallpaperConfig.type != com.example.util.WallpaperType.DEFAULT) {
-                            OutlinedButton(
-                                onClick = { wallpaperManager.resetToDefault() },
+                            Button(
+                                onClick = { wallpaperPickerLauncher.launch("image/*") },
+                                colors = ButtonDefaults.buttonColors(containerColor = currentThemeColor.primary),
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Reset")
+                                Text("Choose Photo", fontWeight = FontWeight.Bold)
+                            }
+
+                            if (wallpaperConfig.type != com.example.util.WallpaperType.DEFAULT) {
+                                OutlinedButton(
+                                    onClick = { wallpaperManager.resetToDefault() },
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Reset")
+                                }
                             }
                         }
-                    }
 
-                    if (wallpaperConfig.type == com.example.util.WallpaperType.CUSTOM) {
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "Wallpaper Dimming: ${(wallpaperConfig.dimAlpha * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Slider(
-                            value = wallpaperConfig.dimAlpha,
-                            onValueChange = { wallpaperManager.setDimAlpha(it) },
-                            valueRange = 0f..0.7f,
-                            colors = SliderDefaults.colors(
-                                thumbColor = currentThemeColor.primary,
-                                activeTrackColor = currentThemeColor.primary
+                        if (wallpaperConfig.type == com.example.util.WallpaperType.CUSTOM) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Wallpaper Dimming: ${(wallpaperConfig.dimAlpha * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Slider(
+                                value = wallpaperConfig.dimAlpha,
+                                onValueChange = { wallpaperManager.setDimAlpha(it) },
+                                valueRange = 0f..0.7f,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = currentThemeColor.primary,
+                                    activeTrackColor = currentThemeColor.primary
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Built-in Theme Presets",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                         )
-                    }
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    Spacer(modifier = Modifier.height(14.dp))
-                    Text(
-                        text = "Built-in Theme Presets",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Horizontal scrolling list of preset themes
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        com.example.util.ChatWallpaperManager.PRESETS.forEach { preset ->
-                            val isSelected = wallpaperConfig.type == com.example.util.WallpaperType.PRESET && wallpaperConfig.presetId == preset.id
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { wallpaperManager.setPreset(preset.id) }
-                                    .padding(4.dp)
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = preset.previewColor,
+                        // Horizontal scrolling list of preset themes
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            com.example.util.ChatWallpaperManager.PRESETS.forEach { preset ->
+                                val isSelected = wallpaperConfig.type == com.example.util.WallpaperType.PRESET && wallpaperConfig.presetId == preset.id
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
                                     modifier = Modifier
-                                        .size(width = 54.dp, height = 72.dp)
-                                        .border(
-                                            width = if (isSelected) 3.dp else 1.dp,
-                                            color = if (isSelected) currentThemeColor.primary else Color.Gray.copy(alpha = 0.3f),
-                                            shape = RoundedCornerShape(12.dp)
-                                        )
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { wallpaperManager.setPreset(preset.id) }
+                                        .padding(4.dp)
                                 ) {
-                                    if (isSelected) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = "Selected",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(24.dp)
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = preset.previewColor,
+                                        modifier = Modifier
+                                            .size(width = 54.dp, height = 72.dp)
+                                            .border(
+                                                width = if (isSelected) 3.dp else 1.dp,
+                                                color = if (isSelected) currentThemeColor.primary else Color.Gray.copy(alpha = 0.3f),
+                                                shape = RoundedCornerShape(12.dp)
                                             )
+                                    ) {
+                                        if (isSelected) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.Check,
+                                                    contentDescription = "Selected",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
                                         }
                                     }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = preset.name,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                        ),
+                                        color = if (isSelected) currentThemeColor.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
                                 }
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = preset.name,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    ),
-                                    color = if (isSelected) currentThemeColor.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
-                                )
                             }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(24.dp))
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Developer Profile Highlight Card
-            SettingsSectionHeader("Developer & Creator")
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .clickable { showDeveloperModal = true }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.dev_subhojit),
-                        contentDescription = "Subhojit Paul",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(CircleShape)
-                            .border(2.5.dp, currentThemeColor.primary, CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Subhojit Paul",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Creator & Lead Developer",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = currentThemeColor.primary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Language,
-                                contentDescription = null,
-                                tint = GreenCall,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "subhojit-paul.pages.dev",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = GreenCall
-                            )
-                        }
-                    }
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        contentDescription = "View Profile",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Audio & Quality Settings Section
-            SettingsSectionHeader("Audio & Quality (WebRTC)")
-            Surface(
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: CALLS, RINGTONE, HELLO TUNE & AUDIO
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.CALLS_AUDIO) {
+                // Audio & Quality Settings Section
+                SettingsSectionHeader("AUDIO & QUALITY (WEBRTC)")
+                Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.fillMaxWidth()
@@ -915,7 +1124,12 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+            }
 
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: 24/7 CALL READINESS & BATTERY SAVER
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.BATTERY_OEM) {
             // Background Calls & Battery Saver Section
             SettingsSectionHeader("Background Calls & Battery Saver")
             Surface(
@@ -1022,7 +1236,7 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "To receive calls 24/7 even after clearing Recent Apps, enable Autostart and keep LKS Dialer in RAM.",
+                                text = "To receive calls 24/7 even after clearing Recent Apps, enable Autostart and keep RB Dialer in RAM.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1096,7 +1310,12 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+            }
 
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: PRIVACY, DO NOT DISTURB & ENCRYPTION
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.PRIVACY) {
             // Call Privacy & Do Not Disturb Section
             SettingsSectionHeader("Call Privacy & Do Not Disturb")
             Surface(
@@ -1209,7 +1428,7 @@ fun SettingsScreen(
                                                             shape = RoundedCornerShape(6.dp)
                                                         ) {
                                                             Text(
-                                                                text = "LKS",
+                                                                text = "RB",
                                                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                                                 color = GreenCall,
                                                                 modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
@@ -1223,7 +1442,7 @@ fun SettingsScreen(
                                                     style = MaterialTheme.typography.bodySmall,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
-                                                if (info.statusMessage.isNotBlank() && info.statusMessage != "Available on LKS DIALER") {
+                                                if (info.statusMessage.isNotBlank() && info.statusMessage != "Available on LKS DIALER" && info.statusMessage != "Available on RB DIALER") {
                                                     Text(
                                                         text = info.statusMessage,
                                                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
@@ -1290,6 +1509,65 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+            }
+
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: STORAGE, LINKED DEVICES & WEB
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.STORAGE_WEB) {
+            SettingsSectionHeader("Linked Devices & Web")
+            Surface(
+                shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                color = surfaceStyle.cardColor,
+                border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                    .clickable { onNavigateToLinkedDevices() }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = currentThemeColor.primary.copy(alpha = 0.15f),
+                        modifier = Modifier.size(46.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.QrCodeScanner,
+                                contentDescription = null,
+                                tint = currentThemeColor.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Linked Devices",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Scan QR code to log into RB Dialer Web on your computer",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
 
             // ── Storage and Data Section ────────────────────────────────────────
             SettingsSectionHeader("Storage and Data")
@@ -1378,7 +1656,9 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+            }
 
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.PRIVACY) {
             // Security & Privacy
             SettingsSectionHeader("Security & Encryption")
             Surface(
@@ -1406,7 +1686,12 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+            }
 
+            // ══════════════════════════════════════════════════════════════════════
+            // CATEGORY: SYSTEM, LOGS, UPDATES & CREATOR
+            // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.SYSTEM) {
             // Diagnostics, System Logs & Crash Reports
             SettingsSectionHeader("Diagnostics, Logs & Bug Reports")
             Surface(
@@ -1510,7 +1795,7 @@ fun SettingsScreen(
                                 }
                             }
                             Text(
-                                text = "LKS Dialer v$currentVersion",
+                                text = "RB Dialer v$currentVersion",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -1547,7 +1832,7 @@ fun SettingsScreen(
                                         if (info != null) {
                                             manualUpdateInfo = info
                                         } else {
-                                            Toast.makeText(context, "You are using the latest version of LKS Dialer!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "You are using the latest version of RB Dialer!", Toast.LENGTH_SHORT).show()
                                         }
                                     } catch (e: Exception) {
                                         Toast.makeText(context, "Failed to check for updates: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -1577,6 +1862,73 @@ fun SettingsScreen(
                         }
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Developer Profile Highlight Card
+            SettingsSectionHeader("Developer & Creator")
+            Surface(
+                shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                color = surfaceStyle.cardColor,
+                border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                    .clip(RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp))
+                    .clickable { showDeveloperModal = true }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.dev_subhojit),
+                        contentDescription = "Subhojit Paul",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .border(2.5.dp, currentThemeColor.primary, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Subhojit Paul",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Creator & Lead Developer",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = currentThemeColor.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Language,
+                                contentDescription = null,
+                                tint = GreenCall,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "subhojit-paul.pages.dev",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = GreenCall
+                            )
+                        }
+                    }
+                    Icon(
+                        Icons.Default.ChevronRight,
+                        contentDescription = "View Profile",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             }
 
             Spacer(modifier = Modifier.height(40.dp))
@@ -1696,7 +2048,7 @@ fun DeveloperProfileDialog(
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = "🚀 Creator & Lead Engineer • LKS DIALER",
+                        text = "🚀 Creator & Lead Engineer • RB DIALER",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = currentThemeColor.primary,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -1706,7 +2058,7 @@ fun DeveloperProfileDialog(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 Text(
-                    text = "Architected & developed LKS DIALER with end-to-end WebRTC peer-to-peer VoIP, ultra low-latency audio/video routing, and cross-platform communication.",
+                    text = "Architected & developed RB DIALER with end-to-end WebRTC peer-to-peer VoIP, ultra low-latency audio/video routing, and cross-platform communication.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.75f),
                     textAlign = TextAlign.Center,

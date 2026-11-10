@@ -1,5 +1,5 @@
 {
-  "name": "LKS DIALER",
+  "name": "RB DIALER",
   "description": "High-quality VoIP Dialer app featuring WebRTC audio/video calling, phone number authentication, native dialpad, contacts, call history, and seamless Firebase integration structure.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

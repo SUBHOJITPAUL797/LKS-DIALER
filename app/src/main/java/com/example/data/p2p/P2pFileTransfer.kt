@@ -442,8 +442,12 @@ class P2pFileTransfer(private val context: Context) {
 
             deferred.await()
 
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            false
         } catch (e: Exception) {
-            Log.e(TAG, "sendFile error: ${e.message}", e)
+            if (!isCancelled) {
+                Log.e(TAG, "sendFile error: ${e.message}", e)
+            }
             false
         } finally {
             cleanup(sessionId)
@@ -573,8 +577,12 @@ class P2pFileTransfer(private val context: Context) {
             delay(1000)
             true
 
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            false
         } catch (e: Exception) {
-            Log.e(TAG, "streamFile error: ${e.message}", e)
+            if (!isCancelled) {
+                Log.e(TAG, "streamFile error: ${e.message}", e)
+            }
             false
         }
     }
@@ -909,8 +917,13 @@ class P2pFileTransfer(private val context: Context) {
                     }
                 }
 
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                onComplete(null, sessionId)
+                cleanup(sessionId)
             } catch (e: Exception) {
-                Log.e(TAG, "receiveFile error: ${e.message}", e)
+                if (!isCancelled) {
+                    Log.e(TAG, "receiveFile error: ${e.message}", e)
+                }
                 onComplete(null, sessionId)
                 cleanup(sessionId)
             }

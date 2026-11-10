@@ -134,6 +134,7 @@ class LksKeepAliveService : Service() {
                 val chatRepo = com.example.data.repository.ChatRepository.getInstance(applicationContext)
                 chatRepo.attachChatListeners(phone)
                 chatRepo.fetchPendingMessagesAndReceipts()
+                com.example.webrtc.WebRtcEngine.getInstance(applicationContext).listenForIncomingCalls(phone)
             }
         } catch (_: Exception) {}
         Log.d(TAG, "LKS Keep-Alive Service started")
@@ -155,11 +156,19 @@ class LksKeepAliveService : Service() {
                 Log.d(TAG, "Resurrection intent received — keep-alive service is active")
                 schedulePeriodicWatchdog()
                 com.example.data.repository.FirebaseManager.getInstance(this).fetchAndUpdateFcmToken()
+                val phone = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE).getString("user_phone", null)
+                if (!phone.isNullOrBlank()) {
+                    com.example.webrtc.WebRtcEngine.getInstance(applicationContext).listenForIncomingCalls(phone)
+                }
             }
             ACTION_WATCHDOG_HEARTBEAT -> {
                 Log.d(TAG, "Watchdog heartbeat received — refreshing token & scheduling next watchdog")
                 schedulePeriodicWatchdog()
                 FirebaseManager.getInstance(this).fetchAndUpdateFcmToken()
+                val phone = getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE).getString("user_phone", null)
+                if (!phone.isNullOrBlank()) {
+                    com.example.webrtc.WebRtcEngine.getInstance(applicationContext).listenForIncomingCalls(phone)
+                }
             }
         }
         return START_STICKY
@@ -296,10 +305,10 @@ class LksKeepAliveService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "LKS Dialer Background",
+                "RB Dialer Background",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Keeps LKS Dialer ready to receive calls"
+                description = "Keeps RB Dialer ready to receive calls"
                 setShowBadge(false)
                 enableVibration(false)
                 setSound(null, null)
@@ -317,7 +326,7 @@ class LksKeepAliveService : Service() {
         )
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("LKS DIALER")
+            .setContentTitle("RB DIALER")
             .setContentText("Ready for incoming calls")
             .setSmallIcon(android.R.drawable.sym_action_call)
             .setContentIntent(pendingIntent)

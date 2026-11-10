@@ -41,7 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import com.example.ui.theme.LocalThemeColor
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.ui.theme.*
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -81,7 +83,7 @@ fun QrScannerView(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .background(HudBackgroundPrimary),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -90,25 +92,43 @@ fun QrScannerView(
             ) {
                 Text(
                     text = "Camera Permission Required",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = HudTextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "To link your web browser, LKS Dialer needs permission to scan the QR code.",
-                    color = Color.LightGray,
+                    text = "To link your web browser terminal, LKS Dialer needs permission to scan the QR code.",
+                    color = HudTextSecondary,
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(24.dp))
                 Button(
                     onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SignalAmber,
+                        contentColor = Color(0xFF0B1118)
+                    ),
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
-                    Text("Grant Permission", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Grant Permission",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 Spacer(modifier = Modifier.height(12.dp))
-                TextButton(onClick = onClose) {
-                    Text("Cancel", color = Color.White)
+                TextButton(
+                    onClick = onClose,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel", color = HudTextSecondary)
                 }
             }
         }
@@ -122,7 +142,6 @@ private fun CameraScannerContent(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val currentTheme = LocalThemeColor.current
     var isFlashOn by remember { mutableStateOf(false) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var isScanned by remember { mutableStateOf(false) }
@@ -215,7 +234,7 @@ private fun CameraScannerContent(
 
         // Viewfinder Cutout Overlay
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val scanBoxSize = 270.dp.toPx()
+            val scanBoxSize = 260.dp.toPx()
             val left = (size.width - scanBoxSize) / 2
             val top = (size.height - scanBoxSize) / 2 - 40.dp.toPx()
             val cornerRadius = 24.dp.toPx()
@@ -231,13 +250,13 @@ private fun CameraScannerContent(
 
             // Draw darkened background with transparent hole
             clipPath(cutPath, clipOp = ClipOp.Difference) {
-                drawRect(Color.Black.copy(alpha = 0.65f))
+                drawRect(Color(0xFF0B1118).copy(alpha = 0.72f))
             }
 
             // Draw corner reticle accents
             val cornerLength = 32.dp.toPx()
             val strokeWidth = 4.dp.toPx()
-            val accentColor = currentTheme.primary
+            val accentColor = SignalAmber
 
             // Top-left
             drawLine(accentColor, Offset(left, top + cornerLength), Offset(left, top + cornerRadius), strokeWidth)
@@ -260,89 +279,175 @@ private fun CameraScannerContent(
             // Laser scanline inside cutout
             val laserY = top + (scanBoxSize * laserProgress)
             drawLine(
-                color = accentColor.copy(alpha = 0.85f),
+                color = CyberMint.copy(alpha = 0.9f),
                 start = Offset(left + 16.dp.toPx(), laserY),
                 end = Offset(right - 16.dp.toPx(), laserY),
                 strokeWidth = 3.dp.toPx()
             )
         }
 
-        // Top Controls: Back button & Flashlight
+        // RULE 5: Top Controls in a Single Compact Row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
+            Surface(
                 onClick = onClose,
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape,
+                color = HudGlassOverlay,
+                border = BorderStroke(1.dp, HudBorderSubtle)
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = HudTextPrimary
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = HudGlassOverlay,
+                border = BorderStroke(1.dp, HudBorderSubtle)
+            ) {
+                Text(
+                    text = "QR LINK SCANNER",
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = CyberMint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                 )
             }
 
-            Text(
-                text = "Scan QR Code",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = Color.White
-            )
-
-            IconButton(
+            Surface(
                 onClick = {
                     isFlashOn = !isFlashOn
                     cameraControl?.enableTorch(isFlashOn)
                 },
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), CircleShape)
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape,
+                color = if (isFlashOn) SignalAmber.copy(alpha = 0.2f) else HudGlassOverlay,
+                border = BorderStroke(1.dp, if (isFlashOn) SignalAmber else HudBorderSubtle)
             ) {
-                Icon(
-                    if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = "Torch",
-                    tint = if (isFlashOn) Color.Yellow else Color.White
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                        contentDescription = "Torch",
+                        tint = if (isFlashOn) SignalAmber else HudTextPrimary
+                    )
+                }
             }
         }
 
-        // Bottom instruction banner
-        Column(
+        // RULE 5: Bottom Controls in a Clean Docked Card with Arrangement.spacedBy(8.dp) and weighted widths
+        Surface(
+            color = HudGlassOverlay,
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, HudBorderSubtle),
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(horizontal = 16.dp, vertical = 16.dp)
         ) {
-            Surface(
-                color = Color.Black.copy(alpha = 0.75f),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
+            Column(
+                modifier = Modifier.padding(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Text(
+                    text = "Align QR Code Within Reticle",
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = HudTextPrimary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Open LKS Dialer Web on your desktop browser to pair instantly.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = HudTextSecondary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "Point camera at the QR code",
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Open LKS Dialer Web on your computer screen to scan and log in instantly.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.LightGray,
-                        textAlign = TextAlign.Center
-                    )
+                    Surface(
+                        onClick = {
+                            isFlashOn = !isFlashOn
+                            cameraControl?.enableTorch(isFlashOn)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isFlashOn) SignalAmber.copy(alpha = 0.18f) else HudSurfaceContainer,
+                        border = BorderStroke(1.dp, if (isFlashOn) SignalAmber else HudBorderSubtle)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                                contentDescription = "Torch",
+                                tint = if (isFlashOn) SignalAmber else HudTextPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isFlashOn) "Torch ON" else "Torch OFF",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (isFlashOn) SignalAmber else HudTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = HudSurfaceContainer,
+                        border = BorderStroke(1.dp, HudBorderSubtle)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Close Scanner",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = HudTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -1502,6 +1502,10 @@ class ChatRepository private constructor(private val context: Context) {
                     _activeTransfers.value = _activeTransfers.value - messageId
                     sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, chatDto.mediaType, messageId)
                     return@withContext Result.success(messageEntity)
+                } catch (ce: CancellationException) {
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    throw ce
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to send direct media: ${e.message}", e)
                     // If inline direct fails unexpectedly, proceed to fallback below
@@ -1634,6 +1638,10 @@ class ChatRepository private constructor(private val context: Context) {
                     _activeTransfers.value = _activeTransfers.value - messageId
                     sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, if (isSticker) ChatMediaType.STICKER.name else ChatMediaType.IMAGE.name, messageId)
                     return@withContext Result.success(messageEntity)
+                } catch (ce: CancellationException) {
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    throw ce
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to send inline media relay: ${e.message}", e)
                 }
@@ -1668,6 +1676,10 @@ class ChatRepository private constructor(private val context: Context) {
                     _activeTransfers.value = _activeTransfers.value - messageId
                     sendFcmWakeup(canonicalRecipient, myPhone, displaySummaryText, ChatMediaType.AUDIO.name, messageId)
                     return@withContext Result.success(messageEntity)
+                } catch (ce: CancellationException) {
+                    activeTransferJobs.remove(messageId)
+                    _activeTransfers.value = _activeTransfers.value - messageId
+                    throw ce
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to send inline audio relay: ${e.message}", e)
                 }
@@ -1927,7 +1939,7 @@ class ChatRepository private constructor(private val context: Context) {
                 }
                 Log.d(TAG, "Uploaded $totalChunks chunks for message $messageId to $canonicalRecipient")
             } catch (e: Exception) {
-                if (cancelledTransfers.contains(messageId)) {
+                if (e is CancellationException || cancelledTransfers.contains(messageId)) {
                     cancelledTransfers.remove(messageId)
                     _activeTransfers.value = _activeTransfers.value - messageId
                     activeTransferJobs.remove(messageId)
@@ -2624,8 +2636,8 @@ class ChatRepository private constructor(private val context: Context) {
         groupId: String? = null,
         groupName: String? = null
     ) {
-        val workerUrl = com.example.BuildConfig.CALL_WORKER_URL
-        val workerSecret = com.example.BuildConfig.CALL_WORKER_SECRET
+        val workerUrl = com.example.webrtc.WebRtcEngine.getEffectiveWorkerUrl()
+        val workerSecret = com.example.webrtc.WebRtcEngine.getEffectiveWorkerSecret()
         if (workerUrl.isBlank()) return
 
         val firebaseManager = FirebaseManager.getInstance(context)

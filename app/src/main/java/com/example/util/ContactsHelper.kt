@@ -89,6 +89,10 @@ object ContactsHelper {
                 if (cleanDigits.length > 10) {
                     variations.add(cleanDigits.takeLast(10))
                 }
+                if (cleanDigits.length == 10) {
+                    variations.add("+91$cleanDigits")
+                    variations.add("91$cleanDigits")
+                }
                 if (!number.startsWith("+")) {
                     variations.add("+$number")
                 }

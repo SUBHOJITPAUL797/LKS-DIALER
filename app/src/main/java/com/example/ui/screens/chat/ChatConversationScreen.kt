@@ -274,6 +274,7 @@ fun ChatConversationScreen(
         }
     }
     var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
+    var selectedImagePreviewSubtitle by remember { mutableStateOf<String?>(null) }
     var activeViewOnceMessageId by remember { mutableStateOf<String?>(null) }
     var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -522,16 +523,7 @@ fun ChatConversationScreen(
         }
     }
 
-    // Show swipe hint only once ever (persisted in SharedPreferences)
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty() && !hintAlreadySeen && !showSwipeHint) {
-            delay(900)
-            showSwipeHint = true
-            prefs.edit().putBoolean("swipe_hint_seen", true).apply()
-            delay(3500)
-            showSwipeHint = false
-        }
-    }
+    // Automatic first-time swipe hint disabled per user preference
 
     // Media Processing Helper for Gallery Selection (Supports Both Photos & Videos)
     val handlePickedMediaUris: (List<Uri>) -> Unit = { uris ->
@@ -752,26 +744,43 @@ fun ChatConversationScreen(
                     title = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (isGroup) {
-                                        showGroupInfoDialog = true
-                                    } else {
-                                        showMediaGalleryDialog = true
-                                    }
-                                }
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            ChatAvatar(
-                                name = peerDisplayName,
-                                profilePic = peerProfilePic,
-                                phoneNumber = normPeer,
-                                size = 42.dp,
-                                fontSize = 16.sp,
-                                isGroup = isGroup
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        activeViewOnceMessageId = null
+                                        selectedImagePreviewSubtitle = if (isGroup) "Group Photo" else normPeer
+                                        selectedImagePreviewPath = if (peerProfilePic.isNotBlank()) {
+                                            peerProfilePic
+                                        } else {
+                                            val avatarRes = com.example.ui.theme.Avatar3dHelper.getAvatarResId(peerDisplayName, normPeer)
+                                            "android.resource://${context.packageName}/$avatarRes"
+                                        }
+                                    }
+                            ) {
+                                ChatAvatar(
+                                    name = peerDisplayName,
+                                    profilePic = peerProfilePic,
+                                    phoneNumber = normPeer,
+                                    size = 42.dp,
+                                    fontSize = 16.sp,
+                                    isGroup = isGroup
+                                )
+                            }
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (isGroup) {
+                                            showGroupInfoDialog = true
+                                        } else {
+                                            showMediaGalleryDialog = true
+                                        }
+                                    }
+                            ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         text = peerDisplayName,
@@ -1081,6 +1090,13 @@ fun ChatConversationScreen(
                                 onImageClick = { path, viewOnceMsgId ->
                                     selectedImagePreviewPath = path
                                     activeViewOnceMessageId = viewOnceMsgId
+                                    val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(msg.timestamp))
+                                    val rawCap = msg.text.trim()
+                                    selectedImagePreviewSubtitle = if (rawCap.isNotBlank() && !rawCap.startsWith("[gif:") && !rawCap.startsWith("http")) {
+                                        "$rawCap • $timeStr"
+                                    } else {
+                                        timeStr
+                                    }
                                 },
                                 onVideoClick = { file -> selectedVideoPreviewFile = file },
                                 onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
@@ -1095,17 +1111,7 @@ fun ChatConversationScreen(
                         }
                     }
 
-                    // Top of conversation history (oldest items in reverseLayout)
-                    if (messages.isEmpty()) {
-                        item(key = "empty_e2ee_banner") {
-                            EmptyChatWelcomeCard(
-                                peerName = peerDisplayName,
-                                onQuickAction = { starter ->
-                                    inputText = starter
-                                }
-                            )
-                        }
-                    } else if (messages.size < totalMessageCount) {
+                    if (messages.size < totalMessageCount) {
                         item(key = "pagination_loader") {
                             Box(
                                 modifier = Modifier
@@ -2311,17 +2317,18 @@ fun ChatConversationScreen(
         }
     }
 
-    // Fullscreen Image Preview (Interactive Pinch-To-Zoom & Pan)
+    // Fullscreen Image Preview (WhatsApp-Style Interactive Pinch-To-Zoom, Double-Tap Zoom & Pan)
     if (selectedImagePreviewPath != null) {
         com.example.ui.components.ZoomableImageViewerDialog(
             imageModel = selectedImagePreviewPath,
             title = peerDisplayName,
-            subtitle = if (activeViewOnceMessageId != null) "View Once Photo" else null,
+            subtitle = if (activeViewOnceMessageId != null) "View Once Photo" else selectedImagePreviewSubtitle,
             isViewOnce = activeViewOnceMessageId != null,
             onDismissRequest = {
                 val viewOnceId = activeViewOnceMessageId
                 val pathToDelete = selectedImagePreviewPath
                 selectedImagePreviewPath = null
+                selectedImagePreviewSubtitle = null
                 activeViewOnceMessageId = null
                 if (viewOnceId != null) {
                     chatRepository.markViewOnceOpened(viewOnceId, normPeer)
@@ -3136,8 +3143,21 @@ private fun MessageBubble(
                 )
                 .combinedClickable(
                     onClick = {
-                        if (message.mediaType == ChatMediaType.TEXT.name) {
-                            // normal tap on text message does nothing
+                        if (message.mediaType == ChatMediaType.IMAGE.name && !message.isViewOnce && !isDeleted) {
+                            val rawText = message.text.trim()
+                            val gifUrlFromText = ChatRepository.extractGifUrl(rawText)
+                            val mediaPath = message.mediaPath?.trim()
+                            val model = when {
+                                !mediaPath.isNullOrBlank() && (File(mediaPath).exists() || mediaPath.startsWith("content://") || mediaPath.startsWith("file://") || mediaPath.startsWith("http") || mediaPath.length > 64) -> mediaPath
+                                !gifUrlFromText.isNullOrBlank() -> gifUrlFromText
+                                else -> null
+                            }
+                            if (!model.isNullOrBlank()) {
+                                if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                    onMarkMessageRead(message.id)
+                                }
+                                onImageClick(model, null)
+                            }
                         }
                     },
                     onLongClick = {
@@ -3471,7 +3491,18 @@ private fun MessageBubble(
                                    (message.mediaPath?.endsWith(".gif", ignoreCase = true) == true)
 
                     val gifUrlFromText = ChatRepository.extractGifUrl(rawText)
-                    val effectiveImageModel = message.mediaPath.takeIf { !it.isNullOrBlank() && File(it).exists() } ?: gifUrlFromText
+                    val trimmedMediaPath = message.mediaPath?.trim()
+                    val effectiveImageModel = when {
+                        !trimmedMediaPath.isNullOrBlank() && (
+                            File(trimmedMediaPath).exists() ||
+                            trimmedMediaPath.startsWith("content://") ||
+                            trimmedMediaPath.startsWith("file://") ||
+                            trimmedMediaPath.startsWith("http") ||
+                            trimmedMediaPath.length > 64
+                        ) -> trimmedMediaPath
+                        !gifUrlFromText.isNullOrBlank() -> gifUrlFromText
+                        else -> null
+                    }
 
                     if (!effectiveImageModel.isNullOrBlank()) {
                         val imageRatio = remember(effectiveImageModel) {
@@ -3498,20 +3529,18 @@ private fun MessageBubble(
                                 .then(if (imageRatio != null) Modifier.aspectRatio(imageRatio) else Modifier.heightIn(min = 160.dp, max = if (isGifMsg) 280.dp else 360.dp))
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (isDark) Color(0xFF182229) else Color(0xFFE9EDEF))
-                                .pointerInput(message.id, effectiveImageModel) {
-                                    detectTapGestures(
-                                        onTap = {
-                                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                                onMarkMessageRead(message.id)
-                                            }
-                                            onImageClick(effectiveImageModel, null)
-                                        },
-                                        onLongPress = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            onMessageLongClick(message)
+                                .combinedClickable(
+                                    onClick = {
+                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                            onMarkMessageRead(message.id)
                                         }
-                                    )
-                                }
+                                        onImageClick(effectiveImageModel, null)
+                                    },
+                                    onLongClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onMessageLongClick(message)
+                                    }
+                                )
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)

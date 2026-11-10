@@ -1,56 +1,53 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun LksDialerTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     themeColor: AppThemeColor = AppThemeColor.SWIGGY,
     content: @Composable () -> Unit
 ) {
-    val darkColorScheme = darkColorScheme(
+    val context = LocalContext.current
+    val themeManager = remember { ThemeManager.getInstance(context) }
+    val surfaceStyle by themeManager.currentSurfaceStyle.collectAsState()
+
+    val hudColorScheme = lightColorScheme(
         primary = themeColor.primary,
         onPrimary = Color.White,
         primaryContainer = themeColor.primaryDark,
         onPrimaryContainer = Color.White,
-        secondary = themeColor.accent,
-        onSecondary = Color.Black,
-        background = BackgroundDark,
-        surface = SurfaceDark,
-        surfaceVariant = SurfaceCardDark,
-        onBackground = OnSurfaceDark,
-        onSurface = OnSurfaceDark,
-        onSurfaceVariant = OnSurfaceSubtleDark,
-        error = RedEndCall
-    )
-
-    val lightColorScheme = lightColorScheme(
-        primary = themeColor.primaryDark,
-        onPrimary = Color.White,
-        primaryContainer = themeColor.primary,
-        onPrimaryContainer = Color.White,
-        secondary = themeColor.accent,
+        secondary = CyberMint,
         onSecondary = Color.White,
-        background = BackgroundLight,
-        surface = SurfaceLight,
-        surfaceVariant = SurfaceCardLight,
-        onBackground = OnSurfaceLight,
-        onSurface = OnSurfaceLight,
-        onSurfaceVariant = OnSurfaceSubtleLight,
-        error = RedEndCall
+        tertiary = TelemetryBlue,
+        onTertiary = Color.White,
+        background = HudBackgroundPrimary,
+        surface = surfaceStyle.cardColor,
+        surfaceVariant = surfaceStyle.elevatedColor,
+        onBackground = HudTextPrimary,
+        onSurface = HudTextPrimary,
+        onSurfaceVariant = HudTextSecondary,
+        outline = surfaceStyle.borderColor,
+        outlineVariant = surfaceStyle.borderColor,
+        error = CrimsonAlert,
+        onError = Color.White
     )
 
-    val colorScheme = if (darkTheme) darkColorScheme else lightColorScheme
-
-    CompositionLocalProvider(LocalThemeColor provides themeColor) {
+    CompositionLocalProvider(
+        LocalThemeColor provides themeColor,
+        LocalSurfaceStyle provides surfaceStyle
+    ) {
         MaterialTheme(
-            colorScheme = colorScheme,
+            colorScheme = hudColorScheme,
             typography = Typography,
             content = content
         )
@@ -59,8 +56,8 @@ fun LksDialerTheme(
 
 @Composable
 fun MyApplicationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = false,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     LksDialerTheme(darkTheme = darkTheme, content = content)

@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "LKS DIALER"
+rootProject.name = "RB DIALER"
 
 include(":app")

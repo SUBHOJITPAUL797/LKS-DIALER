@@ -84,7 +84,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val savedPhone = prefs.getString("user_phone", null)
         val savedName = prefs.getString("user_name", "")
         val savedDeviceId = prefs.getString("device_id", "")
-        val savedStatus = prefs.getString("user_status", "Available on LKS DIALER")
+        val savedStatus = prefs.getString("user_status", "Available on RB DIALER")?.replace("LKS DIALER", "RB DIALER")
         val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
         if (savedPhone != null) {
             val savedProfilePic = prefs.getString("user_profile_pic", "") ?: ""
@@ -93,7 +93,7 @@ class FirebaseManager private constructor(private val context: Context) {
             val user = UserDto(
                 phoneNumber = savedPhone,
                 displayName = savedName ?: "",
-                statusMessage = savedStatus ?: "Available on LKS DIALER",
+                statusMessage = savedStatus ?: "Available on RB DIALER",
                 profilePictureUrl = savedProfilePic,
                 registeredDeviceId = savedDeviceId ?: "",
                 fcmToken = savedFcmToken,
@@ -191,68 +191,76 @@ class FirebaseManager private constructor(private val context: Context) {
     }
     
     private fun syncDeviceContactsWithUsers(firebaseUsers: List<UserDto>) {
-        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            syncJob?.cancel()
-            syncJob = scope.launch {
-                try {
-                    val localContacts = com.example.util.ContactsHelper.getLocalContacts(context)
-                    val currentPhone = _currentUser.value?.phoneNumber ?: ""
-                    
-                    val syncedList = mutableListOf<ContactDto>()
-                    val nonLksList = mutableListOf<com.example.util.LocalContact>()
-                    
-                    for (local in localContacts) {
-                        if (currentPhone.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, currentPhone)) {
-                            continue // Skip self
-                        }
-                        
-                        val matchingUser = firebaseUsers.find { user ->
-                            user.phoneNumber.isNotBlank() && 
-                            user.phoneNumber != currentPhone &&
-                            com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, user.phoneNumber)
-                        }
-                        
-                        if (matchingUser != null) {
-                            syncedList.add(
-                                ContactDto(
-                                    id = matchingUser.phoneNumber,
-                                    name = local.name.ifBlank { matchingUser.displayName },
-                                    phoneNumber = matchingUser.phoneNumber,
-                                    profilePictureUrl = matchingUser.profilePictureUrl,
-                                    statusMessage = matchingUser.statusMessage
-                                )
-                            )
-                        } else {
-                            nonLksList.add(local)
-                        }
-                    }
-                    
-                    // Also include any registered LKS users that might not be saved in local phonebook (except self)
-                    for (user in firebaseUsers) {
-                        if (user.phoneNumber.isBlank() || user.phoneNumber == currentPhone) continue
-                        val alreadyInList = syncedList.any { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, user.phoneNumber) }
-                        if (!alreadyInList) {
-                            syncedList.add(
-                                ContactDto(
-                                    id = user.phoneNumber,
-                                    name = user.displayName.ifBlank { user.phoneNumber },
-                                    phoneNumber = user.phoneNumber,
-                                    profilePictureUrl = user.profilePictureUrl,
-                                    statusMessage = user.statusMessage
-                                )
-                            )
-                        }
-                    }
-                    
-                    _syncedContacts.value = syncedList.distinctBy { it.phoneNumber }.sortedBy { it.name.lowercase() }
-                    _nonLksContacts.value = nonLksList.distinctBy { it.normalizedNumber }.sortedBy { it.name.lowercase() }
-                    Log.d(TAG, "Synced contacts: ${syncedList.size} on LKS, ${nonLksList.size} to invite")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to sync device contacts", e)
+        val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_CONTACTS
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        syncJob?.cancel()
+        syncJob = scope.launch {
+            try {
+                // Debounce rapid snapshot emissions so only the latest contact sync runs
+                delay(100L)
+                val currentPhone = _currentUser.value?.phoneNumber ?: ""
+                val localContacts = if (hasPermission) {
+                    com.example.util.ContactsHelper.getLocalContacts(context).toMutableList()
+                } else {
+                    mutableListOf()
                 }
+
+                // Also incorporate any contacts the user explicitly created/saved inside LKS Dialer (_contacts)
+                for (saved in _contacts.value) {
+                    if (saved.phoneNumber.isNotBlank() && !localContacts.any { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, saved.phoneNumber) }) {
+                        localContacts.add(
+                            com.example.util.LocalContact(
+                                name = saved.name.ifBlank { saved.phoneNumber },
+                                phoneNumber = saved.phoneNumber,
+                                normalizedNumber = com.example.util.ContactsHelper.normalizePhoneNumber(saved.phoneNumber)
+                            )
+                        )
+                    }
+                }
+
+                val syncedList = mutableListOf<ContactDto>()
+                val nonLksList = mutableListOf<com.example.util.LocalContact>()
+
+                for (local in localContacts) {
+                    if (currentPhone.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, currentPhone)) {
+                        continue // Skip self
+                    }
+
+                    val matchingUser = firebaseUsers.find { user ->
+                        user.phoneNumber.isNotBlank() && 
+                        user.phoneNumber != currentPhone &&
+                        com.example.util.ContactsHelper.numbersMatch(local.phoneNumber, user.phoneNumber)
+                    }
+
+                    if (matchingUser != null) {
+                        syncedList.add(
+                            ContactDto(
+                                id = matchingUser.phoneNumber,
+                                name = local.name.ifBlank { matchingUser.displayName },
+                                phoneNumber = matchingUser.phoneNumber,
+                                profilePictureUrl = matchingUser.profilePictureUrl,
+                                statusMessage = matchingUser.statusMessage
+                            )
+                        )
+                    } else {
+                        nonLksList.add(local)
+                    }
+                }
+
+                // WhatsApp Privacy Model: ONLY show contacts saved in the user's phonebook/contacts.
+                // NEVER dump random strangers from the registeredUsers database into the user's contact list!
+
+                _syncedContacts.value = syncedList.distinctBy { it.phoneNumber }.sortedBy { it.name.lowercase() }
+                _nonLksContacts.value = nonLksList.distinctBy { it.normalizedNumber }.sortedBy { it.name.lowercase() }
+                Log.d(TAG, "Synced contacts: ${syncedList.size} on LKS, ${nonLksList.size} to invite (device contacts: ${localContacts.size})")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync device contacts", e)
             }
-        } else {
-            Log.w(TAG, "READ_CONTACTS permission not granted, cannot sync contacts.")
         }
     }
 
@@ -488,43 +496,67 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     fun verifyAndRegisterNumber(phoneNumber: String, currentDeviceId: String): RegisterResult {
-        // Check local in-memory map first (fast path)
         val existingUser = lookupUserByNumber(phoneNumber)
+        return resolveRegistrationForUser(existingUser, phoneNumber, currentDeviceId)
+    }
 
+    suspend fun verifyAndRegisterNumberAsync(phoneNumber: String, currentDeviceId: String): RegisterResult {
+        var existingUser = lookupUserByNumber(phoneNumber)
+        if (existingUser == null && _isFirebaseConfigured.value) {
+            val cleanNumber = ContactsHelper.normalizePhoneNumber(phoneNumber)
+            val variations = ContactsHelper.generateNumberVariations(cleanNumber)
+            val db = FirebaseFirestore.getInstance()
+            existingUser = kotlinx.coroutines.withTimeoutOrNull(3000L) {
+                var fetched: UserDto? = null
+                for (variant in variations) {
+                    try {
+                        val doc = db.collection("users").document(variant).get().await()
+                        val user = doc.toObject(UserDto::class.java)
+                        if (user != null && user.phoneNumber.isNotBlank()) {
+                            fetched = user
+                            val list = _registeredUsers.value.toMutableList()
+                            if (list.none { it.phoneNumber == user.phoneNumber }) {
+                                list.add(user)
+                                _registeredUsers.value = list
+                            }
+                            break
+                        }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
+                    } catch (_: Exception) {}
+                }
+                fetched
+            }
+        }
+        return resolveRegistrationForUser(existingUser, phoneNumber, currentDeviceId)
+    }
+
+    private fun resolveRegistrationForUser(
+        existingUser: UserDto?,
+        phoneNumber: String,
+        currentDeviceId: String
+    ): RegisterResult {
         return if (existingUser != null) {
             val registeredDev = existingUser.registeredDeviceId
             if (registeredDev.isBlank() || registeredDev == currentDeviceId) {
-                val updatedUser = existingUser.copy(
+                val targetPhone = existingUser.phoneNumber.ifBlank { phoneNumber }
+                loginWithPhone(
+                    phoneNumber = targetPhone,
+                    name = existingUser.displayName,
+                    deviceId = currentDeviceId,
+                    status = existingUser.statusMessage
+                )
+                val loggedInUser = _currentUser.value ?: existingUser.copy(
                     registeredDeviceId = currentDeviceId,
                     isOnline = true,
                     lastSeen = System.currentTimeMillis()
                 )
-                _currentUser.value = updatedUser
-                val list = _registeredUsers.value.toMutableList()
-                val index = list.indexOfFirst { it.phoneNumber == phoneNumber }
-                if (index != -1) {
-                    list[index] = updatedUser
-                } else {
-                    list.add(updatedUser)
-                }
-                _registeredUsers.value = list
-                // Also write update back to Firestore
-                if (_isFirebaseConfigured.value) {
-                    FirebaseFirestore.getInstance().collection("users")
-                        .document(phoneNumber)
-                        .set(updatedUser)
-                        .addOnFailureListener { e ->
-                            Log.e(TAG, "Failed to update existing user on login: ${e.message}")
-                        }
-                }
-                RegisterResult.Success(updatedUser)
+                RegisterResult.Success(loggedInUser)
             } else {
                 RegisterResult.DeviceBlocked(phoneNumber, registeredDev)
             }
         } else {
-            // User not found in local map (Firestore listener may not have populated yet).
-            // Treat as new user so they can register — loginWithPhone will write to Firestore.
-            Log.d(TAG, "User $phoneNumber not in local map — treating as NewUser for registration")
+            Log.d(TAG, "User $phoneNumber not found — treating as NewUser for registration")
             RegisterResult.NewUser(phoneNumber)
         }
     }
@@ -533,7 +565,7 @@ class FirebaseManager private constructor(private val context: Context) {
         val existing = lookupUserByNumber(phoneNumber)
         val finalDeviceId = deviceId.ifBlank { existing?.registeredDeviceId ?: "DEV-${UUID.randomUUID().toString().take(8)}" }
         // BUG-24 FIX: Use the provided status, fall back to existing/default
-        val finalStatus = status.ifBlank { existing?.statusMessage ?: "Available on LKS DIALER" }
+        val finalStatus = status.ifBlank { existing?.statusMessage ?: "Available on RB DIALER" }.replace("LKS DIALER", "RB DIALER")
 
         val savedFcmToken = prefs.getString("fcm_token", "") ?: ""
         val finalFcmToken = existing?.fcmToken?.ifBlank { savedFcmToken } ?: savedFcmToken
@@ -576,8 +608,11 @@ class FirebaseManager private constructor(private val context: Context) {
         _isDndEnabled.value = user.isDndEnabled
         _blockedNumbers.value = user.blockedNumbers
 
-        // Attach listeners for this user
+        // Attach listeners for this user (and re-attach global users listener if logged out previously)
         if (_isFirebaseConfigured.value) {
+            if (usersListener == null) {
+                listenToFirestoreUsers()
+            }
             attachUserSpecificListeners(phoneNumber)
         }
 
@@ -1032,7 +1067,7 @@ class FirebaseManager private constructor(private val context: Context) {
             name = name,
             phoneNumber = number,
             isVoiceLinkUser = registered,
-            statusMessage = if (registered) "Available" else "Not on LKS DIALER yet"
+            statusMessage = if (registered) "Available" else "Not on RB DIALER yet"
         )
         _contacts.value = _contacts.value + newContact
 
@@ -1055,6 +1090,8 @@ class FirebaseManager private constructor(private val context: Context) {
     fun getEffectiveUserPhone(): String? {
         val phone = _currentUser.value?.phoneNumber?.ifBlank { null }
         if (phone != null) return phone
+        val dialerPhone = prefs.getString("user_phone", null)?.ifBlank { null }
+        if (dialerPhone != null) return dialerPhone
         val sp = context.getSharedPreferences("lks_prefs", Context.MODE_PRIVATE)
         return sp.getString("user_phone", null)?.ifBlank { null }
     }
@@ -1357,6 +1394,11 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     fun logout() {
+        presenceHeartbeatJob?.cancel()
+        presenceHeartbeatJob = null
+        try {
+            updateUserPresence(false)
+        } catch (_: Exception) {}
         usersListener?.remove()
         usersListener = null
         contactsListener?.remove()

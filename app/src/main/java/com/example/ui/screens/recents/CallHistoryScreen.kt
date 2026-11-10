@@ -14,7 +14,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -44,6 +47,11 @@ import com.example.data.model.UserDto
 import com.example.data.repository.FirebaseManager
 import com.example.util.ContactsHelper
 import com.example.ui.theme.*
+import com.example.ui.components.QuickStartGuideCard
+import com.example.ui.components.QuickStartStep
+import com.example.ui.components.TacticalStatusPill
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
 import kotlinx.coroutines.delay
@@ -61,7 +69,8 @@ import java.util.Locale
 fun CallHistoryScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit,
-    onOpenChat: ((number: String, name: String) -> Unit)? = null
+    onOpenChat: ((number: String, name: String) -> Unit)? = null,
+    onNavigateToDialer: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val themeColor = LocalThemeColor.current
@@ -76,26 +85,49 @@ fun CallHistoryScreen(
     var showSpamConfirmDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    // 5-Second Inactivity Swipe Demo State
+    // Samsung Dialer Automatic Swipe Demonstration State
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
     var lastCallClickTime by remember { mutableStateOf(0L) }
     var showSwipeHint by remember { mutableStateOf(false) }
+    var demoPhase by remember { mutableIntStateOf(0) } // 0 = idle, 1 = swipe right (Call), 2 = swipe left (Message)
     val demoSwipeOffset = remember { Animatable(0f) }
 
-    // Track 5 seconds of inactivity
+    // Track inactivity and play a smooth Samsung Dialer-style swipe demonstration
     LaunchedEffect(lastInteractionTime, callLogs.size) {
         if (callLogs.isNotEmpty()) {
-            delay(5000)
-            if (System.currentTimeMillis() - lastInteractionTime >= 4900) {
+            delay(3800)
+            if (System.currentTimeMillis() - lastInteractionTime >= 3700) {
                 showSwipeHint = true
-                // Run smooth demonstration swipe sequence
-                demoSwipeOffset.animateTo(75f, animationSpec = tween(700, easing = FastOutSlowInEasing))
-                delay(1000)
-                demoSwipeOffset.animateTo(0f, animationSpec = tween(400, easing = FastOutSlowInEasing))
-                delay(300)
-                demoSwipeOffset.animateTo(-75f, animationSpec = tween(700, easing = FastOutSlowInEasing))
-                delay(1000)
-                demoSwipeOffset.animateTo(0f, animationSpec = tween(400, easing = FastOutSlowInEasing))
+                // Phase 1: Smooth Samsung Right-Swipe to Call preview
+                demoPhase = 1
+                demoSwipeOffset.animateTo(
+                    targetValue = 112f,
+                    animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
+                )
+                delay(850)
+                demoSwipeOffset.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+                delay(350)
+                // Phase 2: Smooth Samsung Left-Swipe to Message preview
+                demoPhase = 2
+                demoSwipeOffset.animateTo(
+                    targetValue = -112f,
+                    animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
+                )
+                delay(850)
+                demoSwipeOffset.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+                demoPhase = 0
             }
         }
     }
@@ -103,6 +135,8 @@ fun CallHistoryScreen(
     val filteredLogs = remember(callLogs, selectedFilter) {
         when (selectedFilter) {
             "MISSED" -> callLogs.filter { it.direction == CallDirection.MISSED }
+            "INCOMING" -> callLogs.filter { it.direction == CallDirection.INCOMING }
+            "OUTGOING" -> callLogs.filter { it.direction == CallDirection.OUTGOING }
             "RECORDINGS" -> callLogs.filter {
                 com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
             }
@@ -471,124 +505,419 @@ fun CallHistoryScreen(
     ) {
         TopAppBar(
             title = {
-                Text(
-                    text = "Recents",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = themeColor.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "RECENTS LOG",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 19.sp,
+                        color = HudTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    TacticalStatusPill(
+                        text = "${callLogs.size} LOGS",
+                        dotColor = if (callLogs.isNotEmpty()) CyberMint else HudTextSecondary
+                    )
+                }
             },
             actions = {
                 if (callLogs.isNotEmpty()) {
-                    IconButton(onClick = { showClearDialog = true }) {
+                    IconButton(
+                        onClick = { showClearDialog = true },
+                        modifier = Modifier.size(48.dp)
+                    ) {
                         Icon(
                             Icons.Default.DeleteOutline,
                             contentDescription = "Clear History",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = HudTextSecondary
                         )
                     }
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.background
+                containerColor = HudBackgroundPrimary
             )
         )
 
-        // Filter chips
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.Start
-        ) {
-            FilterChip(
-                selected = selectedFilter == "ALL",
-                onClick = {
-                    selectedFilter = "ALL"
-                    lastInteractionTime = System.currentTimeMillis()
-                },
-                label = { Text("All Calls (${callLogs.size})") },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = themeColor.primary.copy(alpha = 0.2f),
-                    selectedLabelColor = themeColor.primary
-                )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            FilterChip(
-                selected = selectedFilter == "MISSED",
-                onClick = {
-                    selectedFilter = "MISSED"
-                    lastInteractionTime = System.currentTimeMillis()
-                },
-                label = { Text("Missed (${callLogs.count { it.direction == CallDirection.MISSED }})") },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MissedCallRed.copy(alpha = 0.15f),
-                    selectedLabelColor = MissedCallRed
-                )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
+        // ZERO CLUTTER RULE: Only show filter chips when callLogs is NOT empty!
+        if (callLogs.isNotEmpty()) {
+            val missedCount = remember(callLogs) { callLogs.count { it.direction == CallDirection.MISSED } }
+            val incomingCount = remember(callLogs) { callLogs.count { it.direction == CallDirection.INCOMING } }
+            val outgoingCount = remember(callLogs) { callLogs.count { it.direction == CallDirection.OUTGOING } }
             val recordedCount = remember(callLogs) {
                 callLogs.count {
                     com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
                 }
             }
-            FilterChip(
-                selected = selectedFilter == "RECORDINGS",
-                onClick = {
-                    selectedFilter = "RECORDINGS"
-                    lastInteractionTime = System.currentTimeMillis()
-                },
-                label = { Text("Recordings ($recordedCount)") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp)
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 1. All Calls
+                FilterChip(
+                    selected = selectedFilter == "ALL",
+                    onClick = {
+                        selectedFilter = "ALL"
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            text = "All Calls (${callLogs.size})",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == "ALL",
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = SignalAmber,
+                        selectedBorderWidth = 1.5.dp
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        selectedContainerColor = SignalAmber.copy(alpha = 0.2f),
+                        labelColor = HudTextSecondary,
+                        selectedLabelColor = HudTextPrimary
                     )
-                },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = GreenCall.copy(alpha = 0.2f),
-                    selectedLabelColor = GreenCall
                 )
-            )
+
+                // 2. Missed
+                FilterChip(
+                    selected = selectedFilter == "MISSED",
+                    onClick = {
+                        selectedFilter = "MISSED"
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            text = "Missed ($missedCount)",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.CallMissed,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = if (selectedFilter == "MISSED") CrimsonAlert else HudTextSecondary
+                        )
+                    },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == "MISSED",
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = CrimsonAlert,
+                        selectedBorderWidth = 1.5.dp
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        selectedContainerColor = CrimsonAlert.copy(alpha = 0.18f),
+                        labelColor = HudTextSecondary,
+                        selectedLabelColor = CrimsonAlert
+                    )
+                )
+
+                // 3. Incoming
+                FilterChip(
+                    selected = selectedFilter == "INCOMING",
+                    onClick = {
+                        selectedFilter = "INCOMING"
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            text = "Incoming ($incomingCount)",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.CallReceived,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = if (selectedFilter == "INCOMING") CyberMint else HudTextSecondary
+                        )
+                    },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == "INCOMING",
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = CyberMint,
+                        selectedBorderWidth = 1.5.dp
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        selectedContainerColor = CyberMint.copy(alpha = 0.18f),
+                        labelColor = HudTextSecondary,
+                        selectedLabelColor = CyberMint
+                    )
+                )
+
+                // 4. Outgoing
+                FilterChip(
+                    selected = selectedFilter == "OUTGOING",
+                    onClick = {
+                        selectedFilter = "OUTGOING"
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            text = "Outgoing ($outgoingCount)",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.CallMade,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = if (selectedFilter == "OUTGOING") TelemetryBlue else HudTextSecondary
+                        )
+                    },
+                    modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == "OUTGOING",
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = TelemetryBlue,
+                        selectedBorderWidth = 1.5.dp
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        selectedContainerColor = TelemetryBlue.copy(alpha = 0.18f),
+                        labelColor = HudTextSecondary,
+                        selectedLabelColor = TelemetryBlue
+                    )
+                )
+
+                // 5. Recordings
+                if (recordedCount > 0) {
+                    FilterChip(
+                        selected = selectedFilter == "RECORDINGS",
+                        onClick = {
+                            selectedFilter = "RECORDINGS"
+                            lastInteractionTime = System.currentTimeMillis()
+                        },
+                        label = {
+                            Text(
+                                text = "Rec ($recordedCount)",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (selectedFilter == "RECORDINGS") PurplePrimary else HudTextSecondary
+                            )
+                        },
+                        modifier = Modifier.defaultMinSize(minHeight = 48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = selectedFilter == "RECORDINGS",
+                            borderColor = HudBorderSubtle,
+                            selectedBorderColor = PurplePrimary,
+                            selectedBorderWidth = 1.5.dp
+                        ),
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = HudSurfaceContainer,
+                            selectedContainerColor = PurplePrimary.copy(alpha = 0.2f),
+                            labelColor = HudTextSecondary,
+                            selectedLabelColor = PurplePrimary
+                        )
+                    )
+                }
+            }
         }
 
-        // Animated Swipe Feature Tip Banner
+        // Samsung Dialer-Style Animated Dual-Pill Gesture Indicator
         AnimatedVisibility(
             visible = showSwipeHint && filteredLogs.isNotEmpty(),
             enter = fadeIn() + slideInVertically(),
             exit = fadeOut() + slideOutVertically()
         ) {
             Surface(
-                color = themeColor.primary.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(12.dp),
+                color = HudSurfaceContainer,
+                border = BorderStroke(
+                    1.dp,
+                    when (demoPhase) {
+                        1 -> Color(0xFF10B981).copy(alpha = 0.7f)
+                        2 -> Color(0xFF0284C7).copy(alpha = 0.7f)
+                        else -> HudBorderSubtle
+                    }
+                ),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(
-                        Icons.Default.Swipe,
-                        contentDescription = null,
-                        tint = themeColor.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    // Right Swipe Pill (Call)
+                    Surface(
+                        color = if (demoPhase == 1) Color(0xFF10B981).copy(alpha = 0.22f) else Color(0xFF10B981).copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, if (demoPhase == 1) Color(0xFF10B981) else Color(0xFF10B981).copy(alpha = 0.35f)),
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Call,
+                                contentDescription = null,
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Swipe Right • Call",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = if (demoPhase == 1) Color(0xFF10B981) else HudTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "››",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF10B981)
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Tip: Swipe Right to Audio Call • Swipe Left to Video Call",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                        color = themeColor.primary
-                    )
+
+                    // Left Swipe Pill (Message)
+                    Surface(
+                        color = if (demoPhase == 2) Color(0xFF0284C7).copy(alpha = 0.22f) else Color(0xFF0284C7).copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, if (demoPhase == 2) Color(0xFF0284C7) else Color(0xFF0284C7).copy(alpha = 0.35f)),
+                        shape = RoundedCornerShape(50),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "‹‹",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp,
+                                color = Color(0xFF0284C7)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                Icons.Default.ChatBubbleOutline,
+                                contentDescription = null,
+                                tint = Color(0xFF0284C7),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Swipe Left • Message",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = if (demoPhase == 2) Color(0xFF0284C7) else HudTextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        if (filteredLogs.isEmpty()) {
+        if (callLogs.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.History,
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        tint = HudTextSecondary.copy(alpha = 0.5f)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "No recent calls",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = HudTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Your incoming, outgoing, and missed calls will appear here",
+                        fontSize = 13.sp,
+                        color = HudTextSecondary
+                    )
+                    if (onNavigateToDialer != null) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = onNavigateToDialer,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = CyberMint)
+                        ) {
+                            Icon(Icons.Default.Dialpad, contentDescription = null, tint = Color(0xFF0A101E), modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Open Dialer",
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF0A101E)
+                            )
+                        }
+                    }
+                }
+            }
+        } else if (filteredLogs.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -599,18 +928,22 @@ fun CallHistoryScreen(
                     Icon(
                         if (selectedFilter == "RECORDINGS") Icons.Default.Mic else Icons.Default.History,
                         contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        modifier = Modifier.size(56.dp),
+                        tint = HudTextSecondary.copy(alpha = 0.5f)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     Text(
                         text = when (selectedFilter) {
-                            "MISSED" -> "No missed calls"
-                            "RECORDINGS" -> "No recorded calls yet\nTap Record during any call to save audio"
-                            else -> "No recent call history"
+                            "MISSED" -> "No missed calls recorded"
+                            "RECORDINGS" -> "No recorded calls yet"
+                            else -> "No matching call logs"
                         },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = HudTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -644,24 +977,22 @@ fun CallHistoryScreen(
                         },
                         onAudioCall = {
                             val now = System.currentTimeMillis()
-                            if (now - lastCallClickTime > 1500L) {
+                            if (now - lastCallClickTime > 1200L) {
                                 lastCallClickTime = now
                                 lastInteractionTime = now
-                                coroutineScope.launch {
-                                    delay(200)
-                                    onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.AUDIO)
-                                }
+                                val targetName = matchedUser?.displayName ?: log.otherPartyName
+                                onStartCall(log.otherPartyNumber, targetName, CallType.AUDIO)
                             }
                         },
-                        onVideoCall = {
+                        onMessage = {
                             val now = System.currentTimeMillis()
-                            if (now - lastCallClickTime > 1500L) {
+                            lastInteractionTime = now
+                            val targetName = matchedUser?.displayName ?: log.otherPartyName
+                            if (onOpenChat != null) {
+                                onOpenChat(log.otherPartyNumber, targetName)
+                            } else if (now - lastCallClickTime > 1200L) {
                                 lastCallClickTime = now
-                                lastInteractionTime = now
-                                coroutineScope.launch {
-                                    delay(200)
-                                    onStartCall(log.otherPartyNumber, matchedUser?.displayName ?: log.otherPartyName, CallType.VIDEO)
-                                }
+                                onStartCall(log.otherPartyNumber, targetName, CallType.VIDEO)
                             }
                         }
                     )
@@ -671,7 +1002,6 @@ fun CallHistoryScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SwipeableCallLogItem(
     log: CallLogDto,
@@ -681,132 +1011,224 @@ private fun SwipeableCallLogItem(
     demoOffset: Float,
     onItemClick: () -> Unit,
     onAudioCall: () -> Unit,
-    onVideoCall: () -> Unit
+    onMessage: () -> Unit
 ) {
-    val themeColor = LocalThemeColor.current
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { dismissValue ->
-            when (dismissValue) {
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    onAudioCall()
-                    false
-                }
-                SwipeToDismissBoxValue.EndToStart -> {
-                    onVideoCall()
-                    false
-                }
-                else -> false
-            }
-        },
-        positionalThreshold = { it * 0.4f }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+
+    val userDragOffsetPx = remember { Animatable(0f) }
+    var thresholdCrossed by remember { mutableStateOf(false) }
+
+    val maxDragPx = with(density) { 150.dp.toPx() }
+    val triggerThresholdPx = with(density) { 88.dp.toPx() }
+    val demoOffsetPx = with(density) { demoOffset.dp.toPx() }
+
+    // Combine user drag + demo offset smoothly in a single unified layout
+    val activeOffsetPx = if (userDragOffsetPx.value != 0f) userDragOffsetPx.value else demoOffsetPx
+    val progress = (kotlin.math.abs(activeOffsetPx) / triggerThresholdPx).coerceIn(0f, 1.25f)
+    val isSwipingRight = activeOffsetPx > 0f
+    val isSwipingLeft = activeOffsetPx < 0f
+
+    // Animated chevron pulse for active swipe or demo
+    val infiniteTransition = rememberInfiniteTransition(label = "samsung_swipe_chevron")
+    val chevronShift by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(550, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "chevronShift"
     )
 
-    // Handle demo animation visual background
-    val isDemoActive = demoOffset != 0f
-    val demoDirection = when {
-        demoOffset > 0f -> SwipeToDismissBoxValue.StartToEnd
-        demoOffset < 0f -> SwipeToDismissBoxValue.EndToStart
-        else -> SwipeToDismissBoxValue.Settled
-    }
-
-    Box(modifier = Modifier.fillMaxWidth()) {
-        if (isDemoActive) {
-            // Background for demo swipe
-            val demoBgColor = if (demoOffset > 0f) GreenCall.copy(alpha = 0.85f) else themeColor.primary.copy(alpha = 0.85f)
-            val demoAlign = if (demoOffset > 0f) Alignment.CenterStart else Alignment.CenterEnd
-            val demoIcon = if (demoOffset > 0f) Icons.Default.Call else Icons.Default.Videocam
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 3.dp)
+            .clip(RoundedCornerShape(16.dp))
+    ) {
+        // Samsung One UI Style Rich Swipe Track Background
+        if (kotlin.math.abs(activeOffsetPx) > 2f) {
+            val trackBrush = if (isSwipingRight) {
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    colors = listOf(
+                        Color(0xFF059669),
+                        Color(0xFF10B981)
+                    )
+                )
+            } else {
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    colors = listOf(
+                        Color(0xFF0284C7),
+                        Color(0xFF2563EB)
+                    )
+                )
+            }
 
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(demoBgColor)
-                    .padding(horizontal = 24.dp),
-                contentAlignment = demoAlign
+                    .matchParentSize()
+                    .background(trackBrush)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = if (isSwipingRight) Alignment.CenterStart else Alignment.CenterEnd
             ) {
-                Icon(
-                    imageVector = demoIcon,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            // Foreground with demo offset
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .offset(x = demoOffset.dp)
-            ) {
-                CallLogItemContent(
-                    log = log,
-                    profilePicBase64 = profilePicBase64,
-                    isBlocked = isBlocked,
-                    isSpam = isSpam,
-                    onItemClick = onItemClick
-                )
-            }
-        } else {
-            SwipeToDismissBox(
-                state = dismissState,
-                backgroundContent = {
-                    val direction = dismissState.dismissDirection
-                    val color by animateColorAsState(
-                        when (dismissState.targetValue) {
-                            SwipeToDismissBoxValue.StartToEnd -> GreenCall.copy(alpha = 0.85f)
-                            SwipeToDismissBoxValue.EndToStart -> themeColor.primary.copy(alpha = 0.85f)
-                            SwipeToDismissBoxValue.Settled -> Color.Transparent
-                        }, label = "color"
-                    )
-
-                    val icon = when (direction) {
-                        SwipeToDismissBoxValue.StartToEnd -> Icons.Default.Call
-                        SwipeToDismissBoxValue.EndToStart -> Icons.Default.Videocam
-                        else -> Icons.Default.Call
+                val badgeScale = (0.75f + 0.32f * progress.coerceAtMost(1f))
+                if (isSwipingRight) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.24f),
+                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.85f)),
+                            modifier = Modifier
+                                .size(40.dp)
+                                .scale(badgeScale)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Call,
+                                    contentDescription = "Call",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Call",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.width((6f + chevronShift).dp))
+                        Text(
+                            text = "››",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
                     }
-
-                    val scale by animateFloatAsState(
-                        if (dismissState.targetValue == SwipeToDismissBoxValue.Settled) 0.75f else 1.2f,
-                        label = "scale"
-                    )
-
-                    val alignment = when (direction) {
-                        SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
-                        SwipeToDismissBoxValue.EndToStart -> Alignment.CenterEnd
-                        else -> Alignment.CenterStart
-                    }
-
-                    Box(
-                        Modifier
-                            .fillMaxSize()
-                            .background(color)
-                            .padding(horizontal = 24.dp),
-                        contentAlignment = alignment
-                    ) {
-                        if (direction != SwipeToDismissBoxValue.Settled) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = "Call Action",
-                                modifier = Modifier.scale(scale),
-                                tint = Color.White
-                            )
+                } else if (isSwipingLeft) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "‹‹",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                        Spacer(modifier = Modifier.width((6f + chevronShift).dp))
+                        Text(
+                            text = "Message",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.White.copy(alpha = 0.24f),
+                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.85f)),
+                            modifier = Modifier
+                                .size(40.dp)
+                                .scale(badgeScale)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.ChatBubble,
+                                    contentDescription = "Message",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(19.dp)
+                                )
+                            }
                         }
                     }
                 }
-            ) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    CallLogItemContent(
-                        log = log,
-                        profilePicBase64 = profilePicBase64,
-                        isBlocked = isBlocked,
-                        isSpam = isSpam,
-                        onItemClick = onItemClick
+            }
+        }
+
+        // Foreground Call Log Card with 120fps Horizontal Drag Gesture
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset { androidx.compose.ui.unit.IntOffset(activeOffsetPx.toInt(), 0) }
+                .pointerInput(log.id) {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            thresholdCrossed = false
+                        },
+                        onDragEnd = {
+                            val finalOffset = userDragOffsetPx.value
+                            scope.launch {
+                                if (finalOffset >= triggerThresholdPx) {
+                                    userDragOffsetPx.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    )
+                                    onAudioCall()
+                                } else if (finalOffset <= -triggerThresholdPx) {
+                                    userDragOffsetPx.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    )
+                                    onMessage()
+                                } else {
+                                    userDragOffsetPx.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch {
+                                userDragOffsetPx.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                )
+                            }
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            val nextVal = (userDragOffsetPx.value + dragAmount).coerceIn(-maxDragPx, maxDragPx)
+                            val crossedNow = kotlin.math.abs(nextVal) >= triggerThresholdPx
+                            if (crossedNow && !thresholdCrossed) {
+                                thresholdCrossed = true
+                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            } else if (!crossedNow && thresholdCrossed) {
+                                thresholdCrossed = false
+                            }
+                            scope.launch {
+                                userDragOffsetPx.snapTo(nextVal)
+                            }
+                        }
                     )
                 }
-            }
+        ) {
+            CallLogItemContent(
+                log = log,
+                profilePicBase64 = profilePicBase64,
+                isBlocked = isBlocked,
+                isSpam = isSpam,
+                onItemClick = onItemClick
+            )
         }
     }
 }
@@ -843,13 +1265,15 @@ private fun CallLogItemContent(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = log.otherPartyName,
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = if (log.direction == CallDirection.MISSED) FontWeight.Bold else FontWeight.SemiBold
-                ),
-                color = if (log.direction == CallDirection.MISSED) MissedCallRed else MaterialTheme.colorScheme.onBackground
+                fontFamily = SpaceGroteskFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = if (log.direction == CallDirection.MISSED) CrimsonAlert else HudTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
 
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(3.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val icon = when (log.direction) {
@@ -858,24 +1282,28 @@ private fun CallLogItemContent(
                     CallDirection.MISSED -> Icons.AutoMirrored.Filled.CallMissed
                 }
                 val tint = when (log.direction) {
-                    CallDirection.OUTGOING -> OutgoingCallBlue
-                    CallDirection.INCOMING -> IncomingCallGreen
-                    CallDirection.MISSED -> MissedCallRed
+                    CallDirection.OUTGOING -> TelemetryBlue
+                    CallDirection.INCOMING -> CyberMint
+                    CallDirection.MISSED -> CrimsonAlert
                 }
 
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
                     tint = tint,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
 
                 Spacer(modifier = Modifier.width(6.dp))
 
                 Text(
-                    text = "${formatTime(log.startedAt)} • ${if (log.durationSeconds > 0) formatDuration(log.durationSeconds) else "Missed"}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = "${formatTime(log.startedAt)} • ${if (log.durationSeconds > 0) formatDuration(log.durationSeconds) else "MISSED"}",
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = HudTextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
 
                 val recFile = remember(log.callId, log.recordingPath) {
@@ -884,7 +1312,7 @@ private fun CallLogItemContent(
                 if (recFile != null && recFile.exists()) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = GreenCall.copy(alpha = 0.15f),
+                        color = CyberMint.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Row(
@@ -894,14 +1322,18 @@ private fun CallLogItemContent(
                             Icon(
                                 imageVector = Icons.Default.Mic,
                                 contentDescription = "Recorded",
-                                tint = GreenCall,
+                                tint = CyberMint,
                                 modifier = Modifier.size(11.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
-                                text = "Recorded",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = GreenCall
+                                text = "REC",
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 9.sp,
+                                color = CyberMint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -910,13 +1342,17 @@ private fun CallLogItemContent(
                 if (isBlocked && !isSpam) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                        color = CrimsonAlert.copy(alpha = 0.15f),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            text = "Blocked",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.error,
+                            text = "BLOCKED",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            color = CrimsonAlert,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                         )
                     }
@@ -925,13 +1361,17 @@ private fun CallLogItemContent(
                 if (isSpam) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
-                        color = Color(0xFFFF9800).copy(alpha = 0.15f),
+                        color = SignalAmber.copy(alpha = 0.18f),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
-                            text = "Spam",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = Color(0xFFFF9800),
+                            text = "SPAM",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            color = SignalAmber,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
                         )
                     }

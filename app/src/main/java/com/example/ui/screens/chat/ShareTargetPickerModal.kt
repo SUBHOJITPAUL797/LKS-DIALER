@@ -58,11 +58,18 @@ fun ShareTargetPickerModal(
     }
 
     // Other contacts available on LKS Dialer not in recent conversations
-    val otherLksContacts = remember(registeredUsers, syncedContacts, conversations, searchQuery) {
+    val otherLksContacts = remember(syncedContacts, conversations, searchQuery) {
         val recentNumbers = conversations.map { ContactsHelper.normalizePhoneNumber(it.phoneNumber) }.toSet()
-        val allLks = registeredUsers.filter { user ->
-            val norm = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+        val allLks = syncedContacts.filter { contact ->
+            val norm = ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
             !recentNumbers.contains(norm)
+        }.map { c ->
+            com.example.data.model.UserDto(
+                phoneNumber = c.phoneNumber,
+                displayName = c.name,
+                profilePictureUrl = c.profilePictureUrl,
+                statusMessage = c.statusMessage
+            )
         }
 
         if (searchQuery.isBlank()) {

@@ -42,9 +42,10 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.CallType
 import com.example.data.model.ContactDto
 import com.example.data.repository.FirebaseManager
-import com.example.ui.theme.GreenCall
-import com.example.ui.theme.LocalThemeColor
+import com.example.ui.components.QuickStartGuideCard
+import com.example.ui.components.QuickStartStep
 import com.example.ui.components.SimCallPickerModal
+import com.example.ui.theme.*
 import com.example.util.LocalContact
 import com.example.util.SimManager
 import kotlinx.coroutines.delay
@@ -55,6 +56,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import com.example.util.LksRingtoneManager
 
 private enum class ContactFilterTab(val title: String) {
@@ -142,9 +144,27 @@ fun ContactsScreen(
     }
 
 
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            firebaseManager.syncNativeContacts()
+        } else {
+            Toast.makeText(context, "Contacts permission is needed to show your phone contacts on LKS", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // Trigger contacts sync when screen is launched
     LaunchedEffect(Unit) {
-        firebaseManager.syncNativeContacts()
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.READ_CONTACTS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            firebaseManager.syncNativeContacts()
+        } else {
+            contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+        }
     }
 
     // Filter synced (LKS) contacts based on search query
@@ -195,17 +215,17 @@ fun ContactsScreen(
             type = "text/plain"
             putExtra(
                 Intent.EXTRA_TEXT,
-                "Hey ${contact.name}! Let's talk on LKS Dialer with HD audio & video calls. Download it here: https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/latest"
+                "Hey ${contact.name}! Let's talk on RB Dialer with HD audio & video calls. Download it here: https://github.com/SUBHOJITPAUL797/LKS-DIALER/releases/latest"
             )
         }
-        val shareIntent = Intent.createChooser(sendIntent, "Invite ${contact.name} to LKS Dialer")
+        val shareIntent = Intent.createChooser(sendIntent, "Invite ${contact.name} to RB Dialer")
         context.startActivity(shareIntent)
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(HudBackgroundPrimary)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown()
@@ -215,25 +235,35 @@ fun ContactsScreen(
                 }
             }
     ) {
-        // WhatsApp-Style Top App Bar
+        // Clean WhatsApp/Telegram Style Top App Bar
         TopAppBar(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = "Contacts",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = themeColor.primary
+                        text = "CONTACTS",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        letterSpacing = 0.8.sp,
+                        color = HudTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (totalContactsCount > 0) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Surface(
-                            color = themeColor.primary.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(12.dp)
+                            color = SignalAmber.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, SignalAmber.copy(alpha = 0.5f))
                         ) {
                             Text(
                                 text = "$totalContactsCount",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = themeColor.primary,
+                                fontFamily = JetBrainsMonoFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = SignalAmber,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
@@ -241,114 +271,186 @@ fun ContactsScreen(
                 }
             },
             actions = {
-                IconButton(onClick = {
-                    lastInteractionTime = System.currentTimeMillis()
-                    firebaseManager.syncNativeContacts()
-                }) {
+                IconButton(
+                    onClick = {
+                        lastInteractionTime = System.currentTimeMillis()
+                        firebaseManager.syncNativeContacts()
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
                     Icon(
                         Icons.Default.Sync,
                         contentDescription = "Sync Contacts",
-                        tint = themeColor.primary
+                        tint = SignalAmber
                     )
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = MaterialTheme.colorScheme.background
+                containerColor = HudBackgroundPrimary
             )
         )
 
-        // Real-time Search Field
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = {
-                searchQuery = it
-                lastInteractionTime = System.currentTimeMillis()
-            },
-            placeholder = { Text("Search by name or number...") },
-            leadingIcon = {
-                Icon(
-                    Icons.Default.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = {
-                        searchQuery = ""
-                        lastInteractionTime = System.currentTimeMillis()
-                    }) {
-                        Icon(
-                            Icons.Default.Close,
-                            contentDescription = "Clear search",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+        // RULE 3: Hide search bar and filters when 0 items exist
+        if (totalContactsCount > 0) {
+            // Real-time Search Field
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = {
+                    searchQuery = it
+                    lastInteractionTime = System.currentTimeMillis()
+                },
+                placeholder = {
+                    Text(
+                        "Search contacts by name or number...",
+                        color = HudTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        tint = SignalAmber
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                searchQuery = ""
+                                lastInteractionTime = System.currentTimeMillis()
+                            },
+                            modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Clear search",
+                                tint = HudTextSecondary
+                            )
+                        }
                     }
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
-                focusedBorderColor = themeColor.primary,
-                unfocusedBorderColor = Color.Transparent
-            ),
-            singleLine = true
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // WhatsApp-Style Category Filter Chips
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = selectedFilter == ContactFilterTab.ALL,
-                onClick = {
-                    selectedFilter = ContactFilterTab.ALL
-                    lastInteractionTime = System.currentTimeMillis()
                 },
-                label = { Text("All ($totalContactsCount)") },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = themeColor.primary.copy(alpha = 0.2f),
-                    selectedLabelColor = themeColor.primary
-                )
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = HudSurfaceContainer,
+                    unfocusedContainerColor = HudSurfaceContainer,
+                    focusedBorderColor = SignalAmber,
+                    unfocusedBorderColor = HudBorderSubtle,
+                    focusedTextColor = HudTextPrimary,
+                    unfocusedTextColor = HudTextPrimary
+                ),
+                singleLine = true
             )
 
-            FilterChip(
-                selected = selectedFilter == ContactFilterTab.ON_LKS,
-                onClick = {
-                    selectedFilter = ContactFilterTab.ON_LKS
-                    lastInteractionTime = System.currentTimeMillis()
-                },
-                label = { Text("On LKS (${syncedContacts.size})") },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = GreenCall.copy(alpha = 0.2f),
-                    selectedLabelColor = GreenCall
-                )
-            )
+            Spacer(modifier = Modifier.height(4.dp))
 
-            FilterChip(
-                selected = selectedFilter == ContactFilterTab.INVITE,
-                onClick = {
-                    selectedFilter = ContactFilterTab.INVITE
-                    lastInteractionTime = System.currentTimeMillis()
-                },
-                label = { Text("Invite (${nonLksContacts.size})") },
-                shape = RoundedCornerShape(16.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = themeColor.primary.copy(alpha = 0.2f),
-                    selectedLabelColor = themeColor.primary
+            // Tactical Category Filter Chips
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = selectedFilter == ContactFilterTab.ALL,
+                    onClick = {
+                        selectedFilter = ContactFilterTab.ALL
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            "ALL ($totalContactsCount)",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == ContactFilterTab.ALL,
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = SignalAmber
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        labelColor = HudTextSecondary,
+                        selectedContainerColor = SignalAmber.copy(alpha = 0.18f),
+                        selectedLabelColor = SignalAmber
+                    )
                 )
-            )
+
+                FilterChip(
+                    selected = selectedFilter == ContactFilterTab.ON_LKS,
+                    onClick = {
+                        selectedFilter = ContactFilterTab.ON_LKS
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            "RB (${syncedContacts.size})",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == ContactFilterTab.ON_LKS,
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = CyberMint
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        labelColor = HudTextSecondary,
+                        selectedContainerColor = CyberMint.copy(alpha = 0.18f),
+                        selectedLabelColor = CyberMint
+                    )
+                )
+
+                FilterChip(
+                    selected = selectedFilter == ContactFilterTab.INVITE,
+                    onClick = {
+                        selectedFilter = ContactFilterTab.INVITE
+                        lastInteractionTime = System.currentTimeMillis()
+                    },
+                    label = {
+                        Text(
+                            "CELL (${nonLksContacts.size})",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = selectedFilter == ContactFilterTab.INVITE,
+                        borderColor = HudBorderSubtle,
+                        selectedBorderColor = SignalAmber
+                    ),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = HudSurfaceContainer,
+                        labelColor = HudTextSecondary,
+                        selectedContainerColor = SignalAmber.copy(alpha = 0.18f),
+                        selectedLabelColor = SignalAmber
+                    )
+                )
+            }
         }
 
         // Animated Swipe Feature Tip Banner
@@ -358,8 +460,9 @@ fun ContactsScreen(
             exit = fadeOut() + slideOutVertically()
         ) {
             Surface(
-                color = themeColor.primary.copy(alpha = 0.15f),
+                color = SignalAmber.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, SignalAmber.copy(alpha = 0.45f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -371,14 +474,18 @@ fun ContactsScreen(
                     Icon(
                         Icons.Default.Swipe,
                         contentDescription = null,
-                        tint = themeColor.primary,
+                        tint = SignalAmber,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Tip: Swipe Right to Audio Call • Swipe Left to Video Call",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-                        color = themeColor.primary
+                        text = "Swipe Right: Audio Call • Swipe Left: Video Call",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = SignalAmber,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -391,7 +498,57 @@ fun ContactsScreen(
         val hasLks = showLks && filteredLksContacts.isNotEmpty()
         val hasNonLks = showNonLks && filteredNonLksContacts.isNotEmpty()
 
-        if (!hasLks && !hasNonLks) {
+        if (totalContactsCount == 0) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.Contacts,
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        tint = HudTextSecondary.copy(alpha = 0.5f)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "No contacts synced yet",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = HudTextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Sync your device contacts to call or message on RB DIALER",
+                        fontSize = 13.sp,
+                        color = HudTextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                firebaseManager.syncNativeContacts()
+                            } else {
+                                contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = CyberMint)
+                    ) {
+                        Icon(Icons.Default.Sync, contentDescription = null, tint = Color(0xFF0A101E), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED) "Sync Contacts" else "Allow Contacts Access",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0A101E)
+                        )
+                    }
+                }
+            }
+        } else if (!hasLks && !hasNonLks) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -403,14 +560,18 @@ fun ContactsScreen(
                         Icons.Default.Contacts,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        tint = HudTextSecondary.copy(alpha = 0.4f)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No matching contacts found" else "No contacts found",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
+                        text = if (searchQuery.isNotEmpty()) "No matching contacts found" else "No contacts in this filter",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = HudTextSecondary,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -419,11 +580,11 @@ fun ContactsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                // Section 1: Contacts Available on LKS Dialer
+                // Section 1: Contacts Available on RB Dialer
                 if (hasLks) {
                     item {
                         SectionHeader(
-                            title = "AVAILABLE ON LKS DIALER",
+                            title = "AVAILABLE ON RB DIALER",
                             count = filteredLksContacts.size,
                             accentColor = GreenCall
                         )
@@ -437,7 +598,7 @@ fun ContactsScreen(
 
                         SwipeableContactItem(
                             contact = contact.copy(
-                                statusMessage = userInfo?.statusMessage ?: contact.statusMessage.ifBlank { "Available on LKS DIALER" }
+                                statusMessage = (userInfo?.statusMessage ?: contact.statusMessage.ifBlank { "Available on RB DIALER" }).replace("LKS DIALER", "RB DIALER")
                             ),
                             isOnline = isOnline,
                             demoOffset = currentOffset,
@@ -472,11 +633,11 @@ fun ContactsScreen(
                     }
                 }
 
-                // Section 2: Contacts to Invite to LKS Dialer
+                // Section 2: Contacts to Invite to RB Dialer
                 if (hasNonLks) {
                     item {
                         SectionHeader(
-                            title = "INVITE TO LKS DIALER",
+                            title = "INVITE TO RB DIALER",
                             count = filteredNonLksContacts.size,
                             accentColor = themeColor.primary
                         )
@@ -623,7 +784,7 @@ private fun SectionHeader(
     accentColor: Color
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        color = HudSurfaceContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -641,8 +802,12 @@ private fun SectionHeader(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "$title ($count)",
-                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                color = HudTextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -703,7 +868,7 @@ private fun SwipeableContactItem(
 
             // Foreground with demo offset
             Surface(
-                color = MaterialTheme.colorScheme.surface,
+                color = HudBackgroundPrimary,
                 modifier = Modifier
                     .fillMaxWidth()
                     .offset(x = demoOffset.dp)
@@ -766,7 +931,7 @@ private fun SwipeableContactItem(
                 }
             ) {
                 Surface(
-                    color = MaterialTheme.colorScheme.surface,
+                    color = HudBackgroundPrimary,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     ContactItemRow(
@@ -792,12 +957,11 @@ private fun ContactItemRow(
     onRingtoneClick: () -> Unit,
     onOpenChat: (() -> Unit)? = null
 ) {
-    val themeColor = LocalThemeColor.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onRingtoneClick() }
-            .padding(horizontal = 16.dp, vertical = 11.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Avatar with online status badge
@@ -808,41 +972,51 @@ private fun ContactItemRow(
                     modifier = Modifier
                         .size(13.dp)
                         .clip(CircleShape)
-                        .background(GreenCall)
+                        .background(CyberMint)
                         .align(Alignment.BottomEnd)
                 )
             }
         }
 
-        Spacer(modifier = Modifier.width(14.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = contact.name,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = HudTextPrimary,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Surface(
-                    color = themeColor.primary.copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(6.dp)
+                    color = CyberMint.copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.45f))
                 ) {
                     Text(
-                        text = "LKS",
+                        text = "RB",
+                        fontFamily = JetBrainsMonoFontFamily,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
-                        color = themeColor.primary,
+                        color = CyberMint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                     )
                 }
             }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "${contact.phoneNumber} • ${contact.statusMessage}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                text = contact.phoneNumber,
+                fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                color = SignalAmber,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -851,58 +1025,53 @@ private fun ContactItemRow(
         // Custom Ringtone button
         IconButton(
             onClick = onRingtoneClick,
-            modifier = Modifier.size(34.dp)
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 Icons.Default.MusicNote,
                 contentDescription = "Custom Ringtone",
-                tint = themeColor.primary.copy(alpha = 0.8f),
+                tint = SignalAmber.copy(alpha = 0.85f),
                 modifier = Modifier.size(18.dp)
             )
         }
 
-        Spacer(modifier = Modifier.width(2.dp))
-
         // Quick audio call shortcut
         IconButton(
             onClick = onAudioCall,
-            modifier = Modifier.size(36.dp)
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 Icons.Default.Call,
                 contentDescription = "Audio Call",
-                tint = GreenCall,
+                tint = CyberMint,
                 modifier = Modifier.size(20.dp)
             )
         }
 
-        Spacer(modifier = Modifier.width(2.dp))
-
         // Quick video call shortcut
         IconButton(
             onClick = onVideoCall,
-            modifier = Modifier.size(36.dp)
+            modifier = Modifier.size(48.dp)
         ) {
             Icon(
                 Icons.Default.Videocam,
                 contentDescription = "Video Call",
-                tint = themeColor.primary,
-                modifier = Modifier.size(22.dp)
+                tint = SignalAmber,
+                modifier = Modifier.size(21.dp)
             )
         }
 
         // Quick chat shortcut
         if (onOpenChat != null) {
-            Spacer(modifier = Modifier.width(2.dp))
             IconButton(
                 onClick = onOpenChat,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     Icons.Default.ChatBubbleOutline,
                     contentDescription = "Chat",
-                    tint = GreenCall,
-                    modifier = Modifier.size(20.dp)
+                    tint = TelemetryBlue,
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }
@@ -916,36 +1085,39 @@ private fun InviteContactItem(
     onRingtoneClick: () -> Unit,
     onCellularCall: () -> Unit
 ) {
-    val themeColor = LocalThemeColor.current
-
     Surface(
-        color = MaterialTheme.colorScheme.surface,
+        color = HudBackgroundPrimary,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onRingtoneClick() }
-                .padding(horizontal = 16.dp, vertical = 11.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Initial Avatar
             ContactAvatar(name = contact.name, profilePicBase64 = "")
 
-            Spacer(modifier = Modifier.width(14.dp))
+            Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = contact.name.ifBlank { "Contact" },
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
+                    fontFamily = SpaceGroteskFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = HudTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = contact.phoneNumber,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = HudTextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -954,56 +1126,58 @@ private fun InviteContactItem(
             // Custom Ringtone button
             IconButton(
                 onClick = onRingtoneClick,
-                modifier = Modifier.size(34.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     Icons.Default.MusicNote,
                     contentDescription = "Custom Ringtone",
-                    tint = themeColor.primary.copy(alpha = 0.8f),
+                    tint = SignalAmber.copy(alpha = 0.85f),
                     modifier = Modifier.size(18.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.width(2.dp))
-
             // Quick Cellular Call button
             IconButton(
                 onClick = onCellularCall,
-                modifier = Modifier.size(34.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     Icons.Default.Call,
                     contentDescription = "Cellular Call",
-                    tint = GreenCall,
+                    tint = CyberMint,
                     modifier = Modifier.size(18.dp)
                 )
             }
 
             Spacer(modifier = Modifier.width(4.dp))
 
-            // Sleek "Invite" Pill Button
+            // Sleek "Invite" Pill Button (>= 48dp height touch target)
             OutlinedButton(
                 onClick = onInvite,
-                shape = RoundedCornerShape(20.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = themeColor.primary
+                    containerColor = SignalAmber.copy(alpha = 0.12f),
+                    contentColor = SignalAmber
                 ),
-                border = androidx.compose.foundation.BorderStroke(1.dp, themeColor.primary.copy(alpha = 0.6f)),
-                modifier = Modifier.height(34.dp)
+                border = BorderStroke(1.dp, SignalAmber.copy(alpha = 0.6f)),
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
                 Icon(
                     Icons.Default.Share,
                     contentDescription = null,
                     modifier = Modifier.size(14.dp),
-                    tint = themeColor.primary
+                    tint = SignalAmber
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
-                    text = "Invite",
-                    fontSize = 12.sp,
+                    text = "INVITE",
+                    fontFamily = JetBrainsMonoFontFamily,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = themeColor.primary
+                    color = SignalAmber,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
