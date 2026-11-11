@@ -328,6 +328,58 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
+            val isDarkMode by themeManager.isDarkMode.collectAsState()
+            Surface(
+                shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                color = surfaceStyle.cardColor,
+                border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, SignalAmber)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = if (isDarkMode) Icons.Default.DarkMode else Icons.Default.LightMode,
+                            contentDescription = null,
+                            tint = if (isDarkMode) CyberMint else SignalAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = if (isDarkMode) "Dark Theme Mode" else "Light Theme Mode (Default)",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = HudTextPrimary
+                            )
+                            Text(
+                                text = "Tap switch to toggle Light / Dark theme",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontSize = 11.sp,
+                                color = HudTextSecondary
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = isDarkMode,
+                        onCheckedChange = { themeManager.setDarkMode(it) }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             // ── UI Surface Style Quick Selector (Clay 3D / Frosted Glass / Liquid Glass / HUD) ──
             Row(
                 modifier = Modifier.fillMaxWidth(),

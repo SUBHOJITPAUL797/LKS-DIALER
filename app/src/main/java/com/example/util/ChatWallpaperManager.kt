@@ -44,45 +44,64 @@ class ChatWallpaperManager private constructor(private val context: Context) {
 
         val PRESETS = listOf(
             WallpaperPreset(
+                id = "WHATSAPP_CREAM",
+                name = "Classic Warm Cream (Light)",
+                previewColor = Color(0xFFEFEAE2),
+                gradientColors = listOf(Color(0xFFF6F2EC), Color(0xFFEFEAE2)),
+                isDoodle = true
+            ),
+            WallpaperPreset(
+                id = "SKY_BREEZE",
+                name = "Sky Breeze (Light)",
+                previewColor = Color(0xFFE0F2FE),
+                gradientColors = listOf(Color(0xFFF0F9FF), Color(0xFFE0F2FE))
+            ),
+            WallpaperPreset(
+                id = "MINT_FRESH",
+                name = "Mint Fresh (Light)",
+                previewColor = Color(0xFFD1FAE5),
+                gradientColors = listOf(Color(0xFFECFDF5), Color(0xFFD1FAE5))
+            ),
+            WallpaperPreset(
                 id = "DOODLE",
-                name = "Doodle Pattern",
+                name = "Doodle Night (Dark)",
                 previewColor = Color(0xFF0F2B20),
                 gradientColors = listOf(Color(0xFF0B141A), Color(0xFF11212B)),
                 isDoodle = true
             ),
             WallpaperPreset(
                 id = "EMERALD_NIGHT",
-                name = "Emerald VoIP",
+                name = "Emerald VoIP (Dark)",
                 previewColor = Color(0xFF0A2B1D),
                 gradientColors = listOf(Color(0xFF04180F), Color(0xFF0D3323))
             ),
             WallpaperPreset(
                 id = "MIDNIGHT_OLED",
-                name = "Midnight OLED",
+                name = "Midnight OLED (Dark)",
                 previewColor = Color(0xFF000000),
                 gradientColors = listOf(Color(0xFF000000), Color(0xFF0D0D0D))
             ),
             WallpaperPreset(
                 id = "DEEP_OCEAN",
-                name = "Deep Ocean",
+                name = "Deep Ocean (Dark)",
                 previewColor = Color(0xFF091E3A),
                 gradientColors = listOf(Color(0xFF040F1D), Color(0xFF0D294D))
             ),
             WallpaperPreset(
                 id = "SUNSET_CRIMSON",
-                name = "Sunset Plum",
+                name = "Sunset Plum (Dark)",
                 previewColor = Color(0xFF2E1229),
                 gradientColors = listOf(Color(0xFF170815), Color(0xFF381432))
             ),
             WallpaperPreset(
                 id = "MINIMAL_SLATE",
-                name = "Minimal Slate",
+                name = "Minimal Slate (Dark)",
                 previewColor = Color(0xFF1C232B),
                 gradientColors = listOf(Color(0xFF101418), Color(0xFF222B35))
             ),
             WallpaperPreset(
                 id = "LAVENDER_MIST",
-                name = "Lavender Mist",
+                name = "Lavender Mist (Dark)",
                 previewColor = Color(0xFF261938),
                 gradientColors = listOf(Color(0xFF140C20), Color(0xFF321F4B))
             )

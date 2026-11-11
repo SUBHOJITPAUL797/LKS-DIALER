@@ -139,52 +139,82 @@ fun ChatListScreen(
                         )
                     }
                     Box {
-                        IconButton(
+                        Surface(
                             onClick = { showOptionsMenu = true },
-                            modifier = Modifier.size(48.dp)
+                            shape = CircleShape,
+                            color = if (showOptionsMenu) SignalAmber.copy(alpha = 0.16f) else Color.Transparent,
+                            modifier = Modifier.size(42.dp)
                         ) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = SignalAmber)
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "Options", tint = SignalAmber)
+                            }
                         }
+                        val isDarkMenu = com.example.ui.theme.LocalIsDarkTheme.current
                         DropdownMenu(
                             expanded = showOptionsMenu,
                             onDismissRequest = { showOptionsMenu = false },
-                            modifier = Modifier.background(HudSurfaceContainer)
+                            shape = RoundedCornerShape(22.dp),
+                            containerColor = if (isDarkMenu) Color(0xFF182229) else Color.White,
+                            tonalElevation = if (isDarkMenu) 8.dp else 2.dp,
+                            shadowElevation = 14.dp,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isDarkMenu) Color.White.copy(alpha = 0.09f) else Color(0xFFE2E8F0)
+                            ),
+                            modifier = Modifier
+                                .widthIn(min = 248.dp, max = 276.dp)
+                                .padding(vertical = 4.dp)
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("New Group", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
-                                leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = SignalAmber) },
+                            WhatsAppStyledMenuItem(
+                                title = "New group",
+                                subtitle = "Create a group chat",
+                                icon = Icons.Default.People,
+                                iconTint = Color(0xFF059669),
                                 onClick = {
                                     showOptionsMenu = false
                                     showNewGroupDialog = true
                                 }
                             )
-                            DropdownMenuItem(
-                                text = { Text("Linked Devices", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
-                                leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = SignalAmber) },
+                            WhatsAppStyledMenuItem(
+                                title = "Linked devices",
+                                subtitle = "Pair or manage devices",
+                                icon = Icons.Default.QrCodeScanner,
+                                iconTint = Color(0xFF0284C7),
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToLinkedDevices()
                                 }
                             )
-                            DropdownMenuItem(
-                                text = { Text("Manage Storage", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
-                                leadingIcon = { Icon(Icons.Default.Storage, contentDescription = null, tint = SignalAmber) },
+                            WhatsAppStyledMenuItem(
+                                title = "Manage storage",
+                                subtitle = "Inspect media & free space",
+                                icon = Icons.Default.Storage,
+                                iconTint = Color(0xFF9333EA),
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToStorage()
                                 }
                             )
-                            DropdownMenuItem(
-                                text = { Text("Chat Wallpaper & Theme", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold) },
-                                leadingIcon = { Icon(Icons.Default.Wallpaper, contentDescription = null, tint = SignalAmber) },
+                            WhatsAppStyledMenuItem(
+                                title = "Chat wallpaper & theme",
+                                subtitle = "Customize colors & backgrounds",
+                                icon = Icons.Default.Wallpaper,
+                                iconTint = Color(0xFFF59E0B),
                                 onClick = {
                                     showOptionsMenu = false
                                     onNavigateToSettings()
                                 }
                             )
-                            DropdownMenuItem(
-                                text = { Text("Clear All Chats", fontFamily = SpaceGroteskFontFamily, fontWeight = FontWeight.Bold, color = CrimsonAlert) },
-                                leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = CrimsonAlert) },
+                            HorizontalDivider(
+                                color = if (isDarkMenu) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                            WhatsAppStyledMenuItem(
+                                title = "Clear all chats",
+                                subtitle = "Remove all message history",
+                                icon = Icons.Default.DeleteSweep,
+                                iconTint = CrimsonAlert,
+                                isDestructive = true,
                                 onClick = {
                                     showOptionsMenu = false
                                     showClearAllConfirm = true

@@ -30,6 +30,7 @@ import android.view.WindowManager
 import com.example.data.model.CallDirection
 import com.example.data.model.CallStatus
 import com.example.data.model.CallType
+import com.example.data.model.ContactDto
 import com.example.data.repository.FirebaseManager
 import com.example.ui.screens.call.*
 import com.example.ui.screens.contacts.ContactsScreen
@@ -41,11 +42,13 @@ import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.theme.LksDialerTheme
 import com.example.ui.theme.TealPrimary
 import com.example.webrtc.WebRtcEngine
+import com.example.webrtc.GroupCallEngine
 import com.example.util.GitHubUpdater
 import com.example.util.UpdateInfo
 import com.example.util.LksIncomingRingtonePlayer
 import com.example.ui.components.UpdateDialog
 import com.example.ui.components.OngoingCallTopBar
+import com.example.ui.components.surfaceFinishOverlay
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 
@@ -906,13 +909,28 @@ class MainActivity : ComponentActivity() {
                 val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
                 val direction = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
 
+                val groupCallEngine = remember { GroupCallEngine.getInstance(context, firebaseManager) }
+                val groupCallState by groupCallEngine.state.collectAsState()
+                var showStartGroupCallModal by remember { mutableStateOf(false) }
+                var preselectedGroupPeer by remember { mutableStateOf<ContactDto?>(null) }
+
+                LaunchedEffect(groupCallState.incomingInviteRoom?.roomId, groupCallState.isActive) {
+                    val invite = groupCallState.incomingInviteRoom
+                    val isOneToOneIncomingRinging = rtcState.callStatus == CallStatus.RINGING && !rtcState.isCaller
+                    if (invite != null && !groupCallState.isActive) {
+                        LksIncomingRingtonePlayer.start(context, invite.hostPhone, invite.roomId)
+                    } else if (!isOneToOneIncomingRinging) {
+                        LksIncomingRingtonePlayer.stop()
+                    }
+                }
+
                 var settingsInitialCategory by remember {
                     mutableStateOf(com.example.ui.screens.settings.SettingsCategory.ALL)
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        // WhatsApp-style persistent in-app ongoing call banner when call is minimized
+                        // WhatsApp-style persistent in-app ongoing call banner when 1-to-1 call is minimized
                         if (isCallActive && isCallMinimized && activeCall != null) {
                             OngoingCallTopBar(
                                 activeCall = activeCall,
@@ -934,6 +952,31 @@ class MainActivity : ComponentActivity() {
                                     webRtcEngine.endCall()
                                 }
                             )
+                        }
+
+                        // Persistent in-app ongoing Group Conference banner when minimized
+                        if (groupCallState.isActive && groupCallState.isMinimized) {
+                            MinimizedGroupCallTopBar(
+                                state = groupCallState,
+                                onExpand = { groupCallEngine.setMinimized(false) },
+                                onLeaveOrEnd = { groupCallEngine.leaveGroupCall() }
+                            )
+                        }
+
+                        var previousNavState by remember { mutableStateOf(AppNavState.MAIN) }
+                        val openChatWithPeer: (String, String, String?) -> Unit = { phone, name, avatar ->
+                            val resolvedAvatar = if (!avatar.isNullOrBlank()) {
+                                avatar
+                            } else {
+                                firebaseManager.lookupUserByNumber(phone)?.profilePictureUrl ?: ""
+                            }
+                            chatPeerNumber = phone
+                            chatPeerName = name
+                            chatPeerAvatar = resolvedAvatar
+                            if (navState != AppNavState.CHAT_CONVERSATION) {
+                                previousNavState = navState
+                            }
+                            navState = AppNavState.CHAT_CONVERSATION
                         }
 
                         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -982,22 +1025,41 @@ class MainActivity : ComponentActivity() {
                                         firebaseManager = firebaseManager,
                                         initialCategory = settingsInitialCategory,
                                         onBackClick = { navState = AppNavState.MAIN },
-                                        onNavigateToStorage = { navState = AppNavState.STORAGE_MANAGEMENT },
-                                        onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES }
+                                        onNavigateToStorage = {
+                                            previousNavState = AppNavState.SETTINGS
+                                            navState = AppNavState.STORAGE_MANAGEMENT
+                                        },
+                                        onNavigateToLinkedDevices = {
+                                            previousNavState = AppNavState.SETTINGS
+                                            navState = AppNavState.LINKED_DEVICES
+                                        }
                                     )
                                 }
                                 AppNavState.MAIN -> {
+                                    androidx.activity.compose.BackHandler(enabled = selectedTab != MainTab.DIALER) {
+                                        selectedTab = MainTab.DIALER
+                                    }
                                     Scaffold(
                                         modifier = Modifier.fillMaxSize(),
                                         contentWindowInsets = WindowInsets(0, 0, 0, 0),
                                         bottomBar = {
-                                            Column {
+                                            val activeSurfaceStyle = com.example.ui.theme.LocalSurfaceStyle.current
+                                            val isDarkThemeActive by remember {
+                                                com.example.ui.theme.ThemeManager.getInstance(context)
+                                            }.isDarkMode.collectAsState()
+                                            Column(
+                                                modifier = Modifier.surfaceFinishOverlay(
+                                                    style = activeSurfaceStyle,
+                                                    cornerRadius = 0.dp,
+                                                    accentColor = currentThemeColor.primary
+                                                )
+                                            ) {
                                                 HorizontalDivider(
                                                     thickness = 1.dp,
-                                                    color = com.example.ui.theme.HudBorderSubtle
+                                                    color = activeSurfaceStyle.resolvedBorderColor(isDarkThemeActive)
                                                 )
                                                 NavigationBar(
-                                                    containerColor = com.example.ui.theme.HudSurfaceContainer,
+                                                    containerColor = activeSurfaceStyle.resolvedCardColor(isDarkThemeActive),
                                                     tonalElevation = 0.dp
                                                 ) {
                                                     MainTab.entries.forEach { tab ->
@@ -1059,43 +1121,49 @@ class MainActivity : ComponentActivity() {
                                                 MainTab.DIALER -> DialerScreen(
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
-                                                    onNavigateToSettings = { navState = AppNavState.SETTINGS },
-                                                    onNavigateToLinkedDevices = { navState = AppNavState.LINKED_DEVICES },
+                                                    onNavigateToSettings = {
+                                                        settingsInitialCategory = com.example.ui.screens.settings.SettingsCategory.ALL
+                                                        navState = AppNavState.SETTINGS
+                                                    },
+                                                    onNavigateToLinkedDevices = {
+                                                        previousNavState = AppNavState.MAIN
+                                                        navState = AppNavState.LINKED_DEVICES
+                                                    },
                                                     onNavigateToChats = { selectedTab = MainTab.CHATS },
                                                     onNavigateToContacts = { selectedTab = MainTab.CONTACTS },
                                                     onOpenDirectChat = { number, name ->
-                                                        chatPeerNumber = number
-                                                        chatPeerName = name
-                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                        openChatWithPeer(number, name, null)
                                                     }
                                                 )
                                                 MainTab.RECENTS -> CallHistoryScreen(
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
                                                     onOpenChat = { number, name ->
-                                                        chatPeerNumber = number
-                                                        chatPeerName = name
-                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                        openChatWithPeer(number, name, null)
                                                     },
-                                                    onNavigateToDialer = { selectedTab = MainTab.DIALER }
+                                                    onNavigateToDialer = { selectedTab = MainTab.DIALER },
+                                                    onOpenGroupCallModal = {
+                                                        preselectedGroupPeer = null
+                                                        showStartGroupCallModal = true
+                                                    }
                                                 )
                                                 MainTab.CHATS -> ChatListScreen(
                                                     firebaseManager = firebaseManager,
                                                     activeCallNumber = if (isCallActive) otherPartyNumber else null,
                                                     activeCallType = if (isCallActive) activeCall?.callType else null,
                                                     onOpenConversation = { phone, name, avatar ->
-                                                        chatPeerNumber = phone
-                                                        chatPeerName = name
-                                                        chatPeerAvatar = avatar
-                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                        openChatWithPeer(phone, name, avatar)
                                                     },
                                                     onNavigateToStorage = {
+                                                        previousNavState = AppNavState.MAIN
                                                         navState = AppNavState.STORAGE_MANAGEMENT
                                                     },
                                                     onNavigateToSettings = {
+                                                        settingsInitialCategory = com.example.ui.screens.settings.SettingsCategory.APPEARANCE
                                                         navState = AppNavState.SETTINGS
                                                     },
                                                     onNavigateToLinkedDevices = {
+                                                        previousNavState = AppNavState.MAIN
                                                         navState = AppNavState.LINKED_DEVICES
                                                     }
                                                 )
@@ -1103,9 +1171,11 @@ class MainActivity : ComponentActivity() {
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
                                                     onOpenChat = { number, name ->
-                                                        chatPeerNumber = number
-                                                        chatPeerName = name
-                                                        navState = AppNavState.CHAT_CONVERSATION
+                                                        openChatWithPeer(number, name, null)
+                                                    },
+                                                    onOpenGroupCallModal = {
+                                                        preselectedGroupPeer = null
+                                                        showStartGroupCallModal = true
                                                     }
                                                 )
                                                 MainTab.PROFILE -> ProfileScreen(
@@ -1120,9 +1190,15 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 AppNavState.CHAT_CONVERSATION -> {
+                                    val returnFromChat = {
+                                        navState = if (previousNavState == AppNavState.STORAGE_MANAGEMENT) {
+                                            AppNavState.STORAGE_MANAGEMENT
+                                        } else {
+                                            AppNavState.MAIN
+                                        }
+                                    }
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.MAIN
-                                        selectedTab = MainTab.CHATS
+                                        returnFromChat()
                                     }
                                     ChatConversationScreen(
                                         peerPhoneNumber = chatPeerNumber,
@@ -1138,40 +1214,48 @@ class MainActivity : ComponentActivity() {
                                             pendingSharedDocuments = null
                                         },
                                         onBackClick = {
-                                            navState = AppNavState.MAIN
-                                            selectedTab = MainTab.CHATS
+                                            returnFromChat()
                                         },
                                         onStartCall = safeStartCall
                                     )
                                 }
                                 AppNavState.STORAGE_MANAGEMENT -> {
+                                    val returnFromStorage = {
+                                        navState = if (previousNavState == AppNavState.SETTINGS) {
+                                            AppNavState.SETTINGS
+                                        } else {
+                                            AppNavState.MAIN
+                                        }
+                                    }
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.MAIN
-                                        selectedTab = MainTab.CHATS
+                                        returnFromStorage()
                                     }
                                     ChatStorageManagementScreen(
                                         chatRepository = ChatRepository.getInstance(context),
                                         firebaseManager = firebaseManager,
                                         onBackClick = {
-                                            navState = AppNavState.MAIN
-                                            selectedTab = MainTab.CHATS
+                                            returnFromStorage()
                                         },
                                         onOpenChat = { phone, name ->
-                                            chatPeerNumber = phone
-                                            chatPeerName = name
-                                            chatPeerAvatar = ""
-                                            navState = AppNavState.CHAT_CONVERSATION
+                                            openChatWithPeer(phone, name, null)
                                         }
                                     )
                                 }
                                 AppNavState.LINKED_DEVICES -> {
+                                    val returnFromLinked = {
+                                        navState = if (previousNavState == AppNavState.SETTINGS) {
+                                            AppNavState.SETTINGS
+                                        } else {
+                                            AppNavState.MAIN
+                                        }
+                                    }
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.MAIN
+                                        returnFromLinked()
                                     }
                                     LinkedDevicesScreen(
                                         firebaseManager = firebaseManager,
                                         onBackClick = {
-                                            navState = AppNavState.MAIN
+                                            returnFromLinked()
                                         }
                                     )
                                 }
@@ -1310,6 +1394,16 @@ class MainActivity : ComponentActivity() {
                                             displayNumber = otherPartyNumber,
                                             webRtcEngine = webRtcEngine,
                                             onMinimize = { isCallMinimized = true },
+                                            onAddPersonToGroup = {
+                                                preselectedGroupPeer = ContactDto(
+                                                    id = otherPartyNumber,
+                                                    name = otherPartyDisplayName,
+                                                    phoneNumber = otherPartyNumber,
+                                                    profilePictureUrl = otherPartyProfilePic,
+                                                    isVoiceLinkUser = true
+                                                )
+                                                showStartGroupCallModal = true
+                                            },
                                             onEndCall = {
                                                 firebaseManager.logCall(
                                                     direction = direction,
@@ -1331,6 +1425,16 @@ class MainActivity : ComponentActivity() {
                                             displayNumber = otherPartyNumber,
                                             webRtcEngine = webRtcEngine,
                                             onMinimize = { isCallMinimized = true },
+                                            onAddPersonToGroup = {
+                                                preselectedGroupPeer = ContactDto(
+                                                    id = otherPartyNumber,
+                                                    name = otherPartyDisplayName,
+                                                    phoneNumber = otherPartyNumber,
+                                                    profilePictureUrl = otherPartyProfilePic,
+                                                    isVoiceLinkUser = true
+                                                )
+                                                showStartGroupCallModal = true
+                                            },
                                             onEndCall = {
                                                 firebaseManager.logCall(
                                                     direction = direction,
@@ -1376,6 +1480,67 @@ class MainActivity : ComponentActivity() {
                                 else -> {}
                             }
                         }
+                    }
+
+                    // Incoming Group Conference Call Overlay (iPhone Liquid Glass & Samsung One UI Swipe)
+                    val incomingGroupRoom = groupCallState.incomingInviteRoom
+                    if (incomingGroupRoom != null && !groupCallState.isActive) {
+                        val hostPic = remember(incomingGroupRoom.hostPhone) {
+                            firebaseManager.lookupUserByNumber(incomingGroupRoom.hostPhone)?.profilePictureUrl ?: ""
+                        }
+                        IncomingCallOverlay(
+                            callerName = "${incomingGroupRoom.title} (${incomingGroupRoom.hostName})",
+                            callerNumber = "Group ${incomingGroupRoom.callType.name} • ${incomingGroupRoom.invitedPhones.size + 1} Invited",
+                            profilePicUrl = hostPic,
+                            callType = incomingGroupRoom.callType,
+                            isSpam = false,
+                            onAnswer = {
+                                LksIncomingRingtonePlayer.stop()
+                                groupCallEngine.answerIncomingGroupInvite()
+                            },
+                            onDecline = {
+                                LksIncomingRingtonePlayer.stop()
+                                groupCallEngine.declineIncomingGroupInvite()
+                            }
+                        )
+                    }
+
+                    // Active Group Conference Screen (Zoom-Grade Multi-Participant Stage)
+                    if (groupCallState.isActive && !groupCallState.isMinimized) {
+                        androidx.activity.compose.BackHandler {
+                            groupCallEngine.setMinimized(true)
+                        }
+                        ActiveGroupCallScreen(
+                            state = groupCallState,
+                            groupCallEngine = groupCallEngine,
+                            firebaseManager = firebaseManager,
+                            onMinimize = { groupCallEngine.setMinimized(true) }
+                        )
+                    }
+
+                    // Start / Promote Group Conference Modal
+                    if (showStartGroupCallModal) {
+                        StartGroupCallModal(
+                            firebaseManager = firebaseManager,
+                            isAddingToExistingCall = false,
+                            preselectedContacts = listOfNotNull(preselectedGroupPeer),
+                            onStartGroupCall = { title, selectedContacts, callType, waitingRoom ->
+                                // If promoting from an active 1-to-1 call, end the 1-to-1 call cleanly first
+                                if (isCallActive && activeCall != null) {
+                                    webRtcEngine.endCall(activeCall.callId)
+                                }
+                                groupCallEngine.createGroupCall(
+                                    title = title,
+                                    invitedContacts = selectedContacts,
+                                    callType = callType,
+                                    waitingRoomEnabled = waitingRoom
+                                )
+                            },
+                            onDismiss = {
+                                showStartGroupCallModal = false
+                                preselectedGroupPeer = null
+                            }
+                        )
                     }
                 }
                     

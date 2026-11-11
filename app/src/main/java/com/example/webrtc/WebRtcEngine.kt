@@ -340,20 +340,20 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Check OEM DSP hardware support and enable them to completely cancel speaker echo
         // and background noise on both parties' devices.
         val isAecSupported = try {
-            android.media.audiofx.AcousticEchoCanceler.isAvailable()
-        } catch (_: Exception) {
             JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
+        } catch (_: Exception) {
+            false
         }
         val isNsSupported = try {
-            android.media.audiofx.NoiseSuppressor.isAvailable()
-        } catch (_: Exception) {
             JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+        } catch (_: Exception) {
+            false
         }
         Log.i("WebRtcEngine", "Hardware AEC Supported: $isAecSupported, Hardware NS Supported: $isNsSupported")
 
         val audioDeviceModule: JavaAudioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(isAecSupported) // Hardware DSP Acoustic Echo Canceler cancels YouTube / media & speaker feedback
-            .setUseHardwareNoiseSuppressor(isNsSupported)      // Hardware DSP Noise Suppressor cancels fan / ambient noise
+            .setUseHardwareAcousticEchoCanceler(isAecSupported) // Uses HW DSP when supported, falls back to WebRTC software AEC3 cleanly
+            .setUseHardwareNoiseSuppressor(isNsSupported)      // Uses HW DSP when supported, falls back to WebRTC software NS cleanly
             .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setUseStereoInput(false)
             .setAudioAttributes(
@@ -496,37 +496,80 @@ class WebRtcEngine private constructor(private val context: Context) {
         } catch (_: Exception) {}
     }
 
+    private val mediaTeardownScope = CoroutineScope(
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "WebRtcTeardownThread").apply { isDaemon = true }
+        }.asCoroutineDispatcher() + SupervisorJob()
+    )
+
     /**
-     * Dedicated teardown for any active PeerConnection and media tracks.
-     * Prevents orphaned audio/video tracks and native AudioRecord/AudioTrack conflicts.
+     * Dedicated non-blocking teardown for any active PeerConnection and media tracks.
+     * Immediately clears UI state & references (<1ms on Main thread) so Compose SurfaceViewRenderers
+     * detach their sinks cleanly, then disposes camera & native PeerConnection on a background thread.
+     * Never calls remoteVideoTrack.dispose() manually because PeerConnection.dispose() owns remote receiver tracks.
      */
     private fun cleanupMediaAndPeerConnection() {
         unregisterNetworkHandoffCallback()
-        try { localAudioTrack?.setEnabled(false) } catch (_: Exception) {}
-        try { localAudioTrack?.dispose() } catch (_: Exception) {}
-        localAudioTrack = null
-        try { audioSource?.dispose() } catch (_: Exception) {}
-        audioSource = null
 
-        try { _state.value.localVideoTrack?.dispose() } catch (_: Exception) {}
-        try { _state.value.remoteVideoTrack?.dispose() } catch (_: Exception) {}
-        _state.value = _state.value.copy(localVideoTrack = null, remoteVideoTrack = null)
-        
-        try {
-            videoCapturer?.stopCapture()
-            videoCapturer?.dispose()
-        } catch (_: Exception) {}
+        val oldAudioTrack = localAudioTrack
+        val oldAudioSource = audioSource
+        val oldLocalVideoTrack = _state.value.localVideoTrack
+        val oldCapturer = videoCapturer
+        val oldVideoSource = videoSource
+        val oldSurfaceHelper = surfaceTextureHelper
+        val oldPc = peerConnection
+
+        localAudioTrack = null
+        audioSource = null
         videoCapturer = null
-        try { videoSource?.dispose() } catch (_: Exception) {}
         videoSource = null
-        try { surfaceTextureHelper?.dispose() } catch (_: Exception) {}
         surfaceTextureHelper = null
-        
-        try {
-            peerConnection?.close()
-            peerConnection?.dispose()
-        } catch (_: Exception) {}
         peerConnection = null
+
+        // Immediately clear video tracks from UI state so Compose detaches SurfaceViewRenderer sinks right away
+        if (_state.value.localVideoTrack != null || _state.value.remoteVideoTrack != null) {
+            _state.value = _state.value.copy(localVideoTrack = null, remoteVideoTrack = null)
+        }
+
+        try { oldAudioTrack?.setEnabled(false) } catch (_: Throwable) {}
+        try { oldLocalVideoTrack?.setEnabled(false) } catch (_: Throwable) {}
+
+        if (oldAudioTrack != null || oldAudioSource != null || oldLocalVideoTrack != null ||
+            oldCapturer != null || oldVideoSource != null || oldSurfaceHelper != null || oldPc != null
+        ) {
+            mediaTeardownScope.launch {
+                // Allow 90ms for Compose AndroidView onRelease to call removeSink(view) on Main thread
+                // before native MediaStreamTrack / PeerConnection objects are disposed
+                delay(90)
+                try {
+                    oldCapturer?.stopCapture()
+                } catch (_: Throwable) {}
+                try {
+                    oldCapturer?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldPc?.close()
+                } catch (_: Throwable) {}
+                try {
+                    oldLocalVideoTrack?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldVideoSource?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldSurfaceHelper?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldAudioTrack?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldAudioSource?.dispose()
+                } catch (_: Throwable) {}
+                try {
+                    oldPc?.dispose()
+                } catch (_: Throwable) {}
+            }
+        }
     }
 
     /**
@@ -2972,37 +3015,25 @@ class WebRtcEngine private constructor(private val context: Context) {
         videoUpgradeWatchdogJob = null
 
         val currentCall = _state.value.activeCall
+        val oldCapturer = videoCapturer
+        val oldVideoSource = videoSource
+        val oldSurfaceHelper = surfaceTextureHelper
+        val oldLocalVideoTrack = _state.value.localVideoTrack
 
-        // 1. Stop and completely dispose video capturer, sources, and helpers to free hardware
-        try {
-            videoCapturer?.stopCapture()
-            videoCapturer?.dispose()
-        } catch (_: Exception) {}
         videoCapturer = null
-
-        try {
-            videoSource?.dispose()
-        } catch (_: Exception) {}
         videoSource = null
-
-        try {
-            surfaceTextureHelper?.dispose()
-        } catch (_: Exception) {}
         surfaceTextureHelper = null
 
-        try {
-            _state.value.localVideoTrack?.setEnabled(false)
-            _state.value.localVideoTrack?.dispose()
-        } catch (_: Exception) {}
+        try { oldLocalVideoTrack?.setEnabled(false) } catch (_: Throwable) {}
 
-        // 2. Remove video track from peer connection senders
+        // 1. Remove video track from peer connection senders safely without disposing yet
         try {
             peerConnection?.senders?.find { it.track() is VideoTrack }?.let { sender ->
                 sender.setTrack(null, false)
             }
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
 
-        // 3. Update state back to AUDIO
+        // 2. Immediately update state back to AUDIO so UI detaches video renderers cleanly
         _state.value = _state.value.copy(
             callType = CallType.AUDIO,
             localVideoTrack = null,
@@ -3012,6 +3043,16 @@ class WebRtcEngine private constructor(private val context: Context) {
             didIRequestVideoUpgrade = false,
             connectionStatusText = reason
         )
+
+        // 3. Stop and dispose camera hardware asynchronously after UI detaches sinks
+        mediaTeardownScope.launch {
+            delay(90)
+            try { oldCapturer?.stopCapture() } catch (_: Throwable) {}
+            try { oldCapturer?.dispose() } catch (_: Throwable) {}
+            try { oldLocalVideoTrack?.dispose() } catch (_: Throwable) {}
+            try { oldVideoSource?.dispose() } catch (_: Throwable) {}
+            try { oldSurfaceHelper?.dispose() } catch (_: Throwable) {}
+        }
 
         // 4. Update Firestore so peer device immediately knows to revert to AUDIO
         val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
@@ -3418,7 +3459,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 deleteCallAndCandidates(callIdToDelete)
             }
         }
-        endCallInternalLocal(CallStatus.ENDED)
+        endCallInternalLocal(CallStatus.ENDED, isLocalHangup = true)
     }
 
     fun declineCall(targetCallId: String? = null, targetCallerNumber: String? = null, reason: String? = null) {
@@ -3472,7 +3513,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 deleteCallAndCandidates(callIdToDelete)
             }
         }
-        endCallInternalLocal(CallStatus.DECLINED, reason)
+        endCallInternalLocal(CallStatus.DECLINED, reason, isLocalHangup = true)
     }
 
     private fun deleteCallAndCandidates(callId: String) {
@@ -3501,15 +3542,17 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
-    private fun endCallInternalLocal(status: CallStatus, reason: String? = null) {
+    private fun endCallInternalLocal(status: CallStatus, reason: String? = null, isLocalHangup: Boolean = false) {
         activeCallSessionId = null
         // Guard: prevent double-cleanup
         if (_state.value.callStatus == CallStatus.IDLE && status != CallStatus.IDLE) return
-        com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status")
+        com.example.util.logging.LksLogger.breadcrumb("CALL", "Ending call locally with status: $status (isLocal=$isLocalHangup)")
         
         lastInitiateCallTimestamp = 0L // Reset debounce so user can redial immediately
-        com.example.util.CallSoundEffectsManager.stopRingbackTone()
-        com.example.util.CallSoundEffectsManager.stopHoldReminder()
+
+        val prevCall = _state.value.activeCall
+        val prevIsCaller = _state.value.isCaller
+        val prevDuration = _state.value.callDurationSeconds
 
         timerJob?.cancel()
         timerJob = null
@@ -3535,11 +3578,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         hasProcessedAnswer = false
         lastProcessedIceRestartTimestamp = 0L
         sentIceCandidateHashes.clear()
-        // Reset pre-warm state for the next incoming call
         prebuiltAnswerSdp = null
         prebuiltCallId = null
         preWarmDone = false
-        try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Exception) {}
         processedCandidateStrings.clear()
         localGatheredCandidates.clear()
         synchronized(queuedRemoteIceCandidates) {
@@ -3551,109 +3592,113 @@ class WebRtcEngine private constructor(private val context: Context) {
         } catch (_: Exception) {}
         incomingCallWakeLock = null
         
-        unregisterNetworkHandoffCallback()
+        // Non-blocking media & PeerConnection teardown (detaches tracks immediately, disposes hardware on background thread)
         cleanupMediaAndPeerConnection()
-        val prevCall = _state.value.activeCall
+        signalingManager.cleanup()
 
-        // Automatically stop call recording if active and capture saved file
-        val recordingFile = try {
-            com.example.util.CallAudioRecorder.getInstance(context).stopRecording(prevCall?.callId)
-        } catch (_: Exception) { null }
-
-        // Phase 3: Reliable call logs — record call ended for both caller and callee
-        if (prevCall != null) {
-            val userPhone = getEffectivePhoneNumber()
-            val isCaller = _state.value.isCaller || (userPhone.isNotBlank() && (
-                userPhone == prevCall.callerNumber ||
-                userPhone.replace(Regex("[^0-9]"), "") == prevCall.callerNumber.replace(Regex("[^0-9]"), "")
-            ))
-            val direction = if (status == CallStatus.MISSED) {
-                com.example.data.model.CallDirection.MISSED
-            } else if (isCaller) {
-                com.example.data.model.CallDirection.OUTGOING
-            } else {
-                com.example.data.model.CallDirection.INCOMING
-            }
-            val otherNumber = if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
-            val otherName = if (isCaller) prevCall.calleeName else prevCall.callerName
-            com.example.data.repository.FirebaseManager.getInstance(context).recordCallEnded(
-                callId = prevCall.callId,
-                status = status,
-                durationSeconds = _state.value.callDurationSeconds,
-                fallbackDirection = direction,
-                fallbackOtherNumber = otherNumber,
-                fallbackOtherName = otherName,
-                fallbackCallType = prevCall.callType,
-                recordingPath = recordingFile?.absolutePath
-            )
-        }
-
-        // Keep prevCall for UI display (so "Call Ended" screen shows caller name/number for 1500ms).
-        // The Firestore listener guard has been fixed to check callStatus (not activeCall == null)
-        // so the next incoming call can arrive during this window without being blocked.
         val effectiveReason = reason ?: prevCall?.reason
         val isBusy = effectiveReason.equals("busy", ignoreCase = true)
 
-        _state.value = _state.value.copy(
-            callStatus = status,
-            activeCall = prevCall,   // ← keep for UI display during the 1500ms end screen
-            connectionStatusText = when {
-                isBusy -> "User Busy / On Another Call"
-                status == CallStatus.ENDED -> "Call Ended"
-                status == CallStatus.DECLINED -> "Call Declined"
-                status == CallStatus.MISSED -> "Call Missed"
-                else -> status.name
-            },
-            activeCallerTuneTitle = null,
-            localVideoTrack = null,
-            remoteVideoTrack = null
-        )
-        
-        // Briefly delay then reset to IDLE so the UI can show the end status
+        // ⚡ Instant UI Dismissal when local user cuts/declines call; brief 550ms feedback when remote ends
         resetIdleJob?.cancel()
-        resetIdleJob = scope.launch {
-            delay(1500)
-            if (_state.value.callStatus != CallStatus.ANSWERED && _state.value.callStatus != CallStatus.CALLING && _state.value.callStatus != CallStatus.RINGING) {
-                _state.value = WebRtcState(callStatus = CallStatus.IDLE)
+        if (isLocalHangup || status == CallStatus.IDLE) {
+            _state.value = WebRtcState(callStatus = CallStatus.IDLE)
+        } else {
+            _state.value = _state.value.copy(
+                callStatus = status,
+                activeCall = prevCall,
+                connectionStatusText = when {
+                    isBusy -> "User Busy / On Another Call"
+                    status == CallStatus.ENDED -> "Call Ended"
+                    status == CallStatus.DECLINED -> "Call Declined"
+                    status == CallStatus.MISSED -> "Call Missed"
+                    else -> status.name
+                },
+                activeCallerTuneTitle = null,
+                localVideoTrack = null,
+                remoteVideoTrack = null
+            )
+            resetIdleJob = scope.launch {
+                delay(550)
+                if (_state.value.callStatus != CallStatus.ANSWERED &&
+                    _state.value.callStatus != CallStatus.CALLING &&
+                    _state.value.callStatus != CallStatus.RINGING
+                ) {
+                    _state.value = WebRtcState(callStatus = CallStatus.IDLE)
+                }
             }
         }
-        
-        // Reset audio routing & release audio focus
-        audioRouteManager.resetAudioRouting()
-        signalingManager.cleanup()
-        
-        try {
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-            notificationManager.cancel(1001)
-            notificationManager.cancel(2001)
-            notificationManager.cancel(2002)
-        } catch (_: Exception) {}
-        
-        try {
-            headsetButtonManager.stopListening()
-        } catch (_: Exception) {}
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+        // Run all audio, ringtone, service, and call log persistence asynchronously off the Main UI thread
+        mediaTeardownScope.launch {
+            try { audioDeviceModule?.setSpeakerMute(false) } catch (_: Throwable) {}
+            try { com.example.util.CallSoundEffectsManager.stopRingbackTone() } catch (_: Throwable) {}
+            try { com.example.util.CallSoundEffectsManager.stopHoldReminder() } catch (_: Throwable) {}
+            try { com.example.util.LksIncomingRingtonePlayer.stop() } catch (_: Throwable) {}
+            try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Throwable) {}
+            try { com.example.util.SamsungVoiceFocusManager.stop() } catch (_: Throwable) {}
+            try { headsetButtonManager.stopListening() } catch (_: Throwable) {}
+
+            val recordingFile = try {
+                com.example.util.CallAudioRecorder.getInstance(context).stopRecording(prevCall?.callId)
+            } catch (_: Throwable) { null }
+
+            if (prevCall != null) {
+                try {
+                    val userPhone = getEffectivePhoneNumber()
+                    val isCaller = prevIsCaller || (userPhone.isNotBlank() && (
+                        userPhone == prevCall.callerNumber ||
+                            userPhone.replace(Regex("[^0-9]"), "") == prevCall.callerNumber.replace(Regex("[^0-9]"), "")
+                        ))
+                    val direction = if (status == CallStatus.MISSED) {
+                        com.example.data.model.CallDirection.MISSED
+                    } else if (isCaller) {
+                        com.example.data.model.CallDirection.OUTGOING
+                    } else {
+                        com.example.data.model.CallDirection.INCOMING
+                    }
+                    val otherNumber = if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
+                    val otherName = if (isCaller) prevCall.calleeName else prevCall.callerName
+                    com.example.data.repository.FirebaseManager.getInstance(context).recordCallEnded(
+                        callId = prevCall.callId,
+                        status = status,
+                        durationSeconds = prevDuration,
+                        fallbackDirection = direction,
+                        fallbackOtherNumber = otherNumber,
+                        fallbackOtherName = otherName,
+                        fallbackCallType = prevCall.callType,
+                        recordingPath = recordingFile?.absolutePath
+                    )
+                } catch (_: Throwable) {}
+            }
+
             try {
-                com.example.services.LksConnectionService.disconnectCall()
-            } catch (_: Exception) {}
-        }
+                val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                notificationManager.cancel(1001)
+                notificationManager.cancel(2001)
+                notificationManager.cancel(2002)
+            } catch (_: Throwable) {}
 
-        com.example.services.ActiveCallService.stop(context)
-        com.example.services.FloatingCallBubbleService.hide(context)
-        com.example.util.LksIncomingRingtonePlayer.stop()
-        try { com.example.services.LksKeepAliveService.stopRingtone(context) } catch (_: Exception) {}
-        com.example.util.SamsungVoiceFocusManager.stop()
-        com.example.util.CallSoundEffectsManager.stopRingbackTone()
-        com.example.util.CallSoundEffectsManager.stopHoldReminder()
-        if (status != CallStatus.IDLE) {
-            if (isBusy) {
-                com.example.util.CallSoundEffectsManager.playBusyTone(context)
-            } else {
-                com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try { com.example.services.LksConnectionService.disconnectCall() } catch (_: Throwable) {}
             }
+            try { com.example.services.ActiveCallService.stop(context) } catch (_: Throwable) {}
+            try { com.example.services.FloatingCallBubbleService.hide(context) } catch (_: Throwable) {}
+
+            if (status != CallStatus.IDLE) {
+                try {
+                    if (isBusy) {
+                        com.example.util.CallSoundEffectsManager.playBusyTone(context)
+                    } else {
+                        com.example.util.CallSoundEffectsManager.playCallEndedTone(context)
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            try {
+                audioRouteManager.resetAudioRouting()
+            } catch (_: Throwable) {}
         }
-        // NOTE: 30s Firestore cleanup is scheduled by endCall()/declineCall() — not duplicated here.
     }
 
     /**

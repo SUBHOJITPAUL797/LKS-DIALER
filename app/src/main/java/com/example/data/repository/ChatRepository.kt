@@ -109,12 +109,45 @@ class ChatRepository private constructor(private val context: Context) {
 
         fun extractCleanText(rawText: String): String {
             if (rawText.isBlank()) return ""
-            if (rawText.startsWith("[gif:") || rawText.startsWith("http://") || rawText.startsWith("https://")) {
-                return ""
+            val trimmed = rawText.trim()
+            if (trimmed.startsWith("[gif:")) {
+                return "🎬 GIF"
+            }
+            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                return if (trimmed.contains("tenor.com", ignoreCase = true) || trimmed.endsWith(".gif", ignoreCase = true)) {
+                    "🎬 GIF"
+                } else {
+                    trimmed
+                }
             }
             return try {
-                val obj = JSONObject(rawText)
-                obj.optString("text", rawText)
+                val obj = JSONObject(trimmed)
+                when (obj.optString("__wa_type")) {
+                    "location" -> {
+                        val name = obj.optString("name").ifBlank { obj.optString("address") }
+                        if (name.isNotBlank()) "📍 Location: $name" else "📍 Shared Location"
+                    }
+                    "contact" -> {
+                        val name = obj.optString("name")
+                        if (name.isNotBlank()) "👤 Contact: $name" else "👤 Shared Contact"
+                    }
+                    "poll" -> {
+                        val question = obj.optString("question")
+                        if (question.isNotBlank()) "📊 Poll: $question" else "📊 Poll"
+                    }
+                    else -> {
+                        if (obj.has("text")) {
+                            val innerText = obj.optString("text", trimmed)
+                            if (innerText != trimmed && innerText.startsWith("{")) {
+                                extractCleanText(innerText)
+                            } else {
+                                innerText
+                            }
+                        } else {
+                            trimmed
+                        }
+                    }
+                }
             } catch (_: Exception) {
                 rawText
             }

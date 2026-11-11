@@ -70,7 +70,8 @@ fun CallHistoryScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit,
     onOpenChat: ((number: String, name: String) -> Unit)? = null,
-    onNavigateToDialer: (() -> Unit)? = null
+    onNavigateToDialer: (() -> Unit)? = null,
+    onOpenGroupCallModal: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val themeColor = LocalThemeColor.current
@@ -523,6 +524,35 @@ fun CallHistoryScreen(
                 }
             },
             actions = {
+                if (onOpenGroupCallModal != null) {
+                    Surface(
+                        onClick = onOpenGroupCallModal,
+                        shape = RoundedCornerShape(50),
+                        color = CyberMint.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.55f)),
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Groups,
+                                contentDescription = "Start Group Call",
+                                tint = CyberMint,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Group Call",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = HudTextPrimary
+                            )
+                        }
+                    }
+                }
                 if (callLogs.isNotEmpty()) {
                     IconButton(
                         onClick = { showClearDialog = true },

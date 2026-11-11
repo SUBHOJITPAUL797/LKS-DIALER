@@ -70,7 +70,8 @@ private enum class ContactFilterTab(val title: String) {
 fun ContactsScreen(
     firebaseManager: FirebaseManager,
     onStartCall: (number: String, name: String, callType: CallType) -> Unit,
-    onOpenChat: ((number: String, name: String) -> Unit)? = null
+    onOpenChat: ((number: String, name: String) -> Unit)? = null,
+    onOpenGroupCallModal: (() -> Unit)? = null
 ) {
     val themeColor = LocalThemeColor.current
     val context = LocalContext.current
@@ -271,6 +272,35 @@ fun ContactsScreen(
                 }
             },
             actions = {
+                if (onOpenGroupCallModal != null) {
+                    Surface(
+                        onClick = onOpenGroupCallModal,
+                        shape = RoundedCornerShape(50),
+                        color = CyberMint.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.55f)),
+                        modifier = Modifier.padding(end = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Groups,
+                                contentDescription = "Start Group Call",
+                                tint = CyberMint,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Group Call",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = HudTextPrimary
+                            )
+                        }
+                    }
+                }
                 IconButton(
                     onClick = {
                         lastInteractionTime = System.currentTimeMillis()

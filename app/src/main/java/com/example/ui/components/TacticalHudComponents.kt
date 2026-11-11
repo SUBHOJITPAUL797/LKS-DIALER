@@ -36,8 +36,10 @@ data class QuickStartStep(
 )
 
 /**
- * Seamless full-surface finish modifier for 3D Soft Clay, Frosted Glass, Liquid Glass, and Tactical HUD.
- * Uses full-card diagonal/radial gradients (never partial inner boxes that cut across text or icons).
+ * Industry-standard optical surface finish modifier for iPhone Liquid Glass, Frosted Fog Glass,
+ * 3D Soft Clay, and Clean Utility.
+ * Renders multi-layer specular highlights, inner luminous rims, and prismatic edge refraction
+ * without obscuring text or icons.
  */
 fun Modifier.surfaceFinishOverlay(
     style: AppSurfaceStyle,
@@ -46,14 +48,104 @@ fun Modifier.surfaceFinishOverlay(
 ): Modifier = this.drawWithContent {
     val rPx = cornerRadius.toPx()
     when (style) {
+        AppSurfaceStyle.LIQUID_GLASS -> {
+            // 1. Base Liquid Glass optical refraction wash (top-left specular caustics -> bottom-right prism tint)
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.34f),
+                        Color(0xFF38BDF8).copy(alpha = 0.09f),
+                        Color.Transparent,
+                        Color(0xFFA855F7).copy(alpha = 0.07f),
+                        Color.White.copy(alpha = 0.14f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                ),
+                cornerRadius = CornerRadius(rPx, rPx)
+            )
+            // 2. Soft top meniscus liquid sheen
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.28f),
+                        Color.White.copy(alpha = 0.05f),
+                        Color.Transparent
+                    ),
+                    startY = 0f,
+                    endY = size.height * 0.48f
+                ),
+                cornerRadius = CornerRadius(rPx, rPx)
+            )
+            drawContent()
+            // 3. Outer iPhone Liquid Glass specular prism rim (bright top-left & bottom-right specular reflection)
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.85f),
+                        Color(0xFF38BDF8).copy(alpha = 0.55f),
+                        accentColor.copy(alpha = 0.38f),
+                        Color(0xFFE879F9).copy(alpha = 0.45f),
+                        Color.White.copy(alpha = 0.70f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                ),
+                cornerRadius = CornerRadius(rPx, rPx),
+                style = Stroke(width = 1.35.dp.toPx())
+            )
+        }
+        AppSurfaceStyle.FROSTED_GLASS -> {
+            // 1. Satin Fog Glass diffused atmospheric layer
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.40f),
+                        Color(0xFFE0F2FE).copy(alpha = 0.16f),
+                        Color(0xFFF1F5F9).copy(alpha = 0.10f),
+                        Color.White.copy(alpha = 0.24f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                ),
+                cornerRadius = CornerRadius(rPx, rPx)
+            )
+            // 2. Radial soft fog glow from top center
+            drawRoundRect(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.24f),
+                        Color.Transparent
+                    ),
+                    center = Offset(size.width * 0.3f, 0f),
+                    radius = size.width.coerceAtLeast(1f) * 0.85f
+                ),
+                cornerRadius = CornerRadius(rPx, rPx)
+            )
+            drawContent()
+            // 3. Crisp frosted acrylic rim
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.78f),
+                        Color(0xFF7DD3FC).copy(alpha = 0.35f),
+                        Color.White.copy(alpha = 0.42f)
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height)
+                ),
+                cornerRadius = CornerRadius(rPx, rPx),
+                style = Stroke(width = 1.15.dp.toPx())
+            )
+        }
         AppSurfaceStyle.CLAY_3D -> {
             // Smooth full-card soft clay ambient gradient BEFORE content so text/icons stay 100% crisp
             drawRoundRect(
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.06f),
+                        Color.White.copy(alpha = 0.12f),
                         Color.Transparent,
-                        Color.Black.copy(alpha = 0.16f)
+                        Color.Black.copy(alpha = 0.08f)
                     ),
                     start = Offset(0f, 0f),
                     end = Offset(0f, size.height)
@@ -65,73 +157,13 @@ fun Modifier.surfaceFinishOverlay(
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.16f),
-                        style.borderColor.copy(alpha = 0.35f),
-                        Color.Black.copy(alpha = 0.25f)
+                        Color.White.copy(alpha = 0.32f),
+                        style.borderColor.copy(alpha = 0.45f),
+                        Color.Black.copy(alpha = 0.15f)
                     )
                 ),
                 cornerRadius = CornerRadius(rPx, rPx),
                 style = Stroke(width = 1.dp.toPx())
-            )
-        }
-        AppSurfaceStyle.FROSTED_GLASS -> {
-            // Smooth full-card frosted glass diagonal sheen BEFORE content
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.08f),
-                        Color(0xFF38BDF8).copy(alpha = 0.04f),
-                        Color.Transparent
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height)
-                ),
-                cornerRadius = CornerRadius(rPx, rPx)
-            )
-            drawContent()
-            // Clean 1dp icy frost border
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.28f),
-                        Color(0xFF7DD3FC).copy(alpha = 0.16f),
-                        Color.White.copy(alpha = 0.08f)
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height)
-                ),
-                cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = 1.dp.toPx())
-            )
-        }
-        AppSurfaceStyle.LIQUID_GLASS -> {
-            // Smooth full-card liquid glass refraction gradient BEFORE content
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF38BDF8).copy(alpha = 0.08f),
-                        Color.Transparent,
-                        Color(0xFFE879F9).copy(alpha = 0.05f)
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height)
-                ),
-                cornerRadius = CornerRadius(rPx, rPx)
-            )
-            drawContent()
-            // Clean 1dp iridescent liquid glass rim
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF38BDF8).copy(alpha = 0.42f),
-                        Color(0xFFE879F9).copy(alpha = 0.28f),
-                        accentColor.copy(alpha = 0.35f)
-                    ),
-                    start = Offset.Zero,
-                    end = Offset(size.width, size.height)
-                ),
-                cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = 1.1.dp.toPx())
             )
         }
         AppSurfaceStyle.TACTICAL_HUD -> {
@@ -149,10 +181,13 @@ fun StyledSurfaceCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val isDark = LocalIsDarkTheme.current
     val cornerRadius = style.cornerRadiusDp.dp
     val shape = RoundedCornerShape(cornerRadius)
-    val borderColor = if (isHighlighted) accentColor else style.borderColor.copy(alpha = 0.65f)
-    val bgColor = if (isHighlighted) accentColor.copy(alpha = 0.14f) else style.cardColor
+    val baseBorder = style.resolvedBorderColor(isDark)
+    val baseCard = style.resolvedCardColor(isDark)
+    val borderColor = if (isHighlighted) accentColor else baseBorder.copy(alpha = 0.75f)
+    val bgColor = if (isHighlighted) accentColor.copy(alpha = 0.15f) else baseCard
 
     if (onClick != null) {
         Surface(

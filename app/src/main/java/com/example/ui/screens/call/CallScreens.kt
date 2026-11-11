@@ -5,6 +5,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -381,17 +382,84 @@ fun IncomingCallOverlay(
     onAnswer: () -> Unit,
     onDecline: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val themeManager = remember { ThemeManager.getInstance(context) }
+    val incomingCallStyle by themeManager.incomingCallStyle.collectAsState()
+    val incomingSwipeDirection by themeManager.incomingSwipeDirection.collectAsState()
     var actionTaken by remember { mutableStateOf(false) }
+
+    val triggerAnswer = {
+        if (!actionTaken) {
+            actionTaken = true
+            try {
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            } catch (_: Throwable) {}
+            onAnswer()
+        }
+    }
+
+    val triggerDecline = {
+        if (!actionTaken) {
+            actionTaken = true
+            try {
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            } catch (_: Throwable) {}
+            onDecline()
+        }
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "incoming_call_liquid")
+    val pulsePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulse_phase"
+    )
+    val shimmerOffset by infiniteTransition.animateFloat(
+        initialValue = -1f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer_offset"
+    )
+    val floatBreath by infiniteTransition.animateFloat(
+        initialValue = -6f,
+        targetValue = 6f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "float_breath"
+    )
+
+    val isSamsungStyle = incomingCallStyle == IncomingCallUiStyle.SAMSUNG_ONE_UI ||
+        incomingSwipeDirection == IncomingSwipeDirection.SAMSUNG_EXPAND_RING
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF0A101E),
-                        Color(0xFF0F172A),
-                        Color(0xFF1E293B)
-                    )
+                    colors = if (isSamsungStyle) {
+                        listOf(
+                            Color(0xFF06152D),
+                            Color(0xFF0B2545),
+                            Color(0xFF091326)
+                        )
+                    } else {
+                        listOf(
+                            Color(0xFF0A1428),
+                            Color(0xFF10203B),
+                            Color(0xFF070E1C)
+                        )
+                    }
                 )
             )
             .pointerInput(Unit) { detectTapGestures { } }
@@ -399,24 +467,58 @@ fun IncomingCallOverlay(
         val decodedBitmap = remember(profilePicUrl) {
             if (profilePicUrl.isNotBlank()) ImageUtils.decodeBase64ToImageBitmap(profilePicUrl) else null
         }
-        
+
         if (decodedBitmap != null) {
             Image(
                 bitmap = decodedBitmap,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .scale(1.08f)
             )
-            // Dark translucent gradient overlay
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             listOf(
-                                Color.Black.copy(alpha = 0.72f),
-                                Color.Black.copy(alpha = 0.55f),
-                                Color.Black.copy(alpha = 0.85f)
+                                Color(0xFF060D1A).copy(alpha = 0.65f),
+                                Color(0xFF0A182E).copy(alpha = 0.52f),
+                                Color(0xFF050B14).copy(alpha = 0.84f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            // Ambient Liquid Glass refractive aura orbs in background
+            Box(
+                modifier = Modifier
+                    .offset(x = (-50).dp, y = (70 + floatBreath).dp)
+                    .size(280.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0xFF38BDF8).copy(alpha = 0.24f),
+                                Color(0xFF6366F1).copy(alpha = 0.08f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 60.dp, y = (-90 - floatBreath).dp)
+                    .size(300.dp)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                CyberMint.copy(alpha = 0.22f),
+                                Color(0xFF0EA5E9).copy(alpha = 0.08f),
+                                Color.Transparent
                             )
                         )
                     )
@@ -426,83 +528,192 @@ fun IncomingCallOverlay(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(32.dp),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(modifier = Modifier.height(40.dp))
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // ── TOP: Quick Style Switcher + Caller Identity Liquid Glass Card ──
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Live Style Switcher Pill (iPhone Liquid Glass vs Samsung One UI)
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isSpam) CrimsonAlert.copy(alpha = 0.18f) else CyberMint.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, if (isSpam) CrimsonAlert else CyberMint)
+                    shape = RoundedCornerShape(50),
+                    color = Color.White.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
                 ) {
-                    Text(
-                        text = "INCOMING ${callType.name} CALL",
-                        fontFamily = com.example.ui.theme.SpaceGroteskFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.2.sp),
-                        color = if (isSpam) CrimsonAlert else CyberMint,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                    )
-                }
-
-                if (isSpam) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        color = CrimsonAlert.copy(alpha = 0.22f),
-                        shape = RoundedCornerShape(12.dp)
+                    Row(
+                        modifier = Modifier.padding(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Report, contentDescription = null, tint = CrimsonAlert, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Suspected Spam Number",
-                                color = CrimsonAlert,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                            )
+                        IncomingCallUiStyle.entries.forEach { styleOption ->
+                            val selected = incomingCallStyle == styleOption
+                            Surface(
+                                onClick = {
+                                    themeManager.setIncomingCallStyle(styleOption)
+                                    if (styleOption == IncomingCallUiStyle.SAMSUNG_ONE_UI &&
+                                        incomingSwipeDirection == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT
+                                    ) {
+                                        themeManager.setIncomingSwipeDirection(IncomingSwipeDirection.ANY_DIRECTION)
+                                    }
+                                },
+                                shape = RoundedCornerShape(50),
+                                color = if (selected) Color.White.copy(alpha = 0.24f) else Color.Transparent,
+                                border = if (selected) BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)) else null
+                            ) {
+                                Text(
+                                    text = if (styleOption == IncomingCallUiStyle.IPHONE_LIQUID_GLASS) {
+                                        "iPhone Liquid Glass"
+                                    } else {
+                                        "Samsung One UI"
+                                    },
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    fontSize = 11.sp,
+                                    color = if (selected) Color.White else Color.White.copy(alpha = 0.7f),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                )
+                            }
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                Text(
-                    text = callerName,
-                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White
-                )
+                // Refractive Liquid Glass Caller Header Card
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = Color.White.copy(alpha = 0.13f),
+                    border = BorderStroke(
+                        1.2.dp,
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.65f),
+                                Color(0xFF7DD3FC).copy(alpha = 0.35f),
+                                Color.White.copy(alpha = 0.20f)
+                            )
+                        )
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.20f),
+                                        Color.White.copy(alpha = 0.04f)
+                                    )
+                                )
+                            )
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = if (isSpam) CrimsonAlert.copy(alpha = 0.22f) else CyberMint.copy(alpha = 0.20f),
+                            border = BorderStroke(1.dp, if (isSpam) CrimsonAlert else CyberMint.copy(alpha = 0.7f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.PhoneInTalk,
+                                    contentDescription = null,
+                                    tint = if (isSpam) CrimsonAlert else CyberMint,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "INCOMING ${callType.name} CALL",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    letterSpacing = 1.1.sp,
+                                    color = if (isSpam) CrimsonAlert else CyberMint
+                                )
+                            }
+                        }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                        if (isSpam) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "⚠ Suspected Spam Caller",
+                                color = CrimsonAlert,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
 
-                Text(
-                    text = callerNumber,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White.copy(alpha = 0.78f)
-                )
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text(
+                            text = callerName,
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 28.sp,
+                            color = Color.White,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text = callerNumber,
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontSize = 14.sp,
+                            color = Color.White.copy(alpha = 0.82f)
+                        )
+                    }
+                }
             }
 
-            // Central Pulsing Avatar
+            // ── CENTER: Pulsing Refractive Avatar Ring ──
             Box(
-                modifier = Modifier.size(190.dp),
+                modifier = Modifier.size(200.dp),
                 contentAlignment = Alignment.Center
             ) {
+                // Expanding concentric Samsung / Liquid Glass rings
                 Box(
                     modifier = Modifier
-                        .size(190.dp)
+                        .size(200.dp)
+                        .scale(0.82f + pulsePhase * 0.26f)
+                        .alpha((1f - pulsePhase).coerceIn(0f, 1f))
                         .clip(CircleShape)
-                        .background(CyberMint.copy(alpha = 0.22f))
+                        .border(2.dp, CyberMint.copy(alpha = 0.65f), CircleShape)
+                        .background(CyberMint.copy(alpha = 0.10f))
                 )
+                Box(
+                    modifier = Modifier
+                        .size(172.dp)
+                        .scale(0.88f + ((pulsePhase + 0.5f) % 1f) * 0.20f)
+                        .alpha((1f - ((pulsePhase + 0.5f) % 1f)).coerceIn(0f, 1f))
+                        .clip(CircleShape)
+                        .border(1.5.dp, Color(0xFF38BDF8).copy(alpha = 0.6f), CircleShape)
+                )
+
                 Surface(
-                    modifier = Modifier.size(150.dp),
+                    modifier = Modifier.size(138.dp),
                     shape = CircleShape,
                     color = Color(0xFF1E293B),
-                    border = BorderStroke(2.5.dp, CyberMint),
-                    shadowElevation = 12.dp
+                    border = BorderStroke(
+                        3.dp,
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.9f),
+                                CyberMint,
+                                Color(0xFF38BDF8)
+                            )
+                        )
+                    ),
+                    shadowElevation = 16.dp
                 ) {
                     if (decodedBitmap != null) {
                         Image(
@@ -525,45 +736,702 @@ fun IncomingCallOverlay(
                 }
             }
 
-            // Answer & Decline Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 24.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+            // ── BOTTOM: Multi-Directional Swipe Pickup Deck (iPhone Liquid Glass & Samsung One UI) ──
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                // Decline (Red)
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Button(
-                        onClick = { if (!actionTaken) { actionTaken = true; onDecline() } },
-                        shape = CircleShape,
-                        modifier = Modifier.size(72.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
-                    ) {
-                        Icon(Icons.Default.CallEnd, contentDescription = "Decline", tint = Color.White, modifier = Modifier.size(32.dp))
+                // Mode selector chips so user can switch gesture style right on the call screen if desired
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                ) {
+                    IncomingSwipeDirection.entries.forEach { dirOption ->
+                        val isDirSelected = incomingSwipeDirection == dirOption
+                        Surface(
+                            onClick = { themeManager.setIncomingSwipeDirection(dirOption) },
+                            shape = RoundedCornerShape(50),
+                            color = if (isDirSelected) CyberMint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.08f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isDirSelected) CyberMint else Color.White.copy(alpha = 0.20f)
+                            )
+                        ) {
+                            val shortLabel = when (dirOption) {
+                                IncomingSwipeDirection.ANY_DIRECTION -> "↑ ← → Omni Swipe"
+                                IncomingSwipeDirection.IPHONE_SLIDE_RIGHT -> "iPhone Slide"
+                                IncomingSwipeDirection.SWIPE_UP -> "Swipe Up"
+                                IncomingSwipeDirection.SAMSUNG_EXPAND_RING -> "Samsung Rings"
+                            }
+                            Text(
+                                text = shortLabel,
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = if (isDirSelected) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 10.sp,
+                                color = if (isDirSelected) Color.White else Color.White.copy(alpha = 0.72f),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Decline", color = Color.White, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
                 }
 
-                // Answer (Green)
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Button(
-                        onClick = { if (!actionTaken) { actionTaken = true; onAnswer() } },
-                        shape = CircleShape,
-                        modifier = Modifier.size(72.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenCall)
-                    ) {
-                        Icon(
-                            imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
-                            contentDescription = "Answer",
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp)
+                when {
+                    incomingSwipeDirection == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT && !isSamsungStyle -> {
+                        // ── 1. iPhone Liquid Glass Horizontal Slide Capsule + Multi-Directional Support ──
+                        var dragX by remember { mutableStateOf(0f) }
+                        var dragY by remember { mutableStateOf(0f) }
+                        val animatedX by animateFloatAsState(
+                            targetValue = dragX,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "iphone_slide_x"
                         )
+                        val animatedY by animateFloatAsState(
+                            targetValue = dragY,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "iphone_slide_y"
+                        )
+                        val thresholdPx = with(density) { 105.dp.toPx() }
+                        val upThresholdPx = with(density) { 80.dp.toPx() }
+
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "↑ Swipe Up, Left, or Slide Right to Answer",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.padding(bottom = 10.dp)
+                            )
+
+                            // Liquid Glass Capsule Track
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = Color.White.copy(alpha = 0.14f),
+                                border = BorderStroke(
+                                    1.5.dp,
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            Color.White.copy(alpha = 0.75f),
+                                            Color(0xFF7DD3FC).copy(alpha = 0.45f),
+                                            CyberMint.copy(alpha = 0.55f)
+                                        )
+                                    )
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(78.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.horizontalGradient(
+                                                colors = listOf(
+                                                    RedEndCall.copy(alpha = 0.16f),
+                                                    Color.White.copy(alpha = 0.10f),
+                                                    GreenCall.copy(alpha = 0.24f)
+                                                )
+                                            )
+                                        )
+                                        .padding(horizontal = 8.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    // Shimmering prompt label inside capsule
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "slide or swipe ↑ ← → to answer",
+                                            fontFamily = SpaceGroteskFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = Color.White.copy(alpha = (0.65f + 0.35f * kotlin.math.abs(shimmerOffset)).coerceIn(0.4f, 1f))
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Icon(
+                                            Icons.Default.KeyboardDoubleArrowRight,
+                                            contentDescription = null,
+                                            tint = CyberMint,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // Draggable Liquid Glass Orb inside track
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = GreenCall,
+                                        border = BorderStroke(2.dp, Color.White.copy(alpha = 0.85f)),
+                                        shadowElevation = 12.dp,
+                                        modifier = Modifier
+                                            .offset {
+                                                IntOffset(
+                                                    animatedX.roundToInt().coerceAtLeast(0),
+                                                    animatedY.roundToInt().coerceAtMost(0)
+                                                )
+                                            }
+                                            .size(62.dp)
+                                            .pointerInput(Unit) {
+                                                detectDragGestures(
+                                                    onDragEnd = {
+                                                        if (dragX > thresholdPx || dragY < -upThresholdPx) {
+                                                            triggerAnswer()
+                                                        } else {
+                                                            dragX = 0f
+                                                            dragY = 0f
+                                                        }
+                                                    },
+                                                    onDragCancel = {
+                                                        dragX = 0f
+                                                        dragY = 0f
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        dragX = (dragX + dragAmount.x).coerceIn(0f, thresholdPx * 1.6f)
+                                                        dragY = (dragY + dragAmount.y).coerceIn(-upThresholdPx * 1.4f, 20f)
+                                                    }
+                                                )
+                                            }
+                                            .clickable { triggerAnswer() }
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                                                contentDescription = "Answer",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Clean Liquid Glass Decline Pill
+                            Surface(
+                                onClick = { triggerDecline() },
+                                shape = RoundedCornerShape(50),
+                                color = RedEndCall.copy(alpha = 0.85f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.45f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.CallEnd,
+                                        contentDescription = "Decline",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Decline Call",
+                                        fontFamily = SpaceGroteskFontFamily,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Answer", color = Color.White, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold))
+
+                    isSamsungStyle -> {
+                        // ── 2. Samsung One UI Dual Expanding Swipe Rings (Answer & Decline) ──
+                        var answerDragX by remember { mutableStateOf(0f) }
+                        var answerDragY by remember { mutableStateOf(0f) }
+                        var declineDragX by remember { mutableStateOf(0f) }
+                        var declineDragY by remember { mutableStateOf(0f) }
+
+                        val answerDist = kotlin.math.sqrt(answerDragX * answerDragX + answerDragY * answerDragY)
+                        val declineDist = kotlin.math.sqrt(declineDragX * declineDragX + declineDragY * declineDragY)
+                        val ringThresholdPx = with(density) { 78.dp.toPx() }
+
+                        val animAnswerX by animateFloatAsState(answerDragX, spring(stiffness = Spring.StiffnessMediumLow), label = "ans_x")
+                        val animAnswerY by animateFloatAsState(answerDragY, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "ans_y")
+                        val animDeclineX by animateFloatAsState(declineDragX, spring(stiffness = Spring.StiffnessMediumLow), label = "dec_x")
+                        val animDeclineY by animateFloatAsState(declineDragY, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "dec_y")
+
+                        val answerProgress = (answerDist / ringThresholdPx).coerceIn(0f, 1.25f)
+                        val declineProgress = (declineDist / ringThresholdPx).coerceIn(0f, 1.25f)
+
+                        Surface(
+                            shape = RoundedCornerShape(32.dp),
+                            color = Color.White.copy(alpha = 0.12f),
+                            border = BorderStroke(
+                                1.2.dp,
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.55f),
+                                        Color.White.copy(alpha = 0.18f)
+                                    )
+                                )
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 18.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = "Swipe Answer Ring ↑ Up, ← Left, or → Right",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color.White.copy(alpha = 0.90f)
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Samsung Expanding Answer Ring (Green - Swipe Up, Left, or Right)
+                                    Box(
+                                        modifier = Modifier.size(128.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        // Outer target boundary ring
+                                        Box(
+                                            modifier = Modifier
+                                                .size(120.dp)
+                                                .scale(0.85f + 0.25f * answerProgress + 0.08f * pulsePhase)
+                                                .clip(CircleShape)
+                                                .border(
+                                                    width = if (answerProgress > 0.7f) 2.5.dp else 1.5.dp,
+                                                    color = GreenCall.copy(alpha = (0.45f + 0.5f * answerProgress).coerceIn(0f, 1f)),
+                                                    shape = CircleShape
+                                                )
+                                                .background(GreenCall.copy(alpha = 0.12f + 0.18f * answerProgress))
+                                        )
+
+                                        // Directional arrows around the ring
+                                        Icon(
+                                            Icons.Default.KeyboardArrowUp,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.75f),
+                                            modifier = Modifier
+                                                .align(Alignment.TopCenter)
+                                                .padding(top = 4.dp)
+                                                .size(18.dp)
+                                        )
+                                        Icon(
+                                            Icons.Default.KeyboardArrowLeft,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.75f),
+                                            modifier = Modifier
+                                                .align(Alignment.CenterStart)
+                                                .padding(start = 4.dp)
+                                                .size(18.dp)
+                                        )
+                                        Icon(
+                                            Icons.Default.KeyboardArrowRight,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.75f),
+                                            modifier = Modifier
+                                                .align(Alignment.CenterEnd)
+                                                .padding(end = 4.dp)
+                                                .size(18.dp)
+                                        )
+
+                                        // Draggable Green Answer Orb
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = GreenCall,
+                                            border = BorderStroke(2.dp, Color.White),
+                                            shadowElevation = 12.dp,
+                                            modifier = Modifier
+                                                .offset { IntOffset(animAnswerX.roundToInt(), animAnswerY.roundToInt()) }
+                                                .size(72.dp)
+                                                .pointerInput(Unit) {
+                                                    detectDragGestures(
+                                                        onDragEnd = {
+                                                            // Answer if dragged beyond threshold Up, Left, or Right
+                                                            if (answerDist >= ringThresholdPx && answerDragY <= ringThresholdPx * 0.6f) {
+                                                                triggerAnswer()
+                                                            } else {
+                                                                answerDragX = 0f
+                                                                answerDragY = 0f
+                                                            }
+                                                        },
+                                                        onDragCancel = {
+                                                            answerDragX = 0f
+                                                            answerDragY = 0f
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            answerDragX = (answerDragX + dragAmount.x).coerceIn(-ringThresholdPx * 1.35f, ringThresholdPx * 1.35f)
+                                                            answerDragY = (answerDragY + dragAmount.y).coerceIn(-ringThresholdPx * 1.35f, ringThresholdPx * 0.5f)
+                                                        }
+                                                    )
+                                                }
+                                                .clickable { triggerAnswer() }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                                                    contentDescription = "Answer",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(32.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Samsung Expanding Decline Ring (Red - Swipe Any Direction)
+                                    Box(
+                                        modifier = Modifier.size(128.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(120.dp)
+                                                .scale(0.85f + 0.25f * declineProgress + 0.08f * pulsePhase)
+                                                .clip(CircleShape)
+                                                .border(
+                                                    width = if (declineProgress > 0.7f) 2.5.dp else 1.5.dp,
+                                                    color = RedEndCall.copy(alpha = (0.45f + 0.5f * declineProgress).coerceIn(0f, 1f)),
+                                                    shape = CircleShape
+                                                )
+                                                .background(RedEndCall.copy(alpha = 0.12f + 0.18f * declineProgress))
+                                        )
+
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = RedEndCall,
+                                            border = BorderStroke(2.dp, Color.White),
+                                            shadowElevation = 12.dp,
+                                            modifier = Modifier
+                                                .offset { IntOffset(animDeclineX.roundToInt(), animDeclineY.roundToInt()) }
+                                                .size(72.dp)
+                                                .pointerInput(Unit) {
+                                                    detectDragGestures(
+                                                        onDragEnd = {
+                                                            if (declineDist >= ringThresholdPx) {
+                                                                triggerDecline()
+                                                            } else {
+                                                                declineDragX = 0f
+                                                                declineDragY = 0f
+                                                            }
+                                                        },
+                                                        onDragCancel = {
+                                                            declineDragX = 0f
+                                                            declineDragY = 0f
+                                                        },
+                                                        onDrag = { change, dragAmount ->
+                                                            change.consume()
+                                                            declineDragX = (declineDragX + dragAmount.x).coerceIn(-ringThresholdPx * 1.35f, ringThresholdPx * 1.35f)
+                                                            declineDragY = (declineDragY + dragAmount.y).coerceIn(-ringThresholdPx * 1.35f, ringThresholdPx * 1.35f)
+                                                        }
+                                                    )
+                                                }
+                                                .clickable { triggerDecline() }
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.CallEnd,
+                                                    contentDescription = "Decline",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(32.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    else -> {
+                        // ── 3. Default iPhone Liquid Glass Omni-Directional Pickup (Swipe Up, Left, or Right) ──
+                        var orbDragX by remember { mutableStateOf(0f) }
+                        var orbDragY by remember { mutableStateOf(0f) }
+                        val swipeThresholdPx = with(density) { 78.dp.toPx() }
+                        val allowHorizontal = incomingSwipeDirection == IncomingSwipeDirection.ANY_DIRECTION
+
+                        val animOrbX by animateFloatAsState(
+                            targetValue = orbDragX,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "omni_orb_x"
+                        )
+                        val animOrbY by animateFloatAsState(
+                            targetValue = orbDragY,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "omni_orb_y"
+                        )
+
+                        val isSwipingAnswer = orbDragY < -swipeThresholdPx * 0.45f ||
+                            (allowHorizontal && kotlin.math.abs(orbDragX) > swipeThresholdPx * 0.45f)
+                        val isSwipingDecline = orbDragY > swipeThresholdPx * 0.45f
+
+                        Surface(
+                            shape = RoundedCornerShape(34.dp),
+                            color = Color.White.copy(alpha = 0.14f),
+                            border = BorderStroke(
+                                1.4.dp,
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.White.copy(alpha = 0.80f),
+                                        Color(0xFF7DD3FC).copy(alpha = 0.45f),
+                                        CyberMint.copy(alpha = 0.50f),
+                                        Color.White.copy(alpha = 0.25f)
+                                    )
+                                )
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = listOf(
+                                                Color.White.copy(alpha = 0.22f),
+                                                Color.White.copy(alpha = 0.05f)
+                                            )
+                                        )
+                                    )
+                                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                // Animated directional guidance banner
+                                Text(
+                                    text = when {
+                                        isSwipingAnswer -> "Release to Answer Call"
+                                        isSwipingDecline -> "Release to Decline Call"
+                                        allowHorizontal -> "Swipe ↑ Up, ← Left, or → Right to Answer"
+                                        else -> "Swipe ↑ Up to Answer • ↓ Down to Decline"
+                                    },
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = when {
+                                        isSwipingAnswer -> CyberMint
+                                        isSwipingDecline -> CrimsonAlert
+                                        else -> Color.White.copy(alpha = 0.92f)
+                                    }
+                                )
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(140.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    // Side Decline Quick Button (Left)
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.align(Alignment.CenterStart)
+                                    ) {
+                                        Surface(
+                                            onClick = { triggerDecline() },
+                                            shape = CircleShape,
+                                            color = RedEndCall.copy(alpha = 0.88f),
+                                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)),
+                                            shadowElevation = 8.dp,
+                                            modifier = Modifier.size(60.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.CallEnd,
+                                                    contentDescription = "Decline",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(26.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "Decline",
+                                            fontFamily = SpaceGroteskFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = Color.White.copy(alpha = 0.85f)
+                                        )
+                                    }
+
+                                    // Directional Shimmer Chevrons Around Central Liquid Glass Orb
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .align(Alignment.TopCenter)
+                                            .offset(y = (floatBreath * 0.6f).dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.KeyboardDoubleArrowUp,
+                                            contentDescription = "Swipe Up",
+                                            tint = CyberMint.copy(alpha = 0.9f),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+
+                                    if (allowHorizontal) {
+                                        Icon(
+                                            Icons.Default.KeyboardDoubleArrowLeft,
+                                            contentDescription = "Swipe Left",
+                                            tint = CyberMint.copy(alpha = 0.8f),
+                                            modifier = Modifier
+                                                .align(Alignment.Center)
+                                                .offset(x = (-64).dp)
+                                                .size(22.dp)
+                                        )
+                                        Icon(
+                                            Icons.Default.KeyboardDoubleArrowRight,
+                                            contentDescription = "Swipe Right",
+                                            tint = CyberMint.copy(alpha = 0.8f),
+                                            modifier = Modifier
+                                                .align(Alignment.Center)
+                                                .offset(x = 64.dp)
+                                                .size(22.dp)
+                                        )
+                                    }
+
+                                    // Central Refractive Liquid Glass Answer Orb (Swipe Up, Left, or Right!)
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (isSwipingDecline) RedEndCall else GreenCall,
+                                        border = BorderStroke(
+                                            2.5.dp,
+                                            Brush.linearGradient(
+                                                colors = listOf(
+                                                    Color.White,
+                                                    Color(0xFFBAE6FD),
+                                                    CyberMint
+                                                )
+                                            )
+                                        ),
+                                        shadowElevation = 16.dp,
+                                        modifier = Modifier
+                                            .offset {
+                                                IntOffset(
+                                                    animOrbX.roundToInt(),
+                                                    animOrbY.roundToInt()
+                                                )
+                                            }
+                                            .size(80.dp)
+                                            .pointerInput(allowHorizontal) {
+                                                detectDragGestures(
+                                                    onDragEnd = {
+                                                        val answeredUp = orbDragY < -swipeThresholdPx
+                                                        val answeredLeftOrRight = allowHorizontal &&
+                                                            kotlin.math.abs(orbDragX) > swipeThresholdPx
+                                                        val declinedDown = orbDragY > swipeThresholdPx
+
+                                                        when {
+                                                            answeredUp || answeredLeftOrRight -> triggerAnswer()
+                                                            declinedDown -> triggerDecline()
+                                                            else -> {
+                                                                orbDragX = 0f
+                                                                orbDragY = 0f
+                                                            }
+                                                        }
+                                                    },
+                                                    onDragCancel = {
+                                                        orbDragX = 0f
+                                                        orbDragY = 0f
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        if (allowHorizontal) {
+                                                            orbDragX = (orbDragX + dragAmount.x).coerceIn(
+                                                                -swipeThresholdPx * 1.5f,
+                                                                swipeThresholdPx * 1.5f
+                                                            )
+                                                        }
+                                                        orbDragY = (orbDragY + dragAmount.y).coerceIn(
+                                                            -swipeThresholdPx * 1.5f,
+                                                            swipeThresholdPx * 1.3f
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                            .clickable { triggerAnswer() }
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.radialGradient(
+                                                        colors = listOf(
+                                                            Color.White.copy(alpha = 0.35f),
+                                                            Color.Transparent
+                                                        )
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = when {
+                                                    isSwipingDecline -> Icons.Default.CallEnd
+                                                    callType == CallType.VIDEO -> Icons.Default.Videocam
+                                                    else -> Icons.Default.Call
+                                                },
+                                                contentDescription = "Swipe to Answer",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(34.dp)
+                                            )
+                                        }
+                                    }
+
+                                    // Side Direct Answer Button (Right)
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.align(Alignment.CenterEnd)
+                                    ) {
+                                        Surface(
+                                            onClick = { triggerAnswer() },
+                                            shape = CircleShape,
+                                            color = GreenCall.copy(alpha = 0.88f),
+                                            border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.65f)),
+                                            shadowElevation = 8.dp,
+                                            modifier = Modifier.size(60.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                                                    contentDescription = "Answer",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(26.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "Answer",
+                                            fontFamily = SpaceGroteskFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = Color.White.copy(alpha = 0.85f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -578,6 +1446,7 @@ fun ActiveAudioCallScreen(
     displayNumber: String,
     webRtcEngine: WebRtcEngine,
     onMinimize: (() -> Unit)? = null,
+    onAddPersonToGroup: (() -> Unit)? = null,
     onEndCall: () -> Unit
 ) {
     var endCallClicked by remember { mutableStateOf(false) }
@@ -677,6 +1546,39 @@ fun ActiveAudioCallScreen(
                     tint = Color.White,
                     modifier = Modifier.size(28.dp)
                 )
+            }
+        }
+
+        if (onAddPersonToGroup != null) {
+            Surface(
+                onClick = onAddPersonToGroup,
+                shape = RoundedCornerShape(50),
+                color = CyberMint.copy(alpha = 0.22f),
+                border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(top = 16.dp, end = 16.dp)
+                    .align(Alignment.TopEnd)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PersonAdd,
+                        contentDescription = "Add to Group Call",
+                        tint = CyberMint,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Group Call",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color.White
+                    )
+                }
             }
         }
 
@@ -1062,8 +1964,14 @@ fun ActiveVideoCallScreen(
     displayNumber: String,
     webRtcEngine: WebRtcEngine,
     onMinimize: (() -> Unit)? = null,
+    onAddPersonToGroup: (() -> Unit)? = null,
     onEndCall: () -> Unit
 ) {
+    val filterContext = androidx.compose.ui.platform.LocalContext.current
+    val videoFilterManager = remember { VideoFilterManager.getInstance(filterContext) }
+    val localFilterConfig by videoFilterManager.filterConfig.collectAsState()
+    var showFilterStudioSheet by remember { mutableStateOf(false) }
+
     var endCallClicked by remember { mutableStateOf(false) }
     var areControlsVisible by remember { mutableStateOf(true) }
     var isControlsPinned by remember { mutableStateOf(false) }
@@ -1257,11 +2165,12 @@ fun ActiveVideoCallScreen(
                     }
                 }
             } else {
-                // Fullscreen Video Renderer
+                // Fullscreen Video Renderer with Real-Time Optical Video Filter & Studio Lighting
                 if (fullscreenTrack != null) {
-                    WebRtcVideoRenderer(
+                    FilteredVideoViewport(
                         videoTrack = fullscreenTrack,
                         eglBaseContext = webRtcEngine.eglBaseContext,
+                        filterConfig = localFilterConfig,
                         modifier = Modifier.fillMaxSize(),
                         mirror = isFullscreenMirrored,
                         onFirstFrameRendered = {
@@ -1422,9 +2331,10 @@ fun ActiveVideoCallScreen(
                     }
             ) {
                 if (pipTrack != null) {
-                    WebRtcVideoRenderer(
+                    FilteredVideoViewport(
                         videoTrack = pipTrack,
                         eglBaseContext = webRtcEngine.eglBaseContext,
+                        filterConfig = localFilterConfig,
                         modifier = Modifier.fillMaxSize(),
                         mirror = isPipMirrored,
                         isOverlay = true
@@ -1619,11 +2529,52 @@ fun ActiveVideoCallScreen(
                         }
                     }
 
-                    // Right: Controls Pin, Switch to Audio & More Options Menu
+                    // Right: Video Filter Studio, Add Person (+), Controls Pin, Switch to Audio & More Options Menu
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        // Video Filter Studio Button
+                        IconButton(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                showFilterStudioSheet = true
+                            },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(if (!localFilterConfig.isDefault) CyberMint.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.55f))
+                                .border(1.dp, if (!localFilterConfig.isDefault) CyberMint else Color.White.copy(alpha = 0.20f), CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = "Video Filters & Studio Lighting",
+                                tint = if (!localFilterConfig.isDefault) CyberMint else Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        if (onAddPersonToGroup != null) {
+                            IconButton(
+                                onClick = {
+                                    lastInteractionTime = System.currentTimeMillis()
+                                    onAddPersonToGroup()
+                                },
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.55f))
+                                    .border(1.dp, CyberMint.copy(alpha = 0.5f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PersonAdd,
+                                    contentDescription = "Add Person to Group Call",
+                                    tint = CyberMint,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
                         // Pin / Unpin Controls Toggle Button
                         IconButton(
                             onClick = {
@@ -1690,6 +2641,36 @@ fun ActiveVideoCallScreen(
                                 onDismissRequest = { showMoreMenu = false },
                                 modifier = Modifier.background(Color(0xFF1E293B))
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Video Filters & Studio Lighting", color = Color.White) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = CyberMint
+                                        )
+                                    },
+                                    onClick = {
+                                        showMoreMenu = false
+                                        showFilterStudioSheet = true
+                                    }
+                                )
+                                if (onAddPersonToGroup != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Add Person (Group Conference)", color = Color.White) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.Groups,
+                                                contentDescription = null,
+                                                tint = CyberMint
+                                            )
+                                        },
+                                        onClick = {
+                                            showMoreMenu = false
+                                            onAddPersonToGroup()
+                                        }
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text(if (isControlsPinned) "Unpin Controls (Auto-Hide)" else "Pin Controls (Always Visible)", color = Color.White) },
                                     leadingIcon = {
@@ -1975,6 +2956,32 @@ fun ActiveVideoCallScreen(
                             }
                         }
 
+                        // 4.5. Video Filter Studio Button in Dock
+                        Surface(
+                            onClick = {
+                                lastInteractionTime = System.currentTimeMillis()
+                                showFilterStudioSheet = true
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (!localFilterConfig.isDefault) CyberMint.copy(alpha = 0.28f) else Color(0x33FFFFFF),
+                            border = BorderStroke(
+                                1.dp,
+                                if (!localFilterConfig.isDefault) CyberMint else Color.White.copy(alpha = 0.25f)
+                            )
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = "Video Filters",
+                                    tint = if (!localFilterConfig.isDefault) CyberMint else Color.White,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
                         // 5. End Call Button
                         Button(
                             onClick = {
@@ -1999,6 +3006,28 @@ fun ActiveVideoCallScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // Video Filter & Studio Lighting Bottom Drawer inside 1-to-1 Video Call
+        if (showFilterStudioSheet) {
+            Box(
+                modifier = Modifier
+                    .zIndex(50f)
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickable { showFilterStudioSheet = false },
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Box(modifier = Modifier.clickable(enabled = false) {}) {
+                    VideoFilterStudioSheet(
+                        filterConfig = localFilterConfig,
+                        onSelectPreset = { videoFilterManager.selectPreset(it) },
+                        onUpdateConfig = { videoFilterManager.updateConfig(it) },
+                        onReset = { videoFilterManager.resetToDefault() },
+                        onDismiss = { showFilterStudioSheet = false }
+                    )
                 }
             }
         }
@@ -2154,36 +3183,59 @@ fun WebRtcVideoRenderer(
     AndroidView(
         factory = { context ->
             org.webrtc.SurfaceViewRenderer(context).apply {
-                init(eglBaseContext, object : org.webrtc.RendererCommon.RendererEvents {
-                    override fun onFirstFrameRendered() {
-                        post { onFirstFrameRendered?.invoke() }
+                try {
+                    init(eglBaseContext, object : org.webrtc.RendererCommon.RendererEvents {
+                        override fun onFirstFrameRendered() {
+                            post { onFirstFrameRendered?.invoke() }
+                        }
+                        override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {}
+                    })
+                    setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                    setEnableHardwareScaler(true)
+                    setMirror(mirror)
+                    if (isOverlay) {
+                        setZOrderMediaOverlay(true)
                     }
-                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {}
-                })
-                setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
-                setEnableHardwareScaler(true)
-                setMirror(mirror)
-                if (isOverlay) {
-                    setZOrderMediaOverlay(true)
+                    setTag(videoTrack)
+                    videoTrack.addSink(this)
+                } catch (_: Throwable) {
+                    // Guard against race if track or EGL context is already tearing down
                 }
-                // Tag the view with the current track so we can clean it up in update
-                setTag(videoTrack)
-                videoTrack.addSink(this)
             }
         },
         update = { view ->
-            view.setMirror(mirror)
-            val oldTrack = view.getTag() as? org.webrtc.VideoTrack
-            if (oldTrack != videoTrack) {
-                oldTrack?.removeSink(view)
-                view.setTag(videoTrack)
-                videoTrack.addSink(view)
-            }
+            try {
+                view.setMirror(mirror)
+                val oldTrack = view.getTag() as? org.webrtc.VideoTrack
+                if (oldTrack != videoTrack) {
+                    if (oldTrack != null) {
+                        try {
+                            oldTrack.removeSink(view)
+                        } catch (_: Throwable) {}
+                    }
+                    view.setTag(videoTrack)
+                    try {
+                        videoTrack.addSink(view)
+                    } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {}
         },
         onRelease = { view ->
             val oldTrack = view.getTag() as? org.webrtc.VideoTrack
-            oldTrack?.removeSink(view)
-            view.release()
+            view.setTag(null)
+            if (oldTrack != null) {
+                try {
+                    oldTrack.removeSink(view)
+                } catch (_: Throwable) {
+                    // Native VideoTrack may already be disposed during rapid hangup
+                }
+            }
+            try {
+                view.clearImage()
+            } catch (_: Throwable) {}
+            try {
+                view.release()
+            } catch (_: Throwable) {}
         },
         modifier = modifier
     )

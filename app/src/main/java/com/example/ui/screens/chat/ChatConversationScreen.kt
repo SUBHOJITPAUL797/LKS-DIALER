@@ -160,6 +160,17 @@ fun formatReplyPreview(message: MessageEntity): String {
         return "📄 $docName"
     }
 
+    // Check for WhatsApp rich payloads (Location, Contact, Poll)
+    WhatsAppPayloadParser.parseLocation(rawText)?.let { loc ->
+        return if (loc.isLiveLocation) "📍 Live Location: ${loc.title}" else "📍 Location: ${loc.title}"
+    }
+    WhatsAppPayloadParser.parseContact(rawText)?.let { contact ->
+        return "👤 Contact: ${contact.name}"
+    }
+    WhatsAppPayloadParser.parsePoll(rawText)?.let { poll ->
+        return "📊 Poll: ${poll.question}"
+    }
+
     // Text message — extract if it's a JSON reply wrapper
     return try {
         val obj = JSONObject(rawText)
@@ -284,6 +295,7 @@ fun ChatConversationScreen(
     var showSpamConfirmDialog by remember { mutableStateOf(false) }
     var showStarredMessagesSheet by remember { mutableStateOf(false) }  // Starred messages viewer
     var showDisappearingDialog by remember { mutableStateOf(false) }
+    var showWallpaperDialog by remember { mutableStateOf(false) }
     val disappearingDuration by chatRepository.getDisappearingDurationFlow(normPeer).collectAsState(initial = 0L)
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
@@ -314,6 +326,9 @@ fun ChatConversationScreen(
     val activeTransfers by chatRepository.activeTransfers.collectAsState()
 
     var showAttachmentMenu by remember { mutableStateOf(false) }
+    var showLocationSharingDialog by remember { mutableStateOf(false) }
+    var showShareContactDialog by remember { mutableStateOf(false) }
+    var showCreatePollDialog by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
     var photosToPreview by remember { mutableStateOf<List<File>?>(initialSharedPhotos) }
     var selectedMessageForOptions by remember { mutableStateOf<MessageEntity?>(null) }
@@ -523,6 +538,34 @@ fun ChatConversationScreen(
         }
     }
 
+    // Prioritized in-chat BackHandler so Back closes open panels/bars before exiting the chat
+    androidx.activity.compose.BackHandler(
+        enabled = !photosToPreview.isNullOrEmpty() ||
+            showNativeCamera ||
+            showAttachmentMenu ||
+            showMediaPicker ||
+            isSearching ||
+            editingMessage != null ||
+            replyingTo != null
+    ) {
+        when {
+            !photosToPreview.isNullOrEmpty() -> photosToPreview = null
+            showNativeCamera -> showNativeCamera = false
+            showAttachmentMenu -> showAttachmentMenu = false
+            showMediaPicker -> showMediaPicker = false
+            isSearching -> {
+                isSearching = false
+                searchQuery = ""
+                currentSearchIdx = 0
+            }
+            editingMessage != null -> {
+                editingMessage = null
+                inputText = ""
+            }
+            replyingTo != null -> replyingTo = null
+        }
+    }
+
     // Automatic first-time swipe hint disabled per user preference
 
     // Media Processing Helper for Gallery Selection (Supports Both Photos & Videos)
@@ -642,6 +685,42 @@ fun ChatConversationScreen(
                     }
                 } catch (e: Exception) {
                     Toast.makeText(context, "Failed to send document: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // Audio File Picker Launcher (MP3, WAV, M4A, AAC, OGG)
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    var displayName = "audio_${System.currentTimeMillis()}.mp3"
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (nameIdx != -1) displayName = cursor.getString(nameIdx) ?: displayName
+                        }
+                    }
+                    val ext = displayName.substringAfterLast('.', "mp3")
+                    val tempFile = File(context.cacheDir, "aud_${System.currentTimeMillis()}.$ext")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+                    }
+                    if (tempFile.exists() && tempFile.length() > 0) {
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = displayName,
+                            mediaType = ChatMediaType.DOCUMENT,
+                            mediaFile = tempFile
+                        )
+                        listState.animateScrollToItem(0)
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Failed to send audio file: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -860,76 +939,192 @@ fun ChatConversationScreen(
                             }
                         }
                         Box {
-                            IconButton(onClick = { showOptionsMenu = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Options")
+                            Surface(
+                                onClick = { showOptionsMenu = true },
+                                shape = CircleShape,
+                                color = if (showOptionsMenu) TealPrimary.copy(alpha = 0.16f) else Color.Transparent,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.MoreVert,
+                                        contentDescription = "Options",
+                                        tint = if (showOptionsMenu) TealPrimary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                             }
+                            val isDarkMenu = com.example.ui.theme.LocalIsDarkTheme.current
                             DropdownMenu(
                                 expanded = showOptionsMenu,
-                                onDismissRequest = { showOptionsMenu = false }
+                                onDismissRequest = { showOptionsMenu = false },
+                                shape = RoundedCornerShape(22.dp),
+                                containerColor = if (isDarkMenu) Color(0xFF182229) else Color.White,
+                                tonalElevation = if (isDarkMenu) 8.dp else 2.dp,
+                                shadowElevation = 14.dp,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isDarkMenu) Color.White.copy(alpha = 0.09f) else Color(0xFFE2E8F0)
+                                ),
+                                modifier = Modifier
+                                    .widthIn(min = 248.dp, max = 276.dp)
+                                    .padding(vertical = 4.dp)
                             ) {
+                                // Top mini header inside 3-dots menu
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = peerDisplayName,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDarkMenu) Color.White else Color(0xFF0F172A),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Lock,
+                                                contentDescription = null,
+                                                tint = if (isDarkMenu) Color(0xFF4ADE80) else Color(0xFF059669),
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = "End-to-End Encrypted",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (isDarkMenu) Color(0xFF4ADE80) else Color(0xFF059669)
+                                            )
+                                        }
+                                    }
+                                }
+
+                                HorizontalDivider(
+                                    color = if (isDarkMenu) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+
+                                // 1. Contact / Group Info
                                 if (isGroup) {
-                                    DropdownMenuItem(
-                                        text = { Text("Group info") },
-                                        leadingIcon = { Icon(Icons.Default.People, contentDescription = null, tint = TealPrimary) },
+                                    WhatsAppStyledMenuItem(
+                                        title = "Group info",
+                                        subtitle = "Members & group settings",
+                                        icon = Icons.Default.People,
+                                        iconTint = Color(0xFF0284C7),
                                         onClick = {
                                             showOptionsMenu = false
                                             showGroupInfoDialog = true
                                         }
                                     )
+                                } else {
+                                    WhatsAppStyledMenuItem(
+                                        title = "View contact",
+                                        subtitle = "Profile & shared media",
+                                        icon = Icons.Default.Person,
+                                        iconTint = Color(0xFF0284C7),
+                                        onClick = {
+                                            showOptionsMenu = false
+                                            showMediaGalleryDialog = true
+                                        }
+                                    )
                                 }
-                                DropdownMenuItem(
-                                    text = { Text("Search") },
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        isSearching = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Media, Links & Docs") },
+
+                                // 2. Media, Links & Docs
+                                WhatsAppStyledMenuItem(
+                                    title = "Media, links, and docs",
+                                    subtitle = "Photos, videos & files",
+                                    icon = Icons.Default.PhotoLibrary,
+                                    iconTint = Color(0xFF9333EA),
                                     onClick = {
                                         showOptionsMenu = false
                                         showMediaGalleryDialog = true
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Starred messages") },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Star,
-                                            contentDescription = null,
-                                            tint = Color(0xFFFFC107)
-                                        )
-                                    },
+
+                                // 3. Search in chat
+                                WhatsAppStyledMenuItem(
+                                    title = "Search",
+                                    subtitle = "Find messages in chat",
+                                    icon = Icons.Default.Search,
+                                    iconTint = Color(0xFF0EA5E9),
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        isSearching = true
+                                    }
+                                )
+
+                                // 4. Starred messages
+                                WhatsAppStyledMenuItem(
+                                    title = "Starred messages",
+                                    subtitle = "Important saved messages",
+                                    icon = Icons.Default.Star,
+                                    iconTint = Color(0xFFF59E0B),
                                     onClick = {
                                         showOptionsMenu = false
                                         showStarredMessagesSheet = true
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Disappearing messages") },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Schedule,
-                                            contentDescription = null,
-                                            tint = if (disappearingDuration > 0L) TealPrimary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
+
+                                // 5. Disappearing messages
+                                val disappearingBadge = when {
+                                    disappearingDuration <= 0L -> "Off"
+                                    disappearingDuration <= 24 * 3600 * 1000L -> "24h"
+                                    disappearingDuration <= 7 * 24 * 3600 * 1000L -> "7d"
+                                    else -> "On"
+                                }
+                                WhatsAppStyledMenuItem(
+                                    title = "Disappearing messages",
+                                    subtitle = "Auto-delete timer",
+                                    icon = Icons.Default.Schedule,
+                                    iconTint = Color(0xFF059669),
+                                    badgeText = disappearingBadge,
                                     onClick = {
                                         showOptionsMenu = false
                                         showDisappearingDialog = true
                                     }
                                 )
-                                DropdownMenuItem(
-                                    text = { Text("Clear chat") },
+
+                                // 6. Wallpaper
+                                WhatsAppStyledMenuItem(
+                                    title = "Wallpaper",
+                                    subtitle = "Customize chat background",
+                                    icon = Icons.Default.Wallpaper,
+                                    iconTint = Color(0xFF6366F1),
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        showWallpaperDialog = true
+                                    }
+                                )
+
+                                HorizontalDivider(
+                                    color = if (isDarkMenu) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
+
+                                // 7. Clear chat
+                                WhatsAppStyledMenuItem(
+                                    title = "Clear chat",
+                                    icon = Icons.Default.DeleteSweep,
+                                    iconTint = Color(0xFFFB7185),
+                                    isDestructive = true,
                                     onClick = {
                                         showOptionsMenu = false
                                         showClearChatDialog = true
                                     }
                                 )
+
+                                // 8. Group or Contact Moderation Actions
                                 if (isGroup) {
-                                    DropdownMenuItem(
-                                        text = { Text("Exit group", color = MaterialTheme.colorScheme.error) },
-                                        leadingIcon = { Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                    WhatsAppStyledMenuItem(
+                                        title = "Exit group",
+                                        icon = Icons.Default.ExitToApp,
+                                        iconTint = Color(0xFFEF4444),
+                                        isDestructive = true,
                                         onClick = {
                                             showOptionsMenu = false
                                             showExitGroupDialog = true
@@ -938,9 +1133,11 @@ fun ChatConversationScreen(
                                     val myPhone = firebaseManager.currentUser.value?.phoneNumber ?: ""
                                     val isGroupAdmin = ContactsHelper.numbersMatch(groupDto?.adminPhone ?: "", myPhone)
                                     if (isGroupAdmin) {
-                                        DropdownMenuItem(
-                                            text = { Text("Delete group", color = MaterialTheme.colorScheme.error) },
-                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                        WhatsAppStyledMenuItem(
+                                            title = "Delete group",
+                                            icon = Icons.Default.Delete,
+                                            iconTint = Color(0xFFEF4444),
+                                            isDestructive = true,
                                             onClick = {
                                                 showOptionsMenu = false
                                                 showDeleteGroupDialog = true
@@ -949,9 +1146,10 @@ fun ChatConversationScreen(
                                     }
                                 } else {
                                     if (isBlocked) {
-                                        DropdownMenuItem(
-                                            text = { Text("Unblock contact") },
-                                            leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null, tint = TealPrimary) },
+                                        WhatsAppStyledMenuItem(
+                                            title = "Unblock contact",
+                                            icon = Icons.Default.CheckCircle,
+                                            iconTint = Color(0xFF4ADE80),
                                             onClick = {
                                                 showOptionsMenu = false
                                                 firebaseManager.unblockNumber(normPeer)
@@ -960,17 +1158,21 @@ fun ChatConversationScreen(
                                             }
                                         )
                                     } else {
-                                        DropdownMenuItem(
-                                            text = { Text("Block contact") },
-                                            leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                        WhatsAppStyledMenuItem(
+                                            title = "Block contact",
+                                            icon = Icons.Default.Block,
+                                            iconTint = Color(0xFFEF4444),
+                                            isDestructive = true,
                                             onClick = {
                                                 showOptionsMenu = false
                                                 showBlockConfirmDialog = true
                                             }
                                         )
-                                        DropdownMenuItem(
-                                            text = { Text("Report spam") },
-                                            leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, tint = Color(0xFFFF9800)) },
+                                        WhatsAppStyledMenuItem(
+                                            title = "Report spam",
+                                            icon = Icons.Default.Report,
+                                            iconTint = Color(0xFFF97316),
+                                            isDestructive = true,
                                             onClick = {
                                                 showOptionsMenu = false
                                                 showSpamConfirmDialog = true
@@ -1000,7 +1202,7 @@ fun ChatConversationScreen(
             } else null
         }
 
-        val isDark = isSystemInDarkTheme()
+        val isDark = com.example.ui.theme.LocalIsDarkTheme.current
 
         val wallpaperModifier = when (wallpaperConfig.type) {
             WallpaperType.CUSTOM -> {
@@ -1209,11 +1411,11 @@ fun ChatConversationScreen(
                                 }
                             },
                             shape = CircleShape,
-                            color = if (isSystemInDarkTheme()) Color(0xFF232D36) else Color.White,
+                            color = if (isDark) Color(0xFF232D36) else Color.White,
                             shadowElevation = 6.dp,
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                if (isSystemInDarkTheme()) Color(0xFF3B4A54) else Color(0xFFCBD5E1)
+                                if (isDark) Color(0xFF3B4A54) else Color(0xFFCBD5E1)
                             ),
                             modifier = Modifier.size(44.dp)
                         ) {
@@ -1221,7 +1423,7 @@ fun ChatConversationScreen(
                                 Icon(
                                     imageVector = Icons.Filled.KeyboardDoubleArrowDown,
                                     contentDescription = "Scroll to bottom",
-                                    tint = if (isSystemInDarkTheme()) Color(0xFF8696A0) else Color(0xFF54656F),
+                                    tint = if (isDark) Color(0xFF8696A0) else Color(0xFF54656F),
                                     modifier = Modifier.size(24.dp)
                                 )
                             }
@@ -1260,7 +1462,7 @@ fun ChatConversationScreen(
                 if (replyingTo != null) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        color = if (isSystemInDarkTheme()) Color(0xFF1F2C34) else Color(0xFFE0F7FA),
+                        color = if (isDark) Color(0xFF1F2C34) else Color(0xFFE0F7FA),
                         tonalElevation = 2.dp
                     ) {
                         Row(
@@ -1332,7 +1534,7 @@ fun ChatConversationScreen(
                     }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        color = if (isSystemInDarkTheme()) Color(0xFF1B2A32) else Color(0xFFE8F5E9),
+                        color = if (isDark) Color(0xFF1B2A32) else Color(0xFFE8F5E9),
                         tonalElevation = 2.dp
                     ) {
                         Row(
@@ -1490,6 +1692,56 @@ fun ChatConversationScreen(
                 }
             }
 
+            // ── WhatsApp Floating Attachment Sheet (Pops up above input bar) ──
+            WhatsAppFloatingAttachmentSheet(
+                visible = showAttachmentMenu,
+                onDismiss = { showAttachmentMenu = false },
+                onDocumentClick = {
+                    showAttachmentMenu = false
+                    documentPickerLauncher.launch(
+                        arrayOf(
+                            "application/pdf",
+                            "application/msword",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/vnd.ms-excel",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "text/plain",
+                            "*/*"
+                        )
+                    )
+                },
+                onCameraClick = {
+                    showAttachmentMenu = false
+                    showNativeCamera = true
+                },
+                onGalleryClick = {
+                    showAttachmentMenu = false
+                    try {
+                        galleryMultipleLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    } catch (_: Exception) {
+                        galleryFallbackLauncher.launch(arrayOf("image/*", "video/*"))
+                    }
+                },
+                onAudioClick = {
+                    showAttachmentMenu = false
+                    audioPickerLauncher.launch(arrayOf("audio/*"))
+                },
+                onLocationClick = {
+                    showAttachmentMenu = false
+                    showLocationSharingDialog = true
+                },
+                onContactClick = {
+                    showAttachmentMenu = false
+                    showShareContactDialog = true
+                },
+                onPollClick = {
+                    showAttachmentMenu = false
+                    showCreatePollDialog = true
+                }
+            )
+
             // ── Bottom Input Bar ─────────────────────────────────────────────
             Surface(
                 modifier = Modifier.fillMaxWidth(),
@@ -1544,285 +1796,342 @@ fun ChatConversationScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                        if (isRecording) {
-                            // Voice Recording UI
-                            IconButton(
-                                onClick = { voiceHelper.cancelRecording() },
-                                modifier = Modifier.size(40.dp)
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.error)
-                            }
+                            if (isRecording) {
+                                // Voice Recording UI
+                                IconButton(
+                                    onClick = { voiceHelper.cancelRecording() },
+                                    modifier = Modifier.size(40.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.error)
+                                }
 
-                            Row(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Pulsing recording indicator dot
-                                val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
-                                val pulseAlpha by infiniteTransition.animateFloat(
-                                    initialValue = 0.35f,
-                                    targetValue = 1f,
-                                    animationSpec = infiniteRepeatable(
-                                        animation = tween(550, easing = LinearEasing),
-                                        repeatMode = RepeatMode.Reverse
-                                    ),
-                                    label = "pulse"
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.Red.copy(alpha = pulseAlpha))
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                val seconds = (recordingDurationMs / 1000) % 60
-                                val minutes = (recordingDurationMs / 1000) / 60
-                                Text(
-                                    text = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds),
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = Color.Red
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-
-                                // Animated live audio waveform spikes
-                                Canvas(
+                                Row(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(28.dp)
+                                        .padding(horizontal = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    val barWidth = 3.dp.toPx()
-                                    val barGap = 2.dp.toPx()
-                                    val totalBarWidth = barWidth + barGap
-                                    val maxBars = (size.width / totalBarWidth).toInt().coerceAtLeast(1)
-                                    val samples = amplitudeSamples.takeLast(maxBars)
-                                    val centerY = size.height / 2f
-
-                                    samples.forEachIndexed { index, amp ->
-                                        val x = size.width - (samples.size - index) * totalBarWidth
-                                        val barHeight = (size.height * amp.coerceIn(0.12f, 1f)).coerceAtLeast(4.dp.toPx())
-                                        drawRoundRect(
-                                            color = GreenCall,
-                                            topLeft = androidx.compose.ui.geometry.Offset(x, centerY - barHeight / 2f),
-                                            size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
-                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
-                                        )
-                                    }
-                                }
-                            }
-
-                            IconButton(
-                                onClick = {
-                                    val result = voiceHelper.stopRecording()
-                                    if (result != null) {
-                                        val (audioFile, duration) = result
-                                        coroutineScope.launch {
-                                            chatRepository.sendMessage(
-                                                recipientNumber = normPeer,
-                                                recipientName = peerDisplayName,
-                                                text = "",
-                                                mediaType = ChatMediaType.AUDIO,
-                                                mediaFile = audioFile,
-                                                mediaDurationMs = duration
-                                            )
-                                            listState.animateScrollToItem(0)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape)
-                                    .background(GreenCall)
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
-                            }
-                        } else {
-                            // Emoji / Sticker / GIF Keyboard Toggle
-                            IconButton(
-                                onClick = {
-                                    if (showMediaPicker) {
-                                        showMediaPicker = false
-                                        keyboardController?.show()
-                                    } else {
-                                        keyboardController?.hide()
-                                        showMediaPicker = true
-                                    }
-                                }
-                            ) {
-                                Text(
-                                    text = if (showMediaPicker) "⌨️" else "😊",
-                                    fontSize = 22.sp
-                                )
-                            }
-
-                            // Standard Input UI: Attachment button opens options (Camera, Gallery, Document)
-                            IconButton(onClick = { showAttachmentMenu = true }) {
-                                Icon(Icons.Default.AttachFile, contentDescription = "Attach", tint = TealPrimary)
-                            }
-
-                            OutlinedTextField(
-                                value = inputText,
-                                onValueChange = { text ->
-                                    inputText = text
-                                    chatRepository.setTyping(normPeer, text.isNotBlank())
-                                    if (showMediaPicker) showMediaPicker = false
-                                },
-                                placeholder = {
-                                    val currentReply = replyingTo
-                                    Text(
-                                        if (currentReply != null) "Reply to ${currentReply.senderLabel}…"
-                                        else "Message…"
+                                    val infiniteTransition = rememberInfiniteTransition(label = "rec_pulse")
+                                    val pulseAlpha by infiniteTransition.animateFloat(
+                                        initialValue = 0.35f,
+                                        targetValue = 1f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(550, easing = LinearEasing),
+                                            repeatMode = RepeatMode.Reverse
+                                        ),
+                                        label = "pulse"
                                     )
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .padding(horizontal = 4.dp),
-                                shape = RoundedCornerShape(24.dp),
-                                maxLines = 4,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    unfocusedBorderColor = Color.Transparent,
-                                    focusedBorderColor = TealPrimary
-                                )
-                            )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.Red.copy(alpha = pulseAlpha))
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    val seconds = (recordingDurationMs / 1000) % 60
+                                    val minutes = (recordingDurationMs / 1000) / 60
+                                    Text(
+                                        text = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds),
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = Color.Red
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
 
-                            if (editingMessage != null) {
-                                IconButton(
-                                    onClick = {
-                                        val textToEdit = inputText.trim()
-                                        val editMsg = editingMessage
-                                        if (textToEdit.isNotEmpty() && editMsg != null) {
-                                            val targetId = editMsg.id
-                                            editingMessage = null
-                                            inputText = ""
-                                            chatRepository.setTyping(normPeer, false)
-                                            coroutineScope.launch {
-                                                val res = chatRepository.editMessage(targetId, textToEdit, normPeer)
-                                                if (res.isFailure) {
-                                                    Toast.makeText(context, res.exceptionOrNull()?.message ?: "Failed to edit message", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
+                                    Canvas(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(28.dp)
+                                    ) {
+                                        val barWidth = 3.dp.toPx()
+                                        val barGap = 2.dp.toPx()
+                                        val totalBarWidth = barWidth + barGap
+                                        val maxBars = (size.width / totalBarWidth).toInt().coerceAtLeast(1)
+                                        val samples = amplitudeSamples.takeLast(maxBars)
+                                        val centerY = size.height / 2f
+
+                                        samples.forEachIndexed { index, amp ->
+                                            val x = size.width - (samples.size - index) * totalBarWidth
+                                            val barHeight = (size.height * amp.coerceIn(0.12f, 1f)).coerceAtLeast(4.dp.toPx())
+                                            drawRoundRect(
+                                                color = GreenCall,
+                                                topLeft = androidx.compose.ui.geometry.Offset(x, centerY - barHeight / 2f),
+                                                size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx(), 2.dp.toPx())
+                                            )
                                         }
-                                    },
-                                    modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(GreenCall)
-                                ) {
-                                    Icon(Icons.Default.Check, contentDescription = "Save edit", tint = Color.White)
+                                    }
                                 }
-                            } else if (inputText.isNotBlank()) {
+
                                 IconButton(
                                     onClick = {
-                                        val textToSend = inputText.trim()
-                                        val currentReply = replyingTo
-                                        if (textToSend.isNotEmpty()) {
-                                            inputText = ""
-                                            replyingTo = null
-                                            showMediaPicker = false
-                                            dismissedTypingUrl = null
-                                            chatRepository.setTyping(normPeer, false)
+                                        val result = voiceHelper.stopRecording()
+                                        if (result != null) {
+                                            val (audioFile, duration) = result
                                             coroutineScope.launch {
-                                                val payload = if (currentReply != null) {
-                                                    """{"text":${escapeJson(textToSend)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
-                                                } else {
-                                                    textToSend
-                                                }
-                                                chatRepository.markConversationAsRead(normPeer)
                                                 chatRepository.sendMessage(
                                                     recipientNumber = normPeer,
                                                     recipientName = peerDisplayName,
-                                                    text = payload,
-                                                    mediaType = ChatMediaType.TEXT
+                                                    text = "",
+                                                    mediaType = ChatMediaType.AUDIO,
+                                                    mediaFile = audioFile,
+                                                    mediaDurationMs = duration
                                                 )
                                                 listState.animateScrollToItem(0)
                                             }
                                         }
                                     },
                                     modifier = Modifier
-                                        .size(44.dp)
+                                        .size(46.dp)
                                         .clip(CircleShape)
-                                        .background(Brush.horizontalGradient(listOf(LocalThemeColor.current.primary, LocalThemeColor.current.primaryDark)))
+                                        .background(GreenCall)
                                 ) {
-                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note", tint = Color.White)
                                 }
                             } else {
-                                IconButton(
-                                    onClick = {
-                                        val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                                            context,
-                                            android.Manifest.permission.RECORD_AUDIO
-                                        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-
-                                        if (hasMicPermission) {
-                                            voiceHelper.startRecording()
-                                        } else {
-                                            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-                                        }
-                                    },
+                                // ── WhatsApp Pill Input Container (Emoji + Text + Attach + Camera) ──
+                                Surface(
                                     modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(TealPrimary)
+                                        .weight(1f)
+                                        .padding(end = 6.dp),
+                                    shape = RoundedCornerShape(26.dp),
+                                    color = if (isDark) Color(0xFF1F2C34) else Color(0xFFF1F5F9),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (showAttachmentMenu || showMediaPicker) TealPrimary.copy(alpha = 0.6f)
+                                        else if (isDark) Color.White.copy(alpha = 0.08f)
+                                        else Color(0xFFCBD5E1)
+                                    )
                                 ) {
-                                    Icon(Icons.Default.Mic, contentDescription = "Record Voice Note", tint = Color.White)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // Emoji / Sticker / GIF Keyboard Toggle
+                                        IconButton(
+                                            onClick = {
+                                                showAttachmentMenu = false
+                                                if (showMediaPicker) {
+                                                    showMediaPicker = false
+                                                    keyboardController?.show()
+                                                } else {
+                                                    keyboardController?.hide()
+                                                    showMediaPicker = true
+                                                }
+                                            },
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Text(
+                                                text = if (showMediaPicker) "⌨️" else "😊",
+                                                fontSize = 21.sp
+                                            )
+                                        }
+
+                                        // Borderless WhatsApp TextField inside pill
+                                        TextField(
+                                            value = inputText,
+                                            onValueChange = { text ->
+                                                inputText = text
+                                                chatRepository.setTyping(normPeer, text.isNotBlank())
+                                                if (showMediaPicker) showMediaPicker = false
+                                                if (showAttachmentMenu) showAttachmentMenu = false
+                                            },
+                                            placeholder = {
+                                                val currentReply = replyingTo
+                                                Text(
+                                                    text = if (currentReply != null) "Reply to ${currentReply.senderLabel}…"
+                                                    else "Message",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                                )
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 4,
+                                            colors = TextFieldDefaults.colors(
+                                                focusedContainerColor = Color.Transparent,
+                                                unfocusedContainerColor = Color.Transparent,
+                                                disabledContainerColor = Color.Transparent,
+                                                focusedIndicatorColor = Color.Transparent,
+                                                unfocusedIndicatorColor = Color.Transparent,
+                                                disabledIndicatorColor = Color.Transparent
+                                            ),
+                                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        )
+
+                                        // Paperclip Attachment Button (toggles floating WhatsApp attachment grid)
+                                        IconButton(
+                                            onClick = {
+                                                keyboardController?.hide()
+                                                showMediaPicker = false
+                                                showAttachmentMenu = !showAttachmentMenu
+                                            },
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.AttachFile,
+                                                contentDescription = "Attach",
+                                                tint = if (showAttachmentMenu) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+
+                                        // Quick Camera Button (shown when input is empty, just like WhatsApp)
+                                        if (inputText.isBlank()) {
+                                            IconButton(
+                                                onClick = {
+                                                    showAttachmentMenu = false
+                                                    showMediaPicker = false
+                                                    showNativeCamera = true
+                                                },
+                                                modifier = Modifier.size(40.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.PhotoCamera,
+                                                    contentDescription = "Camera",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Right circular action button (Save Edit / Send / Mic)
+                                if (editingMessage != null) {
+                                    IconButton(
+                                        onClick = {
+                                            val textToEdit = inputText.trim()
+                                            val editMsg = editingMessage
+                                            if (textToEdit.isNotEmpty() && editMsg != null) {
+                                                val targetId = editMsg.id
+                                                editingMessage = null
+                                                inputText = ""
+                                                chatRepository.setTyping(normPeer, false)
+                                                coroutineScope.launch {
+                                                    val res = chatRepository.editMessage(targetId, textToEdit, normPeer)
+                                                    if (res.isFailure) {
+                                                        Toast.makeText(context, res.exceptionOrNull()?.message ?: "Failed to edit message", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(GreenCall)
+                                    ) {
+                                        Icon(Icons.Default.Check, contentDescription = "Save edit", tint = Color.White)
+                                    }
+                                } else if (inputText.isNotBlank()) {
+                                    IconButton(
+                                        onClick = {
+                                            val textToSend = inputText.trim()
+                                            val currentReply = replyingTo
+                                            if (textToSend.isNotEmpty()) {
+                                                inputText = ""
+                                                replyingTo = null
+                                                showMediaPicker = false
+                                                showAttachmentMenu = false
+                                                dismissedTypingUrl = null
+                                                chatRepository.setTyping(normPeer, false)
+                                                coroutineScope.launch {
+                                                    val payload = if (currentReply != null) {
+                                                        """{"text":${escapeJson(textToSend)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                                                    } else {
+                                                        textToSend
+                                                    }
+                                                    chatRepository.markConversationAsRead(normPeer)
+                                                    chatRepository.sendMessage(
+                                                        recipientNumber = normPeer,
+                                                        recipientName = peerDisplayName,
+                                                        text = payload,
+                                                        mediaType = ChatMediaType.TEXT
+                                                    )
+                                                    listState.animateScrollToItem(0)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(Brush.horizontalGradient(listOf(LocalThemeColor.current.primary, LocalThemeColor.current.primaryDark)))
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
+                                    }
+                                } else {
+                                    IconButton(
+                                        onClick = {
+                                            showAttachmentMenu = false
+                                            showMediaPicker = false
+                                            val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                                                context,
+                                                android.Manifest.permission.RECORD_AUDIO
+                                            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                                            if (hasMicPermission) {
+                                                voiceHelper.startRecording()
+                                            } else {
+                                                micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(TealPrimary)
+                                    ) {
+                                        Icon(Icons.Default.Mic, contentDescription = "Record Voice Note", tint = Color.White)
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // ── Animated Emoji / Sticker / GIF Media Keyboard ─────────
-                AnimatedVisibility(
-                    visible = showMediaPicker,
-                    enter = expandVertically(animationSpec = tween(250)) + fadeIn(),
-                    exit = shrinkVertically(animationSpec = tween(200)) + fadeOut()
-                ) {
-                    ChatMediaKeyboardPicker(
-                        onEmojiSelected = { emoji ->
-                            inputText += emoji
-                            chatRepository.setTyping(normPeer, true)
-                        },
-                        onBackspace = {
-                            if (inputText.isNotEmpty()) {
-                                inputText = dropLastCodePoint(inputText)
-                                chatRepository.setTyping(normPeer, inputText.isNotBlank())
+                    // ── Instant Zero-Jank Emoji / Sticker / GIF Media Keyboard ─────────
+                    if (showMediaPicker) {
+                        ChatMediaKeyboardPicker(
+                            onEmojiSelected = { emoji ->
+                                inputText += emoji
+                                chatRepository.setTyping(normPeer, true)
+                            },
+                            onBackspace = {
+                                if (inputText.isNotEmpty()) {
+                                    inputText = dropLastCodePoint(inputText)
+                                    chatRepository.setTyping(normPeer, inputText.isNotBlank())
+                                }
+                            },
+                            onStickerSelected = { stickerCode, stickerName, stickerUrl ->
+                                coroutineScope.launch {
+                                    chatRepository.sendSticker(
+                                        recipientNumber = normPeer,
+                                        recipientName = peerDisplayName,
+                                        stickerCode = stickerCode.ifBlank { "✨" },
+                                        stickerName = stickerName,
+                                        stickerUrl = stickerUrl.takeIf { it.startsWith("http") }
+                                    )
+                                    listState.animateScrollToItem(0)
+                                }
+                            },
+                            onGifSelected = { gifUrl, gifTitle ->
+                                coroutineScope.launch {
+                                    chatRepository.sendGif(
+                                        recipientNumber = normPeer,
+                                        recipientName = peerDisplayName,
+                                        gifUrl = gifUrl,
+                                        gifTitle = gifTitle
+                                    )
+                                    listState.animateScrollToItem(0)
+                                }
                             }
-                        },
-                        onStickerSelected = { stickerCode, stickerName, stickerUrl ->
-                            coroutineScope.launch {
-                                chatRepository.sendSticker(
-                                    recipientNumber = normPeer,
-                                    recipientName = peerDisplayName,
-                                    stickerCode = stickerCode.ifBlank { "✨" },
-                                    stickerName = stickerName,
-                                    stickerUrl = stickerUrl.takeIf { it.startsWith("http") }
-                                )
-                                listState.animateScrollToItem(0)
-                            }
-                        },
-                        onGifSelected = { gifUrl, gifTitle ->
-                            coroutineScope.launch {
-                                chatRepository.sendGif(
-                                    recipientNumber = normPeer,
-                                    recipientName = peerDisplayName,
-                                    gifUrl = gifUrl,
-                                    gifTitle = gifTitle
-                                )
-                                listState.animateScrollToItem(0)
-                            }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
     }
-}
 
     // Clear Chat Granular Dialog
     if (showClearChatDialog) {
@@ -2353,79 +2662,77 @@ fun ChatConversationScreen(
         )
     }
 
-    // ── Attachment Picker Bottom Sheet ───────────────────────────
-    if (showAttachmentMenu) {
-        ModalBottomSheet(
-            onDismissRequest = { showAttachmentMenu = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-            tonalElevation = 8.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 36.dp, top = 8.dp)
-            ) {
-                Text(
-                    text = "Share Content",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(bottom = 20.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceAround,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Camera (Native in-app CameraX just like WhatsApp)
-                    AttachmentOptionItem(
-                        icon = Icons.Default.PhotoCamera,
-                        label = "Camera",
-                        backgroundColor = Color(0xFFE91E63),
-                        onClick = {
-                            showAttachmentMenu = false
-                            showNativeCamera = true
-                        }
+    // ── WhatsApp Google Maps Location Sharing Dialog ─────────────────────
+    if (showLocationSharingDialog) {
+        WhatsAppLocationSharingDialog(
+            onDismiss = { showLocationSharingDialog = false },
+            onSendLocation = { locationData ->
+                showLocationSharingDialog = false
+                coroutineScope.launch {
+                    val payload = locationData.toMessageJson()
+                    replyingTo = null
+                    chatRepository.markConversationAsRead(normPeer)
+                    chatRepository.sendMessage(
+                        recipientNumber = normPeer,
+                        recipientName = peerDisplayName,
+                        text = payload,
+                        mediaType = ChatMediaType.TEXT
                     )
-
-                    // Gallery (Multi-photo & Video picker just like WhatsApp)
-                    AttachmentOptionItem(
-                        icon = Icons.Default.PhotoLibrary,
-                        label = "Gallery",
-                        backgroundColor = Color(0xFF9C27B0),
-                        onClick = {
-                            showAttachmentMenu = false
-                            try {
-                                galleryMultipleLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                )
-                            } catch (e: Exception) {
-                                galleryFallbackLauncher.launch(arrayOf("image/*", "video/*"))
-                            }
-                        }
-                    )
-
-                    // Document
-                    AttachmentOptionItem(
-                        icon = Icons.Default.InsertDriveFile,
-                        label = "Document",
-                        backgroundColor = Color(0xFF5E35B1),
-                        onClick = {
-                            showAttachmentMenu = false
-                            documentPickerLauncher.launch(arrayOf(
-                                "application/pdf",
-                                "application/msword",
-                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                "application/vnd.ms-excel",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                "text/plain",
-                                "*/*"
-                            ))
-                        }
-                    )
+                    listState.animateScrollToItem(0)
                 }
             }
-        }
+        )
+    }
+
+    // ── WhatsApp Contact Sharing Dialog ──────────────────────────────────
+    if (showShareContactDialog) {
+        WhatsAppShareContactDialog(
+            contacts = syncedContacts,
+            onDismiss = { showShareContactDialog = false },
+            onSendContact = { contactData ->
+                showShareContactDialog = false
+                coroutineScope.launch {
+                    val payload = contactData.toMessageJson()
+                    chatRepository.markConversationAsRead(normPeer)
+                    chatRepository.sendMessage(
+                        recipientNumber = normPeer,
+                        recipientName = peerDisplayName,
+                        text = payload,
+                        mediaType = ChatMediaType.TEXT
+                    )
+                    listState.animateScrollToItem(0)
+                }
+            }
+        )
+    }
+
+    // ── WhatsApp Poll Creator Dialog ─────────────────────────────────────
+    if (showCreatePollDialog) {
+        WhatsAppCreatePollDialog(
+            onDismiss = { showCreatePollDialog = false },
+            onSendPoll = { pollData ->
+                showCreatePollDialog = false
+                coroutineScope.launch {
+                    val payload = pollData.toMessageJson()
+                    chatRepository.markConversationAsRead(normPeer)
+                    chatRepository.sendMessage(
+                        recipientNumber = normPeer,
+                        recipientName = peerDisplayName,
+                        text = payload,
+                        mediaType = ChatMediaType.TEXT
+                    )
+                    listState.animateScrollToItem(0)
+                }
+            }
+        )
+    }
+
+    // ── WhatsApp Quick Wallpaper Picker Dialog ───────────────────────────
+    if (showWallpaperDialog) {
+        WhatsAppQuickWallpaperDialog(
+            wallpaperManager = wallpaperManager,
+            onDismiss = { showWallpaperDialog = false }
+        )
     }
 
     // ── Native WhatsApp Camera Screen ─────────────────────────────
@@ -2501,28 +2808,34 @@ fun ChatConversationScreen(
                 !isDeleted &&
                 targetMsg.mediaType == ChatMediaType.TEXT.name &&
                 (System.currentTimeMillis() - targetMsg.timestamp <= 10 * 60 * 1000L)
+        val isDarkSheet = com.example.ui.theme.LocalIsDarkTheme.current
 
         ModalBottomSheet(
-            onDismissRequest = { selectedMessageForOptions = null }
+            onDismissRequest = { selectedMessageForOptions = null },
+            containerColor = if (isDarkSheet) Color(0xFF182229) else Color.White,
+            contentColor = if (isDarkSheet) Color.White else Color(0xFF0F172A),
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 12.dp)
+                    .padding(bottom = 16.dp)
             ) {
+                Text(
+                    text = "Message options",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isDarkSheet) Color(0xFF94A3B8) else Color(0xFF64748B),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                )
+
                 // ── Star / Unstar ──────────────────────────────────────────
-                ListItem(
-                    headlineContent = {
-                        Text(if (targetMsg.isStarred) "Unstar message" else "Star message")
-                    },
-                    leadingContent = {
-                        Icon(
-                            if (targetMsg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
-                            contentDescription = null,
-                            tint = if (targetMsg.isStarred) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    modifier = Modifier.clickable {
+                WhatsAppStyledMenuItem(
+                    title = if (targetMsg.isStarred) "Unstar message" else "Star message",
+                    subtitle = if (targetMsg.isStarred) "Remove from starred messages" else "Save for quick access later",
+                    icon = if (targetMsg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
+                    iconTint = Color(0xFFF59E0B),
+                    onClick = {
                         val msgId = targetMsg.id
                         val willStar = !targetMsg.isStarred
                         selectedMessageForOptions = null
@@ -2537,10 +2850,12 @@ fun ChatConversationScreen(
 
                 if (!isDeleted) {
                     // Reply
-                    ListItem(
-                        headlineContent = { Text("Reply") },
-                        leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null) },
-                        modifier = Modifier.clickable {
+                    WhatsAppStyledMenuItem(
+                        title = "Reply",
+                        subtitle = "Quote this message in your reply",
+                        icon = Icons.AutoMirrored.Filled.Reply,
+                        iconTint = Color(0xFF0284C7),
+                        onClick = {
                             val previewText = formatReplyPreview(targetMsg)
                             replyingTo = ReplyContext(
                                 messageId = targetMsg.id,
@@ -2558,10 +2873,12 @@ fun ChatConversationScreen(
                             val obj = org.json.JSONObject(targetMsg.text)
                             obj.optString("text", targetMsg.text)
                         } catch (_: Exception) { targetMsg.text }
-                        ListItem(
-                            headlineContent = { Text("Copy") },
-                            leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
-                            modifier = Modifier.clickable {
+                        WhatsAppStyledMenuItem(
+                            title = "Copy",
+                            subtitle = "Copy message text to clipboard",
+                            icon = Icons.Default.ContentCopy,
+                            iconTint = Color(0xFF6366F1),
+                            onClick = {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                                 val clip = android.content.ClipData.newPlainText("Copied message", rawText)
                                 clipboard?.setPrimaryClip(clip)
@@ -2577,10 +2894,12 @@ fun ChatConversationScreen(
                             val obj = org.json.JSONObject(targetMsg.text)
                             obj.optString("text", targetMsg.text)
                         } catch (_: Exception) { targetMsg.text }
-                        ListItem(
-                            headlineContent = { Text("Edit (10 min window)") },
-                            leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = GreenCall) },
-                            modifier = Modifier.clickable {
+                        WhatsAppStyledMenuItem(
+                            title = "Edit message",
+                            subtitle = "Available within 10 minutes of sending",
+                            icon = Icons.Default.Edit,
+                            iconTint = Color(0xFF059669),
+                            onClick = {
                                 editingMessage = targetMsg
                                 inputText = rawText
                                 selectedMessageForOptions = null
@@ -2588,12 +2907,20 @@ fun ChatConversationScreen(
                         )
                     }
 
+                    HorizontalDivider(
+                        color = if (isDarkSheet) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+
                     // Delete for everyone (WhatsApp style: outgoing only, not already deleted)
                     if (targetMsg.isOutgoing) {
-                        ListItem(
-                            headlineContent = { Text("Delete for everyone", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) },
-                            leadingContent = { Icon(Icons.Default.DeleteSweep, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                            modifier = Modifier.clickable {
+                        WhatsAppStyledMenuItem(
+                            title = "Delete for everyone",
+                            subtitle = "Remove for all participants in this chat",
+                            icon = Icons.Default.DeleteSweep,
+                            iconTint = Color(0xFFEF4444),
+                            isDestructive = true,
+                            onClick = {
                                 val idToDelete = targetMsg.id
                                 selectedMessageForOptions = null
                                 coroutineScope.launch {
@@ -2605,10 +2932,13 @@ fun ChatConversationScreen(
                 }
 
                 // Delete for me
-                ListItem(
-                    headlineContent = { Text("Delete for me", color = MaterialTheme.colorScheme.error) },
-                    leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                    modifier = Modifier.clickable {
+                WhatsAppStyledMenuItem(
+                    title = "Delete for me",
+                    subtitle = "Remove from your device only",
+                    icon = Icons.Default.Delete,
+                    iconTint = Color(0xFFEF4444),
+                    isDestructive = true,
+                    onClick = {
                         val idToDelete = targetMsg.id
                         selectedMessageForOptions = null
                         coroutineScope.launch {
@@ -2808,6 +3138,7 @@ private fun SwipeableMessageWrapper(
 
 @Composable
 private fun E2eeInfoBanner() {
+    val isDark = com.example.ui.theme.LocalIsDarkTheme.current
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2815,9 +3146,10 @@ private fun E2eeInfoBanner() {
         contentAlignment = Alignment.Center
     ) {
         Surface(
-            color = if (isSystemInDarkTheme()) Color(0xFF182229) else Color(0xFFFFF3C4),
+            color = if (isDark) Color(0xFF182229) else Color(0xFFFFF8DB),
             shape = RoundedCornerShape(12.dp),
-            shadowElevation = 1.dp
+            shadowElevation = 1.dp,
+            border = BorderStroke(1.dp, if (isDark) Color.White.copy(alpha = 0.06f) else Color(0xFFFDE68A))
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -2827,13 +3159,13 @@ private fun E2eeInfoBanner() {
                     Icons.Default.Lock,
                     contentDescription = null,
                     modifier = Modifier.size(13.dp),
-                    tint = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404)
+                    tint = if (isDark) Color(0xFFFFD279) else Color(0xFF92400E)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "Messages are End-to-End Encrypted and deleted from server once delivered.",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isSystemInDarkTheme()) Color(0xFFFFD279) else Color(0xFF856404),
+                    color = if (isDark) Color(0xFFFFD279) else Color(0xFF92400E),
                     textAlign = TextAlign.Center
                 )
             }
@@ -3016,11 +3348,24 @@ private fun MessageBubble(
 ) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
-    val isDark = isSystemInDarkTheme()
+    val isDark = com.example.ui.theme.LocalIsDarkTheme.current
     val isOutgoing = message.isOutgoing
 
-    val displayText = remember(message.text, message.mediaType) {
-        if (message.mediaType == ChatMediaType.TEXT.name) {
+    val sharedLocation = remember(message.text, message.mediaType) {
+        if (message.mediaType == ChatMediaType.TEXT.name) WhatsAppPayloadParser.parseLocation(message.text) else null
+    }
+    val sharedContact = remember(message.text, message.mediaType) {
+        if (message.mediaType == ChatMediaType.TEXT.name) WhatsAppPayloadParser.parseContact(message.text) else null
+    }
+    val sharedPoll = remember(message.text, message.mediaType) {
+        if (message.mediaType == ChatMediaType.TEXT.name) WhatsAppPayloadParser.parsePoll(message.text) else null
+    }
+    val isRichWhatsAppPayload = sharedLocation != null || sharedContact != null || sharedPoll != null
+
+    val displayText = remember(message.text, message.mediaType, isRichWhatsAppPayload) {
+        if (isRichWhatsAppPayload) {
+            ""
+        } else if (message.mediaType == ChatMediaType.TEXT.name) {
             try {
                 val obj = org.json.JSONObject(message.text)
                 obj.optString("text", message.text)
@@ -3035,8 +3380,8 @@ private fun MessageBubble(
         } else message.text
     }
 
-    val firstUrl = remember(displayText, message.mediaType) {
-        if (message.mediaType == ChatMediaType.TEXT.name) LinkPreviewHelper.extractFirstUrl(displayText) else null
+    val firstUrl = remember(displayText, message.mediaType, isRichWhatsAppPayload) {
+        if (!isRichWhatsAppPayload && message.mediaType == ChatMediaType.TEXT.name) LinkPreviewHelper.extractFirstUrl(displayText) else null
     }
     val linkPreview by produceState<LinkPreviewData?>(
         initialValue = firstUrl?.let { LinkPreviewHelper.getCachedPreview(it) },
@@ -3944,9 +4289,62 @@ private fun MessageBubble(
                     Spacer(modifier = Modifier.height(4.dp))
                 }
 
+                // ── WhatsApp Location Bubble Card (Google Maps) ───────────────
+                if (sharedLocation != null && !isDeleted) {
+                    WhatsAppLocationBubbleCard(
+                        locationData = sharedLocation,
+                        isOutgoing = isOutgoing,
+                        onOpenMap = {
+                            openInGoogleMaps(
+                                context = context,
+                                latitude = sharedLocation.latitude,
+                                longitude = sharedLocation.longitude,
+                                label = sharedLocation.title,
+                                navigationMode = false
+                            )
+                        },
+                        onDirections = {
+                            openInGoogleMaps(
+                                context = context,
+                                latitude = sharedLocation.latitude,
+                                longitude = sharedLocation.longitude,
+                                label = sharedLocation.title,
+                                navigationMode = true
+                            )
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                // ── WhatsApp Contact Card ─────────────────────────────────────
+                if (sharedContact != null && !isDeleted) {
+                    WhatsAppContactBubbleCard(
+                        contactData = sharedContact,
+                        isOutgoing = isOutgoing,
+                        onCallClick = { phone, _ ->
+                            try {
+                                val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone")).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(dialIntent)
+                            } catch (_: Exception) {}
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                // ── WhatsApp Interactive Poll Card ────────────────────────────
+                if (sharedPoll != null && !isDeleted) {
+                    WhatsAppPollBubbleCard(
+                        pollData = sharedPoll,
+                        isOutgoing = isOutgoing
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
                 // ── Rich Link Preview Card (WhatsApp style) ───────────────────
                 val activePreview = linkPreview
-                if (activePreview != null && !isDeleted) {
+                if (activePreview != null && !isDeleted && !isRichWhatsAppPayload) {
                     LinkPreviewCard(
                         preview = activePreview,
                         isOutgoing = isOutgoing,
@@ -3967,7 +4365,7 @@ private fun MessageBubble(
                 }
 
                 // ── Text / Caption with Clickable Links ───────────────────────
-                if (displayText.isNotBlank() && !isHeroPreviewOnly && !isFrameless && message.mediaType != ChatMediaType.DOCUMENT.name) {
+                if (displayText.isNotBlank() && !isHeroPreviewOnly && !isFrameless && !isRichWhatsAppPayload && message.mediaType != ChatMediaType.DOCUMENT.name) {
                     ClickableMessageText(
                         text = displayText,
                         isOutgoing = isOutgoing,
@@ -4072,7 +4470,7 @@ private fun ClickableMessageText(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
         )
     } else {
-        val isDark = isSystemInDarkTheme()
+        val isDark = com.example.ui.theme.LocalIsDarkTheme.current
         val linkColor = when {
             isOutgoing            -> Color(0xFFFFF3CD) // Warm light cream underline on orange bubble
             !isOutgoing && isDark -> themeColor.accent // Soft amber on dark slate bubble
@@ -4155,7 +4553,7 @@ private fun LinkPreviewCard(
     onOpenUrl: (String) -> Unit,
     onLongClick: (() -> Unit)? = null
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = com.example.ui.theme.LocalIsDarkTheme.current
     val isHero = !preview.imageUrl.isNullOrBlank()
 
     if (isHero) {

@@ -29,9 +29,19 @@ object CountryCodes {
     )
 
     fun formatPhoneNumber(dialCode: String, number: String): String {
+        val trimmed = number.trim()
         val cleanDialCodeDigits = dialCode.replace(Regex("[^0-9]"), "")
-        val cleanNumber = number.replace(Regex("[^0-9]"), "")
-        return if (cleanNumber.startsWith(cleanDialCodeDigits)) {
+        val rawDigits = trimmed.replace(Regex("[^0-9]"), "")
+        if (rawDigits.isEmpty()) return ""
+        if (trimmed.startsWith("+")) {
+            return "+$rawDigits"
+        }
+        val cleanNumber = rawDigits.trimStart('0').ifEmpty { rawDigits }
+        return if (
+            cleanDialCodeDigits.isNotEmpty() &&
+            cleanNumber.startsWith(cleanDialCodeDigits) &&
+            cleanNumber.length >= 10 + cleanDialCodeDigits.length
+        ) {
             "+$cleanNumber"
         } else {
             "$dialCode$cleanNumber"

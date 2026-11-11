@@ -1,9 +1,12 @@
 package com.example.ui.screens.chat
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -25,19 +28,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.TealPrimary
 
 enum class MediaKeyboardTab {
     EMOJI,
-    STICKER,
-    GIF
+    GIF,
+    STICKER
 }
 
 data class StickerItem(
@@ -67,9 +73,12 @@ fun ChatMediaKeyboardPicker(
     var selectedTab by remember { mutableStateOf(MediaKeyboardTab.EMOJI) }
     var isExpanded by remember { mutableStateOf(false) }
 
-    val animatedHeight by androidx.compose.animation.core.animateDpAsState(
-        targetValue = if (isExpanded) 520.dp else 360.dp,
-        animationSpec = tween(durationMillis = 250),
+    val animatedHeight by animateDpAsState(
+        targetValue = if (isExpanded) 460.dp else 320.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
         label = "mediaPickerHeight"
     )
 
@@ -78,7 +87,7 @@ fun ChatMediaKeyboardPicker(
             .fillMaxWidth()
             .height(animatedHeight),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 6.dp,
+        tonalElevation = 4.dp,
         shadowElevation = 8.dp
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -95,21 +104,20 @@ fun ChatMediaKeyboardPicker(
                         .width(38.dp)
                         .height(4.dp),
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.32f)
                 ) {}
             }
 
-            // ── Top Media Tabs Header (WhatsApp / Telegram style) ──
+            // ── Top Media Tabs Header (WhatsApp style pill switcher) ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Tab switcher pill
                 Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                     shape = RoundedCornerShape(20.dp),
                     modifier = Modifier.height(36.dp)
                 ) {
@@ -138,14 +146,14 @@ fun ChatMediaKeyboardPicker(
                     }
                 }
 
-                // Right controls: Expand/Collapse toggle button + Backspace (in Emoji tab)
+                // Right controls: Expand/Collapse toggle button + Backspace
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     IconButton(
                         onClick = { isExpanded = !isExpanded },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             imageVector = if (isExpanded) Icons.Default.CloseFullscreen else Icons.Default.OpenInFull,
@@ -172,17 +180,20 @@ fun ChatMediaKeyboardPicker(
             }
 
             HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
-                thickness = 0.8.dp
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                thickness = 0.6.dp
             )
 
-            // ── Tab Content ──
-            Box(
+            // ── Tab Content with ultra-fast Crossfade (no heavy layout jump) ──
+            Crossfade(
+                targetState = selectedTab,
+                animationSpec = tween(durationMillis = 90),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-            ) {
-                when (selectedTab) {
+                    .weight(1f),
+                label = "tabCrossfade"
+            ) { tab ->
+                when (tab) {
                     MediaKeyboardTab.EMOJI -> {
                         EmojiPickerContent(
                             onEmojiSelected = onEmojiSelected
@@ -235,7 +246,7 @@ private fun TabPillButton(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 1. Emoji Picker
+// 1. High-Performance 120fps Emoji Picker (Fixed 8-column grid + Recent/Popular)
 // ──────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun EmojiPickerContent(
@@ -243,69 +254,97 @@ private fun EmojiPickerContent(
 ) {
     var selectedCategoryIndex by remember { mutableIntStateOf(0) }
     val categories = remember { EmojiCatalog.categories }
-    val currentEmojis = remember(selectedCategoryIndex) { categories[selectedCategoryIndex].emojis }
+    val currentCategory = remember(selectedCategoryIndex) { categories[selectedCategoryIndex] }
+    val currentEmojis = currentCategory.emojis
     val gridState = rememberLazyGridState()
 
-    // Reset scroll when category changes
     LaunchedEffect(selectedCategoryIndex) {
         gridState.scrollToItem(0)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Category Icons Horizontal Row
+        // Category Icons Horizontal Row (WhatsApp top category strip)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             categories.forEachIndexed { index, cat ->
                 val isSelected = index == selectedCategoryIndex
                 Surface(
                     onClick = { selectedCategoryIndex = index },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isSelected) TealPrimary.copy(alpha = 0.15f) else Color.Transparent,
-                    modifier = Modifier.padding(vertical = 2.dp)
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) TealPrimary.copy(alpha = 0.16f) else Color.Transparent
                 ) {
-                    Text(
-                        text = cat.icon,
-                        fontSize = 18.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = cat.icon,
+                            fontSize = 17.sp
+                        )
+                        if (isSelected) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Box(
+                                modifier = Modifier
+                                    .width(16.dp)
+                                    .height(2.dp)
+                                    .clip(CircleShape)
+                                    .background(TealPrimary)
+                            )
+                        }
+                    }
                 }
             }
         }
 
         HorizontalDivider(
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f),
             thickness = 0.5.dp
         )
 
-        // Emojis Grid
+        // Category title header
+        Text(
+            text = currentCategory.title.uppercase(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
+        )
+
+        // Fixed 8-column grid avoids adaptive measurement overhead for 120fps scrolling
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 40.dp),
+            columns = GridCells.Fixed(8),
             state = gridState,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-                .padding(horizontal = 8.dp),
-            contentPadding = PaddingValues(vertical = 6.dp)
+                .padding(horizontal = 6.dp),
+            contentPadding = PaddingValues(bottom = 8.dp)
         ) {
             itemsIndexed(
                 items = currentEmojis,
-                key = { index, emoji -> "${selectedCategoryIndex}_${index}_$emoji" }
+                key = { index, emoji -> "${selectedCategoryIndex}_${index}_$emoji" },
+                contentType = { _, _ -> "emoji_cell" }
             ) { _, emoji ->
                 Box(
                     modifier = Modifier
-                        .aspectRatio(1f)
+                        .height(42.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { onEmojiSelected(emoji) },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = emoji,
-                        fontSize = 24.sp
+                        fontSize = 24.sp,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -314,19 +353,20 @@ private fun EmojiPickerContent(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 2. GIF Picker (Curated + Search)
+// 2. High-Performance GIF Picker (Memory/Disk Cached + Search + Categories)
 // ──────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun GifPickerContent(
     onGifSelected: (gifUrl: String, gifTitle: String) -> Unit
 ) {
+    val context = LocalContext.current
     var searchQuery by remember { mutableStateOf("") }
-    var selectedCategory by remember { mutableStateOf("All") }
+    var selectedCategory by remember { mutableStateOf("Trending") }
     val allGifs = remember { GifCatalog.gifs }
 
     val filteredGifs = remember(searchQuery, selectedCategory) {
         allGifs.filter { gif ->
-            val matchCategory = selectedCategory == "All" || gif.category.equals(selectedCategory, ignoreCase = true)
+            val matchCategory = selectedCategory == "Trending" || gif.category.equals(selectedCategory, ignoreCase = true)
             val matchSearch = searchQuery.isBlank() ||
                     gif.title.contains(searchQuery, ignoreCase = true) ||
                     gif.category.contains(searchQuery, ignoreCase = true)
@@ -335,66 +375,104 @@ private fun GifPickerContent(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Search bar
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("Search GIFs…", fontSize = 13.sp) },
-            leadingIcon = {
-                Icon(Icons.Default.Search, contentDescription = "Search", tint = TealPrimary, modifier = Modifier.size(18.dp))
-            },
-            trailingIcon = {
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(16.dp))
-                    }
-                }
-            },
-            singleLine = true,
+        // WhatsApp-style compact GIF Search Bar + Category Chips
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-                .height(44.dp),
-            shape = RoundedCornerShape(22.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                unfocusedBorderColor = Color.Transparent,
-                focusedBorderColor = TealPrimary
-            )
-        )
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(38.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Search GIFs",
+                        tint = TealPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "Search Tenor / Giphy GIFs…",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                            )
+                        }
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { searchQuery = "" },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Clear",
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         // Categories row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 2.dp),
+                .padding(horizontal = 10.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            val gifCategories = listOf("All", "Laugh", "Love", "Dance", "Shock", "Cry", "Party", "Thumbs Up", "Popcorn")
+            val gifCategories = remember {
+                listOf("Trending", "Laugh", "Love", "Dance", "Shock", "Thumbs Up", "Party", "Cry", "Popcorn")
+            }
             gifCategories.forEach { cat ->
                 val isSelected = selectedCategory == cat
                 Surface(
                     onClick = { selectedCategory = cat },
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (isSelected) TealPrimary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isSelected) TealPrimary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                     modifier = Modifier.height(26.dp)
                 ) {
-                    Text(
-                        text = cat,
-                        fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 11.dp)
+                    ) {
+                        Text(
+                            text = cat,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // GIFs 2-column Grid
+        // GIFs 2-column Grid with pre-built cached ImageRequests
         if (filteredGifs.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -418,39 +496,66 @@ private fun GifPickerContent(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(filteredGifs, key = { it.id }) { gif ->
+                items(
+                    items = filteredGifs,
+                    key = { it.id },
+                    contentType = { "gif_card" }
+                ) { gif ->
+                    val imageRequest = remember(gif.id, gif.previewUrl) {
+                        ImageRequest.Builder(context)
+                            .data(gif.previewUrl)
+                            .memoryCacheKey(gif.id)
+                            .diskCacheKey(gif.id)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
+                            .crossfade(100)
+                            .build()
+                    }
                     Card(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(110.dp)
+                            .height(108.dp)
                             .clickable { onGifSelected(gif.url, gif.title) },
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                        )
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             AsyncImage(
-                                model = gif.previewUrl,
+                                model = imageRequest,
                                 contentDescription = gif.title,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
-                            // Title chip overlay
+                            // GIF badge + title overlay
                             Surface(
-                                color = Color.Black.copy(alpha = 0.55f),
-                                shape = RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp),
+                                color = Color.Black.copy(alpha = 0.52f),
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
                                     .fillMaxWidth()
                             ) {
-                                Text(
-                                    text = gif.title,
-                                    fontSize = 10.sp,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = gif.title,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "GIF",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = GreenCall
+                                    )
+                                }
                             }
                         }
                     }
@@ -486,7 +591,7 @@ private fun StickerPickerContent(
                     onClick = { selectedPackIndex = index },
                     shape = RoundedCornerShape(14.dp),
                     color = if (isSelected) TealPrimary.copy(alpha = 0.15f) else Color.Transparent,
-                    border = if (isSelected) androidx.compose.foundation.BorderStroke(1.2.dp, TealPrimary) else null,
+                    border = if (isSelected) BorderStroke(1.2.dp, TealPrimary) else null,
                     modifier = Modifier.padding(vertical = 2.dp)
                 ) {
                     Row(
@@ -521,7 +626,11 @@ private fun StickerPickerContent(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(currentPack.stickers, key = { it.id }) { sticker ->
+            items(
+                items = currentPack.stickers,
+                key = { it.id },
+                contentType = { "sticker_cell" }
+            ) { sticker ->
                 Box(
                     modifier = Modifier
                         .aspectRatio(1f)
@@ -541,10 +650,9 @@ private fun StickerPickerContent(
                             contentScale = ContentScale.Fit
                         )
                     } else {
-                        // High impact large emoji sticker
                         Text(
                             text = sticker.previewEmoji,
-                            fontSize = 44.sp,
+                            fontSize = 42.sp,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -571,6 +679,15 @@ data class StickerPack(
 
 object EmojiCatalog {
     val categories: List<EmojiCategory> = listOf(
+        EmojiCategory(
+            title = "Frequently Used",
+            icon = "🕒",
+            emojis = listOf(
+                "😂", "❤️", "🤣", "👍", "😭", "🙏", "😘", "🥰", "😍", "😊", "🎉", "🔥", "😁", "💕", "🥺", "😅",
+                "☺️", "🤦", "♥️", "🤷", "🙄", "😆", "🤗", "😉", "🎂", "🤔", "👏", "🙂", "😳", "🥳", "😎", "👌",
+                "💜", "😔", "💪", "✨", "💖", "👀", "😋", "😏", "😢", "👉", "💗", "😩", "💯", "🌹", "💞", "🎈"
+            )
+        ),
         EmojiCategory(
             title = "Smileys & Emotion",
             icon = "😀",
@@ -669,11 +786,11 @@ object StickerCatalog {
                 StickerItem("s_panda_hug", "Panda Hug", "Cute Animals", "", "🐼"),
                 StickerItem("s_fox_smirk", "Sly Fox", "Cute Animals", "", "🦊"),
                 StickerItem("s_bunny_love", "Sweet Bunny", "Cute Animals", "", "🐰"),
-                StickerItem("s_penguin_dance", "Dancing Penguin", "Cute Animals", "", "🐧"),
+                StickerItem("s_penguin_dance", "Happy Penguin", "Cute Animals", "", "🐧"),
                 StickerItem("s_hamster_eat", "Munch Hamster", "Cute Animals", "", "🐹"),
                 StickerItem("s_koala_chill", "Chill Koala", "Cute Animals", "", "🐨"),
                 StickerItem("s_lion_king", "Brave Lion", "Cute Animals", "", "🦁"),
-                StickerItem("s_frog_vibes", "Kermit Vibe", "Cute Animals", "", "🐸"),
+                StickerItem("s_frog_vibes", "Frog Vibe", "Cute Animals", "", "🐸"),
                 StickerItem("s_unicorn_magic", "Sparkle Unicorn", "Cute Animals", "", "🦄"),
                 StickerItem("s_sloth_slow", "Sleepy Sloth", "Cute Animals", "", "🦥")
             )
@@ -732,18 +849,11 @@ object GifCatalog {
             previewUrl = "https://media.giphy.com/media/10JhviFuU2gWD6/200w.gif"
         ),
         GifItem(
-            id = "g_dance_happy",
-            title = "Happy Dance",
-            category = "Dance",
-            url = "https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif",
-            previewUrl = "https://media.giphy.com/media/blSTtZehjAZ8I/200w.gif"
-        ),
-        GifItem(
-            id = "g_dance_snoopy",
-            title = "Snoopy Dance",
-            category = "Dance",
-            url = "https://media.giphy.com/media/o75ajIFH0QnQC3nCeD/giphy.gif",
-            previewUrl = "https://media.giphy.com/media/o75ajIFH0QnQC3nCeD/200w.gif"
+            id = "g_thumbs_up",
+            title = "Thumbs Up Cool",
+            category = "Thumbs Up",
+            url = "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
+            previewUrl = "https://media.giphy.com/media/111ebonMs90YLu/200w.gif"
         ),
         GifItem(
             id = "g_love_cat",
@@ -768,7 +878,7 @@ object GifCatalog {
         ),
         GifItem(
             id = "g_shock_doge",
-            title = "Mind Blown Doge",
+            title = "Mind Blown",
             category = "Shock",
             url = "https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif",
             previewUrl = "https://media.giphy.com/media/26ufdipQqU2lhNA4g/200w.gif"
@@ -781,11 +891,18 @@ object GifCatalog {
             previewUrl = "https://media.giphy.com/media/artj92V8o75VPL7AeQ/200w.gif"
         ),
         GifItem(
-            id = "g_thumbs_up",
-            title = "Thumbs Up Cool",
-            category = "Thumbs Up",
-            url = "https://media.giphy.com/media/111ebonMs90YLu/giphy.gif",
-            previewUrl = "https://media.giphy.com/media/111ebonMs90YLu/200w.gif"
+            id = "g_dance_happy",
+            title = "Happy Vibe",
+            category = "Dance",
+            url = "https://media.giphy.com/media/blSTtZehjAZ8I/giphy.gif",
+            previewUrl = "https://media.giphy.com/media/blSTtZehjAZ8I/200w.gif"
+        ),
+        GifItem(
+            id = "g_dance_snoopy",
+            title = "Snoopy Vibe",
+            category = "Dance",
+            url = "https://media.giphy.com/media/o75ajIFH0QnQC3nCeD/giphy.gif",
+            previewUrl = "https://media.giphy.com/media/o75ajIFH0QnQC3nCeD/200w.gif"
         ),
         GifItem(
             id = "g_popcorn",

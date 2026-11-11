@@ -65,8 +65,8 @@ enum class SettingsCategory(
     val accent: Color
 ) {
     ALL("All Categories", "Complete overview", Icons.Default.GridView, SignalAmber),
-    APPEARANCE("Clay & Glass UI", "3D Clay, Frosted & Liquid Glass", Icons.Default.AutoAwesome, Color(0xFF38BDF8)),
-    CALLS_AUDIO("Calls & Audio", "Ringtone, Hello Tune & WebRTC", Icons.Default.RingVolume, CyberMint),
+    APPEARANCE("Liquid & Fog Glass", "iPhone Liquid Glass, Fog & 3D Clay", Icons.Default.AutoAwesome, Color(0xFF38BDF8)),
+    CALLS_AUDIO("Calls & Swipe UI", "iPhone/Samsung Swipe, Ringtone & WebRTC", Icons.Default.RingVolume, CyberMint),
     PRIVACY("Privacy & DND", "Do Not Disturb, Blocking & E2EE", Icons.Default.Shield, CrimsonAlert),
     BATTERY_OEM("24/7 Readiness", "Battery Saver & OEM Autostart", Icons.Default.BatteryChargingFull, SignalAmber),
     STORAGE_WEB("Storage & Web", "Linked Devices QR & Chat Storage", Icons.Default.QrCodeScanner, TelemetryBlue),
@@ -87,7 +87,11 @@ fun SettingsScreen(
     val themeManager = remember { ThemeManager.getInstance(context) }
     val currentThemeColor = LocalThemeColor.current
     val surfaceStyle = LocalSurfaceStyle.current
+    val isDarkModeGlobal by themeManager.isDarkMode.collectAsState()
+    val incomingCallStyle by themeManager.incomingCallStyle.collectAsState()
+    val incomingSwipeDirection by themeManager.incomingSwipeDirection.collectAsState()
     var selectedCategory by remember(initialCategory) { mutableStateOf(initialCategory) }
+    var searchQuery by remember { mutableStateOf("") }
 
     val wallpaperManager = remember { com.example.util.ChatWallpaperManager.getInstance(context) }
     val wallpaperConfig by wallpaperManager.config.collectAsState()
@@ -302,6 +306,71 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
         ) {
+            // ── 0. Instant Settings Search & Quick Filter Bar ─────────────────────
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { query ->
+                    searchQuery = query
+                    val q = query.trim().lowercase()
+                    if (q.isNotEmpty()) {
+                        selectedCategory = when {
+                            q.contains("swipe") || q.contains("pickup") || q.contains("answer") ||
+                                q.contains("ringtone") || q.contains("tune") || q.contains("audio") ||
+                                q.contains("samsung") || q.contains("call") -> SettingsCategory.CALLS_AUDIO
+                            q.contains("liquid") || q.contains("fog") || q.contains("frosted") ||
+                                q.contains("glass") || q.contains("clay") || q.contains("dark") ||
+                                q.contains("light") || q.contains("theme") || q.contains("iphone") ||
+                                q.contains("wallpaper") -> SettingsCategory.APPEARANCE
+                            q.contains("dnd") || q.contains("block") || q.contains("spam") ||
+                                q.contains("privacy") -> SettingsCategory.PRIVACY
+                            q.contains("battery") || q.contains("oem") || q.contains("background") -> SettingsCategory.BATTERY_OEM
+                            q.contains("storage") || q.contains("qr") || q.contains("web") ||
+                                q.contains("linked") -> SettingsCategory.STORAGE_WEB
+                            q.contains("update") || q.contains("log") || q.contains("system") -> SettingsCategory.SYSTEM
+                            else -> SettingsCategory.ALL
+                        }
+                    }
+                },
+                placeholder = {
+                    Text(
+                        text = "Search settings (e.g., Liquid Glass, Call Swipe, Samsung, Ringtone)...",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontSize = 13.sp,
+                        color = HudTextSecondary
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Search Settings",
+                        tint = currentThemeColor.primary
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = {
+                            searchQuery = ""
+                            selectedCategory = SettingsCategory.ALL
+                        }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear search", tint = HudTextSecondary)
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = surfaceStyle.resolvedCardColor(isDarkModeGlobal),
+                    unfocusedContainerColor = surfaceStyle.resolvedCardColor(isDarkModeGlobal),
+                    focusedBorderColor = currentThemeColor.primary,
+                    unfocusedBorderColor = surfaceStyle.resolvedBorderColor(isDarkModeGlobal)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .surfaceFinishOverlay(surfaceStyle, 16.dp, currentThemeColor.primary)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             // ── 1. Horizontal Category Filter Strip ─────────────────────────────
             Row(
                 modifier = Modifier
@@ -317,10 +386,10 @@ fun SettingsScreen(
                             .defaultMinSize(minHeight = 44.dp)
                             .surfaceFinishOverlay(surfaceStyle, 14.dp, cat.accent),
                         shape = RoundedCornerShape(14.dp),
-                        color = if (isSelected) cat.accent.copy(alpha = 0.22f) else surfaceStyle.cardColor,
+                        color = if (isSelected) cat.accent.copy(alpha = 0.22f) else surfaceStyle.resolvedCardColor(isDarkModeGlobal),
                         border = BorderStroke(
                             if (isSelected) 1.5.dp else 1.dp,
-                            if (isSelected) cat.accent else surfaceStyle.borderColor
+                            if (isSelected) cat.accent else surfaceStyle.resolvedBorderColor(isDarkModeGlobal)
                         )
                     ) {
                         Row(
@@ -471,6 +540,61 @@ fun SettingsScreen(
             // CATEGORY: CLAY & GLASS UI APPEARANCE
             // ══════════════════════════════════════════════════════════════════════
             if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.APPEARANCE) {
+                val isDarkMode by themeManager.isDarkMode.collectAsState()
+                SettingsSectionHeader("APP DISPLAY MODE (LIGHT DEFAULT • DARK OPTIONAL)")
+                Surface(
+                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                    color = surfaceStyle.cardColor,
+                    border = BorderStroke(1.dp, surfaceStyle.borderColor),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Default.DarkMode else Icons.Default.LightMode,
+                                contentDescription = null,
+                                tint = if (isDarkMode) CyberMint else SignalAmber,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = if (isDarkMode) "Dark Theme Active" else "Light Theme Active (Default)",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = HudTextPrimary
+                                )
+                                Text(
+                                    text = "Applies across chats, menus, dialer, and settings",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontSize = 12.sp,
+                                    color = HudTextSecondary
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = isDarkMode,
+                            onCheckedChange = { enabled ->
+                                themeManager.setDarkMode(enabled)
+                            }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
                 SettingsSectionHeader("UI SURFACE FINISH (CLAY 3D • FROSTED GLASS • LIQUID GLASS)")
                 Surface(
                     shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
@@ -818,20 +942,222 @@ fun SettingsScreen(
             }
 
             // ══════════════════════════════════════════════════════════════════════
-            // CATEGORY: CALLS, RINGTONE, HELLO TUNE & AUDIO
+            // CATEGORY: CALLS, INCOMING SWIPE UI, RINGTONE, HELLO TUNE & AUDIO
             // ══════════════════════════════════════════════════════════════════════
+            if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.CALLS_AUDIO || selectedCategory == SettingsCategory.APPEARANCE) {
+                SettingsSectionHeader("INCOMING CALL PICKUP UI & SWIPE GESTURES (iPHONE • SAMSUNG)")
+                Surface(
+                    shape = RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp),
+                    color = surfaceStyle.resolvedCardColor(isDarkModeGlobal),
+                    border = BorderStroke(1.dp, surfaceStyle.resolvedBorderColor(isDarkModeGlobal)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, CyberMint)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = CyberMint.copy(alpha = 0.16f),
+                                border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.45f)),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.SwipeUp,
+                                        contentDescription = null,
+                                        tint = CyberMint,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Incoming Call Style & Swipe Pickup",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 16.sp,
+                                    color = HudTextPrimary
+                                )
+                                Text(
+                                    text = "Answer by swiping Up, Left, or Right with iPhone Liquid Glass or Samsung One UI rings",
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontSize = 12.sp,
+                                    color = HudTextSecondary
+                                )
+                            }
+                        }
+
+                        // 1. Incoming Call Screen Style Selector (iPhone Liquid Glass vs Samsung One UI)
+                        Text(
+                            text = "1. INCOMING CALL SCREEN AESTHETIC",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = currentThemeColor.primary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            IncomingCallUiStyle.entries.forEach { styleItem ->
+                                val isSelected = incomingCallStyle == styleItem
+                                Surface(
+                                    onClick = {
+                                        themeManager.setIncomingCallStyle(styleItem)
+                                        if (styleItem == IncomingCallUiStyle.SAMSUNG_ONE_UI &&
+                                            incomingSwipeDirection == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT
+                                        ) {
+                                            themeManager.setIncomingSwipeDirection(IncomingSwipeDirection.SAMSUNG_EXPAND_RING)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = if (isSelected) currentThemeColor.primary.copy(alpha = 0.16f) else surfaceStyle.resolvedElevatedColor(isDarkModeGlobal),
+                                    border = BorderStroke(
+                                        if (isSelected) 2.dp else 1.dp,
+                                        if (isSelected) currentThemeColor.primary else surfaceStyle.resolvedBorderColor(isDarkModeGlobal)
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .surfaceFinishOverlay(surfaceStyle, 16.dp, currentThemeColor.primary)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                imageVector = if (styleItem == IncomingCallUiStyle.IPHONE_LIQUID_GLASS) {
+                                                    Icons.Default.AutoAwesome
+                                                } else {
+                                                    Icons.Default.RadioButtonChecked
+                                                },
+                                                contentDescription = null,
+                                                tint = if (isSelected) currentThemeColor.primary else HudTextSecondary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            if (isSelected) {
+                                                Icon(
+                                                    Icons.Default.CheckCircle,
+                                                    contentDescription = "Selected",
+                                                    tint = CyberMint,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = styleItem.title,
+                                            fontFamily = SpaceGroteskFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = HudTextPrimary
+                                        )
+                                        Text(
+                                            text = styleItem.subtitle,
+                                            fontFamily = SpaceGroteskFontFamily,
+                                            fontSize = 11.sp,
+                                            color = HudTextSecondary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Multi-Directional Swipe Gesture Mode Selector
+                        Text(
+                            text = "2. CALL PICKUP SWIPE DIRECTION (UP • LEFT • RIGHT)",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = currentThemeColor.primary
+                        )
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            IncomingSwipeDirection.entries.forEach { dirOption ->
+                                val isSelected = incomingSwipeDirection == dirOption
+                                Surface(
+                                    onClick = {
+                                        themeManager.setIncomingSwipeDirection(dirOption)
+                                        if (dirOption == IncomingSwipeDirection.SAMSUNG_EXPAND_RING) {
+                                            themeManager.setIncomingCallStyle(IncomingCallUiStyle.SAMSUNG_ONE_UI)
+                                        } else if (dirOption == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT) {
+                                            themeManager.setIncomingCallStyle(IncomingCallUiStyle.IPHONE_LIQUID_GLASS)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = if (isSelected) CyberMint.copy(alpha = 0.14f) else surfaceStyle.resolvedElevatedColor(isDarkModeGlobal),
+                                    border = BorderStroke(
+                                        if (isSelected) 1.5.dp else 1.dp,
+                                        if (isSelected) CyberMint else surfaceStyle.resolvedBorderColor(isDarkModeGlobal)
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = dirOption.title,
+                                                fontFamily = SpaceGroteskFontFamily,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = HudTextPrimary
+                                            )
+                                            Text(
+                                                text = dirOption.subtitle,
+                                                fontFamily = SpaceGroteskFontFamily,
+                                                fontSize = 11.sp,
+                                                color = HudTextSecondary
+                                            )
+                                        }
+                                        RadioButton(
+                                            selected = isSelected,
+                                            onClick = {
+                                                themeManager.setIncomingSwipeDirection(dirOption)
+                                            },
+                                            colors = RadioButtonDefaults.colors(selectedColor = CyberMint)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+            }
+
             if (selectedCategory == SettingsCategory.ALL || selectedCategory == SettingsCategory.CALLS_AUDIO) {
                 // Audio & Quality Settings Section
                 SettingsSectionHeader("AUDIO & QUALITY (WEBRTC)")
                 Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column {
-                    SettingsSwitchTile(
-                        title = "Hardware Noise Suppression",
-                        subtitle = "Reduces ambient background noise during calls",
+                    shape = RoundedCornerShape(16.dp),
+                    color = surfaceStyle.resolvedCardColor(isDarkModeGlobal),
+                    border = BorderStroke(1.dp, surfaceStyle.resolvedBorderColor(isDarkModeGlobal)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(surfaceStyle, 16.dp, currentThemeColor.primary)
+                ) {
+                    Column {
+                        SettingsSwitchTile(
+                            title = "Hardware Noise Suppression",
+                            subtitle = "Reduces ambient background noise during calls",
                         icon = Icons.Default.GraphicEq,
                         checked = isNoiseSuppressionOn,
                         onCheckedChange = { isNoiseSuppressionOn = it }
@@ -2632,6 +2958,8 @@ private fun ChatWallpaperMiniPreview(
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
+            val isDark = com.example.ui.theme.LocalIsDarkTheme.current
+            val defaultPreviewBg = if (isDark) Color(0xFF0B141A) else Color(0xFFEFEAE2)
             when (config.type) {
                 com.example.util.WallpaperType.CUSTOM -> {
                     if (customBitmap != null) {
@@ -2650,7 +2978,7 @@ private fun ChatWallpaperMiniPreview(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF0B141A))
+                                .background(defaultPreviewBg)
                         )
                     }
                 }
@@ -2665,7 +2993,7 @@ private fun ChatWallpaperMiniPreview(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF0B141A))
+                                .background(defaultPreviewBg)
                         )
                     }
                 }
@@ -2673,7 +3001,7 @@ private fun ChatWallpaperMiniPreview(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color(0xFF0B141A))
+                            .background(defaultPreviewBg)
                     )
                 }
             }
@@ -2688,12 +3016,13 @@ private fun ChatWallpaperMiniPreview(
                 // Incoming bubble
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF202C33),
+                    color = if (isDark) Color(0xFF202C33) else Color.White,
+                    shadowElevation = if (isDark) 0.dp else 1.dp,
                     modifier = Modifier.wrapContentWidth()
                 ) {
                     Text(
                         text = "Hey! How does the new theme look? 👋",
-                        color = Color.White,
+                        color = if (isDark) Color.White else Color(0xFF111B21),
                         fontSize = 11.sp,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
