@@ -682,10 +682,55 @@ class FirebaseManager private constructor(private val context: Context) {
         try {
             val local = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
             if (user.callerTuneTitle.isNotBlank() && (user.callerTuneAudioBase64.isNotBlank() || user.callerTuneUrl.isNotBlank())) {
+                val targetFile = java.io.File(context.filesDir, "my_caller_tune.mp3")
+
+                // When syncing from Firestore, if user.callerTuneAudioBase64.isNotBlank(),
+                // also write the decoded bytes directly to File(context.filesDir, "my_caller_tune.mp3")
+                // (after validating with isValidAudioFile) so freshly logged-in users have it immediately on disk
+                if (user.callerTuneAudioBase64.isNotBlank()) {
+                    val needFileWrite = !targetFile.exists() ||
+                            !com.example.util.LksCallerTuneManager.isValidAudioFile(targetFile) ||
+                            local.title != user.callerTuneTitle ||
+                            local.audioBase64 != user.callerTuneAudioBase64
+
+                    if (needFileWrite) {
+                        try {
+                            val cleanBase64 = if (user.callerTuneAudioBase64.contains(",")) {
+                                user.callerTuneAudioBase64.substringAfter(",")
+                            } else {
+                                user.callerTuneAudioBase64
+                            }
+                            val decoded = android.util.Base64.decode(cleanBase64, android.util.Base64.DEFAULT)
+                            if (decoded.size > 2048) {
+                                val verifyFile = java.io.File(context.cacheDir, "sync_b64_tune_${System.currentTimeMillis()}.tmp")
+                                java.io.FileOutputStream(verifyFile).use { it.write(decoded) }
+                                if (com.example.util.LksCallerTuneManager.isValidAudioFile(verifyFile)) {
+                                    verifyFile.copyTo(targetFile, overwrite = true)
+                                    Log.i(TAG, "Decoded and saved caller tune to my_caller_tune.mp3 (${decoded.size} bytes)")
+                                } else {
+                                    Log.w(TAG, "Decoded caller tune base64 failed validation")
+                                }
+                                try { verifyFile.delete() } catch (_: Exception) {}
+                            }
+                        } catch (be: Exception) {
+                            Log.w(TAG, "Failed decoding caller tune from Base64: ${be.message}")
+                        }
+                    }
+                }
+
+                val hasValidLocalFile = targetFile.exists() && com.example.util.LksCallerTuneManager.isValidAudioFile(targetFile)
+                val resolvedLocalUri = if (hasValidLocalFile) {
+                    android.net.Uri.fromFile(targetFile).toString()
+                } else {
+                    local.localUri
+                }
+
                 val needsSync = local.title != user.callerTuneTitle ||
                     local.audioUrl != user.callerTuneUrl ||
                     (local.audioBase64.isBlank() && user.callerTuneAudioBase64.isNotBlank()) ||
-                    local.startMs != user.callerTuneStartMs
+                    local.startMs != user.callerTuneStartMs ||
+                    local.localUri != resolvedLocalUri
+
                 if (needsSync) {
                     com.example.util.LksCallerTuneManager.saveMyCallerTune(
                         context,
@@ -697,7 +742,8 @@ class FirebaseManager private constructor(private val context: Context) {
                             source = user.callerTuneSource,
                             startMs = user.callerTuneStartMs,
                             endMs = user.callerTuneEndMs,
-                            localUri = local.localUri
+                            localUri = resolvedLocalUri,
+                            thumbnailUrl = local.thumbnailUrl
                         )
                     )
                 }

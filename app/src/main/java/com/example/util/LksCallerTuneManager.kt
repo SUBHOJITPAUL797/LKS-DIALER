@@ -68,7 +68,10 @@ object LksCallerTuneManager {
 
         val savedLocalUri = prefs.getString(KEY_TUNE_LOCAL_URI, null)
         val defaultLocalFile = File(context.filesDir, "my_caller_tune.mp3")
-        val localUriToUse = if (!savedLocalUri.isNullOrBlank()) {
+        val localUriToUse = if (!savedLocalUri.isNullOrBlank() && try {
+            val f = Uri.parse(savedLocalUri).path?.let { File(it) }
+            f != null && f.exists()
+        } catch (_: Exception) { false }) {
             savedLocalUri
         } else if (defaultLocalFile.exists() && defaultLocalFile.length() > 0) {
             Uri.fromFile(defaultLocalFile).toString()
@@ -421,9 +424,18 @@ object LksCallerTuneManager {
                         verifyFile.copyTo(targetFile, overwrite = true)
                         try { verifyFile.delete() } catch (_: Exception) {}
                         Log.i(TAG, "Recovered valid caller tune from Base64: ${decoded.size} bytes")
+                        val titleToUse = info.title.ifBlank { savedTune.title }
+                        val artistToUse = info.artist.ifBlank { savedTune.artist }
+                        val updatedInfo = info.copy(
+                            title = titleToUse,
+                            artist = artistToUse,
+                            source = "MY_SAVED_TUNE",
+                            localUri = Uri.fromFile(targetFile).toString()
+                        )
+                        saveMyCallerTune(context, updatedInfo)
                         val success = awaitPlayPreview(
                             context = context,
-                            info = info.copy(source = "MY_SAVED_TUNE", localUri = Uri.fromFile(targetFile).toString()),
+                            info = updatedInfo,
                             onStarted = onStarted,
                             onCompletion = onCompletion
                         )
@@ -445,7 +457,8 @@ object LksCallerTuneManager {
                 Log.i(TAG, "Downloading song audio from: $downloadUrl")
                 val downloadedFile = YouTubeSearchHelper.downloadSongToTempFile(context, downloadUrl)
                 if (downloadedFile != null && isValidAudioFile(downloadedFile)) {
-                    val clipLen = (info.endMs - info.startMs).coerceIn(5000L, 30000L)
+                    val endMsToUse = if (info.endMs > info.startMs) info.endMs else (info.startMs + 30000L)
+                    val clipLen = (endMsToUse - info.startMs).coerceIn(5000L, 30000L)
                     val trimmedUri = try {
                         AudioTrimmerUtil.trimAudio(context, Uri.fromFile(downloadedFile), info.startMs, info.startMs + clipLen)
                     } catch (_: Exception) { null }
@@ -459,15 +472,17 @@ object LksCallerTuneManager {
                     }
 
                     // Update prefs and Firestore with valid trimmed audio
+                    val titleToUse = info.title.ifBlank { savedTune.title }
+                    val artistToUse = info.artist.ifBlank { savedTune.artist }
                     val updatedInfo = processAndCacheTune(
                         context = context,
                         uri = Uri.fromFile(targetFile),
-                        title = info.title,
-                        artist = info.artist,
+                        title = titleToUse,
+                        artist = artistToUse,
                         source = "LIBRARY",
                         startMs = info.startMs,
-                        endMs = info.endMs,
-                        thumbnailUrl = info.thumbnailUrl,
+                        endMs = endMsToUse,
+                        thumbnailUrl = info.thumbnailUrl ?: savedTune.thumbnailUrl,
                         audioUrl = downloadUrl
                     )
 
@@ -485,7 +500,7 @@ object LksCallerTuneManager {
 
                     return awaitPlayPreview(
                         context = context,
-                        info = updatedInfo.copy(source = "MY_SAVED_TUNE"),
+                        info = updatedInfo.copy(source = "MY_SAVED_TUNE", localUri = Uri.fromFile(targetFile).toString()),
                         onStarted = onStarted,
                         onCompletion = onCompletion
                     )
@@ -498,17 +513,14 @@ object LksCallerTuneManager {
             return false
         }
 
-        val initialUrl = info.audioUrl.ifBlank { savedTune.audioUrl }
-        if (initialUrl.isNotBlank() && tryDownloadAndCache(initialUrl)) {
-            return@withContext true
-        }
-
-        if (info.title.isNotBlank()) {
+        // Step 3: If base64 is blank, search songs via YouTubeSearchHelper.searchSongs(info.title)
+        // to get a fresh working audio URL (since Saavn URLs expire), download to targetFile, and play
+        val titleToSearch = info.title.ifBlank { savedTune.title }
+        if (titleToSearch.isNotBlank()) {
             try {
-                Log.i(TAG, "Auto-searching catalog for song: '${info.title}'")
-                val searchResults = YouTubeSearchHelper.searchSongs(info.title)
-                val matched = searchResults.firstOrNull { it.directAudioUrl.isNotBlank() && it.directAudioUrl != initialUrl }
-                    ?: searchResults.firstOrNull { it.directAudioUrl.isNotBlank() }
+                Log.i(TAG, "Auto-searching songs for fresh audio URL: '$titleToSearch'")
+                val searchResults = YouTubeSearchHelper.searchSongs(titleToSearch)
+                val matched = searchResults.firstOrNull { it.directAudioUrl.isNotBlank() }
                 if (matched != null && tryDownloadAndCache(matched.directAudioUrl)) {
                     return@withContext true
                 }
@@ -522,8 +534,12 @@ object LksCallerTuneManager {
             }
         }
 
-        // Step 5: Direct streaming fallback
+        // Step 4: Fallback to initial saved audioUrl
+        val initialUrl = info.audioUrl.ifBlank { savedTune.audioUrl }
         if (initialUrl.isNotBlank()) {
+            if (tryDownloadAndCache(initialUrl)) {
+                return@withContext true
+            }
             return@withContext awaitPlayPreview(
                 context = context,
                 info = info.copy(audioUrl = initialUrl),
@@ -559,12 +575,13 @@ object LksCallerTuneManager {
             val savedTune = getMyCallerTune(context)
             val isExplicitlySavedTune = (info.source == "MY_SAVED_TUNE") ||
                     (!info.localUri.isNullOrBlank() && info.localUri.contains("my_caller_tune.mp3")) ||
-                    (savedTune.isConfigured && savedTune.title == info.title && info.source != "LIBRARY" && info.source != "PRESET")
+                    (savedTune.isConfigured && savedTune.title.equals(info.title, ignoreCase = true))
 
             val localTargetFile = File(context.filesDir, "my_caller_tune.mp3")
 
             // 1. If this is explicitly the saved caller tune, play local my_caller_tune.mp3 using absolute path
-            if (isExplicitlySavedTune && isValidAudioFile(localTargetFile)) {
+            if (localTargetFile.exists() && isValidAudioFile(localTargetFile) &&
+                (isExplicitlySavedTune || info.source == "MY_SAVED_TUNE" || (savedTune.isConfigured && info.title.equals(savedTune.title, ignoreCase = true)))) {
                 try {
                     player.reset()
                     player.setDataSource(localTargetFile.absolutePath)
@@ -648,7 +665,8 @@ object LksCallerTuneManager {
             }
 
             // 5. Final fallback to localTargetFile
-            if (!dataSourceSet && isExplicitlySavedTune && isValidAudioFile(localTargetFile)) {
+            if (!dataSourceSet && localTargetFile.exists() && isValidAudioFile(localTargetFile) &&
+                (isExplicitlySavedTune || info.source == "MY_SAVED_TUNE" || (savedTune.isConfigured && info.title.equals(savedTune.title, ignoreCase = true)))) {
                 try {
                     player.reset()
                     player.setDataSource(localTargetFile.absolutePath)

@@ -159,6 +159,13 @@ fun SettingsScreen(
     var isCallerTunePreviewPlaying by remember { mutableStateOf(false) }
     var isCallerTuneLoading by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        val currentLocalTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+        if (currentLocalTune.isConfigured && currentLocalTune != callerTuneState) {
+            callerTuneState = currentLocalTune
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             LksRingtoneManager.stopPreview()
@@ -1384,23 +1391,43 @@ fun SettingsScreen(
                                         isPreviewPlaying = false
                                         isCallerTuneLoading = true
                                         coroutineScope.launch {
-                                            val activeTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context).takeIf { it.isConfigured } ?: callerTuneState
-                                            val started = com.example.util.LksCallerTuneManager.playTuneWithAutoRecovery(
-                                                context = context,
-                                                info = activeTune,
-                                                onStarted = {
-                                                    isCallerTuneLoading = false
-                                                    isCallerTunePreviewPlaying = true
-                                                },
-                                                onCompletion = {
+                                            try {
+                                                val localTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+                                                if (localTune.isConfigured && localTune != callerTuneState) {
+                                                    callerTuneState = localTune
+                                                }
+                                                val activeTune = localTune.takeIf { it.isConfigured } ?: callerTuneState
+                                                val started = com.example.util.LksCallerTuneManager.playTuneWithAutoRecovery(
+                                                    context = context,
+                                                    info = activeTune,
+                                                    onStarted = {
+                                                        isCallerTuneLoading = false
+                                                        isCallerTunePreviewPlaying = true
+                                                    },
+                                                    onCompletion = {
+                                                        isCallerTuneLoading = false
+                                                        isCallerTunePreviewPlaying = false
+                                                    }
+                                                )
+                                                // Refresh callerTuneState if getMyCallerTune has updated during recovery/download
+                                                val refreshedTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+                                                if (refreshedTune.isConfigured && refreshedTune != callerTuneState) {
+                                                    callerTuneState = refreshedTune
+                                                }
+                                                if (!started) {
                                                     isCallerTuneLoading = false
                                                     isCallerTunePreviewPlaying = false
+                                                    val errorMsg = if (activeTune.title.isNotBlank()) {
+                                                        "Could not play '${activeTune.title}'. Check connection or try picking another tune."
+                                                    } else {
+                                                        "Could not load or play caller tune."
+                                                    }
+                                                    Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
                                                 }
-                                            )
-                                            if (!started) {
+                                            } catch (e: Exception) {
                                                 isCallerTuneLoading = false
                                                 isCallerTunePreviewPlaying = false
-                                                Toast.makeText(context, "Could not load or play caller tune.", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "Playback error: ${e.message ?: "Failed to play tune"}", Toast.LENGTH_SHORT).show()
                                             }
                                         }
                                     }
