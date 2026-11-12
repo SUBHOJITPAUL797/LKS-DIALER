@@ -171,6 +171,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     private var hasProcessedOffer = false
     private var hasProcessedAnswer = false
+    @Volatile private var isDirectVideoCall = false
 
     private val _state = MutableStateFlow(WebRtcState())
     val state: StateFlow<WebRtcState> = _state.asStateFlow()
@@ -797,8 +798,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             addCandidatesFromPush(candidatesStr)
         }
 
+        val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
+        val hasAnswer = !answerSdp.isNullOrBlank() || currentCall.answerSdp != null || isPcConnected
+
         if (_state.value.callStatus != CallStatus.ANSWERED) {
-            val hasAnswer = !answerSdp.isNullOrBlank() || currentCall.answerSdp != null
             _state.value = _state.value.copy(
                 callStatus = CallStatus.ANSWERED,
                 connectionStatusText = if (hasAnswer) "Connected" else "Connecting P2P..."
@@ -813,6 +818,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                 startCallTimer()
                 registerNetworkHandoffCallback()
             }
+        } else if (hasAnswer && _state.value.connectionStatusText != "Connected") {
+            _state.value = _state.value.copy(connectionStatusText = "Connected")
+            if (_state.value.callDurationSeconds == 0) {
+                startCallTimer()
+            }
         }
 
         if (!answerSdp.isNullOrBlank() && !hasProcessedAnswer) {
@@ -826,6 +836,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.i("WebRtcEngine", "⚡ Remote answer SDP set directly from push payload successfully!")
                     drainQueuedRemoteIceCandidates()
                     unmuteAllAudioTracks()
+                    if (isDirectVideoCall) {
+                        _state.value = _state.value.copy(
+                            callType = CallType.VIDEO,
+                            activeCall = _state.value.activeCall?.copy(callType = CallType.VIDEO)
+                        )
+                    }
                     // ⚡ Caller -> Callee reverse candidate push:
                     // Immediately send caller's gathered TURN relay candidates to callee via FCM
                     // (callee on Wi-Fi has fast Firestore, but cellular caller's candidates must arrive fast)
@@ -962,9 +978,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
                     reconnectJob?.cancel()
                     reconnectJob = null
-                    if (_state.value.callStatus == CallStatus.ANSWERED) {
-                        _state.value = _state.value.copy(connectionStatusText = "Connected")
-                        unmuteAllAudioTracks()
+                    val currentStatus = _state.value.callStatus
+                    val newStatus = if (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING) CallStatus.ANSWERED else currentStatus
+                    _state.value = _state.value.copy(
+                        callStatus = newStatus,
+                        connectionStatusText = "Connected"
+                    )
+                    unmuteAllAudioTracks()
+                    com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                    if (_state.value.callDurationSeconds == 0) {
+                        startCallTimer()
                     }
                 } else if (newState == PeerConnection.PeerConnectionState.FAILED || newState == PeerConnection.PeerConnectionState.CLOSED) {
                     Log.i("WebRtcEngine", "⚡ PeerConnection entered terminal state $newState ── immediately ending call on this device")
@@ -985,9 +1008,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                     PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> {
                         reconnectJob?.cancel()
                         reconnectJob = null
-                        if (_state.value.callStatus == CallStatus.ANSWERED) {
-                            _state.value = _state.value.copy(connectionStatusText = "Connected")
-                            unmuteAllAudioTracks()
+                        val currentStatus = _state.value.callStatus
+                        val newStatus = if (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING) CallStatus.ANSWERED else currentStatus
+                        _state.value = _state.value.copy(
+                            callStatus = newStatus,
+                            connectionStatusText = "Connected"
+                        )
+                        unmuteAllAudioTracks()
+                        com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                        if (_state.value.callDurationSeconds == 0) {
+                            startCallTimer()
                         }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -1474,6 +1504,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             )
 
             activeCallSessionId = newCall.callId
+            isDirectVideoCall = (callType == CallType.VIDEO)
             _state.value = WebRtcState(
                 activeCall = newCall,
                 callStatus = CallStatus.CALLING,
@@ -1993,6 +2024,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         reconnectJob = null
 
         val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
+        if (type == CallType.VIDEO) {
+            isDirectVideoCall = true
+        }
 
         // 0. Prepare caller tokens for instant in-band push when answerSdp is produced
         val currentCall = _state.value.activeCall
@@ -2000,6 +2034,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         val targetFcm = currentCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.first ?: ""
         val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
         val myEffectiveNum = getEffectivePhoneNumber()
+        val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
 
         // ⚡ Zero-Delay Atomic Write:
         // Do NOT write a hollow 'status=ANSWERED' without answerSdp here.
@@ -2029,13 +2066,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callStatus = CallStatus.ANSWERED,
                     callType = type,
                     isCaller = false,
-                    connectionStatusText = "Connecting P2P..."
+                    connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
                 )
             } else {
                 _state.value = _state.value.copy(
                     activeCall = _state.value.activeCall?.copy(offerSdp = offerFromMem, status = CallStatus.ANSWERED),
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = "Connecting P2P..."
+                    connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
                 )
             }
             Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp in RAM -> answering immediately")
@@ -2075,7 +2112,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             callStatus = CallStatus.ANSWERED,
             callType = type,
             isCaller = false,
-            connectionStatusText = "Connecting P2P..."
+            connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
         )
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -2224,6 +2261,9 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Optimistically show the call screen if we have the data
         if (callerName != null && callerNumber != null && callTypeStr != null && isNotCurrentlyInCall) {
             val type = try { CallType.valueOf(callTypeStr) } catch(e: Exception) { CallType.AUDIO }
+            if (type == CallType.VIDEO) {
+                isDirectVideoCall = true
+            }
             _state.value = WebRtcState(
                 activeCall = CallDto(
                     callId = callId,
@@ -2312,6 +2352,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             val rawCall = doc.toObject(CallDto::class.java)
             val call = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
             if (call != null) {
+                if (call.callType == CallType.VIDEO) {
+                    isDirectVideoCall = true
+                }
                 if (call.status == CallStatus.ENDED || call.status == CallStatus.DECLINED || call.status == CallStatus.MISSED) {
                     Log.d("WebRtcEngine", "attachToCall: call $callId already finished with status ${call.status}")
                     markCallTerminated(callId)
@@ -2368,16 +2411,23 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     fun answerCall() {
         val call = _state.value.activeCall ?: return
+        if (call.callType == CallType.VIDEO) {
+            isDirectVideoCall = true
+        }
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
 
         // 0. Cache caller tokens for instant in-band push when answerSdp is ready
         val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
         val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
 
+        val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
+            peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
+
         _state.value = _state.value.copy(
             callStatus = CallStatus.ANSWERED,
             isCaller = false,
-            connectionStatusText = "Connecting P2P..."
+            connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
         )
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -2581,9 +2631,36 @@ class WebRtcEngine private constructor(private val context: Context) {
                 drainQueuedRemoteIceCandidates()
                 unmuteAllAudioTracks()
                 
+                val isVideo = _state.value.callType == CallType.VIDEO || call.callType == CallType.VIDEO || isDirectVideoCall
+                if (offerSdp.contains("m=video") && isVideo) {
+                    isDirectVideoCall = true
+                    if (_state.value.callType != CallType.VIDEO) {
+                        _state.value = _state.value.copy(
+                            callType = CallType.VIDEO,
+                            activeCall = _state.value.activeCall?.copy(callType = CallType.VIDEO)
+                        )
+                    }
+                    if (_state.value.localVideoTrack == null) {
+                        createVideoTrack(startCaptureNow = true)
+                    } else {
+                        startVideoCaptureIfNeeded()
+                    }
+                    _state.value.localVideoTrack?.let { track ->
+                        val alreadyAdded = pc.senders.any { it.track()?.kind() == "video" }
+                        if (!alreadyAdded) {
+                            try {
+                                pc.addTrack(track, listOf("ARDAMS"))
+                                Log.i("WebRtcEngine", "Added video track to PeerConnection before createAnswer")
+                            } catch (e: Exception) {
+                                Log.w("WebRtcEngine", "Failed to add video track before createAnswer: ${e.message}")
+                            }
+                        }
+                    }
+                }
+
                 val constraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (_state.value.callType == CallType.VIDEO) "true" else "false"))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (_state.value.callType == CallType.VIDEO || isVideo) "true" else "false"))
                 }
                 
                 pc.createAnswer(object : SimpleSdpObserver() {
@@ -2607,6 +2684,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                                             "status" to CallStatus.ANSWERED.name,
                                             "answeredAt" to System.currentTimeMillis()
                                         )
+                                        if (isVideo) {
+                                            answerMap["callType"] = CallType.VIDEO.name
+                                        }
                                         if (candidatesList.isNotEmpty()) {
                                             answerMap["calleeCandidates"] = candidatesList
                                         }
@@ -2876,7 +2956,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             } else {
                 baseCall.copy(callId = baseCall.callId.ifBlank { effectiveCallId }, offerSdp = mergedOffer)
             }
-            _state.value = _state.value.copy(activeCall = effectiveCall)
+            val finalEffectiveCall = if (isDirectVideoCall) {
+                effectiveCall.copy(callType = CallType.VIDEO)
+            } else {
+                effectiveCall
+            }
+            _state.value = _state.value.copy(activeCall = finalEffectiveCall)
             
             // Once the call is ANSWERED or ENDED, NEVER process RINGING or replay ringback tones!
             if (isCaller && call.status == CallStatus.RINGING &&
@@ -2918,7 +3003,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 requesterNumber.replace(Regex("[^0-9]"), "") == myNumber.replace(Regex("[^0-9]"), "")
             ))
 
-            if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED) {
+            if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.REQUESTED && _state.value.callType == CallType.AUDIO && !isDirectVideoCall) {
                 if (didIRequest) {
                     // I am the requester: NEVER show accept dialog to myself!
                     _state.value = _state.value.copy(
@@ -2926,7 +3011,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         isVideoUpgradeRequested = false,
                         connectionStatusText = "Requesting video..."
                     )
-                } else if (call.callType == CallType.AUDIO && !_state.value.isVideoUpgradeRequested) {
+                } else if (!_state.value.isVideoUpgradeRequested) {
                     // Remote party requested: show accept dialog only to recipient!
                     _state.value = _state.value.copy(
                         isVideoUpgradeRequested = true,
@@ -2937,7 +3022,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 _state.value = _state.value.copy(
                     isVideoUpgradeRequested = false
                 )
-                if (call.videoUpgradeStatus == null) {
+                if (call.videoUpgradeStatus == null || isDirectVideoCall) {
                     _state.value = _state.value.copy(
                         didIRequestVideoUpgrade = false
                     )
@@ -2978,7 +3063,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Fallback: If remote callType reverted to AUDIO while local is still in VIDEO
             if (call.callType == CallType.AUDIO && _state.value.callType == CallType.VIDEO &&
                 call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.REQUESTED &&
-                call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.ACCEPTED) {
+                call.videoUpgradeStatus != com.example.data.model.VideoUpgradeStatus.ACCEPTED &&
+                !isDirectVideoCall) {
                 Log.i("WebRtcEngine", "Remote callType is AUDIO while local is VIDEO -> reverting to AUDIO")
                 revertToAudioCall("Switched to Audio")
             }
@@ -3012,9 +3098,13 @@ class WebRtcEngine private constructor(private val context: Context) {
 
             if (isCaller && (call.status == CallStatus.ANSWERED || !call.answerSdp.isNullOrBlank()) && _state.value.callStatus != CallStatus.ANSWERED) {
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
+                val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
+                    peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
+                    peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
+                val hasAnswer = !call.answerSdp.isNullOrBlank() || isPcConnected
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = if (!call.answerSdp.isNullOrBlank()) "Connected" else "Connecting P2P..."
+                    connectionStatusText = if (hasAnswer) "Connected" else "Connecting P2P..."
                 )
                 unmuteAllAudioTracks()
                 // Phase 3: Reliable call logs — record outgoing call start immediately on answer
@@ -3023,14 +3113,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     direction = com.example.data.model.CallDirection.OUTGOING,
                     otherPartyNumber = call.calleeNumber,
                     otherPartyName = call.calleeName,
-                    callType = call.callType
+                    callType = if (isDirectVideoCall) CallType.VIDEO else call.callType
                 )
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try {
                         com.example.services.LksConnectionService.setCallActive()
                     } catch (_: Exception) {}
                 }
-                if (!call.answerSdp.isNullOrBlank() && _state.value.callDurationSeconds == 0) {
+                if (hasAnswer && _state.value.callDurationSeconds == 0) {
                     startCallTimer()
                     registerNetworkHandoffCallback()
                 }
@@ -3047,6 +3137,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                             Log.i("WebRtcEngine", "Remote answer SDP set successfully")
                             drainQueuedRemoteIceCandidates()
                             unmuteAllAudioTracks()
+                            if (isDirectVideoCall) {
+                                _state.value = _state.value.copy(
+                                    callType = CallType.VIDEO,
+                                    activeCall = _state.value.activeCall?.copy(callType = CallType.VIDEO)
+                                )
+                            }
                         }
                         override fun onSetFailure(error: String?) {
                             Log.e("WebRtcEngine", "Failed to set remote answer: $error")
@@ -3056,12 +3152,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                 } else if (sigState == PeerConnection.SignalingState.STABLE) {
                     hasProcessedAnswer = true
                     Log.i("WebRtcEngine", "PeerConnection already STABLE with remote answer applied")
+                    if (isDirectVideoCall) {
+                        _state.value = _state.value.copy(
+                            callType = CallType.VIDEO,
+                            activeCall = _state.value.activeCall?.copy(callType = CallType.VIDEO)
+                        )
+                    }
                 } else {
                     Log.w("WebRtcEngine", "Deferring setRemoteDescription until HAVE_LOCAL_OFFER (current state=$sigState)")
                 }
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = "Connected"
+                    connectionStatusText = "Connected",
+                    callType = if (isDirectVideoCall) CallType.VIDEO else _state.value.callType,
+                    activeCall = if (isDirectVideoCall) (_state.value.activeCall ?: call).copy(callType = CallType.VIDEO) else (_state.value.activeCall ?: call)
                 )
                 unmuteAllAudioTracks()
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -3138,7 +3242,15 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun requestVideoUpgrade() {
+        if (_state.value.callType != CallType.AUDIO) {
+            Log.w("WebRtcEngine", "requestVideoUpgrade skipped: current callType is not AUDIO (is ${_state.value.callType})")
+            return
+        }
         val currentCall = _state.value.activeCall
+        if (currentCall?.callType == CallType.VIDEO || isDirectVideoCall) {
+            Log.w("WebRtcEngine", "requestVideoUpgrade skipped: call is already VIDEO")
+            return
+        }
         val callId = currentCall?.callId?.takeIf { it.isNotBlank() } ?: activeCallSessionId ?: ""
         if (callId.isBlank()) {
             Log.w("WebRtcEngine", "Cannot request video upgrade: callId is blank!")
@@ -3872,6 +3984,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         // Reset flags for next call
         hasProcessedOffer = false
         hasProcessedAnswer = false
+        isDirectVideoCall = false
         lastProcessedIceRestartTimestamp = 0L
         sentIceCandidateHashes.clear()
         prebuiltAnswerSdp = null
