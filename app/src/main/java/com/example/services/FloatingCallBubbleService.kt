@@ -690,18 +690,38 @@ class FloatingCallBubbleService : Service() {
                     if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
                         isDragging = true
                         params.x = initialX + dx.toInt()
-                        params.y = initialY + dy.toInt()
+                        params.y = (initialY + dy.toInt()).coerceAtLeast(-dpToPx(60f))
+                        if (dy < -dpToPx(15f)) {
+                            pill.alpha = (1f - (-dy / dpToPx(85f).toFloat())).coerceIn(0.25f, 1f)
+                        } else {
+                            pill.alpha = 1f
+                        }
                         try { wm.updateViewLayout(pill, params) } catch (_: Exception) {}
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    // Save position for pill persistence
-                    lastPillX = params.x
-                    lastPillY = params.y
-                    if (!isDragging) {
-                        // Tapping the card area opens full screen without prematurely silencing ringtone
-                        openFullScreenCallActivity(callId, autoAnswer = false)
+                    val dy = event.rawY - initialTouchY
+                    if (isDragging && (dy < -dpToPx(34f) || params.y < dpToPx(6f))) {
+                        // Smoothly animate upward to hide the pop-up bubble when dragged up
+                        pill.animate()
+                            .translationY(-dpToPx(90f).toFloat())
+                            .alpha(0f)
+                            .setDuration(180L)
+                            .withEndAction {
+                                lastPillX = 0
+                                lastPillY = dpToPx(36f)
+                                removeFloatingView()
+                                stopSelf()
+                            }
+                            .start()
+                    } else {
+                        pill.alpha = 1f
+                        lastPillX = params.x
+                        lastPillY = params.y.coerceAtLeast(dpToPx(16f))
+                        if (!isDragging) {
+                            openFullScreenCallActivity(callId, autoAnswer = false)
+                        }
                     }
                     true
                 }
@@ -818,8 +838,36 @@ class FloatingCallBubbleService : Service() {
             orientation = LinearLayout.VERTICAL
         }
 
+        // Resolve the OTHER party's name accurately so outgoing calls never show the local user's own name ("Me")
+        val resolvedPeerName = run {
+            val activeCall = engine?.state?.value?.activeCall
+            val fb = try { FirebaseManager.getInstance(applicationContext) } catch (_: Exception) { null }
+            val myPhone = fb?.currentUser?.value?.phoneNumber ?: ""
+            val isOutgoing = engine?.state?.value?.isCaller == true ||
+                (myPhone.isNotBlank() && activeCall != null && com.example.util.ContactsHelper.numbersMatch(activeCall.callerNumber, myPhone))
+            val peerNum = if (activeCall != null) {
+                if (isOutgoing) activeCall.calleeNumber else activeCall.callerNumber
+            } else callerNumber
+            val rawPeerName = if (activeCall != null) {
+                if (isOutgoing) activeCall.calleeName else activeCall.callerName
+            } else callerName
+            val contactName = if (peerNum.isNotBlank()) {
+                fb?.syncedContacts?.value?.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, peerNum) }?.name
+            } else null
+            val regUserName = if (peerNum.isNotBlank()) {
+                fb?.lookupUserByNumber(peerNum)?.displayName
+            } else null
+            contactName?.takeIf { it.isNotBlank() }
+                ?: regUserName?.takeIf { it.isNotBlank() }
+                ?: rawPeerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+                ?: callerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+                ?: peerNum.ifBlank { "Active Call" }
+        }
+        callerName = resolvedPeerName
+        currentCallerName = resolvedPeerName
+
         val nameView = TextView(this).apply {
-            text = callerName.ifBlank { "LKS Call" }
+            text = resolvedPeerName
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -992,18 +1040,39 @@ class FloatingCallBubbleService : Service() {
                     if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
                         isDragging = true
                         params.x = initialX + dx.toInt()
-                        params.y = initialY + dy.toInt()
+                        params.y = (initialY + dy.toInt()).coerceAtLeast(-dpToPx(60f))
+                        if (dy < -dpToPx(15f)) {
+                            pill.alpha = (1f - (-dy / dpToPx(85f).toFloat())).coerceIn(0.25f, 1f)
+                        } else {
+                            pill.alpha = 1f
+                        }
                         try { wm.updateViewLayout(pill, params) } catch (_: Exception) {}
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    // Save position for pill persistence
-                    lastPillX = params.x
-                    lastPillY = params.y
-                    if (!isDragging) {
-                        stopRinging()
-                        openFullScreenCallActivity(callId, autoAnswer = false)
+                    val dy = event.rawY - initialTouchY
+                    if (isDragging && (dy < -dpToPx(34f) || params.y < dpToPx(6f))) {
+                        // Smoothly animate upward to hide the pop-up bubble when dragged up
+                        pill.animate()
+                            .translationY(-dpToPx(90f).toFloat())
+                            .alpha(0f)
+                            .setDuration(180L)
+                            .withEndAction {
+                                lastPillX = 0
+                                lastPillY = dpToPx(36f)
+                                removeFloatingView()
+                                stopSelf()
+                            }
+                            .start()
+                    } else {
+                        pill.alpha = 1f
+                        lastPillX = params.x
+                        lastPillY = params.y.coerceAtLeast(dpToPx(16f))
+                        if (!isDragging) {
+                            stopRinging()
+                            openFullScreenCallActivity(callId, autoAnswer = false)
+                        }
                     }
                     true
                 }

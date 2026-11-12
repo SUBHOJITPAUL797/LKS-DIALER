@@ -47,33 +47,52 @@ fun Modifier.surfaceFinishOverlay(
     accentColor: Color = SignalAmber
 ): Modifier = this.drawWithContent {
     val rPx = cornerRadius.toPx()
+    val isDark = ThemeStateHolder.isDarkMode
     when (style) {
         AppSurfaceStyle.LIQUID_GLASS -> {
-            // 1. Base Liquid Glass optical refraction wash (top-left specular caustics -> bottom-right prism tint)
+            // 1. Base iPhone Liquid Glass optical refraction wash (top-left specular caustics -> bottom-right prism tint)
             drawRoundRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.34f),
-                        Color(0xFF38BDF8).copy(alpha = 0.09f),
-                        Color.Transparent,
-                        Color(0xFFA855F7).copy(alpha = 0.07f),
-                        Color.White.copy(alpha = 0.14f)
-                    ),
+                    colors = if (isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.18f),
+                            Color(0xFF38BDF8).copy(alpha = 0.14f),
+                            accentColor.copy(alpha = 0.06f),
+                            Color(0xFFA855F7).copy(alpha = 0.10f),
+                            Color.White.copy(alpha = 0.12f)
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.65f),
+                            Color(0xFF38BDF8).copy(alpha = 0.16f),
+                            accentColor.copy(alpha = 0.07f),
+                            Color(0xFFA855F7).copy(alpha = 0.11f),
+                            Color.White.copy(alpha = 0.48f)
+                        )
+                    },
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 ),
                 cornerRadius = CornerRadius(rPx, rPx)
             )
-            // 2. Soft top meniscus liquid sheen
+            // 2. Curved top liquid meniscus sheen (signature iOS Liquid Glass highlight)
             drawRoundRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.28f),
-                        Color.White.copy(alpha = 0.05f),
-                        Color.Transparent
-                    ),
+                    colors = if (isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.24f),
+                            Color(0xFF7DD3FC).copy(alpha = 0.08f),
+                            Color.Transparent
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.72f),
+                            Color.White.copy(alpha = 0.18f),
+                            Color.Transparent
+                        )
+                    },
                     startY = 0f,
-                    endY = size.height * 0.48f
+                    endY = size.height * 0.52f
                 ),
                 cornerRadius = CornerRadius(rPx, rPx)
             )
@@ -81,30 +100,49 @@ fun Modifier.surfaceFinishOverlay(
             // 3. Outer iPhone Liquid Glass specular prism rim (bright top-left & bottom-right specular reflection)
             drawRoundRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.85f),
-                        Color(0xFF38BDF8).copy(alpha = 0.55f),
-                        accentColor.copy(alpha = 0.38f),
-                        Color(0xFFE879F9).copy(alpha = 0.45f),
-                        Color.White.copy(alpha = 0.70f)
-                    ),
+                    colors = if (isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.78f),
+                            Color(0xFF38BDF8).copy(alpha = 0.62f),
+                            accentColor.copy(alpha = 0.45f),
+                            Color(0xFFE879F9).copy(alpha = 0.50f),
+                            Color.White.copy(alpha = 0.65f)
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.95f),
+                            Color(0xFF38BDF8).copy(alpha = 0.68f),
+                            accentColor.copy(alpha = 0.45f),
+                            Color(0xFFE879F9).copy(alpha = 0.52f),
+                            Color.White.copy(alpha = 0.88f)
+                        )
+                    },
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 ),
                 cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = 1.35.dp.toPx())
+                style = Stroke(width = 1.5.dp.toPx())
             )
         }
         AppSurfaceStyle.FROSTED_GLASS -> {
             // 1. Satin Fog Glass diffused atmospheric layer
             drawRoundRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.40f),
-                        Color(0xFFE0F2FE).copy(alpha = 0.16f),
-                        Color(0xFFF1F5F9).copy(alpha = 0.10f),
-                        Color.White.copy(alpha = 0.24f)
-                    ),
+                    colors = if (isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.14f),
+                            Color(0xFF38BDF8).copy(alpha = 0.08f),
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.09f)
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.58f),
+                            Color(0xFFE0F2FE).copy(alpha = 0.24f),
+                            Color(0xFFF1F5F9).copy(alpha = 0.14f),
+                            Color.White.copy(alpha = 0.40f)
+                        )
+                    },
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 ),
@@ -114,7 +152,7 @@ fun Modifier.surfaceFinishOverlay(
             drawRoundRect(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.24f),
+                        Color.White.copy(alpha = if (isDark) 0.16f else 0.36f),
                         Color.Transparent
                     ),
                     center = Offset(size.width * 0.3f, 0f),
@@ -126,16 +164,24 @@ fun Modifier.surfaceFinishOverlay(
             // 3. Crisp frosted acrylic rim
             drawRoundRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.78f),
-                        Color(0xFF7DD3FC).copy(alpha = 0.35f),
-                        Color.White.copy(alpha = 0.42f)
-                    ),
+                    colors = if (isDark) {
+                        listOf(
+                            Color.White.copy(alpha = 0.55f),
+                            Color(0xFF7DD3FC).copy(alpha = 0.35f),
+                            Color.White.copy(alpha = 0.30f)
+                        )
+                    } else {
+                        listOf(
+                            Color.White.copy(alpha = 0.88f),
+                            Color(0xFF7DD3FC).copy(alpha = 0.45f),
+                            Color.White.copy(alpha = 0.55f)
+                        )
+                    },
                     start = Offset.Zero,
                     end = Offset(size.width, size.height)
                 ),
                 cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = 1.15.dp.toPx())
+                style = Stroke(width = 1.25.dp.toPx())
             )
         }
         AppSurfaceStyle.CLAY_3D -> {
@@ -143,9 +189,9 @@ fun Modifier.surfaceFinishOverlay(
             drawRoundRect(
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.12f),
+                        Color.White.copy(alpha = if (isDark) 0.08f else 0.18f),
                         Color.Transparent,
-                        Color.Black.copy(alpha = 0.08f)
+                        Color.Black.copy(alpha = if (isDark) 0.22f else 0.07f)
                     ),
                     start = Offset(0f, 0f),
                     end = Offset(0f, size.height)
@@ -153,17 +199,17 @@ fun Modifier.surfaceFinishOverlay(
                 cornerRadius = CornerRadius(rPx, rPx)
             )
             drawContent()
-            // Subtle 1dp top-lit clay rim
+            // Subtle 1.2dp top-lit clay rim
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.32f),
-                        style.borderColor.copy(alpha = 0.45f),
-                        Color.Black.copy(alpha = 0.15f)
+                        Color.White.copy(alpha = if (isDark) 0.28f else 0.55f),
+                        style.borderColor.copy(alpha = 0.55f),
+                        Color.Black.copy(alpha = if (isDark) 0.35f else 0.15f)
                     )
                 ),
                 cornerRadius = CornerRadius(rPx, rPx),
-                style = Stroke(width = 1.dp.toPx())
+                style = Stroke(width = 1.2.dp.toPx())
             )
         }
         AppSurfaceStyle.TACTICAL_HUD -> {

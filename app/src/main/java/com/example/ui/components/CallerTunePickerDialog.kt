@@ -78,8 +78,10 @@ fun CallerTunePickerDialog(
     var activeTrimmerThumb by remember { mutableStateOf<String?>(null) }
     var activeTrimmerAudioUrl by remember { mutableStateOf("") }
 
-    // Curated Tunes Preview State
+    // Curated Tunes Preview & Setting State
     var previewingCuratedId by remember { mutableStateOf<String?>(null) }
+    var settingCuratedId by remember { mutableStateOf<String?>(null) }
+    var settingSongId by remember { mutableStateOf<String?>(null) }
 
     // Launcher for device audio picker
     val audioFileLauncher = rememberLauncherForActivityResult(
@@ -320,11 +322,13 @@ fun CallerTunePickerDialog(
                                     items(searchResults) { song ->
                                         val isPreviewPlaying = previewingSongId == song.videoId
                                         val isDownloading = downloadingSongId == song.videoId
+                                        val isSetting = settingSongId == song.videoId
 
                                         InAppMusicSongCard(
                                             song = song,
                                             isPreviewPlaying = isPreviewPlaying,
                                             isDownloading = isDownloading,
+                                            isSetting = isSetting,
                                             onTogglePreview = {
                                                 if (isPreviewPlaying) {
                                                     LksCallerTuneManager.stopPreview()
@@ -345,6 +349,47 @@ fun CallerTunePickerDialog(
                                                         previewingSongId = null
                                                         Toast.makeText(context, "Audio stream preview not available for this track", Toast.LENGTH_SHORT).show()
                                                     }
+                                                }
+                                            },
+                                            onDirectSet = {
+                                                coroutineScope.launch {
+                                                    LksCallerTuneManager.stopPreview()
+                                                    previewingSongId = null
+                                                    settingSongId = song.videoId
+                                                    Toast.makeText(context, "Setting \"${song.title}\" as your Caller Tune...", Toast.LENGTH_SHORT).show()
+
+                                                    val tuneInfo = if (song.directAudioUrl.isNotBlank()) {
+                                                        LksCallerTuneManager.cacheAndSetTuneFromUrl(
+                                                            context = context,
+                                                            title = song.title,
+                                                            artist = song.channelName,
+                                                            streamUrl = song.directAudioUrl,
+                                                            source = "LIBRARY",
+                                                            startMs = 0L,
+                                                            endMs = 30000L,
+                                                            thumbnailUrl = song.thumbnailUrl
+                                                        )
+                                                    } else {
+                                                        CallerTuneInfo(
+                                                            title = song.title,
+                                                            artist = song.channelName,
+                                                            source = "LIBRARY",
+                                                            thumbnailUrl = song.thumbnailUrl
+                                                        )
+                                                    }
+
+                                                    com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
+                                                        title = tuneInfo.title,
+                                                        artist = tuneInfo.artist,
+                                                        audioUrl = tuneInfo.audioUrl,
+                                                        audioBase64 = tuneInfo.audioBase64,
+                                                        source = tuneInfo.source,
+                                                        startMs = tuneInfo.startMs,
+                                                        endMs = tuneInfo.endMs
+                                                    )
+                                                    settingSongId = null
+                                                    Toast.makeText(context, "Caller Tune active: ${song.title}", Toast.LENGTH_LONG).show()
+                                                    onTuneSelected(tuneInfo)
                                                 }
                                             },
                                             onSelectAndTrim = {
@@ -437,6 +482,7 @@ fun CallerTunePickerDialog(
                                 CuratedTuneCard(
                                     tune = curated,
                                     isPlaying = previewingCuratedId == curated.id,
+                                    isSetting = settingCuratedId == curated.id,
                                     onTogglePreview = {
                                         if (previewingCuratedId == curated.id) {
                                             LksCallerTuneManager.stopPreview()
@@ -457,16 +503,18 @@ fun CallerTunePickerDialog(
                                     onSelect = {
                                         LksCallerTuneManager.stopPreview()
                                         previewingCuratedId = null
+                                        settingCuratedId = curated.id
                                         coroutineScope.launch {
-                                            val tuneInfo = CallerTuneInfo(
+                                            Toast.makeText(context, "Setting \"${curated.title}\" as your Caller Tune...", Toast.LENGTH_SHORT).show()
+                                            val tuneInfo = LksCallerTuneManager.cacheAndSetTuneFromUrl(
+                                                context = context,
                                                 title = curated.title,
                                                 artist = curated.artist,
-                                                audioUrl = curated.streamUrl,
+                                                streamUrl = curated.streamUrl,
                                                 source = "PRESET",
                                                 startMs = 0L,
                                                 endMs = 30000L
                                             )
-                                            LksCallerTuneManager.saveMyCallerTune(context, tuneInfo)
                                             com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
                                                 title = tuneInfo.title,
                                                 artist = tuneInfo.artist,
@@ -476,7 +524,8 @@ fun CallerTunePickerDialog(
                                                 startMs = tuneInfo.startMs,
                                                 endMs = tuneInfo.endMs
                                             )
-                                            Toast.makeText(context, "Caller Tune set to: ${curated.title}", Toast.LENGTH_LONG).show()
+                                            settingCuratedId = null
+                                            Toast.makeText(context, "Caller Tune active: ${curated.title}", Toast.LENGTH_LONG).show()
                                             onTuneSelected(tuneInfo)
                                         }
                                     }
@@ -501,7 +550,9 @@ private fun InAppMusicSongCard(
     song: YouTubeSongItem,
     isPreviewPlaying: Boolean,
     isDownloading: Boolean,
+    isSetting: Boolean,
     onTogglePreview: () -> Unit,
+    onDirectSet: () -> Unit,
     onSelectAndTrim: () -> Unit
 ) {
     Surface(
@@ -524,7 +575,7 @@ private fun InAppMusicSongCard(
             // 1. Thumbnail with in-app play overlay & duration badge
             Box(
                 modifier = Modifier
-                    .size(width = 68.dp, height = 68.dp)
+                    .size(width = 64.dp, height = 64.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color.Black)
                     .clickable(onClick = onTogglePreview)
@@ -570,7 +621,7 @@ private fun InAppMusicSongCard(
                 }
             }
 
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
 
             // 2. Song Details
             Column(modifier = Modifier.weight(1f)) {
@@ -599,7 +650,7 @@ private fun InAppMusicSongCard(
                 }
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(6.dp))
 
             // 3. Audio Preview Toggle Button
             IconButton(onClick = onTogglePreview) {
@@ -607,24 +658,39 @@ private fun InAppMusicSongCard(
                     if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.VolumeUp,
                     contentDescription = "Preview",
                     tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else Color(0xFF6750A4),
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
-            // 4. Trim & Set Button
-            Button(
-                onClick = onSelectAndTrim,
-                enabled = !isDownloading,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                if (isDownloading) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Trim", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            // 4. Action Buttons (Direct Set + Trim)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Button(
+                    onClick = onDirectSet,
+                    enabled = !isDownloading && !isSetting,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    if (isSetting) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Set", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onSelectAndTrim,
+                    enabled = !isDownloading && !isSetting,
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    if (isDownloading) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color(0xFF6750A4), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(2.dp))
+                        Text("Trim", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -639,6 +705,7 @@ private fun InAppMusicSongCard(
 private fun CuratedTuneCard(
     tune: LksCallerTuneManager.CuratedTune,
     isPlaying: Boolean,
+    isSetting: Boolean,
     onTogglePreview: () -> Unit,
     onSelect: () -> Unit
 ) {
@@ -694,11 +761,16 @@ private fun CuratedTuneCard(
 
             Button(
                 onClick = onSelect,
+                enabled = !isSetting,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6750A4)),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text("Set", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                if (isSetting) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White, strokeWidth = 2.dp)
+                } else {
+                    Text("Set", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
             }
         }
     }

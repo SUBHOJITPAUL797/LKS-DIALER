@@ -1432,19 +1432,23 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
 
             // Supervisory Progression: After initial SDP synthesis & network dispatch (2.2s),
-            // transition caller to RINGING state so caller sees "Ringing..." and hears the ringback tone.
+            // transition caller local UI to RINGING if still in CALLING and not yet answered.
+            // CRITICAL: Do NOT overwrite Firestore 'status' to RINGING from the caller side, because if the
+            // callee answered within ~2.2s, writing RINGING from caller would overwrite ANSWERED in Firestore!
             scope.launch {
                 delay(2200)
-                if (_state.value.callStatus == CallStatus.CALLING && _state.value.activeCall?.callId == newCall.callId) {
-                    Log.i("WebRtcEngine", "Initial route established -> transitioning to Ringing state with ringback tone")
-                    _state.value = _state.value.copy(
+                val cur = _state.value
+                if (cur.callStatus == CallStatus.CALLING &&
+                    cur.activeCall?.callId == newCall.callId &&
+                    !hasProcessedAnswer &&
+                    cur.activeCall.answerSdp.isNullOrBlank()
+                ) {
+                    Log.i("WebRtcEngine", "Initial route established -> transitioning caller UI to Ringing state")
+                    _state.value = cur.copy(
                         callStatus = CallStatus.RINGING,
                         connectionStatusText = "Ringing...",
-                        activeCall = _state.value.activeCall?.copy(status = CallStatus.RINGING)
+                        activeCall = cur.activeCall.copy(status = CallStatus.RINGING)
                     )
-                    try {
-                        firestore.collection("calls").document(newCall.callId).update("status", CallStatus.RINGING.name)
-                    } catch (_: Exception) {}
                     com.example.util.CallSoundEffectsManager.onCallRinging(context)
                 }
             }
@@ -2258,7 +2262,27 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 processOfferSdpIfAvailable()
             } else {
-                Log.w("WebRtcEngine", "offerSdp not yet in memory at answer time — rapid polling cache/network")
+                Log.w("WebRtcEngine", "offerSdp not yet in memory at answer time — immediately notifying caller of ANSWERED status and polling offer")
+                // Immediately write status=ANSWERED so caller leaves "Ringing..." screen without waiting for offer fetch
+                try {
+                    firestore.collection("calls").document(call.callId)
+                        .set(mapOf("status" to CallStatus.ANSWERED.name), com.google.firebase.firestore.SetOptions.merge())
+                } catch (_: Exception) {}
+                if (call.callerNumber.isNotBlank()) {
+                    val myPhoneNum = getEffectivePhoneNumber()
+                    val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
+                    val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                    triggerPushNotification(
+                        calleeNumber = call.callerNumber,
+                        callerName = myPhoneNum,
+                        callerNumber = myPhoneNum,
+                        callType = call.callType.name,
+                        callId = call.callId,
+                        type = "call_answered",
+                        explicitFcmToken = targetFcm,
+                        explicitWebToken = targetWeb
+                    )
+                }
                 scope.launch(Dispatchers.IO) {
                     for (attempt in 1..80) {
                         if (hasProcessedOffer || isCallTerminated(call.callId) || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.DECLINED) break
@@ -2528,7 +2552,9 @@ class WebRtcEngine private constructor(private val context: Context) {
                 try {
                     pollCounter++
                     val serverDoc = try {
-                        if (pollCounter % 8 == 0) {
+                        val isWaitingForAnswer = _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING
+                        val forceServerFetch = if (isWaitingForAnswer) (pollCounter % 2 == 0) else (pollCounter % 6 == 0)
+                        if (forceServerFetch) {
                             firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
                         } else {
                             firestore.collection("calls").document(callId).get().await()
@@ -2751,11 +2777,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
 
-            if (isCaller && call.status == CallStatus.ANSWERED && _state.value.callStatus != CallStatus.ANSWERED) {
+            if (isCaller && (call.status == CallStatus.ANSWERED || !call.answerSdp.isNullOrBlank()) && _state.value.callStatus != CallStatus.ANSWERED) {
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = if (call.answerSdp != null) "Connected" else "Connecting P2P..."
+                    connectionStatusText = if (!call.answerSdp.isNullOrBlank()) "Connected" else "Connecting P2P..."
                 )
                 unmuteAllAudioTracks()
                 // Phase 3: Reliable call logs — record outgoing call start immediately on answer
@@ -2771,17 +2797,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                         com.example.services.LksConnectionService.setCallActive()
                     } catch (_: Exception) {}
                 }
-                if (call.answerSdp != null && _state.value.callDurationSeconds == 0) {
+                if (!call.answerSdp.isNullOrBlank() && _state.value.callDurationSeconds == 0) {
                     startCallTimer()
                     registerNetworkHandoffCallback()
                 }
             }
 
-            if (isCaller && call.answerSdp != null && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
-                activeCallPollingJob?.cancel()
-                activeCallPollingJob = null
+            if (isCaller && !call.answerSdp.isNullOrBlank() && (!hasProcessedAnswer || call.answerSdp != oldCall?.answerSdp)) {
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
-                if (peerConnection?.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
+                val sigState = peerConnection?.signalingState()
+                if (sigState == PeerConnection.SignalingState.HAVE_LOCAL_OFFER) {
                     hasProcessedAnswer = true
                     val sessionDescription = SessionDescription(SessionDescription.Type.ANSWER, call.answerSdp)
                     peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
@@ -2792,11 +2817,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         override fun onSetFailure(error: String?) {
                             Log.e("WebRtcEngine", "Failed to set remote answer: $error")
+                            hasProcessedAnswer = false
                         }
                     }, sessionDescription)
-                } else {
+                } else if (sigState == PeerConnection.SignalingState.STABLE) {
                     hasProcessedAnswer = true
-                    Log.i("WebRtcEngine", "Skipping setRemoteDescription: PeerConnection state is already ${peerConnection?.signalingState()}")
+                    Log.i("WebRtcEngine", "PeerConnection already STABLE with remote answer applied")
+                } else {
+                    Log.w("WebRtcEngine", "Deferring setRemoteDescription until HAVE_LOCAL_OFFER (current state=$sigState)")
                 }
                 _state.value = _state.value.copy(
                     callStatus = CallStatus.ANSWERED,
@@ -2828,19 +2856,20 @@ class WebRtcEngine private constructor(private val context: Context) {
                 addCandidateDirect(candStr)
             }
 
-            // Hold State synchronization
+            // Hold State synchronization (guarded by 2.5s cooldown after local hold/resume tap to prevent stale polling snapshots from reverting local resume)
             val remoteHold = snapshot?.getBoolean("isOnHold") == true || snapshot?.getBoolean("onHold") == true || call.isOnHold
             val heldBy = snapshot?.getString("heldBy") ?: call.heldBy ?: ""
             val myPhone = getEffectivePhoneNumber()
             val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
-            
-            if (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe)) {
+            val isWithinLocalHoldCooldown = (System.currentTimeMillis() - lastLocalHoldToggleTime) < 2500L
+
+            if (!isWithinLocalHoldCooldown && (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe))) {
                 val statusMsg = when {
                     !remoteHold -> "Connected"
                     isHeldByMe -> "Call On Hold"
                     else -> "Call On Hold (Other Party)"
                 }
-                Log.i("WebRtcEngine", "Hold state updated: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy, myPhone=$myPhone")
+                Log.i("WebRtcEngine", "Hold state updated from remote: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy")
                 _state.value = _state.value.copy(
                     isOnHold = remoteHold,
                     isHeldLocally = isHeldByMe,
@@ -2850,10 +2879,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                     com.example.util.CallSoundEffectsManager.playHoldTone(context)
                     localAudioTrack?.setEnabled(false)
                     _state.value.localVideoTrack?.setEnabled(false)
+                    try {
+                        val receivers = peerConnection?.receivers ?: emptyList()
+                        for (receiver in receivers) {
+                            (receiver.track() as? AudioTrack)?.setVolume(0.0)
+                        }
+                    } catch (_: Exception) {}
                 } else {
                     com.example.util.CallSoundEffectsManager.playUnholdTone(context)
-                    localAudioTrack?.setEnabled(!_state.value.isMuted)
                     _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
+                    unmuteAllAudioTracks()
                 }
             }
             
@@ -3281,23 +3316,15 @@ class WebRtcEngine private constructor(private val context: Context) {
         setMicrophoneMute(!_state.value.isMuted)
     }
 
+    @Volatile
+    private var lastLocalHoldToggleTime: Long = 0L
+
     fun putCallOnHold(onHold: Boolean, isCellularInterruption: Boolean = false) {
         val currentCall = _state.value.activeCall ?: return
         val myNumber = getEffectivePhoneNumber()
-        
-        // 1. Mute or restore local audio and video tracks
-        if (onHold) {
-            localAudioTrack?.setEnabled(false)
-            _state.value.localVideoTrack?.setEnabled(false)
-            com.example.util.CallSoundEffectsManager.playHoldTone(context)
-        } else {
-            localAudioTrack?.setEnabled(!_state.value.isMuted)
-            _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
-            com.example.util.CallSoundEffectsManager.playUnholdTone(context)
-            unmuteAllAudioTracks()
-        }
-        
-        // 2. Update local UI state
+        lastLocalHoldToggleTime = System.currentTimeMillis()
+
+        // 1. Update local UI & state FIRST so unmuteAllAudioTracks() sees the updated isOnHold=false flag!
         val statusText = when {
             !onHold -> "Connected"
             isCellularInterruption -> "On Hold (Cellular Call)"
@@ -3308,7 +3335,25 @@ class WebRtcEngine private constructor(private val context: Context) {
             isHeldLocally = onHold,
             connectionStatusText = statusText
         )
-        
+
+        // 2. Mute or restore local and remote audio/video tracks
+        if (onHold) {
+            localAudioTrack?.setEnabled(false)
+            try { audioDeviceModule?.setMicrophoneMute(true) } catch (_: Exception) {}
+            _state.value.localVideoTrack?.setEnabled(false)
+            try {
+                val receivers = peerConnection?.receivers ?: emptyList()
+                for (receiver in receivers) {
+                    (receiver.track() as? AudioTrack)?.setVolume(0.0)
+                }
+            } catch (_: Exception) {}
+            com.example.util.CallSoundEffectsManager.playHoldTone(context)
+        } else {
+            _state.value.localVideoTrack?.setEnabled(_state.value.isCameraOn)
+            com.example.util.CallSoundEffectsManager.playUnholdTone(context)
+            unmuteAllAudioTracks()
+        }
+
         // 3. Sync hold state with Telecom Connection (Bluetooth Headsets, Smartwatches, Android Auto)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {

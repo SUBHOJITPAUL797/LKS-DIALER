@@ -221,12 +221,24 @@ class MainActivity : ComponentActivity() {
             if (currentStatus == com.example.data.model.CallStatus.ANSWERED || currentStatus == com.example.data.model.CallStatus.CALLING || (currentStatus == com.example.data.model.CallStatus.RINGING && com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value?.isCaller == true)) {
                 val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
                 val activeCall = rtcState?.activeCall
-                if (activeCall != null) {
+                if (activeCall != null && rtcState != null) {
+                    val fb = com.example.data.repository.FirebaseManager.getInstance(this)
+                    val myPhoneNorm = com.example.util.ContactsHelper.normalizePhoneNumber(fb.currentUser.value?.phoneNumber ?: "")
+                    val callerNorm = com.example.util.ContactsHelper.normalizePhoneNumber(activeCall.callerNumber)
+                    val isOutgoing = rtcState.isCaller || (myPhoneNorm.isNotBlank() && callerNorm == myPhoneNorm)
+                    val peerNumber = if (isOutgoing) activeCall.calleeNumber else activeCall.callerNumber
+                    val rawPeerName = if (isOutgoing) activeCall.calleeName else activeCall.callerName
+                    val contactName = fb.syncedContacts.value.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, peerNumber) }?.name
+                    val userName = fb.lookupUserByNumber(peerNumber)?.displayName
+                    val resolvedPeerName = contactName?.takeIf { it.isNotBlank() }
+                        ?: userName?.takeIf { it.isNotBlank() }
+                        ?: rawPeerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+                        ?: peerNumber
                     com.example.services.FloatingCallBubbleService.showActive(
                         this,
                         activeCall.callId,
-                        activeCall.callerName,
-                        activeCall.callerNumber,
+                        resolvedPeerName,
+                        peerNumber,
                         activeCall.callType
                     )
                 }
@@ -301,25 +313,38 @@ class MainActivity : ComponentActivity() {
         val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value ?: return
         val activeCall = rtcState.activeCall ?: return
 
-        if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !rtcState.isCaller) {
+        val fb = com.example.data.repository.FirebaseManager.getInstance(this)
+        val myPhoneNorm = com.example.util.ContactsHelper.normalizePhoneNumber(fb.currentUser.value?.phoneNumber ?: "")
+        val callerNorm = com.example.util.ContactsHelper.normalizePhoneNumber(activeCall.callerNumber)
+        val isOutgoing = rtcState.isCaller || (myPhoneNorm.isNotBlank() && callerNorm == myPhoneNorm)
+        val peerNumber = if (isOutgoing) activeCall.calleeNumber else activeCall.callerNumber
+        val rawPeerName = if (isOutgoing) activeCall.calleeName else activeCall.callerName
+        val contactName = fb.syncedContacts.value.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, peerNumber) }?.name
+        val userName = fb.lookupUserByNumber(peerNumber)?.displayName
+        val resolvedPeerName = contactName?.takeIf { it.isNotBlank() }
+            ?: userName?.takeIf { it.isNotBlank() }
+            ?: rawPeerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+            ?: peerNumber
+
+        if (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && !isOutgoing) {
             // Show Draggable Incoming Call Pill over home screen when app is minimized during ring
             com.example.services.FloatingCallBubbleService.showIncoming(
                 this,
                 activeCall.callId,
-                activeCall.callerName,
-                activeCall.callerNumber,
+                resolvedPeerName,
+                peerNumber,
                 activeCall.callType
             )
         } else if (rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED ||
                    rtcState.callStatus == com.example.data.model.CallStatus.CALLING ||
-                   (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && rtcState.isCaller)) {
+                   (rtcState.callStatus == com.example.data.model.CallStatus.RINGING && isOutgoing)) {
             // Show Draggable Active Call Pill over other apps (suppressed only if native PiP window is currently visible)
             if (!isInPipMode) {
                 com.example.services.FloatingCallBubbleService.showActive(
                     this,
                     activeCall.callId,
-                    activeCall.callerName,
-                    activeCall.callerNumber,
+                    resolvedPeerName,
+                    peerNumber,
                     activeCall.callType
                 )
             }
@@ -899,14 +924,29 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val isIncoming = !rtcState.isCaller
+                val syncedContacts by firebaseManager.syncedContacts.collectAsState()
+                val registeredUsers by firebaseManager.registeredUsers.collectAsState()
+                val myPhoneNorm = com.example.util.ContactsHelper.normalizePhoneNumber(currentUser?.phoneNumber ?: "")
+                val activeCallerNorm = com.example.util.ContactsHelper.normalizePhoneNumber(activeCall?.callerNumber ?: "")
+                val isOutgoingCall = rtcState.isCaller || (myPhoneNorm.isNotBlank() && activeCallerNorm == myPhoneNorm)
+                val isIncoming = !isOutgoingCall
                 val otherPartyNumber = if (isIncoming) (activeCall?.callerNumber ?: "") else (activeCall?.calleeNumber ?: "")
-                val otherPartyUser = remember(otherPartyNumber) {
+                val otherPartyContact = remember(otherPartyNumber, syncedContacts) {
+                    if (otherPartyNumber.isNotBlank()) {
+                        syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, otherPartyNumber) }
+                    } else null
+                }
+                val otherPartyUser = remember(otherPartyNumber, registeredUsers) {
                     if (otherPartyNumber.isNotBlank()) firebaseManager.lookupUserByNumber(otherPartyNumber) else null
                 }
                 val otherPartyName = if (isIncoming) (activeCall?.callerName ?: "") else (activeCall?.calleeName ?: "")
-                val otherPartyDisplayName = otherPartyUser?.displayName?.takeIf { it.isNotBlank() } ?: otherPartyName.takeIf { it.isNotBlank() } ?: otherPartyNumber
-                val otherPartyProfilePic = otherPartyUser?.profilePictureUrl ?: ""
+                val otherPartyDisplayName = otherPartyContact?.name?.takeIf { it.isNotBlank() }
+                    ?: otherPartyUser?.displayName?.takeIf { it.isNotBlank() }
+                    ?: otherPartyName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+                    ?: otherPartyNumber
+                val otherPartyProfilePic = otherPartyUser?.profilePictureUrl?.ifBlank { null }
+                    ?: otherPartyContact?.profilePictureUrl
+                    ?: ""
                 val direction = if (isIncoming) CallDirection.INCOMING else CallDirection.OUTGOING
 
                 val groupCallEngine = remember { GroupCallEngine.getInstance(context, firebaseManager) }
@@ -1342,7 +1382,7 @@ class MainActivity : ComponentActivity() {
                                 CallStatus.RINGING -> {
                                     if (isIncoming) {
                                         IncomingCallOverlay(
-                                            callerName = activeCall.callerName,
+                                            callerName = otherPartyDisplayName,
                                             callerNumber = activeCall.callerNumber,
                                             profilePicUrl = otherPartyProfilePic,
                                             callType = activeCall.callType,
@@ -1352,7 +1392,7 @@ class MainActivity : ComponentActivity() {
                                                 firebaseManager.logCall(
                                                     direction = CallDirection.INCOMING,
                                                     otherPartyNumber = activeCall.callerNumber,
-                                                    otherPartyName = activeCall.callerName,
+                                                    otherPartyName = otherPartyDisplayName,
                                                     callType = activeCall.callType,
                                                     status = CallStatus.DECLINED,
                                                     durationSeconds = rtcState.callDurationSeconds,

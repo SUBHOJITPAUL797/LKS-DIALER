@@ -83,9 +83,9 @@ enum class AppSurfaceStyle(
     val title: String,
     val subtitle: String,
     val badge: String,
-    val cardColor: Color,
-    val elevatedColor: Color,
-    val borderColor: Color,
+    private val lightCardColor: Color,
+    private val lightElevatedColor: Color,
+    private val lightBorderColor: Color,
     val highlightColor: Color,
     val cornerRadiusDp: Int
 ) {
@@ -93,9 +93,9 @@ enum class AppSurfaceStyle(
         title = "iPhone Liquid Glass",
         subtitle = "Optical refractive transparent glass with specular prism rim",
         badge = "LIQUID GLASS",
-        cardColor = Color(0xEBFFFFFF),
-        elevatedColor = Color(0xF5FFFFFF),
-        borderColor = Color(0x8038BDF8),
+        lightCardColor = Color(0xB3FFFFFF),
+        lightElevatedColor = Color(0xCCFFFFFF),
+        lightBorderColor = Color(0x9938BDF8),
         highlightColor = Color(0xFF0EA5E9),
         cornerRadiusDp = 24
     ),
@@ -103,9 +103,9 @@ enum class AppSurfaceStyle(
         title = "Frosted Fog Glass",
         subtitle = "Diffused satin fog glass with soft luminescence",
         badge = "FOG GLASS",
-        cardColor = Color(0xF2F8FAFC),
-        elevatedColor = Color(0xFAF8FAFC),
-        borderColor = Color(0x7094A3B8),
+        lightCardColor = Color(0xCCF8FAFC),
+        lightElevatedColor = Color(0xE0F8FAFC),
+        lightBorderColor = Color(0x8094A3B8),
         highlightColor = Color(0xFF0284C7),
         cornerRadiusDp = 22
     ),
@@ -113,9 +113,9 @@ enum class AppSurfaceStyle(
         title = "3D Soft Clay",
         subtitle = "Sculpted matte clay cards with warm tactile depth",
         badge = "CLAY 3D",
-        cardColor = Color(0xFFFFFFFF),
-        elevatedColor = Color(0xFFF8FAFC),
-        borderColor = Color(0xFFE2E8F0),
+        lightCardColor = Color(0xFFFFFFFF),
+        lightElevatedColor = Color(0xFFF8FAFC),
+        lightBorderColor = Color(0xFFCBD5E1),
         highlightColor = Color(0xFFFF9800),
         cornerRadiusDp = 22
     ),
@@ -123,31 +123,40 @@ enum class AppSurfaceStyle(
         title = "Clean Utility",
         subtitle = "Clean precision field utility with crisp borders",
         badge = "UTILITY",
-        cardColor = HudSurfaceContainer,
-        elevatedColor = HudElevatedCard,
-        borderColor = HudBorderSubtle,
+        lightCardColor = Color(0xFFFFFFFF),
+        lightElevatedColor = Color(0xFFFFFFFF),
+        lightBorderColor = Color(0xFFE2E8F0),
         highlightColor = SignalAmber,
         cornerRadiusDp = 16
     );
 
-    fun resolvedCardColor(isDark: Boolean): Color = if (!isDark) cardColor else when (this) {
-        LIQUID_GLASS -> Color(0xBF131F2C)
-        FROSTED_GLASS -> Color(0xD9182432)
-        CLAY_3D -> Color(0xFF1A2530)
-        TACTICAL_HUD -> Color(0xFF162029)
+    val cardColor: Color
+        get() = resolvedCardColor(ThemeStateHolder.isDarkMode)
+
+    val elevatedColor: Color
+        get() = resolvedElevatedColor(ThemeStateHolder.isDarkMode)
+
+    val borderColor: Color
+        get() = resolvedBorderColor(ThemeStateHolder.isDarkMode)
+
+    fun resolvedCardColor(isDark: Boolean): Color = if (!isDark) lightCardColor else when (this) {
+        LIQUID_GLASS -> Color(0x99122238)
+        FROSTED_GLASS -> Color(0xBF162436)
+        CLAY_3D -> Color(0xFF1A2636)
+        TACTICAL_HUD -> Color(0xFF15202B)
     }
 
-    fun resolvedElevatedColor(isDark: Boolean): Color = if (!isDark) elevatedColor else when (this) {
-        LIQUID_GLASS -> Color(0xD91B2B3C)
-        FROSTED_GLASS -> Color(0xE6202F40)
-        CLAY_3D -> Color(0xFF22303F)
-        TACTICAL_HUD -> Color(0xFF1E2B37)
+    fun resolvedElevatedColor(isDark: Boolean): Color = if (!isDark) lightElevatedColor else when (this) {
+        LIQUID_GLASS -> Color(0xB8182C46)
+        FROSTED_GLASS -> Color(0xD91E2F44)
+        CLAY_3D -> Color(0xFF223144)
+        TACTICAL_HUD -> Color(0xFF1D2B3A)
     }
 
-    fun resolvedBorderColor(isDark: Boolean): Color = if (!isDark) borderColor else when (this) {
-        LIQUID_GLASS -> Color(0x887DD3FC)
-        FROSTED_GLASS -> Color(0x6694A3B8)
-        CLAY_3D -> Color(0xFF2E3F50)
+    fun resolvedBorderColor(isDark: Boolean): Color = if (!isDark) lightBorderColor else when (this) {
+        LIQUID_GLASS -> Color(0x997DD3FC)
+        FROSTED_GLASS -> Color(0x7794A3B8)
+        CLAY_3D -> Color(0xFF33475B)
         TACTICAL_HUD -> Color(0xFF2B3B4B)
     }
 }
@@ -190,8 +199,8 @@ enum class IncomingSwipeDirection(
         subtitle = "Swipe the Liquid Glass orb Up, Left, or Right to pick up"
     ),
     IPHONE_SLIDE_RIGHT(
-        title = "iPhone Slide Right / Left",
-        subtitle = "Slide right on the Liquid Glass track to answer, left to decline"
+        title = "iPhone Slide Right",
+        subtitle = "Slide horizontally on the iPhone Liquid Glass track to answer"
     ),
     SWIPE_UP(
         title = "Vertical Swipe Up / Down",
@@ -221,6 +230,12 @@ class ThemeManager private constructor(context: Context) {
 
     private val _incomingSwipeDirection = MutableStateFlow(loadSavedIncomingSwipeDirection())
     val incomingSwipeDirection: StateFlow<IncomingSwipeDirection> = _incomingSwipeDirection.asStateFlow()
+
+    init {
+        ThemeStateHolder.isDarkMode = _isDarkMode.value
+        ThemeStateHolder.surfaceStyle = _currentSurfaceStyle.value
+        ThemeStateHolder.themeColor = _currentTheme.value
+    }
 
     private fun loadSavedTheme(): AppThemeColor {
         val savedName = prefs.getString("selected_theme_color", AppThemeColor.SWIGGY.name)
@@ -260,16 +275,19 @@ class ThemeManager private constructor(context: Context) {
 
     fun setTheme(theme: AppThemeColor) {
         prefs.edit().putString("selected_theme_color", theme.name).apply()
+        ThemeStateHolder.themeColor = theme
         _currentTheme.value = theme
     }
 
     fun setSurfaceStyle(style: AppSurfaceStyle) {
         prefs.edit().putString("selected_surface_style", style.name).apply()
+        ThemeStateHolder.surfaceStyle = style
         _currentSurfaceStyle.value = style
     }
 
     fun setDarkMode(enabled: Boolean) {
         prefs.edit().putBoolean("app_dark_mode", enabled).apply()
+        ThemeStateHolder.isDarkMode = enabled
         _isDarkMode.value = enabled
     }
 
@@ -298,4 +316,3 @@ class ThemeManager private constructor(context: Context) {
 val LocalThemeColor = compositionLocalOf { AppThemeColor.SWIGGY }
 val LocalSurfaceStyle = compositionLocalOf { AppSurfaceStyle.LIQUID_GLASS }
 val LocalIsDarkTheme = compositionLocalOf { false }
-

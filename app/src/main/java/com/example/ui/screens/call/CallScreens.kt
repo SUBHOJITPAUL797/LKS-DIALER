@@ -40,6 +40,7 @@ import com.example.data.model.CallType
 import com.example.data.model.CallStatus
 import androidx.compose.ui.graphics.Brush
 import com.example.ui.theme.*
+import com.example.ui.components.surfaceFinishOverlay
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.Shadow
 
@@ -54,6 +55,65 @@ fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+@Composable
+fun CleanCallAvatar(
+    name: String,
+    number: String,
+    accentColor: Color = CyberMint,
+    fontSizeSp: Int = 38
+) {
+    val cleanLabel = remember(name, number) {
+        val raw = name.trim().takeIf { it.isNotEmpty() && !it.equals("Unknown", ignoreCase = true) }
+            ?: number.trim()
+        val words = raw.split(" ").filter { it.isNotBlank() }
+        when {
+            words.size >= 2 && words[0].first().isLetter() && words[1].first().isLetter() ->
+                "${words[0].first().uppercaseChar()}${words[1].first().uppercaseChar()}"
+            raw.any { it.isLetter() } ->
+                raw.filter { it.isLetterOrDigit() }.take(2).uppercase()
+            else ->
+                raw.filter { it.isDigit() }.takeLast(2).ifEmpty { "LK" }
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.radialGradient(
+                    colors = listOf(
+                        accentColor.copy(alpha = 0.42f),
+                        Color(0xFF1E293B).copy(alpha = 0.92f),
+                        Color(0xFF0A1220)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        // Subtle optical specular top sheen
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.28f),
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.25f)
+                        )
+                    )
+                )
+        )
+        Text(
+            text = cleanLabel,
+            fontFamily = SpaceGroteskFontFamily,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = fontSizeSp.sp,
+            color = Color.White,
+            letterSpacing = 1.sp
+        )
+    }
 }
 
 @Composable
@@ -101,15 +161,18 @@ fun OutgoingCallScreen(
         }
     }
 
+    val surfaceStyle = LocalSurfaceStyle.current
+    val themeColor = LocalThemeColor.current
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF0A101E),
-                        Color(0xFF0F172A),
-                        Color(0xFF1E293B)
+                        Color(0xFF050B16),
+                        Color(0xFF0D1B2E),
+                        Color(0xFF071222)
                     )
                 )
             )
@@ -133,9 +196,41 @@ fun OutgoingCallScreen(
                     .background(
                         Brush.verticalGradient(
                             listOf(
-                                Color.Black.copy(alpha = 0.72f),
-                                Color.Black.copy(alpha = 0.55f),
-                                Color.Black.copy(alpha = 0.85f)
+                                Color.Black.copy(alpha = 0.65f),
+                                Color.Black.copy(alpha = 0.48f),
+                                Color.Black.copy(alpha = 0.78f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            // Atmospheric refractive aura orbs when user has no photo (never white)
+            Box(
+                modifier = Modifier
+                    .size(320.dp)
+                    .align(Alignment.TopCenter)
+                    .offset(y = (-30).dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                themeColor.primary.copy(alpha = 0.28f),
+                                CyberMint.copy(alpha = 0.10f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .size(340.dp)
+                    .align(Alignment.BottomCenter)
+                    .offset(y = 50.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0xFF38BDF8).copy(alpha = 0.22f),
+                                themeColor.primary.copy(alpha = 0.08f),
+                                Color.Transparent
                             )
                         )
                     )
@@ -249,25 +344,34 @@ fun OutgoingCallScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        val avatarRes = remember(calleeName, calleeNumber) {
-                            Avatar3dHelper.getAvatarResId(calleeName, calleeNumber)
-                        }
-                        Image(
-                            painter = painterResource(id = avatarRes),
-                            contentDescription = calleeName,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                        CleanCallAvatar(
+                            name = calleeName,
+                            number = calleeNumber,
+                            accentColor = CyberMint,
+                            fontSizeSp = 44
                         )
                     }
                 }
             }
 
-            // Bottom Docked Controls Card
+            // Bottom Docked Controls Card styled per user's selected Surface Style in Settings
+            val dockContainerColor = when (surfaceStyle) {
+                AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.14f)
+                AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.18f)
+                AppSurfaceStyle.CLAY_3D -> Color(0xFF162235).copy(alpha = 0.90f)
+                AppSurfaceStyle.TACTICAL_HUD -> Color(0xFF0C1524).copy(alpha = 0.88f)
+            }
+            val dockBorderColor = when (surfaceStyle) {
+                AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.55f)
+                AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.42f)
+                AppSurfaceStyle.CLAY_3D -> themeColor.primary.copy(alpha = 0.45f)
+                AppSurfaceStyle.TACTICAL_HUD -> CyberMint.copy(alpha = 0.40f)
+            }
             Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xE60F172A),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                shadowElevation = 16.dp,
+                shape = RoundedCornerShape(28.dp),
+                color = dockContainerColor,
+                border = BorderStroke(1.2.dp, dockBorderColor),
+                shadowElevation = if (surfaceStyle == AppSurfaceStyle.LIQUID_GLASS || surfaceStyle == AppSurfaceStyle.FROSTED_GLASS) 0.dp else 12.dp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
@@ -275,7 +379,14 @@ fun OutgoingCallScreen(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(vertical = 20.dp, horizontal = 16.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(
+                            style = surfaceStyle,
+                            accentColor = themeColor.primary,
+                            cornerRadius = 28.dp
+                        )
+                        .padding(vertical = 20.dp, horizontal = 16.dp)
                 ) {
                     // In-Call Controls (Mute & Speakerphone while Calling / Ringing)
                     if (webRtcEngine != null && rtcState != null) {
@@ -534,55 +645,12 @@ fun IncomingCallOverlay(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // ── TOP: Quick Style Switcher + Caller Identity Liquid Glass Card ──
+            // ── TOP: Caller Identity Card (Cleanly uses the style selected in Settings) ──
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // Live Style Switcher Pill (iPhone Liquid Glass vs Samsung One UI)
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Color.White.copy(alpha = 0.12f),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        IncomingCallUiStyle.entries.forEach { styleOption ->
-                            val selected = incomingCallStyle == styleOption
-                            Surface(
-                                onClick = {
-                                    themeManager.setIncomingCallStyle(styleOption)
-                                    if (styleOption == IncomingCallUiStyle.SAMSUNG_ONE_UI &&
-                                        incomingSwipeDirection == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT
-                                    ) {
-                                        themeManager.setIncomingSwipeDirection(IncomingSwipeDirection.ANY_DIRECTION)
-                                    }
-                                },
-                                shape = RoundedCornerShape(50),
-                                color = if (selected) Color.White.copy(alpha = 0.24f) else Color.Transparent,
-                                border = if (selected) BorderStroke(1.dp, Color.White.copy(alpha = 0.5f)) else null
-                            ) {
-                                Text(
-                                    text = if (styleOption == IncomingCallUiStyle.IPHONE_LIQUID_GLASS) {
-                                        "iPhone Liquid Glass"
-                                    } else {
-                                        "Samsung One UI"
-                                    },
-                                    fontFamily = SpaceGroteskFontFamily,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 11.sp,
-                                    color = if (selected) Color.White else Color.White.copy(alpha = 0.7f),
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // Refractive Liquid Glass Caller Header Card
                 Surface(
@@ -723,107 +791,49 @@ fun IncomingCallOverlay(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
-                        val avatarRes = remember(callerName, callerNumber) {
-                            Avatar3dHelper.getAvatarResId(callerName, callerNumber)
-                        }
-                        Image(
-                            painter = painterResource(id = avatarRes),
-                            contentDescription = callerName,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                        CleanCallAvatar(
+                            name = callerName,
+                            number = callerNumber,
+                            accentColor = CyberMint,
+                            fontSizeSp = 42
                         )
                     }
                 }
             }
 
-            // ── BOTTOM: Multi-Directional Swipe Pickup Deck (iPhone Liquid Glass & Samsung One UI) ──
+            // ── BOTTOM: Swipe Pickup Deck (Configured via Settings) ──
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // Mode selector chips so user can switch gesture style right on the call screen if desired
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                ) {
-                    IncomingSwipeDirection.entries.forEach { dirOption ->
-                        val isDirSelected = incomingSwipeDirection == dirOption
-                        Surface(
-                            onClick = { themeManager.setIncomingSwipeDirection(dirOption) },
-                            shape = RoundedCornerShape(50),
-                            color = if (isDirSelected) CyberMint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.08f),
-                            border = BorderStroke(
-                                1.dp,
-                                if (isDirSelected) CyberMint else Color.White.copy(alpha = 0.20f)
-                            )
-                        ) {
-                            val shortLabel = when (dirOption) {
-                                IncomingSwipeDirection.ANY_DIRECTION -> "↑ ← → Omni Swipe"
-                                IncomingSwipeDirection.IPHONE_SLIDE_RIGHT -> "iPhone Slide"
-                                IncomingSwipeDirection.SWIPE_UP -> "Swipe Up"
-                                IncomingSwipeDirection.SAMSUNG_EXPAND_RING -> "Samsung Rings"
-                            }
-                            Text(
-                                text = shortLabel,
-                                fontFamily = SpaceGroteskFontFamily,
-                                fontWeight = if (isDirSelected) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 10.sp,
-                                color = if (isDirSelected) Color.White else Color.White.copy(alpha = 0.72f),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-
                 when {
                     incomingSwipeDirection == IncomingSwipeDirection.IPHONE_SLIDE_RIGHT && !isSamsungStyle -> {
-                        // ── 1. iPhone Liquid Glass Horizontal Slide Capsule + Multi-Directional Support ──
-                        var dragX by remember { mutableStateOf(0f) }
-                        var dragY by remember { mutableStateOf(0f) }
+                        // ── 1. Authentic iPhone Liquid Glass Horizontal Slide Capsule (Locked Horizontal Track) ──
+                        var dragX by remember { mutableFloatStateOf(0f) }
                         val animatedX by animateFloatAsState(
                             targetValue = dragX,
                             animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
                             ),
                             label = "iphone_slide_x"
                         )
-                        val animatedY by animateFloatAsState(
-                            targetValue = dragY,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium
-                            ),
-                            label = "iphone_slide_y"
-                        )
-                        val thresholdPx = with(density) { 105.dp.toPx() }
-                        val upThresholdPx = with(density) { 80.dp.toPx() }
 
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                text = "↑ Swipe Up, Left, or Slide Right to Answer",
-                                fontFamily = SpaceGroteskFontFamily,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White.copy(alpha = 0.85f),
-                                modifier = Modifier.padding(bottom = 10.dp)
-                            )
-
                             // Liquid Glass Capsule Track
                             Surface(
                                 shape = RoundedCornerShape(50),
-                                color = Color.White.copy(alpha = 0.14f),
+                                color = Color.White.copy(alpha = 0.16f),
                                 border = BorderStroke(
                                     1.5.dp,
                                     Brush.linearGradient(
                                         colors = listOf(
-                                            Color.White.copy(alpha = 0.75f),
-                                            Color(0xFF7DD3FC).copy(alpha = 0.45f),
-                                            CyberMint.copy(alpha = 0.55f)
+                                            Color.White.copy(alpha = 0.80f),
+                                            Color(0xFF7DD3FC).copy(alpha = 0.48f),
+                                            CyberMint.copy(alpha = 0.60f)
                                         )
                                     )
                                 ),
@@ -831,84 +841,105 @@ fun IncomingCallOverlay(
                                     .fillMaxWidth()
                                     .height(78.dp)
                             ) {
-                                Box(
+                                BoxWithConstraints(
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .background(
                                             Brush.horizontalGradient(
                                                 colors = listOf(
-                                                    RedEndCall.copy(alpha = 0.16f),
-                                                    Color.White.copy(alpha = 0.10f),
-                                                    GreenCall.copy(alpha = 0.24f)
+                                                    Color.White.copy(alpha = 0.18f),
+                                                    Color.White.copy(alpha = 0.08f),
+                                                    GreenCall.copy(alpha = 0.26f)
                                                 )
                                             )
                                         )
                                         .padding(horizontal = 8.dp),
                                     contentAlignment = Alignment.CenterStart
                                 ) {
-                                    // Shimmering prompt label inside capsule
+                                    val knobSize = 62.dp
+                                    val maxSlidePx = with(density) {
+                                        (maxWidth - knobSize).toPx().coerceAtLeast(1f)
+                                    }
+                                    val slideProgress = (animatedX / maxSlidePx).coerceIn(0f, 1f)
+
+                                    // Shimmering "slide to answer" prompt inside capsule (fades smoothly as knob slides)
                                     Row(
-                                        modifier = Modifier.fillMaxWidth(),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(start = 52.dp)
+                                            .alpha((1f - slideProgress * 1.35f).coerceIn(0f, 1f)),
                                         horizontalArrangement = Arrangement.Center,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "slide or swipe ↑ ← → to answer",
+                                            text = "slide to answer",
                                             fontFamily = SpaceGroteskFontFamily,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp,
-                                            color = Color.White.copy(alpha = (0.65f + 0.35f * kotlin.math.abs(shimmerOffset)).coerceIn(0.4f, 1f))
+                                            fontSize = 16.sp,
+                                            letterSpacing = 0.5.sp,
+                                            color = Color.White.copy(
+                                                alpha = (0.72f + 0.28f * kotlin.math.abs(shimmerOffset)).coerceIn(0.45f, 1f)
+                                            )
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Icon(
                                             Icons.Default.KeyboardDoubleArrowRight,
                                             contentDescription = null,
-                                            tint = CyberMint,
+                                            tint = Color.White.copy(alpha = 0.85f),
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
 
-                                    // Draggable Liquid Glass Orb inside track
+                                    // Strictly Horizontal Draggable iPhone Knob inside Track (Y is locked to 0)
                                     Surface(
                                         shape = CircleShape,
-                                        color = GreenCall,
-                                        border = BorderStroke(2.dp, Color.White.copy(alpha = 0.85f)),
-                                        shadowElevation = 12.dp,
+                                        color = Color.White,
+                                        border = BorderStroke(2.dp, GreenCall.copy(alpha = 0.55f)),
+                                        shadowElevation = 10.dp,
                                         modifier = Modifier
                                             .offset {
                                                 IntOffset(
-                                                    animatedX.roundToInt().coerceAtLeast(0),
-                                                    animatedY.roundToInt().coerceAtMost(0)
+                                                    x = animatedX.roundToInt().coerceIn(0, maxSlidePx.roundToInt()),
+                                                    y = 0
                                                 )
                                             }
-                                            .size(62.dp)
-                                            .pointerInput(Unit) {
+                                            .size(knobSize)
+                                            .pointerInput(maxSlidePx) {
                                                 detectDragGestures(
                                                     onDragEnd = {
-                                                        if (dragX > thresholdPx || dragY < -upThresholdPx) {
+                                                        if (dragX >= maxSlidePx * 0.70f) {
+                                                            dragX = maxSlidePx
                                                             triggerAnswer()
                                                         } else {
                                                             dragX = 0f
-                                                            dragY = 0f
                                                         }
                                                     },
                                                     onDragCancel = {
                                                         dragX = 0f
-                                                        dragY = 0f
                                                     },
                                                     onDrag = { change, dragAmount ->
                                                         change.consume()
-                                                        dragX = (dragX + dragAmount.x).coerceIn(0f, thresholdPx * 1.6f)
-                                                        dragY = (dragY + dragAmount.y).coerceIn(-upThresholdPx * 1.4f, 20f)
+                                                        dragX = (dragX + dragAmount.x).coerceIn(0f, maxSlidePx)
                                                     }
                                                 )
                                             }
-                                            .clickable { triggerAnswer() }
                                     ) {
-                                        Box(contentAlignment = Alignment.Center) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(
+                                                    Brush.radialGradient(
+                                                        colors = listOf(
+                                                            GreenCall,
+                                                            Color(0xFF059669)
+                                                        )
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
                                             Icon(
                                                 imageVector = if (callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
-                                                contentDescription = "Answer",
+                                                contentDescription = "Slide to Answer",
                                                 tint = Color.White,
                                                 modifier = Modifier.size(28.dp)
                                             )
@@ -1508,10 +1539,21 @@ fun ActiveAudioCallScreen(
         )
     }
 
+    val surfaceStyle = LocalSurfaceStyle.current
+    val themeColor = LocalThemeColor.current
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(BackgroundDark)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF050B16),
+                        Color(0xFF0D1B2E),
+                        Color(0xFF071222)
+                    )
+                )
+            )
             .pointerInput(Unit) { detectTapGestures { } }
     ) {
         val decodedBitmap = remember(profilePicUrl) {
@@ -1526,7 +1568,51 @@ fun ActiveAudioCallScreen(
                 modifier = Modifier.fillMaxSize()
             )
             // Dim overlay so text stays readable
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.62f),
+                                Color.Black.copy(alpha = 0.45f),
+                                Color.Black.copy(alpha = 0.72f)
+                            )
+                        )
+                    )
+            )
+        } else {
+            // Atmospheric refractive aura orbs so Liquid Glass & Frosted Glass docks refract over rich color
+            Box(
+                modifier = Modifier
+                    .size(320.dp)
+                    .align(Alignment.TopCenter)
+                    .offset(y = (-24).dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                themeColor.primary.copy(alpha = 0.28f),
+                                CyberMint.copy(alpha = 0.12f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .size(360.dp)
+                    .align(Alignment.BottomCenter)
+                    .offset(y = 60.dp)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0xFF38BDF8).copy(alpha = 0.24f),
+                                themeColor.primary.copy(alpha = 0.10f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+            )
         }
 
         if (onMinimize != null) {
@@ -1804,14 +1890,11 @@ fun ActiveAudioCallScreen(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
-                            val avatar3dRes = remember(displayName, displayNumber) {
-                                Avatar3dHelper.getAvatarResId(displayName, displayNumber)
-                            }
-                            Image(
-                                painter = painterResource(avatar3dRes),
-                                contentDescription = displayName,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                            CleanCallAvatar(
+                                name = displayName,
+                                number = displayNumber,
+                                accentColor = themeColor.primary,
+                                fontSizeSp = 38
                             )
                         }
                     }
@@ -1828,12 +1911,24 @@ fun ActiveAudioCallScreen(
                 )
             }
 
-            // Bottom In-Call Controls Docked Card (Always dark obsidian frosted glass so controls are 100% visible)
+            // Bottom In-Call Controls Docked Card styled per user's selected Surface Style in Settings
+            val dockContainerColor = when (surfaceStyle) {
+                AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.14f)
+                AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.18f)
+                AppSurfaceStyle.CLAY_3D -> Color(0xFF162235).copy(alpha = 0.90f)
+                AppSurfaceStyle.TACTICAL_HUD -> Color(0xFF0C1524).copy(alpha = 0.88f)
+            }
+            val dockBorderColor = when (surfaceStyle) {
+                AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.55f)
+                AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.42f)
+                AppSurfaceStyle.CLAY_3D -> themeColor.primary.copy(alpha = 0.45f)
+                AppSurfaceStyle.TACTICAL_HUD -> CyberMint.copy(alpha = 0.40f)
+            }
             Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xE60F172A),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
-                shadowElevation = 16.dp,
+                shape = RoundedCornerShape(28.dp),
+                color = dockContainerColor,
+                border = BorderStroke(1.2.dp, dockBorderColor),
+                shadowElevation = if (surfaceStyle == AppSurfaceStyle.LIQUID_GLASS || surfaceStyle == AppSurfaceStyle.FROSTED_GLASS) 0.dp else 12.dp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
@@ -1841,7 +1936,14 @@ fun ActiveAudioCallScreen(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(16.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .surfaceFinishOverlay(
+                            style = surfaceStyle,
+                            accentColor = themeColor.primary,
+                            cornerRadius = 28.dp
+                        )
+                        .padding(16.dp)
                 ) {
                     // Row 1: Core Audio / Video Communication Controls
                     Row(
@@ -2234,11 +2336,11 @@ fun ActiveVideoCallScreen(
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     } else {
-                                        Image(
-                                            painter = painterResource(avatar3dRes),
-                                            contentDescription = displayName,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
+                                        CleanCallAvatar(
+                                            name = displayName,
+                                            number = displayNumber,
+                                            accentColor = CyberMint,
+                                            fontSizeSp = 34
                                         )
                                     }
                                 }
@@ -2821,7 +2923,21 @@ fun ActiveVideoCallScreen(
             }
         }
 
-        // Z-Index Aware Bottom Controls Dock in Translucent Glass-morphism Container
+        // Z-Index Aware Bottom Controls Dock styled per user's selected Surface Style in Settings
+        val videoSurfaceStyle = LocalSurfaceStyle.current
+        val videoThemeColor = LocalThemeColor.current
+        val videoDockContainerColor = when (videoSurfaceStyle) {
+            AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.16f)
+            AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.20f)
+            AppSurfaceStyle.CLAY_3D -> Color(0xFF162235).copy(alpha = 0.90f)
+            AppSurfaceStyle.TACTICAL_HUD -> Color(0xFF0C1524).copy(alpha = 0.88f)
+        }
+        val videoDockBorderColor = when (videoSurfaceStyle) {
+            AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.58f)
+            AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.44f)
+            AppSurfaceStyle.CLAY_3D -> videoThemeColor.primary.copy(alpha = 0.45f)
+            AppSurfaceStyle.TACTICAL_HUD -> CyberMint.copy(alpha = 0.40f)
+        }
         AnimatedVisibility(
             visible = areControlsVisible && !isPipMode,
             enter = fadeIn(tween(200)),
@@ -2839,10 +2955,10 @@ fun ActiveVideoCallScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color(0xD90F172A),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
-                    shadowElevation = 16.dp,
+                    shape = RoundedCornerShape(26.dp),
+                    color = videoDockContainerColor,
+                    border = BorderStroke(1.2.dp, videoDockBorderColor),
+                    shadowElevation = if (videoSurfaceStyle == AppSurfaceStyle.LIQUID_GLASS || videoSurfaceStyle == AppSurfaceStyle.FROSTED_GLASS) 0.dp else 14.dp,
                     modifier = Modifier
                         .fillMaxWidth()
                         .widthIn(max = 520.dp)
@@ -2850,6 +2966,11 @@ fun ActiveVideoCallScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .surfaceFinishOverlay(
+                                style = videoSurfaceStyle,
+                                accentColor = videoThemeColor.primary,
+                                cornerRadius = 26.dp
+                            )
                             .padding(horizontal = 10.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -3138,16 +3259,63 @@ private fun InCallControlButton(
     size: androidx.compose.ui.unit.Dp = 60.dp,
     onClick: () -> Unit
 ) {
+    val surfaceStyle = LocalSurfaceStyle.current
+    val themeColor = LocalThemeColor.current
+    val inactiveFillBrush = when (surfaceStyle) {
+        AppSurfaceStyle.LIQUID_GLASS -> Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.26f),
+                Color.White.copy(alpha = 0.10f)
+            )
+        )
+        AppSurfaceStyle.FROSTED_GLASS -> Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.22f),
+                Color.White.copy(alpha = 0.12f)
+            )
+        )
+        AppSurfaceStyle.CLAY_3D -> Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF28374E),
+                Color(0xFF192436)
+            )
+        )
+        AppSurfaceStyle.TACTICAL_HUD -> Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF1B293E),
+                Color(0xFF111C2D)
+            )
+        )
+    }
+    val inactiveBorderColor = when (surfaceStyle) {
+        AppSurfaceStyle.LIQUID_GLASS -> Color.White.copy(alpha = 0.55f)
+        AppSurfaceStyle.FROSTED_GLASS -> Color.White.copy(alpha = 0.38f)
+        AppSurfaceStyle.CLAY_3D -> themeColor.primary.copy(alpha = 0.38f)
+        AppSurfaceStyle.TACTICAL_HUD -> CyberMint.copy(alpha = 0.32f)
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         IconButton(
             onClick = onClick,
             modifier = Modifier
                 .size(size)
                 .clip(CircleShape)
-                .background(if (isActive) activeColor.copy(alpha = 0.28f) else Color(0xFF1E293B))
+                .then(
+                    if (isActive) {
+                        Modifier.background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    activeColor.copy(alpha = 0.42f),
+                                    activeColor.copy(alpha = 0.22f)
+                                )
+                            )
+                        )
+                    } else {
+                        Modifier.background(inactiveFillBrush)
+                    }
+                )
                 .border(
-                    width = if (isActive) 1.5.dp else 1.dp,
-                    color = if (isActive) activeColor else Color.White.copy(alpha = 0.28f),
+                    width = if (isActive) 1.5.dp else 1.2.dp,
+                    color = if (isActive) activeColor else inactiveBorderColor,
                     shape = CircleShape
                 )
         ) {
@@ -3163,7 +3331,7 @@ private fun InCallControlButton(
             text = label,
             fontFamily = com.example.ui.theme.SpaceGroteskFontFamily,
             fontWeight = FontWeight.Bold,
-            color = if (isActive) activeColor else Color(0xFFF1F5F9),
+            color = if (isActive) activeColor else Color.White,
             fontSize = 12.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis

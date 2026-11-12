@@ -2389,12 +2389,27 @@ fun ChatConversationScreen(
         var addMemberSearch by remember { mutableStateOf("") }
         var selectedNewMembers by remember { mutableStateOf(setOf<String>()) }
         val currentGroupMembers = remember(groupDto) { groupDto?.members?.map { ContactsHelper.normalizePhoneNumber(it) }?.toSet() ?: emptySet() }
-        val candidates = remember(registeredUsers, currentGroupMembers, addMemberSearch) {
-            registeredUsers.filter { user ->
-                val p = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
-                p.isNotBlank() && !currentGroupMembers.contains(p) &&
-                    (addMemberSearch.isBlank() || user.displayName.contains(addMemberSearch, ignoreCase = true) || user.phoneNumber.contains(addMemberSearch))
-            }
+        val candidates = remember(syncedContacts, registeredUsers, currentGroupMembers, addMemberSearch) {
+            syncedContacts.mapNotNull { contact ->
+                val p = ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
+                if (p.isBlank() || currentGroupMembers.contains(p)) {
+                    null
+                } else {
+                    val regUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, p) }
+                    val resolvedName = contact.name.ifBlank { regUser?.displayName ?: contact.phoneNumber }
+                    val resolvedPic = contact.profilePictureUrl.ifBlank { regUser?.profilePictureUrl ?: "" }
+                    if (addMemberSearch.isBlank() ||
+                        resolvedName.contains(addMemberSearch, ignoreCase = true) ||
+                        contact.phoneNumber.contains(addMemberSearch)
+                    ) {
+                        com.example.data.model.UserDto(
+                            phoneNumber = p,
+                            displayName = resolvedName,
+                            profilePictureUrl = resolvedPic
+                        )
+                    } else null
+                }
+            }.distinctBy { it.phoneNumber }
         }
 
         AlertDialog(

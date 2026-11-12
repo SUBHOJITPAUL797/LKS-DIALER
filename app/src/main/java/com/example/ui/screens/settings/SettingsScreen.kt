@@ -157,11 +157,14 @@ fun SettingsScreen(
     var callerTuneState by remember { mutableStateOf(com.example.util.LksCallerTuneManager.getMyCallerTune(context)) }
     var showCallerTunePicker by remember { mutableStateOf(false) }
     var isCallerTunePreviewPlaying by remember { mutableStateOf(false) }
+    var isCallerTuneLoading by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose {
             LksRingtoneManager.stopPreview()
             com.example.util.LksCallerTuneManager.stopPreview()
+            isCallerTunePreviewPlaying = false
+            isCallerTuneLoading = false
         }
     }
 
@@ -1372,29 +1375,51 @@ fun SettingsScreen(
                         if (callerTuneState.isConfigured) {
                             IconButton(
                                 onClick = {
-                                    if (isCallerTunePreviewPlaying) {
+                                    if (isCallerTunePreviewPlaying || isCallerTuneLoading) {
                                         com.example.util.LksCallerTuneManager.stopPreview()
                                         isCallerTunePreviewPlaying = false
+                                        isCallerTuneLoading = false
                                     } else {
                                         LksRingtoneManager.stopPreview()
                                         isPreviewPlaying = false
-                                        val activeTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context).takeIf { it.isConfigured } ?: callerTuneState
-                                        val started = com.example.util.LksCallerTuneManager.playPreview(context, activeTune) {
-                                            isCallerTunePreviewPlaying = false
-                                        }
-                                        isCallerTunePreviewPlaying = started
-                                        if (!started) {
-                                            Toast.makeText(context, "Could not play caller tune preview.", Toast.LENGTH_SHORT).show()
+                                        isCallerTuneLoading = true
+                                        coroutineScope.launch {
+                                            val activeTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context).takeIf { it.isConfigured } ?: callerTuneState
+                                            val started = com.example.util.LksCallerTuneManager.playTuneWithAutoRecovery(
+                                                context = context,
+                                                info = activeTune,
+                                                onStarted = {
+                                                    isCallerTuneLoading = false
+                                                    isCallerTunePreviewPlaying = true
+                                                },
+                                                onCompletion = {
+                                                    isCallerTuneLoading = false
+                                                    isCallerTunePreviewPlaying = false
+                                                }
+                                            )
+                                            if (!started) {
+                                                isCallerTuneLoading = false
+                                                isCallerTunePreviewPlaying = false
+                                                Toast.makeText(context, "Could not load or play caller tune.", Toast.LENGTH_SHORT).show()
+                                            }
                                         }
                                     }
                                 }
                             ) {
-                                Icon(
-                                    if (isCallerTunePreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
-                                    contentDescription = if (isCallerTunePreviewPlaying) "Stop Preview" else "Play Preview",
-                                    tint = if (isCallerTunePreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
-                                    modifier = Modifier.size(32.dp)
-                                )
+                                if (isCallerTuneLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        color = GreenCall,
+                                        strokeWidth = 2.5.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        if (isCallerTunePreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
+                                        contentDescription = if (isCallerTunePreviewPlaying) "Stop Preview" else "Play Preview",
+                                        tint = if (isCallerTunePreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -1417,6 +1442,7 @@ fun SettingsScreen(
                             onClick = {
                                 com.example.util.LksCallerTuneManager.stopPreview()
                                 isCallerTunePreviewPlaying = false
+                                isCallerTuneLoading = false
                                 showCallerTunePicker = true
                             },
                             modifier = Modifier.weight(1f),
@@ -1433,6 +1459,7 @@ fun SettingsScreen(
                                 onClick = {
                                     com.example.util.LksCallerTuneManager.stopPreview()
                                     isCallerTunePreviewPlaying = false
+                                    isCallerTuneLoading = false
                                     com.example.util.LksCallerTuneManager.removeMyCallerTune(context)
                                     com.example.data.repository.FirebaseManager.getInstance(context).removeCallerTune()
                                     callerTuneState = com.example.util.CallerTuneInfo()

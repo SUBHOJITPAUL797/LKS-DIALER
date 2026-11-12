@@ -268,7 +268,10 @@ class LksCallConnection(
         Log.d("LksCallConnection", "Telecom onCallAudioStateChanged: route=$route, isMuted=${state.isMuted}")
 
         val engine = WebRtcEngine.getInstanceIfCreated() ?: return
-        if (engine.state.value.callStatus == com.example.data.model.CallStatus.ANSWERED) {
+        if (engine.state.value.callStatus == com.example.data.model.CallStatus.ANSWERED &&
+            !engine.state.value.isOnHold &&
+            this.state != android.telecom.Connection.STATE_HOLDING
+        ) {
             engine.setMicrophoneMute(state.isMuted)
         }
 

@@ -3,6 +3,7 @@ package com.example.ui.screens.call
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -49,73 +51,157 @@ fun MinimizedGroupCallTopBar(
     val mins = state.callDurationSeconds / 60
     val secs = state.callDurationSeconds % 60
     val durationStr = "%02d:%02d".format(mins, secs)
+    var isHiddenByDragUp by remember { mutableStateOf(false) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+
+    if (isHiddenByDragUp) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(top = 2.dp),
+            contentAlignment = Alignment.TopCenter
+        ) {
+            Surface(
+                onClick = {
+                    isHiddenByDragUp = false
+                    dragOffsetY = 0f
+                },
+                shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+                color = Color(0xFF064E3B).copy(alpha = 0.92f),
+                border = BorderStroke(1.dp, CyberMint.copy(alpha = 0.55f)),
+                shadowElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Groups,
+                        contentDescription = null,
+                        tint = CyberMint,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "${room.title} • $durationStr",
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Show Call Banner",
+                        tint = CyberMint,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
 
     Surface(
         onClick = onExpand,
         color = Color(0xFF064E3B),
         contentColor = Color.White,
         shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .offset { androidx.compose.ui.unit.IntOffset(0, dragOffsetY.toInt().coerceAtMost(0)) }
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragEnd = {
+                        if (dragOffsetY < -35f) {
+                            isHiddenByDragUp = true
+                        }
+                        dragOffsetY = 0f
+                    },
+                    onDragCancel = { dragOffsetY = 0f },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragOffsetY = (dragOffsetY + dragAmount).coerceIn(-160f, 0f)
+                    }
+                )
+            }
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = CyberMint.copy(alpha = 0.24f),
-                    modifier = Modifier.size(34.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (room.callType == CallType.VIDEO) Icons.Default.Groups else Icons.Default.PhoneInTalk,
-                            contentDescription = null,
-                            tint = CyberMint,
-                            modifier = Modifier.size(18.dp)
+                    Surface(
+                        shape = CircleShape,
+                        color = CyberMint.copy(alpha = 0.24f),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (room.callType == CallType.VIDEO) Icons.Default.Groups else Icons.Default.PhoneInTalk,
+                                contentDescription = null,
+                                tint = CyberMint,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${room.title} (${state.joinedParticipants.size} in call)",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "Tap to return • Swipe ↑ to hide • $durationStr",
+                            fontFamily = JetBrainsMonoFontFamily,
+                            fontSize = 10.sp,
+                            color = CyberMint
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${room.title} (${state.joinedParticipants.size} in call)",
-                        fontFamily = SpaceGroteskFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "Tap to return to conference • $durationStr",
-                        fontFamily = JetBrainsMonoFontFamily,
-                        fontSize = 11.sp,
-                        color = CyberMint
+
+                IconButton(
+                    onClick = { isHiddenByDragUp = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowUp,
+                        contentDescription = "Hide Banner",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(20.dp)
                     )
                 }
-            }
 
-            Surface(
-                onClick = onLeaveOrEnd,
-                shape = RoundedCornerShape(50),
-                color = RedEndCall
-            ) {
-                Text(
-                    text = "Leave",
-                    fontFamily = SpaceGroteskFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                )
+                Spacer(modifier = Modifier.width(4.dp))
+
+                Surface(
+                    onClick = onLeaveOrEnd,
+                    shape = RoundedCornerShape(50),
+                    color = RedEndCall
+                ) {
+                    Text(
+                        text = "Leave",
+                        fontFamily = SpaceGroteskFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
             }
         }
     }
@@ -138,26 +224,26 @@ fun StartGroupCallModal(
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val syncedContacts by firebaseManager.syncedContacts.collectAsState()
 
-    val availableContacts = remember(registeredUsers, syncedContacts, currentUser) {
+    // PRIVACY FIX: Strictly show ONLY the user's own device contacts (syncedContacts) + any explicitly preselected peer.
+    // NEVER dump global registeredUsers from Firestore that are not in the user's phonebook!
+    val availableContacts = remember(registeredUsers, syncedContacts, currentUser, preselectedContacts) {
         val myPhone = ContactsHelper.normalizePhoneNumber(currentUser?.phoneNumber ?: "")
         val map = LinkedHashMap<String, ContactDto>()
         syncedContacts.forEach { c ->
             val norm = ContactsHelper.normalizePhoneNumber(c.phoneNumber)
             if (norm.isNotBlank() && norm != myPhone) {
-                map[norm] = c.copy(phoneNumber = norm)
+                val matchedReg = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, norm) }
+                map[norm] = c.copy(
+                    phoneNumber = norm,
+                    profilePictureUrl = c.profilePictureUrl.ifBlank { matchedReg?.profilePictureUrl ?: "" },
+                    isVoiceLinkUser = c.isVoiceLinkUser || matchedReg != null
+                )
             }
         }
-        registeredUsers.forEach { u ->
-            val norm = ContactsHelper.normalizePhoneNumber(u.phoneNumber)
+        preselectedContacts.forEach { p ->
+            val norm = ContactsHelper.normalizePhoneNumber(p.phoneNumber)
             if (norm.isNotBlank() && norm != myPhone && !map.containsKey(norm)) {
-                map[norm] = ContactDto(
-                    id = norm,
-                    name = u.displayName.ifBlank { norm },
-                    phoneNumber = norm,
-                    profilePictureUrl = u.profilePictureUrl,
-                    isVoiceLinkUser = true,
-                    statusMessage = u.statusMessage
-                )
+                map[norm] = p.copy(phoneNumber = norm)
             }
         }
         map.values.toList()
@@ -1525,15 +1611,35 @@ private fun GroupParticipantTile(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
-                            val avatarRes = remember(participant.displayName, participant.phoneNumber) {
-                                Avatar3dHelper.getAvatarResId(participant.displayName, participant.phoneNumber)
+                            val initials = remember(participant.displayName, participant.phoneNumber) {
+                                participant.displayName.trim()
+                                    .split(Regex("\\s+"))
+                                    .filter { it.isNotBlank() }
+                                    .take(2)
+                                    .joinToString("") { it.first().uppercaseChar().toString() }
+                                    .ifBlank { participant.phoneNumber.takeLast(2).ifBlank { "U" } }
                             }
-                            Image(
-                                painter = painterResource(id = avatarRes),
-                                contentDescription = participant.displayName,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.radialGradient(
+                                            colors = listOf(
+                                                Color(0xFF1E3A5F),
+                                                Color(0xFF0F172A)
+                                            )
+                                        )
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = initials,
+                                    fontFamily = SpaceGroteskFontFamily,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = if (isSpotlight) 28.sp else 20.sp,
+                                    color = CyberMint
+                                )
+                            }
                         }
                     }
                 }
