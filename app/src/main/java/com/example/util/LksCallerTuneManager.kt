@@ -3,12 +3,16 @@ package com.example.util
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -135,14 +139,23 @@ object LksCallerTuneManager {
         val targetFile = File(context.filesDir, "my_caller_tune.mp3")
 
         try {
-            val inStream = if (uri.scheme == "file" && uri.path != null) {
-                FileInputStream(File(uri.path!!))
-            } else {
-                context.contentResolver.openInputStream(uri)
+            val srcFile = if (uri.scheme == "file" && uri.path != null) File(uri.path!!) else null
+            val isSameFile = srcFile != null && try {
+                srcFile.canonicalPath == targetFile.canonicalPath
+            } catch (_: Exception) {
+                srcFile.absolutePath == targetFile.absolutePath
             }
-            inStream?.use { input ->
-                FileOutputStream(targetFile).use { output ->
-                    input.copyTo(output)
+
+            if (!isSameFile) {
+                val inStream = if (srcFile != null) {
+                    FileInputStream(srcFile)
+                } else {
+                    context.contentResolver.openInputStream(uri)
+                }
+                inStream?.use { input ->
+                    FileOutputStream(targetFile).use { output ->
+                        input.copyTo(output)
+                    }
                 }
             }
             var bytes = if (targetFile.exists()) targetFile.readBytes() else ByteArray(0)
@@ -309,6 +322,67 @@ object LksCallerTuneManager {
      * 4. If audioUrl is missing, auto-searches music catalog for song title and downloads it.
      * 5. Plays local audio directly without network stutter or closed descriptor bugs.
      */
+    /**
+     * Verifies via MediaExtractor that a local audio file has a parseable container and at least one
+     * valid audio track, rejecting truncated downloads or corrupted MP3 sync-sliced files.
+     */
+    fun isValidAudioFile(file: File?): Boolean {
+        if (file == null || !file.exists() || file.length() <= 1024L) return false
+        var extractor: MediaExtractor? = null
+        return try {
+            extractor = MediaExtractor()
+            extractor.setDataSource(file.absolutePath)
+            var hasAudioTrack = false
+            for (i in 0 until extractor.trackCount) {
+                val fmt = extractor.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
+                if (mime.startsWith("audio/")) {
+                    extractor.selectTrack(i)
+                    val firstSampleSize = extractor.readSampleData(java.nio.ByteBuffer.allocate(64 * 1024), 0)
+                    if (firstSampleSize > 0) {
+                        hasAudioTrack = true
+                        break
+                    }
+                }
+            }
+            hasAudioTrack
+        } catch (e: Exception) {
+            Log.w(TAG, "Audio validation failed for ${file.name}: ${e.message}")
+            false
+        } finally {
+            try { extractor?.release() } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun awaitPlayPreview(
+        context: Context,
+        info: CallerTuneInfo,
+        onStarted: () -> Unit,
+        onCompletion: () -> Unit
+    ): Boolean {
+        val result = CompletableDeferred<Boolean>()
+        val initiated = withContext(Dispatchers.Main) {
+            playPreview(
+                context = context,
+                info = info,
+                onStarted = {
+                    if (!result.isCompleted) result.complete(true)
+                    onStarted()
+                },
+                onCompletion = onCompletion,
+                onError = {
+                    if (!result.isCompleted) result.complete(false)
+                }
+            )
+        }
+        if (!initiated) return false
+        val prepared = withTimeoutOrNull(10_000L) { result.await() } ?: false
+        if (!prepared) {
+            withContext(Dispatchers.Main) { stopPreview() }
+        }
+        return prepared
+    }
+
     suspend fun playTuneWithAutoRecovery(
         context: Context,
         info: CallerTuneInfo,
@@ -317,75 +391,74 @@ object LksCallerTuneManager {
     ): Boolean = withContext(Dispatchers.IO) {
         val targetFile = File(context.filesDir, "my_caller_tune.mp3")
 
-        // Step 1: Check if local file exists and is valid (> 2KB)
-        if (targetFile.exists() && targetFile.length() > 2048) {
-            val success = withContext(Dispatchers.Main) {
-                playPreview(
+        // Step 1: Check if local file exists and actually parses as valid audio
+        if (targetFile.exists()) {
+            if (isValidAudioFile(targetFile)) {
+                val success = awaitPlayPreview(
                     context = context,
                     info = info.copy(source = "MY_SAVED_TUNE", localUri = Uri.fromFile(targetFile).toString()),
                     onStarted = onStarted,
                     onCompletion = onCompletion
                 )
+                if (success) return@withContext true
+            } else {
+                Log.w(TAG, "Deleting corrupted cached caller tune file: ${targetFile.absolutePath}")
+                try { targetFile.delete() } catch (_: Exception) {}
             }
-            if (success) return@withContext true
         }
 
-        // Step 2: Recover from Base64 if available
-        val base64 = info.audioBase64.ifBlank { getMyCallerTune(context).audioBase64 }
+        // Step 2: Recover from Base64 only if decoded audio validates cleanly
+        val savedTune = getMyCallerTune(context)
+        val base64 = info.audioBase64.ifBlank { savedTune.audioBase64 }
         if (base64.isNotBlank()) {
             try {
                 val cleanBase64 = if (base64.contains(",")) base64.substringAfter(",") else base64
                 val decoded = Base64.decode(cleanBase64, Base64.DEFAULT)
                 if (decoded.size > 2048) {
-                    FileOutputStream(targetFile).use { it.write(decoded) }
-                    Log.i(TAG, "Recovered caller tune from Base64: ${decoded.size} bytes")
-                    val success = withContext(Dispatchers.Main) {
-                        playPreview(
+                    val verifyFile = File(context.cacheDir, "verify_b64_tune_${System.currentTimeMillis()}.tmp")
+                    FileOutputStream(verifyFile).use { it.write(decoded) }
+                    if (isValidAudioFile(verifyFile)) {
+                        verifyFile.copyTo(targetFile, overwrite = true)
+                        try { verifyFile.delete() } catch (_: Exception) {}
+                        Log.i(TAG, "Recovered valid caller tune from Base64: ${decoded.size} bytes")
+                        val success = awaitPlayPreview(
                             context = context,
                             info = info.copy(source = "MY_SAVED_TUNE", localUri = Uri.fromFile(targetFile).toString()),
                             onStarted = onStarted,
                             onCompletion = onCompletion
                         )
+                        if (success) return@withContext true
+                    } else {
+                        Log.w(TAG, "Stored Base64 caller tune failed validation; falling back to URL/catalog re-download")
+                        try { verifyFile.delete() } catch (_: Exception) {}
                     }
-                    if (success) return@withContext true
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed recovering from Base64: ${e.message}")
             }
         }
 
-        // Step 3: Resolve audio URL (use saved URL or search by song title)
-        var urlToDownload = info.audioUrl.ifBlank { getMyCallerTune(context).audioUrl }
-        if (urlToDownload.isBlank() && info.title.isNotBlank()) {
+        // Step 3 & 4: Download from saved audioUrl or re-search catalog by song title
+        suspend fun tryDownloadAndCache(downloadUrl: String): Boolean {
+            if (downloadUrl.isBlank()) return false
             try {
-                Log.i(TAG, "Auto-searching catalog for song: '${info.title}'")
-                val searchResults = YouTubeSearchHelper.searchSongs(info.title)
-                val matched = searchResults.firstOrNull { it.directAudioUrl.isNotBlank() }
-                if (matched != null) {
-                    urlToDownload = matched.directAudioUrl
-                    Log.i(TAG, "Found audio URL for '${info.title}': $urlToDownload")
-                }
-            } catch (se: Exception) {
-                Log.w(TAG, "Auto-search failed: ${se.message}")
-            }
-        }
-
-        // Step 4: Download stream into targetFile
-        if (urlToDownload.isNotBlank()) {
-            try {
-                Log.i(TAG, "Downloading song audio from: $urlToDownload")
-                val downloadedFile = YouTubeSearchHelper.downloadSongToTempFile(context, urlToDownload)
-                if (downloadedFile != null && downloadedFile.exists() && downloadedFile.length() > 2048) {
+                Log.i(TAG, "Downloading song audio from: $downloadUrl")
+                val downloadedFile = YouTubeSearchHelper.downloadSongToTempFile(context, downloadUrl)
+                if (downloadedFile != null && isValidAudioFile(downloadedFile)) {
                     val clipLen = (info.endMs - info.startMs).coerceIn(5000L, 30000L)
                     val trimmedUri = try {
                         AudioTrimmerUtil.trimAudio(context, Uri.fromFile(downloadedFile), info.startMs, info.startMs + clipLen)
                     } catch (_: Exception) { null }
 
-                    val finalFile = if (trimmedUri?.path != null) File(trimmedUri.path!!) else downloadedFile
+                    val trimmedFile = trimmedUri?.path?.let { File(it) }
+                    val finalFile = if (trimmedFile != null && isValidAudioFile(trimmedFile)) trimmedFile else downloadedFile
                     finalFile.copyTo(targetFile, overwrite = true)
                     try { downloadedFile.delete() } catch (_: Exception) {}
+                    if (trimmedFile != null && trimmedFile.exists()) {
+                        try { trimmedFile.delete() } catch (_: Exception) {}
+                    }
 
-                    // Update prefs and Firestore
+                    // Update prefs and Firestore with valid trimmed audio
                     val updatedInfo = processAndCacheTune(
                         context = context,
                         uri = Uri.fromFile(targetFile),
@@ -395,7 +468,7 @@ object LksCallerTuneManager {
                         startMs = info.startMs,
                         endMs = info.endMs,
                         thumbnailUrl = info.thumbnailUrl,
-                        audioUrl = urlToDownload
+                        audioUrl = downloadUrl
                     )
 
                     try {
@@ -410,30 +483,55 @@ object LksCallerTuneManager {
                         )
                     } catch (_: Exception) {}
 
-                    val success = withContext(Dispatchers.Main) {
-                        playPreview(
-                            context = context,
-                            info = updatedInfo.copy(source = "MY_SAVED_TUNE"),
-                            onStarted = onStarted,
-                            onCompletion = onCompletion
-                        )
-                    }
-                    return@withContext success
+                    return awaitPlayPreview(
+                        context = context,
+                        info = updatedInfo.copy(source = "MY_SAVED_TUNE"),
+                        onStarted = onStarted,
+                        onCompletion = onCompletion
+                    )
+                } else {
+                    try { downloadedFile?.delete() } catch (_: Exception) {}
                 }
             } catch (de: Exception) {
-                Log.w(TAG, "Download & recovery failed: ${de.message}")
+                Log.w(TAG, "Download & recovery failed for $downloadUrl: ${de.message}")
+            }
+            return false
+        }
+
+        val initialUrl = info.audioUrl.ifBlank { savedTune.audioUrl }
+        if (initialUrl.isNotBlank() && tryDownloadAndCache(initialUrl)) {
+            return@withContext true
+        }
+
+        if (info.title.isNotBlank()) {
+            try {
+                Log.i(TAG, "Auto-searching catalog for song: '${info.title}'")
+                val searchResults = YouTubeSearchHelper.searchSongs(info.title)
+                val matched = searchResults.firstOrNull { it.directAudioUrl.isNotBlank() && it.directAudioUrl != initialUrl }
+                    ?: searchResults.firstOrNull { it.directAudioUrl.isNotBlank() }
+                if (matched != null && tryDownloadAndCache(matched.directAudioUrl)) {
+                    return@withContext true
+                }
+                if (matched != null && matched.directAudioUrl.isNotBlank()) {
+                    if (awaitPlayPreview(context, info.copy(audioUrl = matched.directAudioUrl), onStarted, onCompletion)) {
+                        return@withContext true
+                    }
+                }
+            } catch (se: Exception) {
+                Log.w(TAG, "Auto-search failed: ${se.message}")
             }
         }
 
         // Step 5: Direct streaming fallback
-        withContext(Dispatchers.Main) {
-            playPreview(
+        if (initialUrl.isNotBlank()) {
+            return@withContext awaitPlayPreview(
                 context = context,
-                info = info.copy(audioUrl = urlToDownload),
+                info = info.copy(audioUrl = initialUrl),
                 onStarted = onStarted,
                 onCompletion = onCompletion
             )
         }
+        false
     }
 
     @Synchronized
@@ -441,20 +539,13 @@ object LksCallerTuneManager {
         context: Context,
         info: CallerTuneInfo,
         onStarted: () -> Unit = {},
-        onCompletion: () -> Unit = {}
+        onCompletion: () -> Unit = {},
+        onError: () -> Unit = {}
     ): Boolean {
         stopPreview()
         try {
             val player = MediaPlayer()
             previewPlayer = player
-
-            player.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            player.setVolume(1.0f, 1.0f)
 
             // Ensure normal audio routing so it plays through the speaker
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -473,7 +564,7 @@ object LksCallerTuneManager {
             val localTargetFile = File(context.filesDir, "my_caller_tune.mp3")
 
             // 1. If this is explicitly the saved caller tune, play local my_caller_tune.mp3 using absolute path
-            if (isExplicitlySavedTune && localTargetFile.exists() && localTargetFile.length() > 0) {
+            if (isExplicitlySavedTune && isValidAudioFile(localTargetFile)) {
                 try {
                     player.reset()
                     player.setDataSource(localTargetFile.absolutePath)
@@ -494,7 +585,7 @@ object LksCallerTuneManager {
                         val filePath = uri.path
                         if (uri.scheme == "file" && filePath != null) {
                             val f = File(filePath)
-                            if (f.exists() && f.length() > 0) {
+                            if (isValidAudioFile(f)) {
                                 player.setDataSource(f.absolutePath)
                                 dataSourceSet = true
                                 Log.d(TAG, "playPreview using info.localUri file: $filePath")
@@ -520,10 +611,12 @@ object LksCallerTuneManager {
                 try {
                     player.reset()
                     val file = base64ToTempFile(context, base64ToUse, "preview")
-                    if (file != null && file.exists() && file.length() > 0) {
-                        player.setDataSource(file.absolutePath)
+                    if (isValidAudioFile(file)) {
+                        player.setDataSource(file!!.absolutePath)
                         dataSourceSet = true
                         Log.d(TAG, "playPreview using base64TempFile: ${file.absolutePath} (${file.length()} bytes)")
+                    } else {
+                        try { file?.delete() } catch (_: Exception) {}
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to setDataSource from base64TempFile: ${e.message}")
@@ -555,7 +648,7 @@ object LksCallerTuneManager {
             }
 
             // 5. Final fallback to localTargetFile
-            if (!dataSourceSet && isExplicitlySavedTune && localTargetFile.exists() && localTargetFile.length() > 0) {
+            if (!dataSourceSet && isExplicitlySavedTune && isValidAudioFile(localTargetFile)) {
                 try {
                     player.reset()
                     player.setDataSource(localTargetFile.absolutePath)
@@ -570,6 +663,15 @@ object LksCallerTuneManager {
                 stopPreview()
                 return false
             }
+
+            // Set AudioAttributes and volume AFTER player.reset() / setDataSource() so reset() never clears them
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            player.setVolume(1.0f, 1.0f)
 
             player.setOnPreparedListener { mp ->
                 synchronized(this) {
@@ -588,6 +690,7 @@ object LksCallerTuneManager {
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to start preview player: ${e.message}")
                             stopPreview()
+                            onError()
                             onCompletion()
                         }
                     } else {
@@ -598,6 +701,7 @@ object LksCallerTuneManager {
             player.setOnErrorListener { _, what, extra ->
                 Log.w(TAG, "Preview player error: what=$what extra=$extra")
                 stopPreview()
+                onError()
                 onCompletion()
                 true
             }

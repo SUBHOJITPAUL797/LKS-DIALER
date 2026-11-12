@@ -38,7 +38,7 @@ object AudioTrimmerUtil {
         val t0 = System.currentTimeMillis()
         Log.i(TAG, "⚡ Starting instant trim for: $srcUri ($startMs ms to $endMs ms)")
 
-        withTimeoutOrNull(5000L) {
+        withTimeoutOrNull(15000L) {
             try {
                 // Read input directly into RAM bytes for instant parsing
                 val bytes = if (srcUri.scheme == "file" && srcUri.path != null) {
@@ -100,6 +100,21 @@ object AudioTrimmerUtil {
         val len = bytes.size
         if (len < 512) return null
 
+        // CRITICAL: Never run raw MP3 sync scanning on MP4/M4A/AAC/OGG/WAV/FLAC/WebM containers.
+        // Compressed AAC frames inside .mp4/.m4a often contain random 0xFF 0xE* byte pairs that
+        // falsely match an MPEG sync word and produce unplayable corrupted .mp3 fragments.
+        if (len >= 12) {
+            val head4 = String(bytes, 0, 4, Charsets.US_ASCII)
+            val boxType4 = String(bytes, 4, 4, Charsets.US_ASCII)
+            if (boxType4 == "ftyp" || head4 == "OggS" || head4 == "RIFF" || head4 == "fLaC" || head4 == "ADIF") {
+                return null
+            }
+            if ((bytes[0].toInt() and 0xFF) == 0x1A && (bytes[1].toInt() and 0xFF) == 0x45 &&
+                (bytes[2].toInt() and 0xFF) == 0xDF && (bytes[3].toInt() and 0xFF) == 0xA3) {
+                return null
+            }
+        }
+
         var offset = 0
 
         // 1. Skip ID3v2 header (skips high-res album art / thumbnail photos cleanly)
@@ -119,65 +134,62 @@ object AudioTrimmerUtil {
 
         if (offset >= len - 4) return null
 
-        val ringtonesDir = File(context.filesDir, "ringtones").apply { mkdirs() }
-        val outFile = File(ringtonesDir, "trimmed_${System.currentTimeMillis()}.mp3")
-        val outputStream = ByteArrayOutputStream(len / 4)
-
-        var currentTimeMs = 0.0
-        var writtenFrames = 0
-
-        while (offset < len - 4) {
-            val b1 = bytes[offset].toInt() and 0xFF
-            val b2 = bytes[offset + 1].toInt() and 0xFF
-
-            // Check sync word (11 bits = 0xFFE0)
-            if (b1 != 0xFF || (b2 and 0xE0) != 0xE0) {
-                offset++
-                continue
-            }
-
-            val b3 = bytes[offset + 2].toInt() and 0xFF
-            val b4 = bytes[offset + 3].toInt() and 0xFF
-
+        fun parseMp3FrameHeader(pos: Int): Triple<Int, Int, Int>? {
+            if (pos < 0 || pos + 4 > len) return null
+            val b1 = bytes[pos].toInt() and 0xFF
+            val b2 = bytes[pos + 1].toInt() and 0xFF
+            if (b1 != 0xFF || (b2 and 0xE0) != 0xE0) return null
+            val b3 = bytes[pos + 2].toInt() and 0xFF
             val mpegVersion = (b2 shr 3) and 0x03
             val layer = (b2 shr 1) and 0x03
             val bitrateIdx = (b3 shr 4) and 0x0F
             val samplingIdx = (b3 shr 2) and 0x03
             val padding = (b3 shr 1) and 0x01
-
-            if (mpegVersion == 1 || layer == 0 || bitrateIdx == 0 || bitrateIdx == 15 || samplingIdx == 3) {
-                offset++
-                continue
-            }
-
+            // Require MPEG Layer III (layer == 1) so ADTS AAC / random binary headers are never accepted
+            if (mpegVersion == 1 || layer != 1 || bitrateIdx == 0 || bitrateIdx == 15 || samplingIdx == 3) return null
             val sampleRate = when (mpegVersion) {
                 3 -> MPEG1_SAMPLING_RATES[samplingIdx]
                 2 -> MPEG2_SAMPLING_RATES[samplingIdx]
                 0 -> MPEG25_SAMPLING_RATES[samplingIdx]
                 else -> 0
             }
-            if (sampleRate <= 0) { offset++; continue }
-
+            if (sampleRate <= 0) return null
             val bitrate = when (mpegVersion) {
                 3 -> MPEG1_BITRATES[bitrateIdx] * 1000
                 else -> MPEG2_BITRATES[bitrateIdx] * 1000
             }
-            if (bitrate <= 0) { offset++; continue }
+            if (bitrate <= 0) return null
+            val samplesPerFrame = if (mpegVersion == 3) 1152 else 576
+            val frameSize = (samplesPerFrame / 8 * bitrate / sampleRate) + padding
+            if (frameSize < 24 || frameSize > 4096 || pos + frameSize > len) return null
+            return Triple(frameSize, samplesPerFrame, sampleRate)
+        }
 
-            val samplesPerFrame = when {
-                layer == 3 -> 384
-                mpegVersion == 3 -> 1152
-                else -> 576
-            }
+        val ringtonesDir = File(context.filesDir, "ringtones").apply { mkdirs() }
+        val outFile = File(ringtonesDir, "trimmed_${System.currentTimeMillis()}.mp3")
+        val outputStream = ByteArrayOutputStream(len / 4)
 
-            val frameSize = if (layer == 3) {
-                ((12 * bitrate / sampleRate) + padding) * 4
-            } else {
-                (samplesPerFrame / 8 * bitrate / sampleRate) + padding
-            }
-            if (frameSize < 4 || frameSize > 4096 || offset + frameSize > len) {
+        var currentTimeMs = 0.0
+        var writtenFrames = 0
+        var confirmedMp3Stream = false
+
+        while (offset < len - 4) {
+            val parsed = parseMp3FrameHeader(offset)
+            if (parsed == null) {
                 offset++
                 continue
+            }
+            val (frameSize, samplesPerFrame, sampleRate) = parsed
+
+            // Before committing to MP3 slicing, verify 3 consecutive valid Layer-III frames align exact byte-for-byte
+            if (!confirmedMp3Stream) {
+                val next1 = parseMp3FrameHeader(offset + frameSize)
+                val next2 = if (next1 != null) parseMp3FrameHeader(offset + frameSize + next1.first) else null
+                if (next1 == null || next2 == null || next1.third != sampleRate || next2.third != sampleRate) {
+                    offset++
+                    continue
+                }
+                confirmedMp3Stream = true
             }
 
             val frameDurationMs = (samplesPerFrame.toDouble() * 1000.0) / sampleRate.toDouble()
@@ -195,7 +207,7 @@ object AudioTrimmerUtil {
             if (currentTimeMs > endMs) break
         }
 
-        if (writtenFrames > 5 && outputStream.size() > 1024) {
+        if (confirmedMp3Stream && writtenFrames > 5 && outputStream.size() > 1024) {
             FileOutputStream(outFile).use { fos ->
                 outputStream.writeTo(fos)
             }

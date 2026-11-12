@@ -170,7 +170,7 @@ object CallSoundEffectsManager {
 
             if (!audioBase64.isNullOrBlank()) {
                 val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
-                if (tempFile != null && tempFile.exists() && tempFile.length() > 0) {
+                if (tempFile != null && LksCallerTuneManager.isValidAudioFile(tempFile)) {
                     val fis = FileInputStream(tempFile)
                     try {
                         player.setDataSource(fis.fd, 0, tempFile.length())
@@ -178,14 +178,22 @@ object CallSoundEffectsManager {
                     } finally {
                         fis.close()
                     }
-                } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                    player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
                 } else {
-                    return
+                    try { tempFile?.delete() } catch (_: Exception) {}
+                    if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
+                        Log.w(TAG, "Base64 caller tune missing or corrupted; falling back to URL: $audioUrl")
+                        player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
+                    } else {
+                        callerTunePlayer = null
+                        try { player.release() } catch (_: Exception) {}
+                        return
+                    }
                 }
             } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
                 player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
             } else {
+                callerTunePlayer = null
+                try { player.release() } catch (_: Exception) {}
                 return
             }
 
@@ -215,9 +223,14 @@ object CallSoundEffectsManager {
             }
 
             player.setOnErrorListener { _, what, extra ->
-                Log.w(TAG, "Caller tune prepare error ($what, $extra)")
+                Log.w(TAG, "Caller tune prepare error ($what, $extra) [isBase64=$isBase64Playing]")
+                val wasRinging = isRingingState
                 stopCallerTune()
-                if (isRingingState) {
+                if (isBase64Playing && !audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
+                    Log.i(TAG, "Retrying caller tune playback directly via stream URL fallback: $audioUrl")
+                    isRingingState = wasRinging
+                    prepareCallerTune(context, null, audioUrl, title, startMs)
+                } else if (wasRinging) {
                     startRingbackTone(context)
                 }
                 true
@@ -301,7 +314,7 @@ object CallSoundEffectsManager {
         }
 
         if (pendingTune != null && player != null) {
-            Log.i(TAG, "Caller Tune is buffering in background; setting 1.2s timeout fallback to ringback tone")
+            Log.i(TAG, "Caller Tune is buffering in background; setting 3.5s timeout fallback to ringback tone")
             handler.postDelayed({
                 synchronized(this) {
                     if (isRingingState && !isCallAnswered && !isCallerTunePrepared && !isRingbackActive) {
@@ -309,7 +322,7 @@ object CallSoundEffectsManager {
                         startRingbackTone(context)
                     }
                 }
-            }, 1200L)
+            }, 3500L)
             return
         }
 

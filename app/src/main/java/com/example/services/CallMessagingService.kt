@@ -632,32 +632,53 @@ class CallMessagingService : FirebaseMessagingService() {
             true
         }
 
-        val builder = NotificationCompat.Builder(this, targetChannelId)
-            .setSmallIcon(android.R.drawable.sym_action_call)
-            .setContentTitle("Incoming $callTypeLabel Call")
-            .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
-            .setStyle(callStyle)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(true)
-            .setAutoCancel(false)
-            .setSound(ringtoneUri, AudioManager.STREAM_RING)
-            .setVibrate(vibrationPattern)
-            .setContentIntent(fullScreenPendingIntent)
+        fun buildBaseBuilder(useCallStyle: Boolean): NotificationCompat.Builder {
+            val b = NotificationCompat.Builder(this, targetChannelId)
+                .setSmallIcon(android.R.drawable.sym_action_call)
+                .setContentTitle("Incoming $callTypeLabel Call")
+                .setContentText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setSound(ringtoneUri, AudioManager.STREAM_RING)
+                .setVibrate(vibrationPattern)
+                .setContentIntent(fullScreenPendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
 
-        // WhatsApp / Telegram standard: ALWAYS set PRIORITY_MAX and fullScreenIntent!
-        // This guarantees that regardless of screen lock state or manufacturer restrictions (Xiaomi, Samsung, etc.),
-        // Android will ALWAYS display the incoming call either as a Full Screen activity (when locked)
-        // or as a high-priority Heads-Up Notification (HUN banner) with Answer/Decline buttons (when unlocked).
-        builder.setPriority(NotificationCompat.PRIORITY_MAX)
-        builder.setFullScreenIntent(fullScreenPendingIntent, true)
+            if (useCallStyle) {
+                b.setStyle(callStyle)
+                b.setFullScreenIntent(fullScreenPendingIntent, true)
+            } else {
+                // Fallback for Android 14+ when USE_FULL_SCREEN_INTENT is not granted yet (e.g. fresh install):
+                // NotificationManager rejects CallStyle without a fullScreenIntent or FGS, so provide explicit
+                // Answer / Decline action buttons on a MAX-priority CATEGORY_CALL heads-up notification.
+                b.setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText("$callerName${if (callerNumber.isNotBlank()) " • $callerNumber" else ""}")
+                )
+                b.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declinePendingIntent)
+                b.addAction(android.R.drawable.sym_action_call, "Answer", acceptPendingIntent)
+                if (canUseFullScreen) {
+                    b.setFullScreenIntent(fullScreenPendingIntent, true)
+                }
+            }
+            return b
+        }
 
         try {
-            val notification = builder.build()
+            val notification = buildBaseBuilder(useCallStyle = canUseFullScreen).build()
             notificationManager.notify(NOTIFICATION_ID, notification)
             Log.i("FCM", "✅ Incoming call notification successfully posted (targetChannel=$targetChannelId, canUseFullScreen=$canUseFullScreen)")
         } catch (e: Exception) {
-            Log.e("FCM", "Failed to post incoming call notification: ${e.message}", e)
+            Log.w("FCM", "Primary incoming call notification rejected (${e.message}); posting standard action notification fallback")
+            try {
+                val fallbackNotification = buildBaseBuilder(useCallStyle = false).build()
+                notificationManager.notify(NOTIFICATION_ID, fallbackNotification)
+                Log.i("FCM", "✅ Fallback incoming call notification posted successfully")
+            } catch (e2: Exception) {
+                Log.e("FCM", "Failed to post incoming call notification: ${e2.message}", e2)
+            }
         }
 
         // Ensure keep-alive service is active to prevent process kill during incoming ring

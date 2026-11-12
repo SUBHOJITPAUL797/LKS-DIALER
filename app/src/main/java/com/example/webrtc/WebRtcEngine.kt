@@ -53,9 +53,9 @@ class WebRtcEngine private constructor(private val context: Context) {
     // ⚡ Ultra-fast HTTP/2 connection pool with keep-alive for zero-delay push dispatch
     private val pushHttpClient = okhttp3.OkHttpClient.Builder()
         .connectionPool(okhttp3.ConnectionPool(5, 5, java.util.concurrent.TimeUnit.MINUTES))
-        .connectTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
-        .readTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
-        .writeTimeout(3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .connectTimeout(8000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .readTimeout(10000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        .writeTimeout(8000, java.util.concurrent.TimeUnit.MILLISECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -133,9 +133,42 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
     
     private var incomingCallListener: ListenerRegistration? = null
+    private var incomingListenerRetryJob: Job? = null
+    @Volatile private var globalNetworkCallbackRegistered = false
     private var activeCallListener: ListenerRegistration? = null
     private var currentListeningCallId: String? = null
     private var iceCandidateListener: ListenerRegistration? = null
+
+    private fun ensureGlobalNetworkRecovery() {
+        if (globalNetworkCallbackRegistered) return
+        globalNetworkCallbackRegistered = true
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+            val request = android.net.NetworkRequest.Builder()
+                .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            cm.registerNetworkCallback(request, object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    scope.launch {
+                        val phone = myPhoneNumber.ifBlank { getEffectivePhoneNumber() }
+                        if (phone.isNotBlank()) {
+                            Log.d("WebRtcEngine", "🌐 Network available: refreshing incoming call listener & polling pending calls")
+                            listenForIncomingCalls(phone)
+                            pollPendingIncomingCalls(phone)
+                        }
+                        val activeCall = _state.value.activeCall
+                        val st = _state.value.callStatus
+                        if (activeCall != null && (st == CallStatus.CALLING || st == CallStatus.RINGING || st == CallStatus.ANSWERED)) {
+                            listenToActiveCall(activeCall.callId, _state.value.isCaller)
+                        }
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            globalNetworkCallbackRegistered = false
+            Log.w("WebRtcEngine", "Failed to register global network recovery callback: ${e.message}")
+        }
+    }
     
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private fun recordSeenCall(callId: String) {
@@ -265,8 +298,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                 requestMethod = "GET"
                 setRequestProperty("X-Worker-Secret", getEffectiveWorkerSecret())
                 setRequestProperty("User-Agent", "LKS-Dialer-Android")
-                connectTimeout = 4000
-                readTimeout = 4000
+                connectTimeout = 7000
+                readTimeout = 7000
             }
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()
@@ -1431,25 +1464,71 @@ class WebRtcEngine private constructor(private val context: Context) {
                 resolveAndPrepareCalleeTune(calleeNumber)
             }
 
-            // Supervisory Progression: After initial SDP synthesis & network dispatch (2.2s),
-            // transition caller local UI to RINGING if still in CALLING and not yet answered.
-            // CRITICAL: Do NOT overwrite Firestore 'status' to RINGING from the caller side, because if the
-            // callee answered within ~2.2s, writing RINGING from caller would overwrite ANSWERED in Firestore!
-            scope.launch {
-                delay(2200)
-                val cur = _state.value
-                if (cur.callStatus == CallStatus.CALLING &&
-                    cur.activeCall?.callId == newCall.callId &&
-                    !hasProcessedAnswer &&
-                    cur.activeCall.answerSdp.isNullOrBlank()
-                ) {
-                    Log.i("WebRtcEngine", "Initial route established -> transitioning caller UI to Ringing state")
-                    _state.value = cur.copy(
-                        callStatus = CallStatus.RINGING,
-                        connectionStatusText = "Ringing...",
-                        activeCall = cur.activeCall.copy(status = CallStatus.RINGING)
-                    )
-                    com.example.util.CallSoundEffectsManager.onCallRinging(context)
+            // Honest Signaling Progression & Push-Retry Watchdog:
+            // NEVER fake "Ringing..." before the callee's device actually receives the call.
+            // While still in CALLING, check Firestore + re-push with the latest live callee token
+            // at 3.8s and 9.5s (handles freshly installed users whose FCM token just rotated and
+            // transient push/network timeouts).
+            scope.launch(Dispatchers.IO) {
+                for (delayMs in longArrayOf(3800L, 5700L)) {
+                    delay(delayMs)
+                    val cur = _state.value
+                    if (cur.callStatus != CallStatus.CALLING ||
+                        cur.activeCall?.callId != newCall.callId ||
+                        hasProcessedAnswer ||
+                        isCallTerminated(newCall.callId)
+                    ) {
+                        return@launch
+                    }
+
+                    // 1. Direct Firestore read in case WatchStream missed callee's RINGING/ANSWERED update
+                    try {
+                        val snap = firestore.collection("calls").document(newCall.callId).get().await()
+                        val latestCall = snap.toObject(CallDto::class.java)
+                        if (latestCall != null && latestCall.status != CallStatus.CALLING) {
+                            withContext(Dispatchers.Main) {
+                                handleCallDocumentUpdate(latestCall, snap, isCaller = true)
+                            }
+                            if (latestCall.status != CallStatus.CALLING) return@launch
+                        }
+                    } catch (_: Exception) {}
+
+                    // 2. Refresh callee's live FCM/Web token directly from Firestore (fresh-install safe)
+                    try {
+                        val variations = com.example.util.ContactsHelper.generateNumberVariations(calleeNumber)
+                        val userQuery = firestore.collection("users")
+                            .whereIn("phoneNumber", variations)
+                            .get()
+                            .await()
+                        val userDoc = userQuery.documents.firstOrNull {
+                            !it.getString("fcmToken").isNullOrEmpty() || !it.getString("webToken").isNullOrEmpty()
+                        } ?: try {
+                            firestore.collection("users").document(calleeNumber).get().await()
+                        } catch (_: Exception) { null }
+
+                        val latestFcm = userDoc?.getString("fcmToken") ?: calleeFcm
+                        val latestWeb = userDoc?.getString("webToken") ?: calleeWeb
+                        if (latestFcm.isNotBlank() || latestWeb.isNotBlank()) {
+                            for (v in variations) {
+                                pushTokenCache[v] = Pair(latestFcm, latestWeb)
+                            }
+                        }
+                        val curOffer = peerConnection?.localDescription?.description ?: _state.value.activeCall?.offerSdp
+                        Log.i("WebRtcEngine", "🔄 Call still in CALLING state after wakeup wait — re-dispatching push to callee $calleeNumber (fcmChanged=${latestFcm != calleeFcm})")
+                        triggerPushNotification(
+                            calleeNumber = calleeNumber,
+                            callerName = callerName,
+                            callerNumber = callerNumber,
+                            callType = callType.name,
+                            callId = newCall.callId,
+                            type = if (!curOffer.isNullOrBlank()) "call_offer" else "incoming_call",
+                            explicitFcmToken = latestFcm.ifBlank { null },
+                            explicitWebToken = latestWeb.ifBlank { null },
+                            offerSdp = curOffer
+                        )
+                    } catch (e: Exception) {
+                        Log.w("WebRtcEngine", "Calling retry watchdog failed: ${e.message}")
+                    }
                 }
             }
             
@@ -1524,19 +1603,49 @@ class WebRtcEngine private constructor(private val context: Context) {
     fun listenForIncomingCalls(phoneNumber: String) {
         if (phoneNumber.isBlank()) return
         myPhoneNumber = phoneNumber
+        ensureGlobalNetworkRecovery()
+        incomingListenerRetryJob?.cancel()
         incomingCallListener?.remove()
 
-        val cleanDigits = phoneNumber.replace(Regex("[^0-9]"), "")
         val distinctVariations = com.example.util.ContactsHelper.generateNumberVariations(phoneNumber)
 
         incomingCallListener = firestore.collection("calls")
             .whereIn("calleeNumber", distinctVariations)
             .addSnapshotListener { snapshot, e ->
-                if (e != null) return@addSnapshotListener
-                val now = System.currentTimeMillis()
-                val activeCalls = snapshot?.documents?.mapNotNull { doc ->
-                    doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id) else it }
-                } ?: emptyList()
+                if (e != null) {
+                    Log.w("WebRtcEngine", "Incoming call snapshot listener error (${e.code}): ${e.message} — scheduling re-attach")
+                    incomingListenerRetryJob?.cancel()
+                    incomingListenerRetryJob = scope.launch {
+                        delay(3000L)
+                        listenForIncomingCalls(phoneNumber)
+                        pollPendingIncomingCalls(phoneNumber)
+                    }
+                    return@addSnapshotListener
+                }
+                handleIncomingCallsSnapshot(snapshot, phoneNumber)
+            }
+    }
+
+    private fun pollPendingIncomingCalls(phoneNumber: String) {
+        if (phoneNumber.isBlank()) return
+        val distinctVariations = com.example.util.ContactsHelper.generateNumberVariations(phoneNumber)
+        firestore.collection("calls")
+            .whereIn("calleeNumber", distinctVariations)
+            .get()
+            .addOnSuccessListener { snapshot ->
+                handleIncomingCallsSnapshot(snapshot, phoneNumber)
+            }
+            .addOnFailureListener { e ->
+                Log.w("WebRtcEngine", "One-shot pending incoming call poll failed: ${e.message}")
+            }
+    }
+
+    private fun handleIncomingCallsSnapshot(snapshot: com.google.firebase.firestore.QuerySnapshot?, phoneNumber: String) {
+        val cleanDigits = phoneNumber.replace(Regex("[^0-9]"), "")
+        val now = System.currentTimeMillis()
+        val activeCalls = snapshot?.documents?.mapNotNull { doc ->
+            doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id) else it }
+        } ?: emptyList()
 
                 // Auto-cleanup finished calls (>5 minutes old) from Firestore to keep DB lean & fast
                 for (call in activeCalls) {
@@ -1594,7 +1703,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                             callTypeStr = incomingCall.callType.name
                         )
                     }
-                    return@addSnapshotListener
+                    return
                 }
 
                 // 2. Industry Standard: Newer Call Upgrade from Same Caller (Caller retried while callee was already ringing)
@@ -1614,7 +1723,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     prewarmPushSocket()
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                     listenForIceCandidates(incomingCall.callId, isCaller = false)
-                    return@addSnapshotListener
+                    return
                 }
 
                 // CRITICAL FIX: Guard on callStatus being IDLE/ENDED/DECLINED/MISSED or new incoming callId
@@ -1633,7 +1742,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         Log.d("WebRtcEngine", "Incoming call auto-declined by DND or Blocklist: ${incomingCall.callId} from ${incomingCall.callerNumber}")
                         markCallTerminated(incomingCall.callId)
                         firestore.collection("calls").document(incomingCall.callId).update("status", CallStatus.DECLINED.name)
-                        return@addSnapshotListener
+                        return
                     }
                     
                     if (!isCallTerminated(incomingCall.callId)) {
@@ -1751,12 +1860,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     listenToActiveCall(incomingCall.callId, isCaller = false)
                     listenForIceCandidates(incomingCall.callId, isCaller = false)
 
-                    // ⚡ Pre-warm: build answer SDP NOW during ringing so Accept tap is instant
+                    // Pre-warm: build answer SDP NOW during ringing so Accept tap is instant
                     prebuiltAnswerSdp = null
                     preWarmDone = false
                     preWarmForIncomingCall(incomingCall)
                 }
-            }
     }
 
     /**
@@ -3876,20 +3984,40 @@ class WebRtcEngine private constructor(private val context: Context) {
                     val json = jsonObj.toString()
                     val mediaType = "application/json; charset=utf-8".toMediaType()
                     val body = json.toRequestBody(mediaType)
-                    val request = okhttp3.Request.Builder()
-                        .url(workerUrl)
-                        .addHeader("Content-Type", "application/json")
-                        .addHeader("X-Worker-Secret", workerSecret)
-                        .post(body)
-                        .build()
+                    val criticalTypes = setOf("incoming_call", "call_offer", "call_ringing", "call_answered", "call_ended", "call_declined")
+                    val maxAttempts = if (type in criticalTypes) 3 else 1
+                    val retryDelays = longArrayOf(0L, 450L, 1100L)
+                    var delivered = false
 
-                    pushHttpClient.newCall(request).execute().use { response ->
-                        android.util.Log.d("WebRtcEngine", "⚡ OkHttp Push Trigger Response: ${response.code} (type=$type, callId=$callId)")
+                    for (attempt in 0 until maxAttempts) {
+                        if (retryDelays[attempt] > 0L) delay(retryDelays[attempt])
+                        try {
+                            val request = okhttp3.Request.Builder()
+                                .url(workerUrl)
+                                .addHeader("Content-Type", "application/json")
+                                .addHeader("X-Worker-Secret", workerSecret)
+                                .post(body)
+                                .build()
+
+                            pushHttpClient.newCall(request).execute().use { response ->
+                                val respBody = try { response.body?.string() ?: "" } catch (_: Exception) { "" }
+                                android.util.Log.d("WebRtcEngine", "⚡ OkHttp Push Trigger Response: ${response.code} (type=$type, callId=$callId, attempt=${attempt + 1})")
+                                if (response.isSuccessful && !respBody.contains("UNREGISTERED", ignoreCase = true) && !respBody.contains("Requested entity was not found", ignoreCase = true)) {
+                                    delivered = true
+                                } else if (respBody.contains("UNREGISTERED", ignoreCase = true) || respBody.contains("Requested entity was not found", ignoreCase = true)) {
+                                    android.util.Log.w("WebRtcEngine", "Push token stale/unregistered for $calleeNumber; evicting cache")
+                                    for (v in distinctVariations) pushTokenCache.remove(v)
+                                }
+                            }
+                            if (delivered) break
+                        } catch (uhe: java.net.UnknownHostException) {
+                            android.util.Log.w("WebRtcEngine", "Push server host unreachable (attempt=${attempt + 1}): ${uhe.message}")
+                        } catch (e: Exception) {
+                            android.util.Log.w("WebRtcEngine", "Failed to trigger push (attempt=${attempt + 1}): ${e.message}")
+                        }
                     }
-                } catch (uhe: java.net.UnknownHostException) {
-                    android.util.Log.w("WebRtcEngine", "Push server host unreachable: ${uhe.message}")
                 } catch (e: Exception) {
-                    android.util.Log.w("WebRtcEngine", "Failed to trigger push: ${e.message}")
+                    android.util.Log.w("WebRtcEngine", "Unexpected error preparing push: ${e.message}")
                 }
             }
         }
