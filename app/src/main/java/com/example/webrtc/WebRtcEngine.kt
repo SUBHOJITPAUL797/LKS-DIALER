@@ -3825,9 +3825,10 @@ class WebRtcEngine private constructor(private val context: Context) {
             if (isCaller && endStatus == CallStatus.MISSED && call != null) {
                 FirebaseManager.getInstance(context).logMissedCallForOfflineUser(
                     calleeNumber = call.calleeNumber,
-                    callerNumber = call.callerNumber,
+                    callerNumber = call.callerNumber.ifBlank { getEffectivePhoneNumber() },
                     callerName = call.callerName,
-                    callType = call.callType
+                    callType = call.callType,
+                    callId = callId
                 )
                 val targetFcm = call.calleeFcmToken
                 val targetWeb = call.calleeWebToken
@@ -4068,13 +4069,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                     val otherNumber = if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
                     val otherName = if (isCaller) prevCall.calleeName else prevCall.callerName
+                    // If still blank, try the reverse field (sometimes calleeNumber is in callerNumber for video)
+                    val effectiveOtherNumber = otherNumber.ifBlank { 
+                        if (isCaller) prevCall.callerNumber else prevCall.calleeNumber 
+                    }.ifBlank {
+                        val candidate = prevCall.callId.substringBefore('_')
+                        if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
+                    }
+                    val effectiveOtherName = otherName.ifBlank {
+                        if (isCaller) prevCall.callerName else prevCall.calleeName
+                    }.ifBlank { effectiveOtherNumber }
                     com.example.data.repository.FirebaseManager.getInstance(context).recordCallEnded(
                         callId = prevCall.callId,
                         status = status,
                         durationSeconds = prevDuration,
                         fallbackDirection = direction,
-                        fallbackOtherNumber = otherNumber,
-                        fallbackOtherName = otherName,
+                        fallbackOtherNumber = effectiveOtherNumber,
+                        fallbackOtherName = effectiveOtherName,
                         fallbackCallType = prevCall.callType,
                         recordingPath = recordingFile?.absolutePath
                     )

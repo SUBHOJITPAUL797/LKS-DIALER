@@ -167,12 +167,16 @@ fun CallHistoryScreen(
     }
 
     selectedLogForDetail?.let { log ->
-        val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
-            registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
+        val resolvedNumber = log.resolveOtherPartyNumber()
+        val matchedUser = remember(resolvedNumber, registeredUsers) {
+            registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber) }
         }
-        val isBlocked = remember(log.otherPartyNumber, blockedNumbers, spamNumbers) {
-            firebaseManager.isNumberBlocked(log.otherPartyNumber)
+        val isBlocked = remember(resolvedNumber, blockedNumbers, spamNumbers) {
+            firebaseManager.isNumberBlocked(resolvedNumber)
         }
+        val displayName = matchedUser?.displayName?.ifBlank { null }
+            ?: log.resolveOtherPartyName().ifBlank { null }
+            ?: resolvedNumber.ifBlank { "Unknown" }
 
         ModalBottomSheet(
             onDismissRequest = { selectedLogForDetail = null }
@@ -185,8 +189,8 @@ fun CallHistoryScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 CallAvatar(
-                    name = log.otherPartyName,
-                    profilePicBase64 = matchedUser?.profilePictureUrl ?: "",
+                    name = displayName,
+                    profilePicBase64 = matchedUser?.profilePictureUrl ?: log.otherPartyProfilePic,
                     size = 76.dp,
                     fontSize = 28.sp
                 )
@@ -194,7 +198,7 @@ fun CallHistoryScreen(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = matchedUser?.displayName ?: log.otherPartyName,
+                    text = displayName,
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
 
@@ -202,7 +206,7 @@ fun CallHistoryScreen(
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = log.otherPartyNumber,
+                        text = resolvedNumber.ifBlank { "Unknown" },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -254,7 +258,7 @@ fun CallHistoryScreen(
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
-                                onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.AUDIO)
+                                onStartCall(resolvedNumber, displayName, CallType.AUDIO)
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
@@ -272,7 +276,7 @@ fun CallHistoryScreen(
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
-                                onStartCall(log.otherPartyNumber, log.otherPartyName, CallType.VIDEO)
+                                onStartCall(resolvedNumber, displayName, CallType.VIDEO)
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = themeColor.primary),
@@ -288,7 +292,7 @@ fun CallHistoryScreen(
                         Button(
                             onClick = {
                                 selectedLogForDetail = null
-                                onOpenChat(log.otherPartyNumber, log.otherPartyName)
+                                onOpenChat(resolvedNumber, displayName)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
                             modifier = Modifier.weight(1f),
@@ -367,9 +371,9 @@ fun CallHistoryScreen(
                 if (isBlocked) {
                     OutlinedButton(
                         onClick = {
-                            firebaseManager.unblockNumber(log.otherPartyNumber)
-                            firebaseManager.unmarkSpam(log.otherPartyNumber)
-                            Toast.makeText(context, "Unblocked ${matchedUser?.displayName ?: log.otherPartyName}", Toast.LENGTH_SHORT).show()
+                            firebaseManager.unblockNumber(resolvedNumber)
+                            firebaseManager.unmarkSpam(resolvedNumber)
+                            Toast.makeText(context, "Unblocked $displayName", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
@@ -417,8 +421,11 @@ fun CallHistoryScreen(
 
     if (showBlockConfirmDialog && selectedLogForDetail != null) {
         val targetLog = selectedLogForDetail ?: return
-        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
-        val targetName = targetUser?.displayName ?: targetLog.otherPartyName
+        val targetNumber = targetLog.resolveOtherPartyNumber()
+        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetNumber) }
+        val targetName = targetUser?.displayName?.ifBlank { null }
+            ?: targetLog.resolveOtherPartyName().ifBlank { null }
+            ?: targetNumber.ifBlank { "Unknown" }
         AlertDialog(
             onDismissRequest = { showBlockConfirmDialog = false },
             icon = {
@@ -431,12 +438,12 @@ fun CallHistoryScreen(
             },
             title = { Text("Block $targetName?") },
             text = {
-                Text("Calls from ${targetLog.otherPartyNumber} will be automatically declined. You will not receive notifications for calls from this number.")
+                Text("Calls from ${targetNumber.ifBlank { "this number" }} will be automatically declined. You will not receive notifications for calls from this number.")
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        firebaseManager.blockNumber(targetLog.otherPartyNumber)
+                        firebaseManager.blockNumber(targetNumber)
                         Toast.makeText(context, "Blocked $targetName", Toast.LENGTH_SHORT).show()
                         showBlockConfirmDialog = false
                     },
@@ -455,8 +462,11 @@ fun CallHistoryScreen(
 
     if (showSpamConfirmDialog && selectedLogForDetail != null) {
         val targetLog = selectedLogForDetail ?: return
-        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetLog.otherPartyNumber) }
-        val targetName = targetUser?.displayName ?: targetLog.otherPartyName
+        val targetNumber = targetLog.resolveOtherPartyNumber()
+        val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetNumber) }
+        val targetName = targetUser?.displayName?.ifBlank { null }
+            ?: targetLog.resolveOtherPartyName().ifBlank { null }
+            ?: targetNumber.ifBlank { "Unknown" }
         AlertDialog(
             onDismissRequest = { showSpamConfirmDialog = false },
             icon = {
@@ -469,12 +479,12 @@ fun CallHistoryScreen(
             },
             title = { Text("Report $targetName as Spam?") },
             text = {
-                Text("This number (${targetLog.otherPartyNumber}) will be blocked, future calls will be suppressed, and a spam report will be submitted to protect the community.")
+                Text("This number (${targetNumber.ifBlank { "this number" }}) will be blocked, future calls will be suppressed, and a spam report will be submitted to protect the community.")
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        firebaseManager.reportSpam(targetLog.otherPartyNumber, "Reported from Call History")
+                        firebaseManager.reportSpam(targetNumber, "Reported from Call History")
                         Toast.makeText(context, "Reported $targetName as spam and blocked", Toast.LENGTH_SHORT).show()
                         showSpamConfirmDialog = false
                     },
@@ -983,21 +993,27 @@ fun CallHistoryScreen(
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
                 itemsIndexed(filteredLogs, key = { _, log -> log.id }) { index, log ->
-                    val matchedUser = remember(log.otherPartyNumber, registeredUsers) {
-                        registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, log.otherPartyNumber) }
+                    val resolvedNumber = log.resolveOtherPartyNumber()
+                    val matchedUser = remember(resolvedNumber, registeredUsers) {
+                        registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber) }
                     }
-                    val isBlocked = remember(log.otherPartyNumber, blockedNumbers, spamNumbers) {
-                        firebaseManager.isNumberBlocked(log.otherPartyNumber)
+                    val isBlocked = remember(resolvedNumber, blockedNumbers, spamNumbers) {
+                        firebaseManager.isNumberBlocked(resolvedNumber)
                     }
-                    val isSpam = remember(log.otherPartyNumber, spamNumbers) {
-                        firebaseManager.isNumberSpam(log.otherPartyNumber)
+                    val isSpam = remember(resolvedNumber, spamNumbers) {
+                        firebaseManager.isNumberSpam(resolvedNumber)
                     }
+                    val targetName = matchedUser?.displayName?.ifBlank { null }
+                        ?: log.resolveOtherPartyName().ifBlank { null }
+                        ?: resolvedNumber.ifBlank { "Unknown" }
                     val isFirstItem = index == 0
                     val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
 
                     SwipeableCallLogItem(
                         log = log,
-                        profilePicBase64 = matchedUser?.profilePictureUrl ?: "",
+                        profilePicBase64 = matchedUser?.profilePictureUrl ?: log.otherPartyProfilePic,
+                        displayName = targetName,
+                        displayNumber = resolvedNumber,
                         isBlocked = isBlocked,
                         isSpam = isSpam,
                         demoOffset = currentOffset,
@@ -1010,19 +1026,17 @@ fun CallHistoryScreen(
                             if (now - lastCallClickTime > 1200L) {
                                 lastCallClickTime = now
                                 lastInteractionTime = now
-                                val targetName = matchedUser?.displayName ?: log.otherPartyName
-                                onStartCall(log.otherPartyNumber, targetName, CallType.AUDIO)
+                                onStartCall(resolvedNumber, targetName, CallType.AUDIO)
                             }
                         },
                         onMessage = {
                             val now = System.currentTimeMillis()
                             lastInteractionTime = now
-                            val targetName = matchedUser?.displayName ?: log.otherPartyName
                             if (onOpenChat != null) {
-                                onOpenChat(log.otherPartyNumber, targetName)
+                                onOpenChat(resolvedNumber, targetName)
                             } else if (now - lastCallClickTime > 1200L) {
                                 lastCallClickTime = now
-                                onStartCall(log.otherPartyNumber, targetName, CallType.VIDEO)
+                                onStartCall(resolvedNumber, targetName, CallType.VIDEO)
                             }
                         }
                     )
@@ -1036,6 +1050,8 @@ fun CallHistoryScreen(
 private fun SwipeableCallLogItem(
     log: CallLogDto,
     profilePicBase64: String,
+    displayName: String = "",
+    displayNumber: String = "",
     isBlocked: Boolean = false,
     isSpam: Boolean = false,
     demoOffset: Float,
@@ -1255,6 +1271,8 @@ private fun SwipeableCallLogItem(
             CallLogItemContent(
                 log = log,
                 profilePicBase64 = profilePicBase64,
+                displayName = displayName,
+                displayNumber = displayNumber,
                 isBlocked = isBlocked,
                 isSpam = isSpam,
                 onItemClick = onItemClick
@@ -1267,12 +1285,20 @@ private fun SwipeableCallLogItem(
 private fun CallLogItemContent(
     log: CallLogDto,
     profilePicBase64: String,
+    displayName: String = "",
+    displayNumber: String = "",
     isBlocked: Boolean = false,
     isSpam: Boolean = false,
     onItemClick: () -> Unit
 ) {
     val themeColor = LocalThemeColor.current
     val context = LocalContext.current
+    val resolvedNumber = displayNumber.ifBlank { log.resolveOtherPartyNumber() }
+    val resolvedName = displayName.ifBlank {
+        log.resolveOtherPartyName().ifBlank {
+            resolvedNumber.ifBlank { "Unknown" }
+        }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1282,7 +1308,7 @@ private fun CallLogItemContent(
     ) {
         // User Profile Picture Avatar
         CallAvatar(
-            name = log.otherPartyName,
+            name = resolvedName,
             profilePicBase64 = profilePicBase64,
             size = 48.dp,
             fontSize = 18.sp,
@@ -1294,7 +1320,7 @@ private fun CallLogItemContent(
         // Info
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = log.otherPartyName,
+                text = resolvedName,
                 fontFamily = SpaceGroteskFontFamily,
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
@@ -1456,8 +1482,11 @@ private fun CallAvatar(
             color = if (isMissed) MissedCallRed.copy(alpha = 0.15f) else themeColor.primary.copy(alpha = 0.15f)
         ) {
             Box(contentAlignment = Alignment.Center) {
+                val initial = name.trim().trimStart('+', '0').take(1).uppercase().ifBlank {
+                    name.trim().take(1).uppercase().ifBlank { "?" }
+                }
                 Text(
-                    text = name.take(1).uppercase().ifBlank { "?" },
+                    text = initial,
                     fontSize = fontSize,
                     fontWeight = FontWeight.Bold,
                     color = if (isMissed) MissedCallRed else themeColor.primary

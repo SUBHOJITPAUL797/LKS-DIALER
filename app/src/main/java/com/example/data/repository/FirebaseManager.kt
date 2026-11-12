@@ -455,8 +455,8 @@ class FirebaseManager private constructor(private val context: Context) {
 
     fun showMissedCallNotification(missedCall: CallLogDto) {
         showMissedCallNotification(
-            callerNumber = missedCall.otherPartyNumber,
-            callerName = missedCall.otherPartyName,
+            callerNumber = missedCall.resolveOtherPartyNumber(),
+            callerName = missedCall.resolveOtherPartyName(),
             callType = missedCall.callType,
             callId = missedCall.callId
         )
@@ -1144,16 +1144,35 @@ class FirebaseManager private constructor(private val context: Context) {
         val logId = UUID.randomUUID().toString()
         activeCallLogIds[callId] = logId
 
+        var finalNumber = otherPartyNumber.trim()
+        var finalName = otherPartyName.trim()
+
+        if (finalNumber.isBlank() && callId.isNotBlank()) {
+            val candidate = callId.substringBefore('_')
+            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
+                finalNumber = candidate
+            }
+        }
+        if (finalNumber.isBlank()) {
+            finalNumber = "Unknown"
+        }
+        if (finalName.isBlank() || finalName == finalNumber) {
+            val lookedUp = if (finalNumber != "Unknown") lookupUserByNumber(finalNumber)?.displayName ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, finalNumber) }?.name else null
+            finalName = lookedUp?.ifBlank { null } ?: if (finalNumber != "Unknown") finalNumber else "Unknown Caller"
+        }
+
         val initialLog = CallLogDto(
             id = logId,
             callId = callId,
             direction = direction,
-            otherPartyNumber = otherPartyNumber,
-            otherPartyName = otherPartyName,
+            otherPartyNumber = finalNumber,
+            otherPartyName = finalName,
             callType = callType,
             status = CallStatus.ANSWERED,
             startedAt = System.currentTimeMillis(),
-            durationSeconds = 0
+            durationSeconds = 0,
+            callerNumber = if (direction == CallDirection.INCOMING) finalNumber else userPhone,
+            calleeNumber = if (direction == CallDirection.OUTGOING) finalNumber else userPhone
         )
         if (_callLogs.value.none { it.callId == callId }) {
             _callLogs.value = listOf(initialLog) + _callLogs.value
@@ -1188,12 +1207,14 @@ class FirebaseManager private constructor(private val context: Context) {
             id = logId,
             callId = cellularCallId,
             direction = CallDirection.OUTGOING,
-            otherPartyNumber = otherPartyNumber,
+            otherPartyNumber = otherPartyNumber.ifBlank { "Unknown" },
             otherPartyName = "$resolvedName ($simDisplayName)",
             callType = CallType.AUDIO,
             status = CallStatus.ANSWERED,
             startedAt = System.currentTimeMillis(),
-            durationSeconds = 0
+            durationSeconds = 0,
+            callerNumber = userPhone,
+            calleeNumber = otherPartyNumber
         )
         _callLogs.value = listOf(log) + _callLogs.value.filter { it.id != logId }
 
@@ -1225,11 +1246,33 @@ class FirebaseManager private constructor(private val context: Context) {
         val logId = activeCallLogIds.remove(callId)
 
         if (logId != null) {
+            var updatedNumber = ""
+            var updatedName = ""
+
             _callLogs.value = _callLogs.value.map { log ->
                 if (log.id == logId || log.callId == callId) {
+                    val resolvedNumber = log.otherPartyNumber.ifBlank {
+                        fallbackOtherNumber.orEmpty().ifBlank {
+                            val candidate = callId.substringBefore('_')
+                            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
+                        }
+                    }.ifBlank { "Unknown" }
+
+                    val resolvedName = log.otherPartyName.ifBlank {
+                        fallbackOtherName?.ifBlank { null }
+                            ?: (if (resolvedNumber != "Unknown") lookupUserByNumber(resolvedNumber)?.displayName else null)
+                            ?: (if (resolvedNumber != "Unknown") _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber) }?.name else null)
+                            ?: resolvedNumber
+                    }.ifBlank { "Unknown Caller" }
+
+                    updatedNumber = resolvedNumber
+                    updatedName = resolvedName
+
                     log.copy(
                         status = status,
                         durationSeconds = durationSeconds,
+                        otherPartyNumber = resolvedNumber,
+                        otherPartyName = resolvedName,
                         recordingPath = recordingPath ?: log.recordingPath
                     )
                 } else log
@@ -1243,6 +1286,12 @@ class FirebaseManager private constructor(private val context: Context) {
                 if (!recordingPath.isNullOrBlank()) {
                     updates["recordingPath"] = recordingPath
                 }
+                if (updatedNumber.isNotBlank() && updatedNumber != "Unknown") {
+                    updates["otherPartyNumber"] = updatedNumber
+                }
+                if (updatedName.isNotBlank() && updatedName != "Unknown Caller") {
+                    updates["otherPartyName"] = updatedName
+                }
                 FirebaseFirestore.getInstance()
                     .collection("users").document(userPhone)
                     .collection("callLogs").document(logId)
@@ -1253,17 +1302,101 @@ class FirebaseManager private constructor(private val context: Context) {
             }
         } else {
             // No prior started log exists (e.g. rejected, missed, cancelled before answer)
-            if (fallbackDirection != null && fallbackOtherNumber != null) {
-                logCall(
-                    direction = fallbackDirection,
-                    otherPartyNumber = fallbackOtherNumber,
-                    otherPartyName = fallbackOtherName ?: fallbackOtherNumber,
-                    callType = fallbackCallType,
-                    status = status,
-                    durationSeconds = durationSeconds,
-                    callId = callId,
-                    recordingPath = recordingPath
-                )
+            if (fallbackDirection != null) {
+                var effNumber = fallbackOtherNumber.orEmpty().trim()
+                var effName = fallbackOtherName.orEmpty().trim()
+
+                if (effNumber.isBlank() && callId.isNotBlank()) {
+                    val candidate = callId.substringBefore('_')
+                    if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
+                        effNumber = candidate
+                    }
+                }
+
+                if (effNumber.isNotBlank()) {
+                    if (effName.isBlank() || effName == effNumber) {
+                        effName = lookupUserByNumber(effNumber)?.displayName?.ifBlank { null }
+                            ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, effNumber) }?.name?.ifBlank { null }
+                            ?: effNumber
+                    }
+                    logCall(
+                        direction = fallbackDirection,
+                        otherPartyNumber = effNumber,
+                        otherPartyName = effName,
+                        callType = fallbackCallType,
+                        status = status,
+                        durationSeconds = durationSeconds,
+                        callId = callId,
+                        recordingPath = recordingPath
+                    )
+                } else if (_isFirebaseConfigured.value && callId.isNotBlank()) {
+                    FirebaseFirestore.getInstance().collection("calls").document(callId).get()
+                        .addOnSuccessListener { doc ->
+                            if (doc != null && doc.exists()) {
+                                val cCaller = doc.getString("callerNumber").orEmpty()
+                                val cCallee = doc.getString("calleeNumber").orEmpty()
+                                val cCallerName = doc.getString("callerName").orEmpty()
+                                val cCalleeName = doc.getString("calleeName").orEmpty()
+                                val isOutgoing = fallbackDirection == CallDirection.OUTGOING
+                                val fetchedNumber = if (isOutgoing) {
+                                    cCallee.ifBlank { cCaller }
+                                } else {
+                                    cCaller.ifBlank { cCallee }
+                                }
+                                val fetchedName = if (isOutgoing) {
+                                    cCalleeName.ifBlank { cCallerName }
+                                } else {
+                                    cCallerName.ifBlank { cCalleeName }
+                                }.ifBlank {
+                                    lookupUserByNumber(fetchedNumber)?.displayName ?: fetchedNumber
+                                }
+                                logCall(
+                                    direction = fallbackDirection,
+                                    otherPartyNumber = fetchedNumber.ifBlank { "Unknown" },
+                                    otherPartyName = fetchedName.ifBlank { "Unknown Caller" },
+                                    callType = fallbackCallType,
+                                    status = status,
+                                    durationSeconds = durationSeconds,
+                                    callId = callId,
+                                    recordingPath = recordingPath
+                                )
+                            } else {
+                                logCall(
+                                    direction = fallbackDirection,
+                                    otherPartyNumber = "Unknown",
+                                    otherPartyName = "Unknown Caller",
+                                    callType = fallbackCallType,
+                                    status = status,
+                                    durationSeconds = durationSeconds,
+                                    callId = callId,
+                                    recordingPath = recordingPath
+                                )
+                            }
+                        }
+                        .addOnFailureListener {
+                            logCall(
+                                direction = fallbackDirection,
+                                otherPartyNumber = "Unknown",
+                                otherPartyName = "Unknown Caller",
+                                callType = fallbackCallType,
+                                status = status,
+                                durationSeconds = durationSeconds,
+                                callId = callId,
+                                recordingPath = recordingPath
+                            )
+                        }
+                } else {
+                    logCall(
+                        direction = fallbackDirection,
+                        otherPartyNumber = "Unknown",
+                        otherPartyName = "Unknown Caller",
+                        callType = fallbackCallType,
+                        status = status,
+                        durationSeconds = durationSeconds,
+                        callId = callId,
+                        recordingPath = recordingPath
+                    )
+                }
             }
         }
     }
@@ -1287,13 +1420,34 @@ class FirebaseManager private constructor(private val context: Context) {
             return
         }
 
+        var finalNumber = otherPartyNumber.trim()
+        var finalName = otherPartyName.trim()
+
+        if (finalNumber.isBlank() && resolvedCallId.isNotBlank()) {
+            val candidate = resolvedCallId.substringBefore('_')
+            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
+                finalNumber = candidate
+            }
+        }
+        if (finalNumber.isBlank()) {
+            finalNumber = "Unknown"
+        }
+        if (finalName.isBlank() || finalName == finalNumber) {
+            val lookedUp = if (finalNumber != "Unknown") lookupUserByNumber(finalNumber)?.displayName ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, finalNumber) }?.name else null
+            finalName = lookedUp?.ifBlank { null } ?: if (finalNumber != "Unknown") finalNumber else "Unknown Caller"
+        }
+
         // Deduplication: check if already in local list with same callId
         val existingIndex = _callLogs.value.indexOfFirst { it.callId == resolvedCallId }
         if (existingIndex >= 0) {
             val existingLog = _callLogs.value[existingIndex]
+            val resolvedNum = existingLog.otherPartyNumber.ifBlank { finalNumber }
+            val resolvedNm = existingLog.otherPartyName.ifBlank { finalName }
             val updated = existingLog.copy(
                 status = status,
                 durationSeconds = durationSeconds,
+                otherPartyNumber = resolvedNum,
+                otherPartyName = resolvedNm,
                 recordingPath = recordingPath ?: existingLog.recordingPath
             )
             val mutable = _callLogs.value.toMutableList()
@@ -1304,6 +1458,8 @@ class FirebaseManager private constructor(private val context: Context) {
                     "status" to status.name,
                     "durationSeconds" to durationSeconds
                 )
+                if (resolvedNum.isNotBlank() && resolvedNum != "Unknown") updates["otherPartyNumber"] = resolvedNum
+                if (resolvedNm.isNotBlank() && resolvedNm != "Unknown Caller") updates["otherPartyName"] = resolvedNm
                 if (!recordingPath.isNullOrBlank()) {
                     updates["recordingPath"] = recordingPath
                 }
@@ -1320,13 +1476,15 @@ class FirebaseManager private constructor(private val context: Context) {
             id = logId,
             callId = resolvedCallId,
             direction = direction,
-            otherPartyNumber = otherPartyNumber,
-            otherPartyName = otherPartyName,
+            otherPartyNumber = finalNumber,
+            otherPartyName = finalName,
             callType = callType,
             status = status,
             startedAt = System.currentTimeMillis(),
             durationSeconds = durationSeconds,
-            recordingPath = recordingPath
+            recordingPath = recordingPath,
+            callerNumber = if (direction == CallDirection.INCOMING) finalNumber else userPhone,
+            calleeNumber = if (direction == CallDirection.OUTGOING) finalNumber else userPhone
         )
         _callLogs.value = listOf(newLog) + _callLogs.value
 
@@ -1375,32 +1533,67 @@ class FirebaseManager private constructor(private val context: Context) {
         calleeNumber: String,
         callerNumber: String,
         callerName: String,
-        callType: CallType
+        callType: CallType,
+        callId: String? = null
     ) {
-        val logId = UUID.randomUUID().toString()
-        val newLog = CallLogDto(
-            id = logId,
-            callId = "${calleeNumber}_${System.currentTimeMillis()}",
-            direction = CallDirection.MISSED,
-            otherPartyNumber = callerNumber,
-            otherPartyName = callerName,
-            callType = callType,
-            status = CallStatus.MISSED,
-            startedAt = System.currentTimeMillis(),
-            durationSeconds = 0
-        )
+        if (calleeNumber.isBlank()) return
 
-        if (_isFirebaseConfigured.value) {
-            FirebaseFirestore.getInstance()
-                .collection("users").document(calleeNumber)
-                .collection("callLogs").document(logId)
-                .set(newLog)
-                .addOnSuccessListener {
-                    Log.d(TAG, "Offline missed call log saved for callee $calleeNumber.")
+        var effCallerNumber = callerNumber.trim()
+        if (effCallerNumber.isBlank()) {
+            effCallerNumber = getEffectiveUserPhone().orEmpty()
+        }
+
+        fun saveLog(num: String, name: String) {
+            val validNumber = num.ifBlank { "Unknown" }
+            val validName = name.ifBlank {
+                if (validNumber != "Unknown") lookupUserByNumber(validNumber)?.displayName ?: validNumber
+                else "Unknown Caller"
+            }
+
+            val logId = UUID.randomUUID().toString()
+            val resolvedCallId = callId ?: "${calleeNumber}_${System.currentTimeMillis()}"
+            val newLog = CallLogDto(
+                id = logId,
+                callId = resolvedCallId,
+                direction = CallDirection.MISSED,
+                otherPartyNumber = validNumber,
+                otherPartyName = validName,
+                callType = callType,
+                status = CallStatus.MISSED,
+                startedAt = System.currentTimeMillis(),
+                durationSeconds = 0,
+                callerNumber = validNumber,
+                calleeNumber = calleeNumber
+            )
+
+            if (_isFirebaseConfigured.value) {
+                FirebaseFirestore.getInstance()
+                    .collection("users").document(calleeNumber)
+                    .collection("callLogs").document(logId)
+                    .set(newLog)
+                    .addOnSuccessListener {
+                        Log.d(TAG, "Offline missed call log saved for callee $calleeNumber.")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Error saving offline missed call to Firestore: ${e.message}")
+                    }
+            }
+        }
+
+        if (effCallerNumber.isBlank() && !callId.isNullOrBlank() && _isFirebaseConfigured.value) {
+            FirebaseFirestore.getInstance().collection("calls").document(callId).get()
+                .addOnSuccessListener { doc ->
+                    val fromDoc = doc?.getString("callerNumber").orEmpty().ifBlank {
+                        doc?.getString("calleeNumber").orEmpty()
+                    }
+                    val fromDocName = doc?.getString("callerName").orEmpty()
+                    saveLog(fromDoc, fromDocName.ifBlank { callerName })
                 }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Error saving offline missed call to Firestore: ${e.message}")
+                .addOnFailureListener {
+                    saveLog("", callerName)
                 }
+        } else {
+            saveLog(effCallerNumber, callerName)
         }
     }
 

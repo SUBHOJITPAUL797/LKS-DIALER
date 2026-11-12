@@ -239,8 +239,31 @@ data class CallLogDto(
     val status: CallStatus = CallStatus.ANSWERED,
     val startedAt: Long = 0L,
     val durationSeconds: Int = 0,
-    val recordingPath: String? = null
-)
+    val recordingPath: String? = null,
+    val callerNumber: String = "",
+    val calleeNumber: String = ""
+) {
+    fun resolveOtherPartyNumber(): String {
+        if (otherPartyNumber.isNotBlank()) return otherPartyNumber
+        if (direction == CallDirection.OUTGOING) {
+            if (calleeNumber.isNotBlank()) return calleeNumber
+            if (callerNumber.isNotBlank()) return callerNumber
+        } else {
+            if (callerNumber.isNotBlank()) return callerNumber
+            if (calleeNumber.isNotBlank()) return calleeNumber
+        }
+        val candidate = callId.substringBefore('_')
+        if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) return candidate
+        return ""
+    }
+
+    fun resolveOtherPartyName(): String {
+        if (otherPartyName.isNotBlank() && otherPartyName != otherPartyNumber && otherPartyName != "Unknown") return otherPartyName
+        val num = resolveOtherPartyNumber()
+        if (num.isNotBlank()) return num
+        return if (otherPartyName.isNotBlank()) otherPartyName else "Unknown"
+    }
+}
 
 data class ContactDto(
     val id: String = "",
