@@ -3,10 +3,12 @@ package com.example.ui.screens.chat
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.widget.Toast
+import com.example.util.VideoThumbnailHelper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -3464,9 +3466,20 @@ private fun MessageBubble(
     val isHeroPreviewOnly = hasHeroPreview && isPureUrlMessage
 
     val isImageOnly = !isDeleted && !message.isViewOnce && message.mediaType == ChatMediaType.IMAGE.name && displayText.isBlank()
+    val isVideoMessage = remember(message.mediaType, message.mediaPath, displayText) {
+        if (message.mediaType != ChatMediaType.DOCUMENT.name) false
+        else {
+            val path = message.mediaPath?.takeIf { it.isNotBlank() }
+            val ext = (path?.let { File(it).extension.ifBlank { null } }
+                ?: displayText.substringAfterLast('.', "DOC"))
+                .uppercase(Locale.getDefault()).take(5)
+            ext in listOf("MP4", "MKV", "WEBM", "MOV", "3GP", "AVI", "M4V")
+        }
+    }
     val bubblePadding = when {
         isFrameless -> PaddingValues(2.dp)
         isImageOnly || isHeroPreviewOnly -> PaddingValues(4.dp)
+        isVideoMessage -> PaddingValues(4.dp)
         else -> PaddingValues(horizontal = 8.dp, vertical = 6.dp)
     }
 
@@ -3497,6 +3510,7 @@ private fun MessageBubble(
                         hasHeroPreview -> 270.dp
                         hasLinkPreview -> 240.dp
                         message.mediaType == ChatMediaType.IMAGE.name && !isDeleted -> 200.dp
+                        isVideoMessage && !isDeleted -> 220.dp
                         else -> 0.dp
                     },
                     max = if (hasHeroPreview) 320.dp else 310.dp
@@ -4141,49 +4155,60 @@ private fun MessageBubble(
                     val isAudio = ext in listOf("MP3", "M4A", "WAV", "AAC", "OGG", "FLAC", "OPUS")
                     val isVideo = ext in listOf("MP4", "MKV", "WEBM", "MOV", "3GP", "AVI", "M4V")
 
-                    val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
-                        if (message.mediaDurationMs > 0L) message.mediaDurationMs
-                        else if (isAudio && hasFile) {
-                            try {
-                                val doc = docFile
-                                if (doc != null) {
-                                    val retriever = android.media.MediaMetadataRetriever()
-                                    retriever.setDataSource(doc.absolutePath)
-                                    val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                                    retriever.release()
-                                    dur
-                                } else 0L
-                            } catch (_: Exception) { 0L }
-                        } else 0L
-                    }
-                    val finalAudioDuration = if (isPlaying && playbackDurationMs > 0L) playbackDurationMs else audioDurationMs
+                    if (isVideo) {
+                        WhatsAppVideoBubbleCard(
+                            message = message,
+                            videoFile = docFile,
+                            hasFile = hasFile,
+                            fileName = fileName,
+                            isOutgoing = isOutgoing,
+                            transferProgress = transferProgress,
+                            onVideoClick = onVideoClick,
+                            onCancelTransfer = onCancelTransfer,
+                            onMessageLongClick = onMessageLongClick,
+                            onMarkMessageRead = onMarkMessageRead
+                        )
+                    } else {
+                        val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
+                            if (message.mediaDurationMs > 0L) message.mediaDurationMs
+                            else if (isAudio && hasFile) {
+                                try {
+                                    val doc = docFile
+                                    if (doc != null) {
+                                        val retriever = android.media.MediaMetadataRetriever()
+                                        retriever.setDataSource(doc.absolutePath)
+                                        val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                                        retriever.release()
+                                        dur
+                                    } else 0L
+                                } catch (_: Exception) { 0L }
+                            } else 0L
+                        }
+                        val finalAudioDuration = if (isPlaying && playbackDurationMs > 0L) playbackDurationMs else audioDurationMs
 
-                    val fileSizeFormatted = remember(docFile, hasFile) {
-                        if (docFile != null && hasFile) {
-                            val bytes = docFile.length()
-                            if (bytes < 1024) "$bytes B"
-                            else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
-                            else String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f))
-                        } else if (!isOutgoing && !hasFile) {
-                            if (ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF")) "Transfer incomplete" else "Transferring document..."
-                        } else ""
-                    }
+                        val fileSizeFormatted = remember(docFile, hasFile) {
+                            if (docFile != null && hasFile) {
+                                val bytes = docFile.length()
+                                if (bytes < 1024) "$bytes B"
+                                else if (bytes < 1024 * 1024) "${bytes / 1024} KB"
+                                else String.format(Locale.getDefault(), "%.1f MB", bytes / (1024f * 1024f))
+                            } else if (!isOutgoing && !hasFile) {
+                                if (ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF")) "Transfer incomplete" else "Transferring document..."
+                            } else ""
+                        }
 
-                    Surface(
-                        color = if (isOutgoing) TealPrimary.copy(alpha = 0.15f) else GreenCall.copy(alpha = 0.12f),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .pointerInput(message.id) {
-                                detectTapGestures(
-                                    onTap = {
-                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                            onMarkMessageRead(message.id)
-                                        }
-                                        if (docFile != null && hasFile) {
-                                            if (isVideo && onVideoClick != null) {
-                                                onVideoClick(docFile)
-                                            } else {
+                        Surface(
+                            color = if (isOutgoing) TealPrimary.copy(alpha = 0.15f) else GreenCall.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .pointerInput(message.id) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                                onMarkMessageRead(message.id)
+                                            }
+                                            if (docFile != null && hasFile) {
                                                 try {
                                                     val fileUri = FileProvider.getUriForFile(
                                                         context,
@@ -4201,103 +4226,100 @@ private fun MessageBubble(
                                                 } catch (e: Exception) {
                                                     Toast.makeText(context, "No app found to open $ext file", Toast.LENGTH_SHORT).show()
                                                 }
+                                            } else {
+                                                val msg = when {
+                                                    ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF") -> "Photo transfer could not complete. Please resend."
+                                                    else -> "Document is preparing or saved elsewhere"
+                                                }
+                                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                             }
-                                        } else {
-                                            val msg = when {
-                                                isVideo -> "Video is transferring..."
-                                                ext in listOf("JPG", "JPEG", "PNG", "WEBP", "GIF") -> "Photo transfer could not complete. Please resend."
-                                                else -> "Document is preparing or saved elsewhere"
-                                            }
-                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        },
+                                        onLongPress = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            onMessageLongClick(message)
                                         }
-                                    },
-                                    onLongPress = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        onMessageLongClick(message)
-                                    }
-                                )
-                            }
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Surface(
-                                    color = when {
-                                        isAudio -> Color(0xFFE91E63)
-                                        isVideo -> Color(0xFF9C27B0)
-                                        ext == "PDF" -> Color(0xFFE53935)
-                                        ext in listOf("DOC", "DOCX") -> Color(0xFF1E88E5)
-                                        ext in listOf("XLS", "XLSX") -> Color(0xFF43A047)
-                                        else -> TealPrimary
-                                    },
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = when {
-                                                isAudio -> "🎵"
-                                                isVideo -> "🎬"
-                                                else -> ext.take(4)
-                                            },
-                                            color = Color.White,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = if (isAudio || isVideo) 16.sp else 11.sp
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = fileName,
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
                                     )
-                                    if (fileSizeFormatted.isNotBlank()) {
-                                        Text(
-                                            text = fileSizeFormatted,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
                                 }
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Icon(
-                                    if (hasFile) Icons.Default.FileDownload else Icons.Default.AttachFile,
-                                    contentDescription = if (hasFile) "Open Document" else "Document",
-                                    tint = if (isOutgoing) TealPrimary else GreenCall,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-
-                            if (isAudio && hasFile) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                AudioWaveformPlayer(
-                                    isPlaying = isPlaying,
-                                    progress = playbackProgress,
-                                    durationMs = finalAudioDuration,
-                                    playbackSpeed = playbackSpeed,
-                                    isOutgoing = isOutgoing,
-                                    onTogglePlay = {
-                                        docFile?.let { onPlayAudio(it.absolutePath) }
-                                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
-                                            onMarkMessageRead(message.id)
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Surface(
+                                        color = when {
+                                            isAudio -> Color(0xFFE91E63)
+                                            ext == "PDF" -> Color(0xFFE53935)
+                                            ext in listOf("DOC", "DOCX") -> Color(0xFF1E88E5)
+                                            ext in listOf("XLS", "XLSX") -> Color(0xFF43A047)
+                                            else -> TealPrimary
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = when {
+                                                    isAudio -> "🎵"
+                                                    else -> ext.take(4)
+                                                },
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = if (isAudio) 16.sp else 11.sp
+                                            )
                                         }
-                                    },
-                                    onSeek = onSeekAudio,
-                                    onCycleSpeed = onCycleSpeed
-                                )
-                            }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = fileName,
+                                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (fileSizeFormatted.isNotBlank()) {
+                                            Text(
+                                                text = fileSizeFormatted,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        if (hasFile) Icons.Default.FileDownload else Icons.Default.AttachFile,
+                                        contentDescription = if (hasFile) "Open Document" else "Document",
+                                        tint = if (isOutgoing) TealPrimary else GreenCall,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
 
-                            // ── P2P / Relay Transfer Progress ───────────────
-                            if (transferProgress != null) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                                FileTransferProgressCard(
-                                    progress = transferProgress,
-                                    onCancel = onCancelTransfer
-                                )
+                                if (isAudio && hasFile) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    AudioWaveformPlayer(
+                                        isPlaying = isPlaying,
+                                        progress = playbackProgress,
+                                        durationMs = finalAudioDuration,
+                                        playbackSpeed = playbackSpeed,
+                                        isOutgoing = isOutgoing,
+                                        onTogglePlay = {
+                                            docFile?.let { onPlayAudio(it.absolutePath) }
+                                            if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                                                onMarkMessageRead(message.id)
+                                            }
+                                        },
+                                        onSeek = onSeekAudio,
+                                        onCycleSpeed = onCycleSpeed
+                                    )
+                                }
+
+                                // ── P2P / Relay Transfer Progress ───────────────
+                                if (transferProgress != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    FileTransferProgressCard(
+                                        progress = transferProgress,
+                                        onCancel = onCancelTransfer
+                                    )
+                                }
                             }
                         }
                     }
@@ -4400,8 +4422,8 @@ private fun MessageBubble(
                 }
                 }
 
-                // ── Timestamp & Ticks (Only if not already rendered inside image/GIF overlay) ──
-                if (!isImageOnly) {
+                // ── Timestamp & Ticks (Only if not already rendered inside image/GIF/video overlay) ──
+                if (!isImageOnly && !isVideoMessage) {
                     Spacer(modifier = Modifier.height(2.dp))
                     Row(
                         modifier = Modifier
@@ -4460,6 +4482,322 @@ private fun MessageBubble(
                     }
                 }
             }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WhatsApp-style Video Message Bubble Card
+// ──────────────────────────────────────────────────────────────────────────────
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun WhatsAppVideoBubbleCard(
+    message: MessageEntity,
+    videoFile: File?,
+    hasFile: Boolean,
+    fileName: String,
+    isOutgoing: Boolean,
+    transferProgress: com.example.data.p2p.FileTransferProgress?,
+    onVideoClick: ((File) -> Unit)?,
+    onCancelTransfer: () -> Unit,
+    onMessageLongClick: (MessageEntity) -> Unit,
+    onMarkMessageRead: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val isDark = com.example.ui.theme.LocalIsDarkTheme.current
+
+    // Video metadata (duration, width, height, formatted strings)
+    val metadataState = produceState<com.example.util.VideoMetadata?>(
+        initialValue = null,
+        key1 = videoFile?.absolutePath,
+        key2 = videoFile?.lastModified()
+    ) {
+        value = if (videoFile != null && videoFile.exists()) {
+            com.example.util.VideoThumbnailHelper.getVideoMetadata(context, videoFile)
+        } else null
+    }
+
+    // Video thumbnail extraction with memory LRU & disk cache
+    val thumbnailState = produceState<Bitmap?>(
+        initialValue = null,
+        key1 = videoFile?.absolutePath,
+        key2 = videoFile?.lastModified()
+    ) {
+        value = if (videoFile != null && videoFile.exists()) {
+            com.example.util.VideoThumbnailHelper.getVideoThumbnail(context, videoFile)
+        } else null
+    }
+    val thumbnail = thumbnailState.value
+
+    val isTransferringIncoming = !isOutgoing && transferProgress != null && transferProgress.percent < 100
+
+    val formattedDuration = remember(metadataState.value, message.mediaDurationMs) {
+        val ms = if (message.mediaDurationMs > 0L) message.mediaDurationMs else (metadataState.value?.durationMs ?: 0L)
+        if (ms > 0L) {
+            com.example.util.VideoThumbnailHelper.formatDuration(ms)
+        } else {
+            metadataState.value?.formattedDuration?.takeIf { it != "0:00" } ?: ""
+        }
+    }
+
+    val formattedSize = remember(videoFile, metadataState.value, transferProgress) {
+        if (videoFile != null && videoFile.exists() && videoFile.length() > 0L) {
+            com.example.util.VideoThumbnailHelper.formatFileSize(videoFile.length())
+        } else if (transferProgress != null && transferProgress.totalBytes > 0L) {
+            com.example.util.VideoThumbnailHelper.formatFileSize(transferProgress.totalBytes)
+        } else {
+            metadataState.value?.formattedSize ?: ""
+        }
+    }
+
+    val hasCaption = remember(message.text, fileName, videoFile) {
+        val raw = message.text.trim()
+        val baseDocName = fileName.trim()
+        val fileObjName = videoFile?.name?.trim() ?: ""
+        raw.isNotBlank() &&
+            !raw.equals(baseDocName, ignoreCase = true) &&
+            (fileObjName.isBlank() || !raw.equals(fileObjName, ignoreCase = true))
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // Video Preview Card Box
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 180.dp, max = 320.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (isDark) Color(0xFF182229) else Color(0xFFE9EDEF))
+                .combinedClickable(
+                    onClick = {
+                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                            onMarkMessageRead(message.id)
+                        }
+                        if (hasFile && videoFile != null) {
+                            if (onVideoClick != null) {
+                                onVideoClick(videoFile)
+                            } else {
+                                try {
+                                    val fileUri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        videoFile
+                                    )
+                                    val mime = android.webkit.MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(videoFile.extension.lowercase(Locale.getDefault())) ?: "video/*"
+                                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                                        setDataAndType(fileUri, mime)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    context.startActivity(intent)
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "No video player found", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } else {
+                            val msg = if (transferProgress != null) "Video is transferring..." else "Video file not found"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onMessageLongClick(message)
+                    }
+                )
+        ) {
+            // ── Video Preview Image or Dark Gradient Fallback ─────────────────
+            if (thumbnail != null) {
+                Image(
+                    bitmap = thumbnail.asImageBitmap(),
+                    contentDescription = "Video preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (isTransferringIncoming) Modifier.blur(8.dp) else Modifier)
+                )
+                if (isTransferringIncoming) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.38f))
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0xFF263238),
+                                    Color(0xFF182229),
+                                    Color(0xFF10171D)
+                                )
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Videocam,
+                        contentDescription = "Video preview placeholder",
+                        tint = Color.White.copy(alpha = 0.35f),
+                        modifier = Modifier.size(56.dp)
+                    )
+                }
+            }
+
+            // ── Center Play Button / Transfer Indicator ──────────────────────
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(54.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .border(1.5.dp, Color.White.copy(alpha = 0.85f), CircleShape)
+                    .clickable {
+                        if (!message.isOutgoing && message.status != MessageStatus.READ.name) {
+                            onMarkMessageRead(message.id)
+                        }
+                        if (hasFile && videoFile != null) {
+                            onVideoClick?.invoke(videoFile)
+                        } else {
+                            val msg = if (transferProgress != null) "Video is transferring..." else "Video file not found"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isTransferringIncoming && !hasFile) {
+                    CircularProgressIndicator(
+                        progress = { (transferProgress?.percent ?: 0) / 100f },
+                        color = Color.White,
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(30.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Play video",
+                        tint = Color.White,
+                        modifier = Modifier.size(34.dp)
+                    )
+                }
+            }
+
+            // ── Bottom-Left Pill Badge: Duration • File Size ─────────────────
+            Surface(
+                color = Color.Black.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Videocam,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    if (formattedDuration.isNotBlank()) {
+                        Text(
+                            text = formattedDuration,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (formattedSize.isNotBlank()) {
+                            Text(
+                                text = " • ",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
+                    }
+                    if (formattedSize.isNotBlank()) {
+                        Text(
+                            text = formattedSize,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    } else if (formattedDuration.isBlank()) {
+                        Text(
+                            text = "Video",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            // ── Bottom-Right Pill Badge: Time + Status Tick ──────────────────
+            Surface(
+                color = Color.Black.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (message.isStarred) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "Starred",
+                            tint = Color(0xFFFFC107),
+                            modifier = Modifier.size(11.dp)
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                    }
+                    val timeString = remember(message.timestamp) {
+                        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(message.timestamp))
+                    }
+                    Text(
+                        text = timeString,
+                        color = Color.White,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                    if (isOutgoing) {
+                        Spacer(modifier = Modifier.width(3.dp))
+                        StatusTickIcon(status = message.status, isOutgoingBubble = true)
+                    }
+                }
+            }
+        }
+
+        // ── P2P / Relay Transfer Progress ────────────────────────────────────
+        if (transferProgress != null) {
+            Spacer(modifier = Modifier.height(6.dp))
+            FileTransferProgressCard(
+                progress = transferProgress,
+                onCancel = onCancelTransfer
+            )
+        }
+
+        // ── Caption Support ──────────────────────────────────────────────────
+        if (hasCaption) {
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 14.5.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Normal
+                ),
+                color = if (isOutgoing) Color.White else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
         }
     }
 }
