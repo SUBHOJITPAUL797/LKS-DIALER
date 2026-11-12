@@ -59,6 +59,93 @@ class WebRtcEngine private constructor(private val context: Context) {
         .retryOnConnectionFailure(true)
         .build()
 
+    private fun encodePushSdp(sdp: String?): String? {
+        if (sdp.isNullOrBlank()) return null
+        if (sdp.length < 3400) return sdp
+        return try {
+            val bos = java.io.ByteArrayOutputStream()
+            java.util.zip.GZIPOutputStream(bos).use { it.write(sdp.toByteArray(Charsets.UTF_8)) }
+            val encoded = "GZ:" + android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+            if (encoded.length < 3300) encoded else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchCallDocViaRest(callId: String): CallDto? {
+        return try {
+            val url = "https://firestore.googleapis.com/v1/projects/lks-dialer/databases/(default)/documents/calls/$callId"
+            val req = okhttp3.Request.Builder().url(url).get().build()
+            pushHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val body = resp.body?.string() ?: return null
+                val fields = org.json.JSONObject(body).optJSONObject("fields") ?: return null
+                fun str(k: String) = fields.optJSONObject(k)?.optString("stringValue")?.takeIf { it.isNotBlank() }
+                fun num(k: String) = fields.optJSONObject(k)?.optString("integerValue")?.toLongOrNull() ?: 0L
+                fun strList(k: String): List<String> {
+                    val vals = fields.optJSONObject(k)?.optJSONObject("arrayValue")?.optJSONArray("values") ?: return emptyList()
+                    return (0 until vals.length()).mapNotNull { i -> vals.optJSONObject(i)?.optString("stringValue")?.takeIf { it.isNotBlank() } }
+                }
+                val st = try { CallStatus.valueOf(str("status") ?: "IDLE") } catch (_: Exception) { CallStatus.IDLE }
+                val ct = try { CallType.valueOf(str("callType") ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
+                CallDto(
+                    callId = str("callId") ?: callId,
+                    callerNumber = str("callerNumber") ?: "",
+                    calleeNumber = str("calleeNumber") ?: "",
+                    callerName = str("callerName") ?: "",
+                    calleeName = str("calleeName") ?: "",
+                    callType = ct,
+                    status = st,
+                    offerSdp = str("offerSdp"),
+                    answerSdp = str("answerSdp"),
+                    callerCandidates = strList("callerCandidates"),
+                    calleeCandidates = strList("calleeCandidates"),
+                    callerTuneTitle = str("callerTuneTitle"),
+                    callerTuneAudioBase64 = str("callerTuneAudioBase64"),
+                    callerTuneUrl = str("callerTuneUrl"),
+                    callerTuneStartMs = num("callerTuneStartMs"),
+                    callerTuneEndMs = num("callerTuneEndMs"),
+                    reason = str("reason"),
+                    iceRestartRequested = num("iceRestartRequested")
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchUserTuneViaRest(calleeNumber: String): com.example.util.CallerTuneInfo? {
+        for (variant in com.example.util.ContactsHelper.generateNumberVariations(calleeNumber)) {
+            try {
+                val encodedId = java.net.URLEncoder.encode(variant, "UTF-8")
+                val url = "https://firestore.googleapis.com/v1/projects/lks-dialer/databases/(default)/documents/users/$encodedId"
+                val req = okhttp3.Request.Builder().url(url).get().build()
+                pushHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use
+                    val body = resp.body?.string() ?: return@use
+                    val fields = org.json.JSONObject(body).optJSONObject("fields") ?: return@use
+                    fun str(k: String) = fields.optJSONObject(k)?.optString("stringValue") ?: ""
+                    fun num(k: String) = fields.optJSONObject(k)?.optString("integerValue")?.toLongOrNull() ?: 0L
+                    val title = str("callerTuneTitle")
+                    val b64 = str("callerTuneAudioBase64")
+                    val aUrl = str("callerTuneUrl")
+                    if (title.isNotBlank() && (b64.isNotBlank() || aUrl.isNotBlank())) {
+                        return com.example.util.CallerTuneInfo(
+                            title = title,
+                            artist = str("callerTuneArtist"),
+                            audioUrl = aUrl,
+                            audioBase64 = b64,
+                            source = str("callerTuneSource").ifBlank { "LIBRARY" },
+                            startMs = num("callerTuneStartMs"),
+                            endMs = num("callerTuneEndMs")
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return null
+    }
+
     fun prewarmPushSocket() {
         scope.launch(Dispatchers.IO) {
             try {
@@ -803,24 +890,26 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Note: Do NOT return early. Launch background candidate sync to ingest any Cloudflare TURN relay candidates uploaded after initial push
         }
 
-        // Aggressively fetch answerSdp directly from Firestore if push did not include it
+        // Aggressively fetch answerSdp directly from Firestore (with timeout + REST fallback if gRPC stalled)
         scope.launch(Dispatchers.IO) {
             for (attempt in 1..60) {
                 if (hasProcessedAnswer || isCallTerminated(callId)) break
                 try {
-                    val doc = if (attempt > 15) {
-                        try {
-                            firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                        } catch (ce: kotlinx.coroutines.CancellationException) {
-                            throw ce
-                        } catch (_: Exception) {
+                    val doc = withTimeoutOrNull(2200L) {
+                        if (attempt > 6) {
+                            try {
+                                firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                            } catch (ce: kotlinx.coroutines.CancellationException) {
+                                throw ce
+                            } catch (_: Exception) {
+                                firestore.collection("calls").document(callId).get().await()
+                            }
+                        } else {
                             firestore.collection("calls").document(callId).get().await()
                         }
-                    } else {
-                        firestore.collection("calls").document(callId).get().await()
                     }
-                    val rawCall = doc.toObject(CallDto::class.java)
-                    if (doc.exists() && rawCall != null) {
+                    val rawCall = doc?.toObject(CallDto::class.java)
+                    if (doc != null && doc.exists() && rawCall != null) {
                         val call = if (rawCall.callId.isBlank()) rawCall.copy(callId = doc.id.ifBlank { callId }) else rawCall
                         withContext(Dispatchers.Main) {
                             handleCallDocumentUpdate(call, doc, isCaller = true)
@@ -829,13 +918,24 @@ class WebRtcEngine private constructor(private val context: Context) {
                             Log.i("WebRtcEngine", "⚡ Retrieved answerSdp on attempt $attempt via push flow")
                             break
                         }
+                    } else if (doc == null || attempt % 3 == 0) {
+                        val restCall = fetchCallDocViaRest(callId)
+                        if (restCall != null) {
+                            withContext(Dispatchers.Main) {
+                                handleCallDocumentUpdate(restCall, null, isCaller = true)
+                            }
+                            if (!restCall.answerSdp.isNullOrBlank()) {
+                                Log.i("WebRtcEngine", "⚡ Retrieved answerSdp on attempt $attempt via REST fallback")
+                                break
+                            }
+                        }
                     }
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
                 } catch (e: Exception) {
                     Log.w("WebRtcEngine", "onCallAnsweredFromPush fetch attempt $attempt failed: ${e.message}")
                 }
-                delay(if (attempt <= 10) 80L else 150L)
+                delay(if (attempt <= 10) 100L else 250L)
             }
         }
     }
@@ -870,7 +970,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                     Log.i("WebRtcEngine", "⚡ PeerConnection entered terminal state $newState ── immediately ending call on this device")
                     scope.launch(Dispatchers.Main) {
                         if (_state.value.callStatus == CallStatus.ANSWERED || _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING) {
-                            endCallInternalLocal(CallStatus.ENDED)
+                            if (newState == PeerConnection.PeerConnectionState.FAILED && !isCallTerminated(callId)) {
+                                endCall(callId)
+                            } else {
+                                endCallInternalLocal(CallStatus.ENDED)
+                            }
                         }
                     }
                 }
@@ -1746,7 +1850,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     }
                     
                     if (!isCallTerminated(incomingCall.callId)) {
-                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+                        val myTune = com.example.services.CallMessagingService.resolveMyTune(context)
                         val ringUpdates = mutableMapOf<String, Any>("status" to CallStatus.RINGING.name)
                         if (myTune.isConfigured) {
                             ringUpdates["callerTuneTitle"] = myTune.title
@@ -2659,20 +2763,22 @@ class WebRtcEngine private constructor(private val context: Context) {
             while (isActive && (_state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING || _state.value.callStatus == CallStatus.ANSWERED)) {
                 try {
                     pollCounter++
-                    val serverDoc = try {
-                        val isWaitingForAnswer = _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING
-                        val forceServerFetch = if (isWaitingForAnswer) (pollCounter % 2 == 0) else (pollCounter % 6 == 0)
-                        if (forceServerFetch) {
-                            firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                        } else {
+                    val serverDoc = withTimeoutOrNull(2200L) {
+                        try {
+                            val isWaitingForAnswer = _state.value.callStatus == CallStatus.CALLING || _state.value.callStatus == CallStatus.RINGING
+                            val forceServerFetch = if (isWaitingForAnswer) (pollCounter % 2 == 0) else (pollCounter % 6 == 0)
+                            if (forceServerFetch) {
+                                firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                            } else {
+                                firestore.collection("calls").document(callId).get().await()
+                            }
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            throw ce
+                        } catch (_: Exception) {
                             firestore.collection("calls").document(callId).get().await()
                         }
-                    } catch (ce: kotlinx.coroutines.CancellationException) {
-                        throw ce
-                    } catch (_: Exception) {
-                        firestore.collection("calls").document(callId).get().await()
                     }
-                    if (serverDoc.exists()) {
+                    if (serverDoc != null && serverDoc.exists()) {
                         val rawServerCall = serverDoc.toObject(CallDto::class.java)
                         val serverCall = rawServerCall?.let { if (it.callId.isBlank()) it.copy(callId = serverDoc.id.ifBlank { callId }) else it }
                         if (serverCall != null) {
@@ -2694,6 +2800,17 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 withContext(Dispatchers.Main) {
                                     handleCallDocumentUpdate(serverCall, serverDoc, isCaller)
                                 }
+                            }
+                        }
+                    } else if (serverDoc == null) {
+                        val restCall = fetchCallDocViaRest(callId)
+                        if (restCall != null) {
+                            val rStatus = restCall.status
+                            withContext(Dispatchers.Main) {
+                                handleCallDocumentUpdate(restCall, null, isCaller)
+                            }
+                            if (rStatus == CallStatus.ENDED || rStatus == CallStatus.DECLINED || rStatus == CallStatus.MISSED) {
+                                break
                             }
                         }
                     }
@@ -2762,8 +2879,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             _state.value = _state.value.copy(activeCall = effectiveCall)
             
             // Once the call is ANSWERED or ENDED, NEVER process RINGING or replay ringback tones!
-            if (isCaller && call.status == CallStatus.RINGING && 
-                _state.value.callStatus != CallStatus.ANSWERED && 
+            if (isCaller && call.status == CallStatus.RINGING &&
+                _state.value.callStatus != CallStatus.ANSWERED &&
                 _state.value.callStatus != CallStatus.ENDED &&
                 _state.value.callStatus != CallStatus.DECLINED) {
                 if (_state.value.callStatus == CallStatus.CALLING) {
@@ -2782,6 +2899,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } else {
                         com.example.util.CallSoundEffectsManager.onCallRinging(context)
                     }
+                } else if (_state.value.callStatus == CallStatus.RINGING &&
+                    _state.value.activeCallerTuneTitle.isNullOrBlank() &&
+                    !call.callerTuneTitle.isNullOrBlank() &&
+                    (!call.callerTuneAudioBase64.isNullOrBlank() || !call.callerTuneUrl.isNullOrBlank())
+                ) {
+                    // Late-arriving caller tune metadata (when push ack lacked tune details): switch from beep to tune
+                    _state.value = _state.value.copy(activeCallerTuneTitle = call.callerTuneTitle)
+                    com.example.util.CallSoundEffectsManager.startCallerTune(context, call.callerTuneAudioBase64, call.callerTuneUrl, call.callerTuneTitle, call.callerTuneStartMs)
                 }
             }
 
@@ -3094,6 +3219,24 @@ class WebRtcEngine private constructor(private val context: Context) {
                 com.example.util.CallSoundEffectsManager.prepareCallerTune(context, audio, url, title, startMs)
             }
             return
+        }
+
+        // Launch parallel OkHttp REST user tune lookup (fast & immune to gRPC stalls)
+        scope.launch(Dispatchers.IO) {
+            val restTune = fetchUserTuneViaRest(calleeNumber)
+            if (restTune != null && _state.value.activeCallerTuneTitle.isNullOrBlank()) {
+                withContext(Dispatchers.Main) {
+                    val curStatus = _state.value.callStatus
+                    if (_state.value.activeCallerTuneTitle.isNullOrBlank() && (curStatus == CallStatus.CALLING || curStatus == CallStatus.RINGING)) {
+                        _state.value = _state.value.copy(activeCallerTuneTitle = restTune.title)
+                        if (curStatus == CallStatus.RINGING) {
+                            com.example.util.CallSoundEffectsManager.startCallerTune(context, restTune.audioBase64, restTune.audioUrl, restTune.title, restTune.startMs)
+                        } else {
+                            com.example.util.CallSoundEffectsManager.prepareCallerTune(context, restTune.audioBase64, restTune.audioUrl, restTune.title, restTune.startMs)
+                        }
+                    }
+                }
+            }
         }
 
         val cleanDigits = calleeNumber.replace(Regex("[^0-9]"), "")
@@ -3956,12 +4099,8 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                         put("callerFcmToken", myFcm)
                         put("callerWebToken", myWeb)
-                        if (!offerSdp.isNullOrBlank() && offerSdp.length < 3500) {
-                            put("offerSdp", offerSdp)
-                        }
-                        if (!answerSdp.isNullOrBlank() && answerSdp.length < 3500) {
-                            put("answerSdp", answerSdp)
-                        }
+                        encodePushSdp(offerSdp)?.let { put("offerSdp", it) }
+                        encodePushSdp(answerSdp)?.let { put("answerSdp", it) }
                         if (!candidates.isNullOrBlank() && candidates.length < 1500) {
                             put("candidates", candidates)
                         }

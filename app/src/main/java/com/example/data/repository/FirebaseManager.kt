@@ -111,6 +111,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 callerTuneEndMs = savedTune.endMs
             )
             _currentUser.value = user
+        syncCallerTuneToLocal(user)
 
             if (_isFirebaseConfigured.value) {
                 // CRITICAL: Always attach listeners and write user to Firestore on startup.
@@ -178,6 +179,7 @@ class FirebaseManager private constructor(private val context: Context) {
                 _currentUser.value?.let { current ->
                     users.find { it.phoneNumber == current.phoneNumber }?.let { updated ->
                         _currentUser.value = updated
+                        syncCallerTuneToLocal(updated)
                     }
                 }
                 
@@ -594,6 +596,7 @@ class FirebaseManager private constructor(private val context: Context) {
             callerTuneEndMs = existing?.callerTuneEndMs?.takeIf { it > 0 } ?: localTune.endMs
         )
         _currentUser.value = user
+        syncCallerTuneToLocal(user)
         
         prefs.edit()
             .putString("user_phone", user.phoneNumber)
@@ -672,6 +675,35 @@ class FirebaseManager private constructor(private val context: Context) {
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to update profile in Firestore: ${e.message}")
                 }
+        }
+    }
+
+    private fun syncCallerTuneToLocal(user: UserDto) {
+        try {
+            val local = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+            if (user.callerTuneTitle.isNotBlank() && (user.callerTuneAudioBase64.isNotBlank() || user.callerTuneUrl.isNotBlank())) {
+                val needsSync = local.title != user.callerTuneTitle ||
+                    local.audioUrl != user.callerTuneUrl ||
+                    (local.audioBase64.isBlank() && user.callerTuneAudioBase64.isNotBlank()) ||
+                    local.startMs != user.callerTuneStartMs
+                if (needsSync) {
+                    com.example.util.LksCallerTuneManager.saveMyCallerTune(
+                        context,
+                        com.example.util.CallerTuneInfo(
+                            title = user.callerTuneTitle,
+                            artist = user.callerTuneArtist,
+                            audioUrl = user.callerTuneUrl,
+                            audioBase64 = user.callerTuneAudioBase64,
+                            source = user.callerTuneSource,
+                            startMs = user.callerTuneStartMs,
+                            endMs = user.callerTuneEndMs,
+                            localUri = local.localUri
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed syncing caller tune from Firestore to local prefs: ${e.message}")
         }
     }
 

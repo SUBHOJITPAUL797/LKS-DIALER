@@ -8,6 +8,11 @@ import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.FileInputStream
 
 /**
@@ -167,6 +172,26 @@ object CallSoundEffectsManager {
 
             val httpHeaders = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
             var isBase64Playing = false
+            var isStreamingUrl = false
+            val validUrl = !audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")
+            val cachedUrlFile = if (validUrl) File(context.cacheDir, "ct_url_${audioUrl!!.hashCode()}.mp4") else null
+
+            fun bindAudioUrlOrCache(): Boolean {
+                if (!validUrl || audioUrl == null) return false
+                if (cachedUrlFile != null && LksCallerTuneManager.isValidAudioFile(cachedUrlFile)) {
+                    val fis = FileInputStream(cachedUrlFile)
+                    try {
+                        player.setDataSource(fis.fd, 0, cachedUrlFile.length())
+                        isBase64Playing = false
+                        return true
+                    } finally {
+                        fis.close()
+                    }
+                }
+                player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
+                isStreamingUrl = true
+                return true
+            }
 
             if (!audioBase64.isNullOrBlank()) {
                 val tempFile = LksCallerTuneManager.base64ToTempFile(context, audioBase64, "caller_playback")
@@ -180,18 +205,15 @@ object CallSoundEffectsManager {
                     }
                 } else {
                     try { tempFile?.delete() } catch (_: Exception) {}
-                    if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                        Log.w(TAG, "Base64 caller tune missing or corrupted; falling back to URL: $audioUrl")
-                        player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
+                    if (bindAudioUrlOrCache()) {
+                        Log.w(TAG, "Base64 caller tune missing or corrupted; using URL/cache fallback: $audioUrl")
                     } else {
                         callerTunePlayer = null
                         try { player.release() } catch (_: Exception) {}
                         return
                     }
                 }
-            } else if (!audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                player.setDataSource(context, android.net.Uri.parse(audioUrl), httpHeaders)
-            } else {
+            } else if (!bindAudioUrlOrCache()) {
                 callerTunePlayer = null
                 try { player.release() } catch (_: Exception) {}
                 return
@@ -223,13 +245,36 @@ object CallSoundEffectsManager {
             }
 
             player.setOnErrorListener { _, what, extra ->
-                Log.w(TAG, "Caller tune prepare error ($what, $extra) [isBase64=$isBase64Playing]")
+                Log.w(TAG, "Caller tune prepare error ($what, $extra) [isBase64=$isBase64Playing, isStreaming=$isStreamingUrl]")
                 val wasRinging = isRingingState
                 stopCallerTune()
-                if (isBase64Playing && !audioUrl.isNullOrBlank() && !audioUrl.contains("youtube.com") && !audioUrl.contains("youtu.be")) {
-                    Log.i(TAG, "Retrying caller tune playback directly via stream URL fallback: $audioUrl")
+                if (isBase64Playing && validUrl) {
+                    Log.i(TAG, "Retrying caller tune playback via URL/cache fallback: $audioUrl")
                     isRingingState = wasRinging
                     prepareCallerTune(context, null, audioUrl, title, startMs)
+                } else if (isStreamingUrl && validUrl && !isCallAnswered) {
+                    // OkHttp download fallback for CDNs rejected by MediaPlayer HTTP stack
+                    isRingingState = wasRinging
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            val dl = YouTubeSearchHelper.downloadSongToTempFile(context, audioUrl!!)
+                            if (dl != null && LksCallerTuneManager.isValidAudioFile(dl) && cachedUrlFile != null) {
+                                dl.copyTo(cachedUrlFile, overwrite = true)
+                                try { dl.delete() } catch (_: Exception) {}
+                                withContext(Dispatchers.Main) {
+                                    if (!isCallAnswered && isRingingState) {
+                                        prepareCallerTune(context, null, audioUrl, title, startMs)
+                                    }
+                                }
+                                return@launch
+                            } else {
+                                try { dl?.delete() } catch (_: Exception) {}
+                            }
+                        } catch (_: Exception) {}
+                        withContext(Dispatchers.Main) {
+                            if (isRingingState && !isCallAnswered) startRingbackTone(context)
+                        }
+                    }
                 } else if (wasRinging) {
                     startRingbackTone(context)
                 }

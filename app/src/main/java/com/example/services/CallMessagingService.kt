@@ -24,6 +24,38 @@ class CallMessagingService : FirebaseMessagingService() {
         const val CHANNEL_ID = "incoming_call_channel"
         const val MISSED_CALL_CHANNEL_ID = "missed_call_channel"
         const val NOTIFICATION_ID = 1001
+
+        private fun decodePushSdp(raw: String?): String {
+            if (raw.isNullOrBlank()) return ""
+            if (!raw.startsWith("GZ:")) return raw
+            return try {
+                val compressed = android.util.Base64.decode(raw.removePrefix("GZ:"), android.util.Base64.NO_WRAP)
+                java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(compressed)).bufferedReader(Charsets.UTF_8).use {
+                    it.readText()
+                }
+            } catch (e: Exception) {
+                Log.w("FCM", "Failed to decompress GZ push SDP: ${e.message}")
+                ""
+            }
+        }
+
+        internal fun resolveMyTune(ctx: Context): com.example.util.CallerTuneInfo {
+            val local = com.example.util.LksCallerTuneManager.getMyCallerTune(ctx)
+            if (local.isConfigured) return local
+            val u = FirebaseManager.getInstance(ctx).currentUser.value
+            if (u != null && u.callerTuneTitle.isNotBlank() && (u.callerTuneAudioBase64.isNotBlank() || u.callerTuneUrl.isNotBlank())) {
+                return com.example.util.CallerTuneInfo(
+                    title = u.callerTuneTitle,
+                    artist = u.callerTuneArtist,
+                    audioUrl = u.callerTuneUrl,
+                    audioBase64 = u.callerTuneAudioBase64,
+                    source = u.callerTuneSource,
+                    startMs = u.callerTuneStartMs,
+                    endMs = u.callerTuneEndMs
+                )
+            }
+            return local
+        }
     }
 
     override fun onNewToken(token: String) {
@@ -106,12 +138,12 @@ class CallMessagingService : FirebaseMessagingService() {
             }
 
             if (type == "call_answered") {
-                val answerSdp = remoteMessage.data["answerSdp"]
+                val answerSdp = decodePushSdp(remoteMessage.data["answerSdp"])
                 val calleeCandidates = remoteMessage.data["candidates"]
-                Log.i("FCM", "Received call_answered push notification for callId: $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()})")
+                Log.i("FCM", "Received call_answered push notification for callId: $callId (hasPushAnswer=${answerSdp.isNotBlank()})")
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
-                engine?.onCallAnsweredFromPush(callId, answerSdp, calleeCandidates)
+                engine?.onCallAnsweredFromPush(callId, answerSdp.ifBlank { null }, calleeCandidates)
                 try {
                     if (wakeLock?.isHeld == true) wakeLock.release()
                 } catch (_: Exception) {}
@@ -132,7 +164,7 @@ class CallMessagingService : FirebaseMessagingService() {
             }
 
             if (type == "call_offer") {
-                val offerSdp = remoteMessage.data["offerSdp"] ?: ""
+                val offerSdp = decodePushSdp(remoteMessage.data["offerSdp"])
                 val callerCandidates = remoteMessage.data["candidates"] ?: ""
                 Log.i("FCM", "Received call_offer push for callId: $callId (offerLen=${offerSdp.length})")
                 if (offerSdp.isNotBlank()) {
@@ -256,7 +288,7 @@ class CallMessagingService : FirebaseMessagingService() {
                 val callerNumber = remoteMessage.data["callerNumber"] ?: ""
                 val callType     = remoteMessage.data["callType"]     ?: "AUDIO"
                 val callerProfilePic = remoteMessage.data["callerProfilePic"] ?: ""
-                val offerSdp     = remoteMessage.data["offerSdp"]     ?: ""
+                val offerSdp     = decodePushSdp(remoteMessage.data["offerSdp"])
 
                 if (isUserBusy) {
                     val callTypeEnum = try { com.example.data.model.CallType.valueOf(callType) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
@@ -364,7 +396,7 @@ class CallMessagingService : FirebaseMessagingService() {
                         val db = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                         val docRef = db.collection("calls").document(callId)
                         // Build update map with caller tune data (we are the callee — getMyCallerTune reads our own prefs)
-                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                        val myTune = resolveMyTune(applicationContext)
                         val ringUpdates = mutableMapOf<String, Any>("status" to "RINGING")
                         if (myTune.isConfigured) {
                             ringUpdates["callerTuneTitle"] = myTune.title
@@ -392,7 +424,7 @@ class CallMessagingService : FirebaseMessagingService() {
                     try {
                         val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
                             ?: com.example.webrtc.WebRtcEngine.getInstance(applicationContext)
-                        val myTune = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                        val myTune = resolveMyTune(applicationContext)
                         engine.sendRingingAckPush(
                             callerNumber = callerNumber,
                             callId = callId,
@@ -702,7 +734,7 @@ class CallMessagingService : FirebaseMessagingService() {
             try {
                 val db2 = com.google.firebase.firestore.FirebaseFirestore.getInstance()
                 val docRef2 = db2.collection("calls").document(callId)
-                val myTune2 = com.example.util.LksCallerTuneManager.getMyCallerTune(applicationContext)
+                val myTune2 = resolveMyTune(applicationContext)
                 val ringUpdates2 = mutableMapOf<String, Any>("status" to com.example.data.model.CallStatus.RINGING.name)
                 if (myTune2.isConfigured) {
                     ringUpdates2["callerTuneTitle"] = myTune2.title
