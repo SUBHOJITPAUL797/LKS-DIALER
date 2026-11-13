@@ -518,14 +518,33 @@ fun ChatConversationScreen(
         chatRepository.setIsAtBottom(isNearBottom)
     }
 
-    // Auto-mark conversation as read on screen open and whenever incoming messages exist,
-    // BUT ONLY WHEN the activity is RESUMED, screen is physically ON, UNLOCKED, AND user is near bottom!
-    LaunchedEffect(normPeer, messages, lifecycleState, isNearBottom) {
-        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED) && isNearBottom) {
+    // Unconditionally mark conversation as read on open & fetch any pending receipts/messages
+    LaunchedEffect(normPeer) {
+        chatRepository.markConversationAsRead(normPeer)
+        chatRepository.fetchPendingMessagesAndReceipts()
+    }
+
+    // Auto-mark conversation as read whenever user is viewing this conversation and unread incoming messages exist
+    LaunchedEffect(normPeer, messages, lifecycleState) {
+        if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
             val isActivelyWatching = chatRepository.isUserInConversation(normPeer)
             if (isActivelyWatching && messages.isNotEmpty()) {
                 val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
                 if (hasUnread) {
+                    chatRepository.markConversationAsRead(normPeer)
+                }
+            }
+        }
+    }
+
+    // Periodic check every 3.5s while active in chat to auto-heal any missed ACKs / delivered ticks
+    LaunchedEffect(normPeer, lifecycleState) {
+        while (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
+            kotlinx.coroutines.delay(3500)
+            if (lifecycleState.isAtLeast(Lifecycle.State.RESUMED)) {
+                chatRepository.fetchPendingMessagesAndReceipts()
+                val hasUnread = messages.any { !it.isOutgoing && it.status != MessageStatus.READ.name }
+                if (hasUnread && chatRepository.isUserInConversation(normPeer)) {
                     chatRepository.markConversationAsRead(normPeer)
                 }
             }
@@ -3853,7 +3872,7 @@ private fun MessageBubble(
                                 )
                                 if (isOutgoing) {
                                     Spacer(modifier = Modifier.width(3.dp))
-                                    StatusTickIcon(status = message.status)
+                                    StatusTickIcon(status = message.status, isOutgoingBubble = true)
                                 }
                             }
                         }
@@ -3997,7 +4016,7 @@ private fun MessageBubble(
                                         )
                                         if (isOutgoing) {
                                             Spacer(modifier = Modifier.width(3.dp))
-                                            StatusTickIcon(status = message.status)
+                                            StatusTickIcon(status = message.status, isOutgoingBubble = true)
                                         }
                                     }
                                 }

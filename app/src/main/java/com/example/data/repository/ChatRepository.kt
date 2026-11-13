@@ -245,11 +245,10 @@ class ChatRepository private constructor(private val context: Context) {
     }
 
     /**
-     * Returns true ONLY if the user is in this conversation AND scrolled to the bottom
-     * where new messages are directly visible on screen.
+     * Returns true if the user is in this conversation in the foreground.
      */
     fun isUserActivelyViewingPeer(peerNumber: String): Boolean {
-        return isUserInConversation(peerNumber) && isUserNearBottom
+        return isUserInConversation(peerNumber)
     }
 
     /**
@@ -309,7 +308,11 @@ class ChatRepository private constructor(private val context: Context) {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "🌐 Network became available: refreshing chat listeners and pending messages")
                     repositoryScope.launch {
-                        currentListeningPhone?.let { phone ->
+                        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+                        val phone = currentListeningPhone
+                            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+                            ?: prefs.getString("user_phone", null)
+                        if (phone != null) {
                             attachChatListeners(phone, force = true)
                         }
                         fetchPendingMessagesAndReceipts()
@@ -1230,6 +1233,10 @@ class ChatRepository private constructor(private val context: Context) {
             val peerNorm = ContactsHelper.normalizePhoneNumber(peerRaw)
             val last10 = peerNorm.filter { it.isDigit() }.takeLast(10)
 
+            val specificMsg = if (receipt.messageId != "all") messageDao.getMessageById(receipt.messageId) else null
+            val cId = specificMsg?.conversationId ?: peerNorm
+            val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
+
             if (receipt.messageId != "all") {
                 if (receipt.status == "VIEW_ONCE_OPENED") {
                     messageDao.markViewOnceOpened(receipt.messageId)
@@ -1237,14 +1244,15 @@ class ChatRepository private constructor(private val context: Context) {
                 } else {
                     messageDao.updateMessageStatus(receipt.messageId, receipt.status)
                 }
-                val specificMsg = messageDao.getMessageById(receipt.messageId)
-                if (specificMsg != null && (receipt.status == MessageStatus.READ.name || receipt.status == "VIEW_ONCE_OPENED")) {
-                    val cId = specificMsg.conversationId
-                    val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
-                    // Mark messages sent up to this message's timestamp as READ (with clock skew buffer)
-                    val upTo = maxOf(specificMsg.timestamp, receipt.timestamp, System.currentTimeMillis() + 60_000L)
-                    messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, upTo, MessageStatus.READ.name)
-                    conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
+                if (specificMsg != null) {
+                    if (receipt.status == MessageStatus.READ.name || receipt.status == "VIEW_ONCE_OPENED") {
+                        // Mark messages sent up to this message's timestamp as READ (with clock skew buffer)
+                        val upTo = maxOf(specificMsg.timestamp, receipt.timestamp, System.currentTimeMillis() + 60_000L)
+                        messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, upTo, MessageStatus.READ.name)
+                        conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
+                    } else if (receipt.status == MessageStatus.DELIVERED.name) {
+                        conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.DELIVERED.name)
+                    }
                 }
             } else if (receipt.status == MessageStatus.READ.name) {
                 // If "all" READ receipt, mark messages sent up to receipt timestamp with clock skew tolerance
@@ -1255,8 +1263,10 @@ class ChatRepository private constructor(private val context: Context) {
 
             // Sync the conversation entity's lastMessageStatus so the Chat tab list
             // reflects the updated ticks (Delivered or Read double blue ticks)
-            val lastMsg = messageDao.getLastMessageForConversation(peerNorm, last10)
+            val lastMsg = messageDao.getLastMessageForConversation(cId, cLast10)
+                ?: messageDao.getLastMessageForConversation(peerNorm, last10)
             if (lastMsg != null && lastMsg.isOutgoing) {
+                conversationDao.updateLastMessageStatus(cId, cLast10, lastMsg.status)
                 conversationDao.updateLastMessageStatus(peerNorm, last10, lastMsg.status)
             }
 
@@ -1270,6 +1280,7 @@ class ChatRepository private constructor(private val context: Context) {
 
     /**
      * Sends an ephemeral receipt (DELIVERED or READ) to peer's receipts inbox.
+     * Writes across recipient variations and triggers instant high-priority FCM receipt push.
      */
     private fun sendReceipt(recipientNumber: String, messageId: String, status: String) {
         val normalized = ContactsHelper.normalizePhoneNumber(recipientNumber)
@@ -1297,17 +1308,106 @@ class ChatRepository private constructor(private val context: Context) {
             timestamp = System.currentTimeMillis()
         )
 
-        firestore.collection("receipts")
-            .document(canonicalRecipient)
-            .collection("acks")
-            .document(receiptId)
-            .set(receiptDto)
-            .addOnSuccessListener {
-                Log.d(TAG, "Receipt sent successfully to $canonicalRecipient: msgId=$messageId, status=$status")
+        // Write to canonical recipient and variations so receipt is guaranteed to be received
+        val targetVariants = ContactsHelper.generateNumberVariations(canonicalRecipient).take(4)
+        for (variant in targetVariants) {
+            firestore.collection("receipts")
+                .document(variant)
+                .collection("acks")
+                .document(receiptId)
+                .set(receiptDto)
+                .addOnSuccessListener {
+                    Log.d(TAG, "Receipt sent successfully to $variant: msgId=$messageId, status=$status")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to send receipt to $variant: ${e.message}")
+                }
+        }
+
+        // Send instant high-priority FCM push receipt so sender immediately sees double tick / blue tick
+        sendFcmReceipt(
+            recipientPhone = canonicalRecipient,
+            senderPhone = myPhone,
+            messageId = messageId,
+            status = status
+        )
+    }
+
+    /**
+     * Sends a high-priority FCM receipt notification back to the message sender.
+     */
+    private fun sendFcmReceipt(
+        recipientPhone: String,
+        senderPhone: String,
+        messageId: String,
+        status: String
+    ) {
+        val workerUrl = com.example.webrtc.WebRtcEngine.getEffectiveWorkerUrl()
+        val workerSecret = com.example.webrtc.WebRtcEngine.getEffectiveWorkerSecret()
+        if (workerUrl.isBlank()) return
+
+        val firebaseManager = FirebaseManager.getInstance(context)
+        repositoryScope.launch(Dispatchers.IO) {
+            try {
+                var recipientUser = firebaseManager.lookupUserByNumber(recipientPhone)
+                var token = recipientUser?.fcmToken ?: ""
+                var webToken = recipientUser?.webToken ?: ""
+
+                // Fallback: query Firestore directly if token is missing from in-memory cache
+                if (token.isBlank() && webToken.isBlank()) {
+                    val cleanDigits = ContactsHelper.normalizePhoneNumber(recipientPhone)
+                    val variations = ContactsHelper.generateNumberVariations(cleanDigits)
+                    for (variant in variations) {
+                        try {
+                            val doc = firestore.collection("users").document(variant).get().await()
+                            val u = doc.toObject(UserDto::class.java)
+                            if (u != null && (!u.fcmToken.isNullOrBlank() || !u.webToken.isNullOrBlank())) {
+                                token = u.fcmToken ?: ""
+                                webToken = u.webToken ?: ""
+                                break
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                if (token.isBlank() && webToken.isBlank()) {
+                    Log.d(TAG, "sendFcmReceipt: No FCM token for $recipientPhone, skipping receipt push")
+                    return@launch
+                }
+
+                var conn: java.net.HttpURLConnection? = null
+                try {
+                    val url = java.net.URL(workerUrl)
+                    conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json")
+                        setRequestProperty("X-Worker-Secret", workerSecret)
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        doOutput = true
+                    }
+                    val json = JSONObject().apply {
+                        if (token.isNotBlank()) put("token", token)
+                        if (webToken.isNotBlank()) put("webToken", webToken)
+                        put("type", "chat_receipt")
+                        put("callerNumber", senderPhone)
+                        put("recipientNumber", recipientPhone)
+                        put("messageId", messageId)
+                        put("mediaType", status)
+                        put("reason", status)
+                    }.toString()
+
+                    conn.outputStream.use { it.write(json.toByteArray()) }
+                    Log.d(TAG, "Receipt FCM push sent: msgId=$messageId, status=$status to $recipientPhone, code=${conn.responseCode}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to send receipt FCM push: ${e.message}")
+                } finally {
+                    conn?.disconnect()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error in sendFcmReceipt: ${e.message}")
             }
-            .addOnFailureListener { e ->
-                Log.w(TAG, "Failed to send receipt to $canonicalRecipient: ${e.message}")
-            }
+        }
     }
 
     /**
@@ -3485,6 +3585,81 @@ class ChatRepository private constructor(private val context: Context) {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Direct fetch receipts failed on push message for $variant: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Handles instant incoming FCM push receipts (DELIVERED, READ, VIEW_ONCE_OPENED).
+     * Directly updates local Room DB so UI ticks update immediately even if backgrounded.
+     */
+    suspend fun handlePushReceiptReceived(data: Map<String, String>) = withContext(Dispatchers.IO) {
+        val messageId = data["messageId"] ?: ""
+        val status = data["mediaType"] ?: data["reason"] ?: MessageStatus.DELIVERED.name
+        val senderNumber = data["callerNumber"] ?: data["senderNumber"] ?: ""
+        val senderNorm = ContactsHelper.normalizePhoneNumber(senderNumber)
+        val last10 = senderNorm.filter { it.isDigit() }.takeLast(10)
+
+        Log.d(TAG, "⚡ handlePushReceiptReceived: msgId=$messageId, status=$status, sender=$senderNorm")
+
+        if (messageId.isNotBlank()) {
+            if (messageId != "all") {
+                if (status == "VIEW_ONCE_OPENED") {
+                    messageDao.markViewOnceOpened(messageId)
+                    messageDao.updateMessageStatus(messageId, MessageStatus.READ.name)
+                } else {
+                    messageDao.updateMessageStatus(messageId, status)
+                }
+                val specificMsg = messageDao.getMessageById(messageId)
+                if (specificMsg != null) {
+                    val cId = specificMsg.conversationId
+                    val cLast10 = cId.filter { it.isDigit() }.takeLast(10)
+                    if (status == MessageStatus.READ.name || status == "VIEW_ONCE_OPENED") {
+                        val upTo = maxOf(specificMsg.timestamp, System.currentTimeMillis() + 60_000L)
+                        messageDao.markDeliveredMessagesAsReadUpTo(cId, cLast10, upTo, MessageStatus.READ.name)
+                        conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.READ.name)
+                    } else if (status == MessageStatus.DELIVERED.name) {
+                        conversationDao.updateLastMessageStatus(cId, cLast10, MessageStatus.DELIVERED.name)
+                    }
+                }
+            } else if (status == MessageStatus.READ.name) {
+                val upToTs = System.currentTimeMillis() + 60_000L
+                messageDao.markDeliveredMessagesAsReadUpTo(senderNorm, last10, upToTs, MessageStatus.READ.name)
+                conversationDao.updateLastMessageStatus(senderNorm, last10, MessageStatus.READ.name)
+            }
+
+            val lastMsg = messageDao.getLastMessageForConversation(senderNorm, last10)
+            if (lastMsg != null && lastMsg.isOutgoing) {
+                conversationDao.updateLastMessageStatus(senderNorm, last10, lastMsg.status)
+            }
+        }
+
+        // Direct-fetch any pending receipts from Firestore as well
+        val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
+        val myPhone = currentListeningPhone
+            ?: FirebaseManager.getInstance(context).currentUser.value?.phoneNumber
+            ?: prefs.getString("user_phone", null)
+            ?: return@withContext
+
+        val variations = ContactsHelper.generateNumberVariations(myPhone)
+        for (variant in variations) {
+            try {
+                val receiptsSnapshot = firestore.collection("receipts")
+                    .document(variant)
+                    .collection("acks")
+                    .get()
+                    .await()
+
+                if (!receiptsSnapshot.isEmpty) {
+                    for (doc in receiptsSnapshot.documents) {
+                        val rDto = doc.toObject(ChatReceiptDto::class.java)
+                        if (rDto != null) {
+                            processIncomingReceipt(rDto, doc.reference)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct fetch receipts failed on push receipt for $variant: ${e.message}")
             }
         }
     }

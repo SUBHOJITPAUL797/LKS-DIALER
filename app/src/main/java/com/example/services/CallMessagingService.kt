@@ -107,6 +107,25 @@ class CallMessagingService : FirebaseMessagingService() {
                 return
             }
 
+            if (type == "chat_receipt") {
+                Log.d("FCM", "Received chat_receipt push notification, handling via ChatRepository")
+                try {
+                    kotlinx.coroutines.runBlocking {
+                        kotlinx.coroutines.withTimeoutOrNull(10000L) {
+                            com.example.data.repository.ChatRepository.getInstance(applicationContext)
+                                .handlePushReceiptReceived(remoteMessage.data)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("FCM", "Error handling chat_receipt push: ${e.message}", e)
+                } finally {
+                    try {
+                        if (wakeLock?.isHeld == true) wakeLock.release()
+                    } catch (_: Exception) {}
+                }
+                return
+            }
+
             if (type == "app_update" || type == "new_release" || remoteMessage.data["update_available"] == "true") {
                 Log.d("FCM", "Received app update push notification from FCM")
                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {

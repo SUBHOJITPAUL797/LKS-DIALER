@@ -60,7 +60,7 @@ export default {
     const requestId = crypto.randomUUID().slice(0, 8);
 
     // Rate limiting: max 120 chat messages or 15 call pushes per IP per minute
-    const isChat = pushType === "chat_message";
+    const isChat = pushType === "chat_message" || pushType === "chat_receipt";
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
     const rateLimitResult = await checkRateLimit(env, `rate:${ip}:${isChat ? "chat" : "call"}`, isChat ? 120 : 15);
     if (!rateLimitResult.allowed) {

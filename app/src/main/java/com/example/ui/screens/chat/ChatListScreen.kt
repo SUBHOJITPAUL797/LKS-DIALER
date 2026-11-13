@@ -753,9 +753,9 @@ private fun ConversationItem(
 @Composable
 fun StatusTickIcon(status: String, isOutgoingBubble: Boolean = false) {
     val tickColor = when (status) {
-        MessageStatus.READ.name -> if (isOutgoingBubble) Color(0xFFB3E5FC) else Color(0xFF34B7F1)
-        MessageStatus.DELIVERED.name -> if (isOutgoingBubble) Color(0xFFE2E8F0) else Color.Gray
-        MessageStatus.SENT.name -> if (isOutgoingBubble) Color(0xFFCBD5E1) else Color.Gray
+        MessageStatus.READ.name -> if (isOutgoingBubble) Color(0xFF00E5FF) else Color(0xFF0288D1)
+        MessageStatus.DELIVERED.name -> if (isOutgoingBubble) Color(0xFFE2E8F0) else Color(0xFF94A3B8)
+        MessageStatus.SENT.name -> if (isOutgoingBubble) Color(0xFFCBD5E1) else Color(0xFF94A3B8)
         else -> Color.LightGray
     }
 
