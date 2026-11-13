@@ -1247,10 +1247,44 @@ class ChatRepositoryWeb {
       timestamp: Date.now()
     };
 
+    const targetVariants = generateNumberVariations(canonicalRecipient).slice(0, 4);
+    for (const variant of targetVariants) {
+      try {
+        await setDoc(doc(db, 'receipts', variant, 'acks', receiptId), receiptDto);
+      } catch (e) {
+        console.warn(`Failed to send receipt to ${variant}:`, e);
+      }
+    }
+
+    this.sendFcmReceipt(canonicalRecipient, myPhone, messageId, status);
+  }
+
+  async sendFcmReceipt(recipientPhone, senderPhone, messageId, status) {
+    const url = "https://lks-dialer-call-notifier.subhojit.workers.dev/call";
     try {
-      await setDoc(doc(db, 'receipts', canonicalRecipient, 'acks', receiptId), receiptDto);
+      const callee = await this.resolvePeerUser(recipientPhone);
+      if (!callee || (!callee.fcmToken && !callee.webToken)) return;
+
+      await fetch(url, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json", 
+          "X-Worker-Secret": "LKS_DIALER_EsA2u7uNJMiE0ZhbtRUnzs7tkZPe4WvJ" 
+        },
+        body: JSON.stringify({
+          token: callee.fcmToken || null,
+          webToken: callee.webToken || null,
+          callerNumber: senderPhone,
+          recipientNumber: recipientPhone,
+          type: "chat_receipt",
+          mediaType: status,
+          reason: status,
+          messageId: messageId
+        })
+      });
+      console.log(`[ChatRepositoryWeb] FCM receipt push sent to ${recipientPhone}: msgId=${messageId}, status=${status}`);
     } catch (e) {
-      console.warn('Failed to send receipt:', e);
+      console.warn('Failed to send FCM receipt push:', e);
     }
   }
 
