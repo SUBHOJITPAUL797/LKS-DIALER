@@ -325,16 +325,57 @@ object LksCallerTuneManager {
      * 4. If audioUrl is missing, auto-searches music catalog for song title and downloads it.
      * 5. Plays local audio directly without network stutter or closed descriptor bugs.
      */
+    private val audioValidityCache = android.util.LruCache<String, Boolean>(60)
+    private val failedBase64Signatures = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private const val PREF_INVALID_B64_SIG = "invalid_b64_tune_sig"
+
+    fun isBase64KnownInvalid(context: Context, base64: String): Boolean {
+        if (base64.isBlank()) return false
+        val sig = "${base64.length}_${base64.hashCode()}"
+        if (failedBase64Signatures.contains(sig)) return true
+        val persisted = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_INVALID_B64_SIG, null)
+        return if (persisted == sig) {
+            failedBase64Signatures.add(sig)
+            true
+        } else false
+    }
+
+    fun markBase64Invalid(context: Context, base64: String) {
+        if (base64.isNotBlank()) {
+            val sig = "${base64.length}_${base64.hashCode()}"
+            failedBase64Signatures.add(sig)
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_INVALID_B64_SIG, sig)
+                .apply()
+        }
+    }
+
     /**
-     * Verifies via MediaExtractor that a local audio file has a parseable container and at least one
-     * valid audio track, rejecting truncated downloads or corrupted MP3 sync-sliced files.
+     * Verifies via container magic + MediaExtractor that a local audio file has a parseable
+     * container and at least one valid audio track, caching results per (path, size, mtime).
      */
     fun isValidAudioFile(file: File?): Boolean {
         if (file == null || !file.exists() || file.length() <= 1024L) return false
+        val cacheKey = "${file.absolutePath}_${file.length()}_${file.lastModified()}"
+        synchronized(audioValidityCache) {
+            audioValidityCache.get(cacheKey)?.let { return it }
+        }
+        if (!VideoThumbnailHelper.isPlausibleMediaFile(file)) {
+            synchronized(audioValidityCache) { audioValidityCache.put(cacheKey, false) }
+            return false
+        }
         var extractor: MediaExtractor? = null
-        return try {
+        val isValid = try {
             extractor = MediaExtractor()
-            extractor.setDataSource(file.absolutePath)
+            try {
+                FileInputStream(file).use { fis ->
+                    extractor.setDataSource(fis.fd, 0L, file.length())
+                }
+            } catch (_: java.io.IOException) {
+                extractor.setDataSource(file.absolutePath)
+            }
             var hasAudioTrack = false
             for (i in 0 until extractor.trackCount) {
                 val fmt = extractor.getTrackFormat(i)
@@ -355,6 +396,10 @@ object LksCallerTuneManager {
         } finally {
             try { extractor?.release() } catch (_: Exception) {}
         }
+        synchronized(audioValidityCache) {
+            audioValidityCache.put(cacheKey, isValid)
+        }
+        return isValid
     }
 
     private suspend fun awaitPlayPreview(

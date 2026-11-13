@@ -75,6 +75,8 @@ class FirebaseManager private constructor(private val context: Context) {
     // BUG-14 FIX: Store reference so it can be removed if needed
     private var usersListener: ListenerRegistration? = null
     private val activeCallLogIds = java.util.concurrent.ConcurrentHashMap<String, String>()
+    @Volatile
+    private var lastSyncedCallerTuneSignature: String = ""
 
     init {
         // Step 1: Check if Firebase is properly configured first
@@ -679,77 +681,87 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     private fun syncCallerTuneToLocal(user: UserDto) {
-        try {
-            val local = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
-            if (user.callerTuneTitle.isNotBlank() && (user.callerTuneAudioBase64.isNotBlank() || user.callerTuneUrl.isNotBlank())) {
-                val targetFile = java.io.File(context.filesDir, "my_caller_tune.mp3")
+        val signature = "${user.phoneNumber}|${user.callerTuneTitle}|${user.callerTuneUrl}|${user.callerTuneStartMs}|${user.callerTuneEndMs}|${user.callerTuneAudioBase64.length}|${user.callerTuneAudioBase64.hashCode()}"
+        if (signature == lastSyncedCallerTuneSignature) return
+        lastSyncedCallerTuneSignature = signature
 
-                // When syncing from Firestore, if user.callerTuneAudioBase64.isNotBlank(),
-                // also write the decoded bytes directly to File(context.filesDir, "my_caller_tune.mp3")
-                // (after validating with isValidAudioFile) so freshly logged-in users have it immediately on disk
-                if (user.callerTuneAudioBase64.isNotBlank()) {
-                    val needFileWrite = !targetFile.exists() ||
-                            !com.example.util.LksCallerTuneManager.isValidAudioFile(targetFile) ||
-                            local.title != user.callerTuneTitle ||
-                            local.audioBase64 != user.callerTuneAudioBase64
+        scope.launch {
+            try {
+                val local = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
+                if (user.callerTuneTitle.isNotBlank() && (user.callerTuneAudioBase64.isNotBlank() || user.callerTuneUrl.isNotBlank())) {
+                    val targetFile = java.io.File(context.filesDir, "my_caller_tune.mp3")
+                    var targetValid = targetFile.exists() && com.example.util.LksCallerTuneManager.isValidAudioFile(targetFile)
+                    if (targetFile.exists() && !targetValid) {
+                        // Delete broken cached file once so future checks don't keep invoking NuMediaExtractor
+                        try { targetFile.delete() } catch (_: Exception) {}
+                    }
 
-                    if (needFileWrite) {
-                        try {
-                            val cleanBase64 = if (user.callerTuneAudioBase64.contains(",")) {
-                                user.callerTuneAudioBase64.substringAfter(",")
-                            } else {
-                                user.callerTuneAudioBase64
-                            }
-                            val decoded = android.util.Base64.decode(cleanBase64, android.util.Base64.DEFAULT)
-                            if (decoded.size > 2048) {
-                                val verifyFile = java.io.File(context.cacheDir, "sync_b64_tune_${System.currentTimeMillis()}.tmp")
-                                java.io.FileOutputStream(verifyFile).use { it.write(decoded) }
-                                if (com.example.util.LksCallerTuneManager.isValidAudioFile(verifyFile)) {
-                                    verifyFile.copyTo(targetFile, overwrite = true)
-                                    Log.i(TAG, "Decoded and saved caller tune to my_caller_tune.mp3 (${decoded.size} bytes)")
+                    if (user.callerTuneAudioBase64.isNotBlank() && !com.example.util.LksCallerTuneManager.isBase64KnownInvalid(context, user.callerTuneAudioBase64)) {
+                        val needFileWrite = !targetValid ||
+                                local.title != user.callerTuneTitle ||
+                                local.audioBase64 != user.callerTuneAudioBase64
+
+                        if (needFileWrite) {
+                            try {
+                                val cleanBase64 = if (user.callerTuneAudioBase64.contains(",")) {
+                                    user.callerTuneAudioBase64.substringAfter(",")
                                 } else {
-                                    Log.w(TAG, "Decoded caller tune base64 failed validation")
+                                    user.callerTuneAudioBase64
                                 }
-                                try { verifyFile.delete() } catch (_: Exception) {}
+                                val decoded = android.util.Base64.decode(cleanBase64, android.util.Base64.DEFAULT)
+                                if (decoded.size > 2048) {
+                                    val verifyFile = java.io.File(context.cacheDir, "sync_b64_tune_${System.currentTimeMillis()}.mp3")
+                                    java.io.FileOutputStream(verifyFile).use { it.write(decoded) }
+                                    if (com.example.util.LksCallerTuneManager.isValidAudioFile(verifyFile)) {
+                                        verifyFile.copyTo(targetFile, overwrite = true)
+                                        targetValid = true
+                                        Log.i(TAG, "Decoded and saved caller tune to my_caller_tune.mp3 (${decoded.size} bytes)")
+                                    } else {
+                                        com.example.util.LksCallerTuneManager.markBase64Invalid(context, user.callerTuneAudioBase64)
+                                        Log.w(TAG, "Decoded caller tune base64 failed validation")
+                                    }
+                                    try { verifyFile.delete() } catch (_: Exception) {}
+                                } else {
+                                    com.example.util.LksCallerTuneManager.markBase64Invalid(context, user.callerTuneAudioBase64)
+                                }
+                            } catch (be: Exception) {
+                                Log.w(TAG, "Failed decoding caller tune from Base64: ${be.message}")
                             }
-                        } catch (be: Exception) {
-                            Log.w(TAG, "Failed decoding caller tune from Base64: ${be.message}")
                         }
                     }
-                }
 
-                val hasValidLocalFile = targetFile.exists() && com.example.util.LksCallerTuneManager.isValidAudioFile(targetFile)
-                val resolvedLocalUri = if (hasValidLocalFile) {
-                    android.net.Uri.fromFile(targetFile).toString()
-                } else {
-                    local.localUri
-                }
+                    val resolvedLocalUri = if (targetValid) {
+                        android.net.Uri.fromFile(targetFile).toString()
+                    } else {
+                        local.localUri
+                    }
 
-                val needsSync = local.title != user.callerTuneTitle ||
-                    local.audioUrl != user.callerTuneUrl ||
-                    (local.audioBase64.isBlank() && user.callerTuneAudioBase64.isNotBlank()) ||
-                    local.startMs != user.callerTuneStartMs ||
-                    local.localUri != resolvedLocalUri
+                    val needsSync = local.title != user.callerTuneTitle ||
+                        local.audioUrl != user.callerTuneUrl ||
+                        (local.audioBase64.isBlank() && user.callerTuneAudioBase64.isNotBlank()) ||
+                        local.startMs != user.callerTuneStartMs ||
+                        local.localUri != resolvedLocalUri
 
-                if (needsSync) {
-                    com.example.util.LksCallerTuneManager.saveMyCallerTune(
-                        context,
-                        com.example.util.CallerTuneInfo(
-                            title = user.callerTuneTitle,
-                            artist = user.callerTuneArtist,
-                            audioUrl = user.callerTuneUrl,
-                            audioBase64 = user.callerTuneAudioBase64,
-                            source = user.callerTuneSource,
-                            startMs = user.callerTuneStartMs,
-                            endMs = user.callerTuneEndMs,
-                            localUri = resolvedLocalUri,
-                            thumbnailUrl = local.thumbnailUrl
+                    if (needsSync) {
+                        com.example.util.LksCallerTuneManager.saveMyCallerTune(
+                            context,
+                            com.example.util.CallerTuneInfo(
+                                title = user.callerTuneTitle,
+                                artist = user.callerTuneArtist,
+                                audioUrl = user.callerTuneUrl,
+                                audioBase64 = user.callerTuneAudioBase64,
+                                source = user.callerTuneSource,
+                                startMs = user.callerTuneStartMs,
+                                endMs = user.callerTuneEndMs,
+                                localUri = resolvedLocalUri,
+                                thumbnailUrl = local.thumbnailUrl
+                            )
                         )
-                    )
+                    }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed syncing caller tune from Firestore to local prefs: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed syncing caller tune from Firestore to local prefs: ${e.message}")
         }
     }
 

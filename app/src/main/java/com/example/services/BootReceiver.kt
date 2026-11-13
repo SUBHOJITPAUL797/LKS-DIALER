@@ -57,6 +57,13 @@ class BootReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.e("BootReceiver", "Failed to start keep-alive service on $action: ${e.message}")
             }
+
+            // Ensure Scheduled Message watcher is active after boot/update
+            try {
+                com.example.ui.screens.chat.ScheduledMessageManager.ensureStarted(context)
+            } catch (e: Exception) {
+                Log.w("BootReceiver", "Failed to start ScheduledMessageManager on $action: ${e.message}")
+            }
         }
     }
 }

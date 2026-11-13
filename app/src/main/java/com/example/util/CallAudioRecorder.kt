@@ -495,14 +495,18 @@ class CallAudioRecorder private constructor(private val context: Context) {
     }
 
     private fun getAudioDurationMs(file: File): Long {
+        if (!VideoThumbnailHelper.isPlausibleMediaFile(file)) return 0L
+        val retriever = MediaMetadataRetriever()
         return try {
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(file.absolutePath)
+            java.io.FileInputStream(file).use { fis ->
+                retriever.setDataSource(fis.fd, 0L, file.length())
+            }
             val time = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            retriever.release()
             time?.toLongOrNull() ?: 0L
         } catch (_: Exception) {
             0L
+        } finally {
+            try { retriever.release() } catch (_: Throwable) {}
         }
     }
 

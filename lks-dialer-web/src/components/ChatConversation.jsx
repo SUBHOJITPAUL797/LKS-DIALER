@@ -2505,9 +2505,15 @@ export default function ChatConversation({
             if (isStickerMsg) {
               const raw = msg.text || '';
               if (raw.startsWith('[sticker_url:')) {
-                const parts = raw.slice(13, -1).split(':');
-                stickerUrl = parts[0];
-                stickerName = parts[1] || 'sticker';
+                const inner = raw.slice(13, -1);
+                const lastColon = inner.lastIndexOf(':');
+                if (lastColon > 6) {
+                  stickerUrl = inner.slice(0, lastColon);
+                  stickerName = inner.slice(lastColon + 1) || 'sticker';
+                } else {
+                  stickerUrl = inner;
+                  stickerName = 'sticker';
+                }
               } else if (raw.startsWith('[sticker:')) {
                 const parts = raw.slice(9, -1).split(':');
                 stickerCode = parts[0];

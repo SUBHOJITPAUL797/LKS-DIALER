@@ -285,6 +285,7 @@ class ChatRepository private constructor(private val context: Context) {
         createNotificationChannel()
         ensureMediaDirectory()
         registerNetworkCallback()
+        com.example.ui.screens.chat.ScheduledMessageManager.ensureStarted(context)
         repositoryScope.launch {
             syncOutdatedConversationStatuses()
         }

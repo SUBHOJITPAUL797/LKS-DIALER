@@ -216,7 +216,8 @@ fun WhatsAppFloatingAttachmentSheet(
     onAudioClick: () -> Unit,
     onLocationClick: () -> Unit,
     onContactClick: () -> Unit,
-    onPollClick: () -> Unit
+    onPollClick: () -> Unit,
+    onScheduleClick: () -> Unit = {}
 ) {
     val isDark = com.example.ui.theme.LocalIsDarkTheme.current
 
@@ -299,7 +300,7 @@ fun WhatsAppFloatingAttachmentSheet(
                     )
                 }
 
-                // Row 2: Location (Google Maps), Contact, Poll, HD Media
+                // Row 2: Location (Google Maps), Contact, Poll, Schedule
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -333,12 +334,12 @@ fun WhatsAppFloatingAttachmentSheet(
                         }
                     )
                     WhatsAppAttachmentTile(
-                        icon = Icons.Default.HighQuality,
-                        label = "HD Photos",
-                        gradientColors = listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8)),
+                        icon = Icons.Default.ScheduleSend,
+                        label = "Schedule",
+                        gradientColors = listOf(Color(0xFF6366F1), Color(0xFF4338CA)),
                         onClick = {
                             onDismiss()
-                            onGalleryClick()
+                            onScheduleClick()
                         }
                     )
                 }

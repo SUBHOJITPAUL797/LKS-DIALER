@@ -106,24 +106,28 @@ fun CallerTuneTrimmerDialog(
     LaunchedEffect(sourceUri) {
         isLoadingDuration = true
         withContext(Dispatchers.IO) {
+            var mmr: android.media.MediaMetadataRetriever? = null
             try {
-                val mmr = android.media.MediaMetadataRetriever()
+                mmr = android.media.MediaMetadataRetriever()
                 setRetrieverDataSource(context, mmr, sourceUri)
                 val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                 totalDurationMs = durationStr?.toLongOrNull() ?: 0L
-                mmr.release()
             } catch (e: Exception) {
                 Log.w(TAG, "MediaMetadataRetriever error: ${e.message}")
+                var player: MediaPlayer? = null
                 try {
-                    val player = MediaPlayer()
+                    player = MediaPlayer()
                     setMediaPlayerDataSource(context, player, sourceUri)
                     player.prepare()
                     totalDurationMs = player.duration.toLong()
-                    player.release()
                 } catch (e2: Exception) {
                     Log.w(TAG, "MediaPlayer duration fallback error: ${e2.message}")
                     totalDurationMs = 60_000L // Default 60s fallback
+                } finally {
+                    try { player?.release() } catch (_: Throwable) {}
                 }
+            } finally {
+                try { mmr?.release() } catch (_: Throwable) {}
             }
         }
         isLoadingDuration = false

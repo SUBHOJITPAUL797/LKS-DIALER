@@ -29,6 +29,13 @@ class LksApplication : Application() {
         // 2. Install Bulletproof Uncaught Crash Handler
         LksCrashHandler.install(this)
 
+        // 2b. Start Scheduled Message Queue Watcher & Auto-Recovery
+        try {
+            com.example.ui.screens.chat.ScheduledMessageManager.ensureStarted(this)
+        } catch (e: Exception) {
+            LksLogger.w("LksApplication", "Failed to start ScheduledMessageManager: ${e.message}", e)
+        }
+
         // 3. Initialize Coil ImageLoader with GIF & Animated WebP Support
         try {
             val imageLoader = coil.ImageLoader.Builder(this)

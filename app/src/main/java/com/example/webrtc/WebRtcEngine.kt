@@ -308,15 +308,47 @@ class WebRtcEngine private constructor(private val context: Context) {
     // TCP 443 penetrates strict Carrier-Grade NAT (CGNAT) and mobile carrier firewalls (Jio, Airtel, etc.).
     // High-availability ICE servers: Google STUN pool & Cloudflare STUN.
     // Official Cloudflare Anycast TURN relays are dynamically fetched from Cloudflare Worker
-    // and persisted locally in encrypted SharedPreferences for 0ms offline-ready call setup.
-    private var iceServers = listOf(
+    // and merged with global multi-port UDP/TCP/TLS TURN relays (ports 80 & 443) so cross-network
+    // calls across symmetric CGNAT & international carrier firewalls connect in real time from 0ms.
+    private fun buildDefaultGlobalIceServers(): List<PeerConnection.IceServer> = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun2.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun3.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun4.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder(
+            listOf(
+                "turn:a.relay.metered.ca:80",
+                "turn:a.relay.metered.ca:80?transport=tcp",
+                "turn:a.relay.metered.ca:443",
+                "turn:a.relay.metered.ca:443?transport=tcp",
+                "turns:a.relay.metered.ca:443?transport=tcp"
+            )
+        ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer(),
+        PeerConnection.IceServer.builder(
+            listOf(
+                "turn:openrelay.metered.ca:80",
+                "turn:openrelay.metered.ca:443",
+                "turn:openrelay.metered.ca:443?transport=tcp",
+                "turns:openrelay.metered.ca:443?transport=tcp"
+            )
+        ).setUsername("openrelayproject").setPassword("openrelayproject").createIceServer()
     )
+
+    private fun mergeWithFallbackIceServers(primary: List<PeerConnection.IceServer>): List<PeerConnection.IceServer> {
+        val merged = mutableListOf<PeerConnection.IceServer>()
+        val seenUrls = mutableSetOf<String>()
+        for (s in primary + buildDefaultGlobalIceServers()) {
+            val key = s.urls.sorted().joinToString(",")
+            if (seenUrls.add(key)) {
+                merged.add(s)
+            }
+        }
+        return merged
+    }
+
+    private var iceServers: List<PeerConnection.IceServer> = buildDefaultGlobalIceServers()
     private val processedCandidateStrings = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val localGatheredCandidates = java.util.concurrent.CopyOnWriteArrayList<String>()
 
@@ -341,7 +373,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     servers.add(builder.createIceServer())
                 }
             }
-            if (servers.isNotEmpty()) servers else null
+            if (servers.isNotEmpty()) mergeWithFallbackIceServers(servers) else null
         } catch (_: Exception) {
             null
         }
@@ -374,7 +406,7 @@ class WebRtcEngine private constructor(private val context: Context) {
 
     /**
      * Suspend-friendly fresh TURN credentials fetch from Cloudflare Worker.
-     * Fetches TLS TURN / STUN credentials and updates the internal cache.
+     * Fetches TLS TURN / STUN credentials and merges them with global multi-port TURN relays.
      * Used by both WebRTC calling and P2P file transfers.
      */
     suspend fun getFreshIceServers(): List<PeerConnection.IceServer> = withContext(Dispatchers.IO) {
@@ -386,40 +418,26 @@ class WebRtcEngine private constructor(private val context: Context) {
                 requestMethod = "GET"
                 setRequestProperty("X-Worker-Secret", getEffectiveWorkerSecret())
                 setRequestProperty("User-Agent", "LKS-Dialer-Android")
-                connectTimeout = 7000
-                readTimeout = 7000
+                connectTimeout = 5000
+                readTimeout = 5000
             }
             if (conn.responseCode == 200) {
                 val body = conn.inputStream.bufferedReader().readText()
-                val json = org.json.JSONObject(body)
-                val serversJson = json.getJSONArray("iceServers")
-                val servers = mutableListOf<PeerConnection.IceServer>()
-                for (i in 0 until serversJson.length()) {
-                    val s = serversJson.getJSONObject(i)
-                    val urls = s.getJSONArray("urls")
-                    val username = if (s.has("username")) s.getString("username") else null
-                    val credential = if (s.has("credential")) s.getString("credential") else null
-                    val urlList = mutableListOf<String>()
-                    for (j in 0 until urls.length()) {
-                        urlList.add(urls.getString(j))
-                    }
-                    if (urlList.isNotEmpty()) {
-                        val builder = PeerConnection.IceServer.builder(urlList)
-                        if (username != null) builder.setUsername(username)
-                        if (credential != null) builder.setPassword(credential)
-                        servers.add(builder.createIceServer())
-                    }
-                }
-                if (servers.isNotEmpty()) {
-                    iceServers = servers
+                val parsed = parseIceServersFromJson(body)
+                if (!parsed.isNullOrEmpty()) {
+                    iceServers = parsed
                     saveCachedIceServers(body)
-                    Log.i("WebRtcEngine", "✅ ICE servers updated from Worker: ${servers.size} servers (Cloudflare Anycast TURN ready)")
-                    return@withContext servers
+                    com.example.util.logging.LksLogger.event(
+                        "WEBRTC_ICE",
+                        "TURN_SERVERS_REFRESHED",
+                        mapOf("totalPools" to parsed.size)
+                    )
+                    return@withContext parsed
                 }
             }
             conn.disconnect()
         } catch (e: Exception) {
-            Log.w("WebRtcEngine", "TURN fetch failed, using cached/fallback ICE servers: ${e.message}")
+            com.example.util.logging.LksLogger.w("WebRtcEngine", "TURN fetch failed, using cached + global fallback TURN relays: ${e.message}")
         }
         return@withContext iceServers
     }
@@ -440,7 +458,7 @@ class WebRtcEngine private constructor(private val context: Context) {
     init {
         loadCachedIceServers()?.let {
             iceServers = it
-            Log.i("WebRtcEngine", "⚡ Loaded ${it.size} cached ICE servers (including Cloudflare Anycast TURN) from storage")
+            Log.i("WebRtcEngine", "⚡ Loaded ${it.size} cached ICE servers (including Cloudflare Anycast + Global TURN) from storage")
         }
         initWebRtc()
         fetchIceServersAsync {}
@@ -721,6 +739,25 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Guarantees zero-delay two-way voice audio immediately upon call answer.
+     * Unmutes immediately (0ms) and re-asserts at 120ms and 400ms to override any delayed OEM AudioHAL transition.
+     */
+    private fun scheduleZeroDelayPostAnswerAudioVerification(callId: String) {
+        unmuteAllAudioTracks()
+        scope.launch(Dispatchers.Main) {
+            for (waitMs in longArrayOf(120L, 400L)) {
+                delay(waitMs)
+                if (_state.value.activeCall?.callId == callId &&
+                    _state.value.callStatus == CallStatus.ANSWERED &&
+                    !_state.value.isOnHold
+                ) {
+                    unmuteAllAudioTracks()
+                }
+            }
+        }
+    }
+
     fun cacheIncomingOffer(callId: String, offerSdp: String) {
         if (callId.isNotBlank() && offerSdp.isNotBlank()) {
             cachedIncomingOfferSdp = offerSdp
@@ -756,6 +793,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         if (currentCall == null || currentCall.callId != callId) return
         if (_state.value.isCaller && _state.value.callStatus == CallStatus.CALLING) {
             Log.i("WebRtcEngine", "⚡ High-priority FCM 'call_ringing' received: callee phone is ringing right now! (tune=$pushTuneTitle)")
+            com.example.util.logging.LksLogger.event("CALL_ENGINE", "CALLEE_RINGING_ACK", mapOf("callId" to callId))
             val resolvedTune = pushTuneTitle?.ifBlank { null } ?: currentCall.callerTuneTitle
             val resolvedUrl = pushTuneUrl?.ifBlank { null } ?: currentCall.callerTuneUrl
             val resolvedStart = if (pushTuneStartMs > 0) pushTuneStartMs else currentCall.callerTuneStartMs
@@ -792,6 +830,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             return
         }
         Log.i("WebRtcEngine", "⚡ High-priority FCM answer push received from callee for call $callId (hasPushAnswer=${!answerSdp.isNullOrBlank()}, hasCandidates=${!candidatesStr.isNullOrBlank()})")
+        com.example.util.logging.LksLogger.event(
+            "CALL_ENGINE",
+            "CALL_ANSWERED_PUSH_RECEIVED",
+            mapOf("callId" to callId, "hasInBandAnswerSdp" to (!answerSdp.isNullOrBlank()))
+        )
         com.example.util.CallSoundEffectsManager.stopRingbackTone()
 
         if (!candidatesStr.isNullOrBlank()) {
@@ -808,7 +851,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 callStatus = CallStatus.ANSWERED,
                 connectionStatusText = if (hasAnswer) "Connected" else "Connecting P2P..."
             )
-            unmuteAllAudioTracks()
+            scheduleZeroDelayPostAnswerAudioVerification(callId)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 try {
                     com.example.services.LksConnectionService.setCallActive()
@@ -835,7 +878,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                     hasProcessedAnswer = true
                     Log.i("WebRtcEngine", "⚡ Remote answer SDP set directly from push payload successfully!")
                     drainQueuedRemoteIceCandidates()
-                    unmuteAllAudioTracks()
+                    scheduleZeroDelayPostAnswerAudioVerification(callId)
                     if (isDirectVideoCall) {
                         _state.value = _state.value.copy(
                             callType = CallType.VIDEO,
@@ -984,7 +1027,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                         callStatus = newStatus,
                         connectionStatusText = "Connected"
                     )
-                    unmuteAllAudioTracks()
+                    scheduleZeroDelayPostAnswerAudioVerification(callId)
                     com.example.util.CallSoundEffectsManager.stopRingbackTone()
                     if (_state.value.callDurationSeconds == 0) {
                         startCallTimer()
@@ -1008,19 +1051,29 @@ class WebRtcEngine private constructor(private val context: Context) {
                     PeerConnection.IceConnectionState.CONNECTED, PeerConnection.IceConnectionState.COMPLETED -> {
                         reconnectJob?.cancel()
                         reconnectJob = null
+                        com.example.util.logging.LksLogger.event(
+                            "WEBRTC_ICE",
+                            "ICE_CONNECTED",
+                            mapOf("callId" to callId, "state" to newState.name, "isCaller" to isCaller)
+                        )
                         val currentStatus = _state.value.callStatus
                         val newStatus = if (currentStatus == CallStatus.CALLING || currentStatus == CallStatus.RINGING) CallStatus.ANSWERED else currentStatus
                         _state.value = _state.value.copy(
                             callStatus = newStatus,
                             connectionStatusText = "Connected"
                         )
-                        unmuteAllAudioTracks()
+                        scheduleZeroDelayPostAnswerAudioVerification(callId)
                         com.example.util.CallSoundEffectsManager.stopRingbackTone()
                         if (_state.value.callDurationSeconds == 0) {
                             startCallTimer()
                         }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        com.example.util.logging.LksLogger.event(
+                            "WEBRTC_ICE",
+                            "ICE_DISCONNECTED_RECOVERING",
+                            mapOf("callId" to callId, "isCaller" to isCaller)
+                        )
                         _state.value = _state.value.copy(connectionStatusText = "Reconnecting...")
                         if (reconnectJob == null || reconnectJob?.isActive == false) {
                             reconnectJob = scope.launch {
@@ -1071,6 +1124,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                         }
                     }
                     PeerConnection.IceConnectionState.FAILED -> {
+                        com.example.util.logging.LksLogger.errorEvent(
+                            subsystem = "WEBRTC_ICE",
+                            errorName = "ICE_CONNECTION_FAILED_RESTARTING",
+                            details = mapOf("callId" to callId, "isCaller" to isCaller, "localCandidates" to localGatheredCandidates.size),
+                            autoUploadToCloud = true
+                        )
                         _state.value = _state.value.copy(connectionStatusText = "Connection Failed • Retrying...")
                         if (isCaller) {
                             scope.launch {
@@ -1127,6 +1186,47 @@ class WebRtcEngine private constructor(private val context: Context) {
                     val candType = candidate.sdp.split(" ").getOrNull(7) ?: "unknown"
                     Log.i("WebRtcEngine", "❄️ Local ICE candidate gathered: mid=${candidate.sdpMid} idx=${candidate.sdpMLineIndex} type=$candType sdp=${candidate.sdp}")
                     sendIceCandidate(callId, candidate, isCaller)
+
+                    // ⚡ Worldwide Cross-Network Fix:
+                    // Sync Caller's gathered candidates (prioritizing TURN relay & srflx) into the main `calls/{callId}`
+                    // document AND push TURN relay candidates via FCM so the Callee has them in RAM before answering!
+                    if (isCaller) {
+                        val prioritizedCallerCands = localGatheredCandidates
+                            .sortedBy { c ->
+                                when {
+                                    c.contains("typ relay") -> 0
+                                    c.contains("typ srflx") -> 1
+                                    else -> 2
+                                }
+                            }
+                            .take(15)
+                        if (candType == "relay" || candType == "srflx" || localGatheredCandidates.size <= 6) {
+                            try {
+                                firestore.collection("calls").document(callId)
+                                    .set(mapOf("callerCandidates" to prioritizedCallerCands), com.google.firebase.firestore.SetOptions.merge())
+                            } catch (_: Exception) {}
+                        }
+                        if (candType == "relay") {
+                            val activeCall = _state.value.activeCall
+                            val calleeNum = activeCall?.calleeNumber ?: ""
+                            if (calleeNum.isNotBlank() && !isCallTerminated(callId)) {
+                                val tFcm = activeCall?.calleeFcmToken?.ifBlank { pushTokenCache[calleeNum]?.first ?: "" } ?: ""
+                                val tWeb = activeCall?.calleeWebToken?.ifBlank { pushTokenCache[calleeNum]?.second ?: "" } ?: ""
+                                val myPhoneNum = getEffectivePhoneNumber()
+                                triggerPushNotification(
+                                    calleeNumber = calleeNum,
+                                    callerName = myPhoneNum,
+                                    callerNumber = myPhoneNum,
+                                    callType = (activeCall?.callType ?: CallType.AUDIO).name,
+                                    callId = callId,
+                                    type = "call_candidates",
+                                    explicitFcmToken = tFcm,
+                                    explicitWebToken = tWeb,
+                                    candidates = compact
+                                )
+                            }
+                        }
+                    }
                 }
             }
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -2131,12 +2231,12 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         // Create PeerConnection right away so it is ready the moment offerSdp is resolved
         createPeerConnection(isCaller = false, callId = callId)
-        unmuteAllAudioTracks()
+        scheduleZeroDelayPostAnswerAudioVerification(callId)
         if (type == CallType.VIDEO) {
             startVideoCaptureIfNeeded()
         }
 
-        // Concurrently fetch document to acquire offerSdp as fast as possible from Firestore with 80 retries & SERVER fallback
+        // Concurrently fetch document to acquire offerSdp as fast as possible from Firestore with 80 retries, SERVER & REST fallback
         val initialOffer = currentCall?.offerSdp ?: cachedIncomingOfferSdp
         if (!initialOffer.isNullOrBlank()) {
             _state.value = _state.value.copy(
@@ -2159,36 +2259,44 @@ class WebRtcEngine private constructor(private val context: Context) {
                         break
                     }
                     try {
-                        var doc = firestore.collection("calls").document(callId).get().await()
-                        var docOffer = doc.getString("offerSdp")
-                        if (docOffer.isNullOrBlank()) {
-                            try {
-                                doc = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                                docOffer = doc.getString("offerSdp")
-                            } catch (ce: kotlinx.coroutines.CancellationException) {
-                                throw ce
-                            } catch (_: Exception) {}
+                        val doc = withTimeoutOrNull(1400L) {
+                            var d = firestore.collection("calls").document(callId).get().await()
+                            if (d.getString("offerSdp").isNullOrBlank()) {
+                                d = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                            }
+                            d
                         }
-                        if (doc.exists()) {
-                            val docCall = doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
-                            if (!docOffer.isNullOrBlank()) {
-                                cachedIncomingOfferSdp = docOffer
-                                Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via fast fetch (attempt $attempt) for $callId -> processing SDP answer")
-                                withContext(Dispatchers.Main) {
-                                    if (!isCallTerminated(callId)) {
-                                        _state.value = _state.value.copy(
-                                            activeCall = (docCall ?: _state.value.activeCall)?.copy(
-                                                status = CallStatus.ANSWERED,
-                                                offerSdp = docOffer
-                                            )
+                        var resolvedCall: CallDto? = null
+                        var docOffer: String? = null
+                        if (doc != null && doc.exists()) {
+                            resolvedCall = doc.toObject(CallDto::class.java)?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
+                            docOffer = doc.getString("offerSdp") ?: resolvedCall?.offerSdp
+                        }
+                        if (docOffer.isNullOrBlank() && attempt >= 2) {
+                            val restCall = fetchCallDocViaRest(callId)
+                            if (restCall != null) {
+                                resolvedCall = restCall
+                                docOffer = restCall.offerSdp
+                            }
+                        }
+                        resolvedCall?.callerCandidates?.forEach { addCandidateDirect(it) }
+                        if (!docOffer.isNullOrBlank()) {
+                            cachedIncomingOfferSdp = docOffer
+                            Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via fast fetch (attempt $attempt) for $callId -> processing SDP answer")
+                            withContext(Dispatchers.Main) {
+                                if (!isCallTerminated(callId)) {
+                                    _state.value = _state.value.copy(
+                                        activeCall = (resolvedCall ?: _state.value.activeCall)?.copy(
+                                            status = CallStatus.ANSWERED,
+                                            offerSdp = docOffer
                                         )
-                                        if (!hasProcessedOffer) {
-                                            processOfferSdpIfAvailable()
-                                        }
+                                    )
+                                    if (!hasProcessedOffer) {
+                                        processOfferSdpIfAvailable()
                                     }
                                 }
-                                break
                             }
+                            break
                         }
                     } catch (ce: kotlinx.coroutines.CancellationException) {
                         throw ce
@@ -2284,9 +2392,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             listenForIceCandidates(callId, isCaller = false)
         }
 
-        // ⚡ Aggressive offerSdp pre-fetch during ringing:
+        // ⚡ Aggressive offerSdp & callerCandidates pre-fetch during ringing:
         // Runs concurrently while user hears the ringtone (3-5s).
-        // Resolves offerSdp in RAM BEFORE user taps answer — 0ms wait on pickup!
+        // Resolves offerSdp & caller TURN candidates in RAM BEFORE user taps answer — 0ms wait on pickup!
         if (incomingOfferFetchJob?.isActive == true && currentListeningCallId == callId) {
             Log.d("WebRtcEngine", "attachToCall: incomingOfferFetchJob already active for $callId - preserving")
         } else {
@@ -2304,16 +2412,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                         break
                     }
                     try {
-                        var snap = firestore.collection("calls").document(callId).get().await()
-                        var offer = snap.getString("offerSdp")
-                        if (offer.isNullOrBlank()) {
-                            try {
-                                snap = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                                offer = snap.getString("offerSdp")
-                            } catch (ce: kotlinx.coroutines.CancellationException) {
-                                throw ce
-                            } catch (_: Exception) {}
+                        val snap = withTimeoutOrNull(1400L) {
+                            var s = firestore.collection("calls").document(callId).get().await()
+                            if (s.getString("offerSdp").isNullOrBlank()) {
+                                s = firestore.collection("calls").document(callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                            }
+                            s
                         }
+                        var offer = snap?.getString("offerSdp")
+                        var snapCall = snap?.toObject(CallDto::class.java)
+                        if (offer.isNullOrBlank() && attempt >= 2) {
+                            val restCall = fetchCallDocViaRest(callId)
+                            if (restCall != null) {
+                                snapCall = restCall
+                                offer = restCall.offerSdp
+                            }
+                        }
+                        snapCall?.callerCandidates?.forEach { addCandidateDirect(it) }
                         if (!offer.isNullOrBlank()) {
                             cachedIncomingOfferSdp = offer
                             withContext(Dispatchers.Main) {
@@ -2352,6 +2467,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             val rawCall = doc.toObject(CallDto::class.java)
             val call = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
             if (call != null) {
+                call.callerCandidates.forEach { addCandidateDirect(it) }
                 if (call.callType == CallType.VIDEO) {
                     isDirectVideoCall = true
                 }
@@ -2415,6 +2531,11 @@ class WebRtcEngine private constructor(private val context: Context) {
             isDirectVideoCall = true
         }
         com.example.util.logging.LksLogger.breadcrumb("CALL", "Answering call ${call.callId} from ${call.callerNumber}")
+        com.example.util.logging.LksLogger.event(
+            "CALL_ENGINE",
+            "CALL_ANSWERED_LOCAL",
+            mapOf("callId" to call.callId, "caller" to call.callerNumber, "callType" to call.callType.name)
+        )
 
         // 0. Cache caller tokens for instant in-band push when answerSdp is ready
         val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
@@ -2559,16 +2680,23 @@ class WebRtcEngine private constructor(private val context: Context) {
                             break
                         }
                         try {
-                            var snap = firestore.collection("calls").document(call.callId).get().await()
-                            var offer = snap.getString("offerSdp")
-                            if (offer.isNullOrBlank()) {
-                                try {
-                                    snap = firestore.collection("calls").document(call.callId).get(com.google.firebase.firestore.Source.SERVER).await()
-                                    offer = snap.getString("offerSdp")
-                                } catch (ce: kotlinx.coroutines.CancellationException) {
-                                    throw ce
-                                } catch (_: Exception) {}
+                            val snap = withTimeoutOrNull(1400L) {
+                                var s = firestore.collection("calls").document(call.callId).get().await()
+                                if (s.getString("offerSdp").isNullOrBlank()) {
+                                    s = firestore.collection("calls").document(call.callId).get(com.google.firebase.firestore.Source.SERVER).await()
+                                }
+                                s
                             }
+                            var offer = snap?.getString("offerSdp")
+                            var snapCall = snap?.toObject(CallDto::class.java)
+                            if (offer.isNullOrBlank() && attempt >= 2) {
+                                val restCall = fetchCallDocViaRest(call.callId)
+                                if (restCall != null) {
+                                    snapCall = restCall
+                                    offer = restCall.offerSdp
+                                }
+                            }
+                            snapCall?.callerCandidates?.forEach { addCandidateDirect(it) }
                             if (!offer.isNullOrBlank()) {
                                 cachedIncomingOfferSdp = offer
                                 withContext(Dispatchers.Main) {
@@ -2593,8 +2721,8 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
         }
 
-        // Unmute local & remote audio tracks now that user tapped answer
-        unmuteAllAudioTracks()
+        // Unmute local & remote audio tracks now that user tapped answer (plus 120ms & 400ms post-answer verification)
+        scheduleZeroDelayPostAnswerAudioVerification(call.callId)
 
         // If video call, start camera capture if it was deferred during pre-warm
         if (call.callType == CallType.VIDEO) {

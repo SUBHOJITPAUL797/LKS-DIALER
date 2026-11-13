@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -46,6 +47,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -61,6 +64,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -73,6 +77,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
@@ -149,8 +155,12 @@ fun formatReplyPreview(message: MessageEntity): String {
         else "📷 Photo"
     }
 
-    if (message.mediaType == ChatMediaType.STICKER.name || rawText.startsWith("sticker_")) {
-        return "🦄 Sticker"
+    if (message.mediaType == ChatMediaType.STICKER.name ||
+        rawText.startsWith("sticker_") ||
+        rawText.startsWith("[sticker:") ||
+        rawText.startsWith("[sticker_url:")
+    ) {
+        return "🎨 Sticker"
     }
 
     if (message.mediaType == ChatMediaType.DOCUMENT.name) {
@@ -201,6 +211,7 @@ fun ChatConversationScreen(
 ) {
     val context = LocalContext.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
     val chatRepository = remember { ChatRepository.getInstance(context) }
     val voiceHelper = remember { VoiceRecorderHelper(context) }
@@ -331,10 +342,21 @@ fun ChatConversationScreen(
     var showLocationSharingDialog by remember { mutableStateOf(false) }
     var showShareContactDialog by remember { mutableStateOf(false) }
     var showCreatePollDialog by remember { mutableStateOf(false) }
+    var showScheduleMessageDialog by remember { mutableStateOf(false) }
+    var editingScheduledMessage by remember { mutableStateOf<ScheduledChatMessage?>(null) }
+    var showScheduledQueueDialog by remember { mutableStateOf(false) }
     var showNativeCamera by remember { mutableStateOf(false) }
     var photosToPreview by remember { mutableStateOf<List<File>?>(initialSharedPhotos) }
     var selectedMessageForOptions by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
+
+    LaunchedEffect(Unit) {
+        ScheduledMessageManager.ensureStarted(context)
+    }
+    val allScheduledMessages by ScheduledMessageManager.scheduledMessages.collectAsState()
+    val peerScheduledMessages = remember(allScheduledMessages, normPeer) {
+        allScheduledMessages.filter { ScheduledMessageManager.matchesPeer(it.recipientNumber, normPeer) }
+    }
 
     val listState = rememberLazyListState()
 
@@ -1110,7 +1132,26 @@ fun ChatConversationScreen(
                                     }
                                 )
 
-                                // 6. Wallpaper
+                                // 6. Scheduled messages
+                                WhatsAppStyledMenuItem(
+                                    title = "Scheduled messages",
+                                    subtitle = if (peerScheduledMessages.isEmpty()) "Send messages at a specific date & time"
+                                    else "${peerScheduledMessages.size} message(s) queued",
+                                    icon = Icons.Default.ScheduleSend,
+                                    iconTint = Color(0xFF6366F1),
+                                    badgeText = if (peerScheduledMessages.isNotEmpty()) "${peerScheduledMessages.size}" else null,
+                                    onClick = {
+                                        showOptionsMenu = false
+                                        if (peerScheduledMessages.isNotEmpty()) {
+                                            showScheduledQueueDialog = true
+                                        } else {
+                                            editingScheduledMessage = null
+                                            showScheduleMessageDialog = true
+                                        }
+                                    }
+                                )
+
+                                // 7. Wallpaper
                                 WhatsAppStyledMenuItem(
                                     title = "Wallpaper",
                                     subtitle = "Customize chat background",
@@ -1760,6 +1801,21 @@ fun ChatConversationScreen(
                 onPollClick = {
                     showAttachmentMenu = false
                     showCreatePollDialog = true
+                },
+                onScheduleClick = {
+                    showAttachmentMenu = false
+                    editingScheduledMessage = null
+                    showScheduleMessageDialog = true
+                }
+            )
+
+            // ── Live Scheduled Messages Banner (Appears when messages are queued for this chat) ──
+            ScheduledMessagesInChatBanner(
+                scheduledList = peerScheduledMessages,
+                onOpenQueueClick = { showScheduledQueueDialog = true },
+                onSendNowClick = { item ->
+                    ScheduledMessageManager.sendNow(context, item.id)
+                    Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
                 }
             )
 
@@ -1932,7 +1988,7 @@ fun ChatConversationScreen(
                                             .padding(horizontal = 4.dp, vertical = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        // Emoji / Sticker / GIF Keyboard Toggle
+                                        // Emoji / Sticker / GIF Keyboard Toggle (Smooth animated icon)
                                         IconButton(
                                             onClick = {
                                                 showAttachmentMenu = false
@@ -1940,16 +1996,28 @@ fun ChatConversationScreen(
                                                     showMediaPicker = false
                                                     keyboardController?.show()
                                                 } else {
+                                                    focusManager.clearFocus()
                                                     keyboardController?.hide()
                                                     showMediaPicker = true
                                                 }
                                             },
                                             modifier = Modifier.size(40.dp)
                                         ) {
-                                            Text(
-                                                text = if (showMediaPicker) "⌨️" else "😊",
-                                                fontSize = 21.sp
-                                            )
+                                            AnimatedContent(
+                                                targetState = showMediaPicker,
+                                                transitionSpec = {
+                                                    (scaleIn(initialScale = 0.75f, animationSpec = tween(150)) + fadeIn(tween(150))) togetherWith
+                                                        (scaleOut(targetScale = 0.75f, animationSpec = tween(100)) + fadeOut(tween(100)))
+                                                },
+                                                label = "mediaToggleIcon"
+                                            ) { isPickerOpen ->
+                                                Icon(
+                                                    imageVector = if (isPickerOpen) Icons.Outlined.Keyboard else Icons.Outlined.EmojiEmotions,
+                                                    contentDescription = if (isPickerOpen) "Show keyboard" else "Open Emoji & 3D Stickers",
+                                                    tint = if (isPickerOpen) LocalThemeColor.current.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(23.dp)
+                                                )
+                                            }
                                         }
 
                                         // Borderless WhatsApp TextField inside pill
@@ -1970,7 +2038,14 @@ fun ChatConversationScreen(
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                                 )
                                             },
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .onFocusChanged { focusState ->
+                                                    if (focusState.isFocused) {
+                                                        if (showMediaPicker) showMediaPicker = false
+                                                        if (showAttachmentMenu) showAttachmentMenu = false
+                                                    }
+                                                },
                                             maxLines = 4,
                                             colors = TextFieldDefaults.colors(
                                                 focusedContainerColor = Color.Transparent,
@@ -1985,6 +2060,38 @@ fun ChatConversationScreen(
                                             )
                                         )
 
+                                        // Schedule Message Button (1-tap Date & Time Scheduler right inside input pill)
+                                        IconButton(
+                                            onClick = {
+                                                keyboardController?.hide()
+                                                showMediaPicker = false
+                                                showAttachmentMenu = false
+                                                editingScheduledMessage = null
+                                                showScheduleMessageDialog = true
+                                            },
+                                            modifier = Modifier.size(38.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.ScheduleSend,
+                                                    contentDescription = "Schedule Message",
+                                                    tint = if (peerScheduledMessages.isNotEmpty()) LocalThemeColor.current.primary
+                                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(21.dp)
+                                                )
+                                                if (peerScheduledMessages.isNotEmpty()) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .offset(x = 3.dp, y = (-2).dp)
+                                                            .size(8.dp)
+                                                            .clip(CircleShape)
+                                                            .background(GreenCall)
+                                                    )
+                                                }
+                                            }
+                                        }
+
                                         // Paperclip Attachment Button (toggles floating WhatsApp attachment grid)
                                         IconButton(
                                             onClick = {
@@ -1992,7 +2099,7 @@ fun ChatConversationScreen(
                                                 showMediaPicker = false
                                                 showAttachmentMenu = !showAttachmentMenu
                                             },
-                                            modifier = Modifier.size(40.dp)
+                                            modifier = Modifier.size(38.dp)
                                         ) {
                                             Icon(
                                                 Icons.Default.AttachFile,
@@ -2009,7 +2116,7 @@ fun ChatConversationScreen(
                                                     showMediaPicker = false
                                                     showNativeCamera = true
                                                 },
-                                                modifier = Modifier.size(40.dp)
+                                                modifier = Modifier.size(38.dp)
                                             ) {
                                                 Icon(
                                                     Icons.Default.PhotoCamera,
@@ -2111,9 +2218,32 @@ fun ChatConversationScreen(
                         }
                     }
 
-                    // ── Instant Zero-Jank Emoji / Sticker / GIF Media Keyboard ─────────
-                    if (showMediaPicker) {
+                    // ── Smooth Animated Emoji / 3D Clay Sticker / GIF Media Keyboard ──
+                    AnimatedVisibility(
+                        visible = showMediaPicker,
+                        enter = slideInVertically(
+                            initialOffsetY = { it / 2 },
+                            animationSpec = spring(
+                                dampingRatio = 0.86f,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) + expandVertically(
+                            expandFrom = Alignment.Bottom,
+                            animationSpec = spring(
+                                dampingRatio = 0.86f,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        ) + fadeIn(animationSpec = tween(180)),
+                        exit = slideOutVertically(
+                            targetOffsetY = { it / 2 },
+                            animationSpec = tween(190, easing = FastOutSlowInEasing)
+                        ) + shrinkVertically(
+                            shrinkTowards = Alignment.Bottom,
+                            animationSpec = tween(190, easing = FastOutSlowInEasing)
+                        ) + fadeOut(animationSpec = tween(140))
+                    ) {
                         ChatMediaKeyboardPicker(
+                            onClose = { showMediaPicker = false },
                             onEmojiSelected = { emoji ->
                                 inputText += emoji
                                 chatRepository.setTyping(normPeer, true)
@@ -2768,6 +2898,76 @@ fun ChatConversationScreen(
         WhatsAppQuickWallpaperDialog(
             wallpaperManager = wallpaperManager,
             onDismiss = { showWallpaperDialog = false }
+        )
+    }
+
+    // ── Schedule Message Date & Time Picker Dialog ───────────────────────
+    if (showScheduleMessageDialog) {
+        ScheduleMessageDialog(
+            recipientName = peerDisplayName,
+            initialMessageText = inputText,
+            editingItem = editingScheduledMessage,
+            onDismiss = {
+                showScheduleMessageDialog = false
+                editingScheduledMessage = null
+            },
+            onConfirmSchedule = { msgText, scheduledAtMs, existingId ->
+                val currentReply = replyingTo
+                val payload = if (existingId == null && currentReply != null) {
+                    """{"text":${escapeJson(msgText)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                } else {
+                    msgText
+                }
+                ScheduledMessageManager.scheduleMessage(
+                    context = context,
+                    recipientNumber = normPeer,
+                    recipientName = peerDisplayName,
+                    payloadText = payload,
+                    previewText = msgText,
+                    scheduledAtMillis = scheduledAtMs,
+                    existingId = existingId
+                )
+                if (existingId == null && inputText.trim() == msgText.trim()) {
+                    inputText = ""
+                    replyingTo = null
+                    chatRepository.setTyping(normPeer, false)
+                }
+                showScheduleMessageDialog = false
+                editingScheduledMessage = null
+                val friendly = ScheduledMessageManager.formatFriendlyScheduleTime(scheduledAtMs)
+                Toast.makeText(
+                    context,
+                    "⏰ Message scheduled for $friendly",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
+
+    // ── Scheduled Messages Queue Manager Dialog ──────────────────────────
+    if (showScheduledQueueDialog) {
+        ScheduledMessagesQueueDialog(
+            recipientName = peerDisplayName,
+            scheduledList = peerScheduledMessages,
+            onDismiss = { showScheduledQueueDialog = false },
+            onScheduleNewClick = {
+                showScheduledQueueDialog = false
+                editingScheduledMessage = null
+                showScheduleMessageDialog = true
+            },
+            onEditItemClick = { item ->
+                showScheduledQueueDialog = false
+                editingScheduledMessage = item
+                showScheduleMessageDialog = true
+            },
+            onSendNowClick = { item ->
+                ScheduledMessageManager.sendNow(context, item.id)
+                Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
+            },
+            onCancelItemClick = { item ->
+                ScheduledMessageManager.cancelScheduledMessage(context, item.id)
+                Toast.makeText(context, "Scheduled message cancelled", Toast.LENGTH_SHORT).show()
+            }
         )
     }
 
@@ -3607,7 +3807,7 @@ private fun MessageBubble(
                     )
                 }
 
-                // ── Sticker Rendering (Borderless) ──────────────────────────
+                // ── Sticker Rendering (Borderless 3D & Clay Studio Support) ──
                 if (isStickerMessage) {
                     val rawStickerText = message.text
                     val isEmojiSticker = rawStickerText.startsWith("[sticker:")
@@ -3617,39 +3817,94 @@ private fun MessageBubble(
                         val parts = rawStickerText.removeSurrounding("[sticker:", "]").split(":")
                         val rawCode = parts.getOrNull(0) ?: "🦄"
                         val rawName = parts.getOrNull(1) ?: ""
-                        val resolvedEmoji = StickerCatalog.resolveEmoji(rawCode.ifBlank { rawName })
-                        Box(
-                            modifier = Modifier
-                                .padding(6.dp)
-                                .sizeIn(minWidth = 90.dp, minHeight = 90.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = resolvedEmoji,
-                                fontSize = if (resolvedEmoji.length <= 4) 72.sp else 24.sp,
-                                textAlign = TextAlign.Center
+                        val matchedSticker = StickerCatalog.findSticker(rawCode, rawName)
+                        if (matchedSticker != null && (matchedSticker.clayBadgeText.isNotBlank() || rawCode.startsWith("clay_") || rawCode.startsWith("d_") || rawCode.startsWith("l_"))) {
+                            Clay3DStickerVisual(
+                                sticker = matchedSticker,
+                                modifier = Modifier
+                                    .padding(6.dp)
+                                    .size(134.dp),
+                                isBubbleSize = true
                             )
+                        } else {
+                            val resolvedEmoji = StickerCatalog.resolveEmoji(rawCode.ifBlank { rawName })
+                            Box(
+                                modifier = Modifier
+                                    .padding(6.dp)
+                                    .sizeIn(minWidth = 90.dp, minHeight = 90.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = resolvedEmoji,
+                                    fontSize = if (resolvedEmoji.length <= 4) 72.sp else 24.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         }
                     } else {
+                        var parsedUrl = ""
+                        var parsedName = ""
+                        if (isUrlSticker) {
+                            val inner = rawStickerText.removeSurrounding("[sticker_url:", "]")
+                            val lastColon = inner.lastIndexOf(':')
+                            if (lastColon > 6) {
+                                parsedUrl = inner.substring(0, lastColon)
+                                parsedName = inner.substring(lastColon + 1)
+                            } else {
+                                parsedUrl = inner
+                            }
+                        }
                         val stickerModel = if (!message.mediaPath.isNullOrBlank()) {
                             message.mediaPath
-                        } else if (isUrlSticker) {
-                            val parts = rawStickerText.removeSurrounding("[sticker_url:", "]").split(":")
-                            parts.getOrNull(0) ?: ""
-                        } else ""
+                        } else {
+                            parsedUrl
+                        }
+                        val fallbackSticker = StickerCatalog.findSticker(parsedName, parsedName)
+                            ?: StickerCatalog.allStickers.firstOrNull { it.imageUrl == parsedUrl }
 
                         if (stickerModel.isNotBlank()) {
                             Box(
                                 modifier = Modifier
-                                    .size(140.dp)
+                                    .size(142.dp)
                                     .padding(4.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                AsyncImage(
-                                    model = stickerModel,
-                                    contentDescription = "Sticker",
+                                val stkReq = remember(stickerModel) {
+                                    ImageRequest.Builder(context)
+                                        .data(stickerModel)
+                                        .memoryCachePolicy(CachePolicy.ENABLED)
+                                        .diskCachePolicy(CachePolicy.ENABLED)
+                                        .crossfade(120)
+                                        .build()
+                                }
+                                SubcomposeAsyncImage(
+                                    model = stkReq,
+                                    contentDescription = parsedName.ifBlank { "Sticker" },
                                     modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Fit
+                                    contentScale = ContentScale.Fit,
+                                    loading = {
+                                        if (fallbackSticker != null) {
+                                            Clay3DStickerVisual(
+                                                sticker = fallbackSticker,
+                                                modifier = Modifier.fillMaxSize(),
+                                                isBubbleSize = true,
+                                                isLoading = true
+                                            )
+                                        } else {
+                                            Text(text = "✨", fontSize = 56.sp)
+                                        }
+                                    },
+                                    error = {
+                                        if (fallbackSticker != null) {
+                                            Clay3DStickerVisual(
+                                                sticker = fallbackSticker,
+                                                modifier = Modifier.fillMaxSize(),
+                                                isBubbleSize = true
+                                            )
+                                        } else {
+                                            Text(text = "✨", fontSize = 64.sp)
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -4188,20 +4443,19 @@ private fun MessageBubble(
                             onMarkMessageRead = onMarkMessageRead
                         )
                     } else {
-                        val audioDurationMs = remember(docFile, hasFile, isAudio, message.mediaDurationMs) {
-                            if (message.mediaDurationMs > 0L) message.mediaDurationMs
-                            else if (isAudio && hasFile) {
-                                try {
-                                    val doc = docFile
-                                    if (doc != null) {
-                                        val retriever = android.media.MediaMetadataRetriever()
-                                        retriever.setDataSource(doc.absolutePath)
-                                        val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                                        retriever.release()
-                                        dur
-                                    } else 0L
-                                } catch (_: Exception) { 0L }
-                            } else 0L
+                        val audioDurationMs by produceState(
+                            initialValue = message.mediaDurationMs,
+                            key1 = docFile?.absolutePath,
+                            key2 = hasFile,
+                            key3 = isAudio
+                        ) {
+                            value = if (message.mediaDurationMs > 0L) {
+                                message.mediaDurationMs
+                            } else if (isAudio && hasFile && docFile != null) {
+                                VideoThumbnailHelper.getAudioDuration(docFile)
+                            } else {
+                                0L
+                            }
                         }
                         val finalAudioDuration = if (isPlaying && playbackDurationMs > 0L) playbackDurationMs else audioDurationMs
 
@@ -4443,22 +4697,26 @@ private fun MessageBubble(
 
                 // ── Timestamp & Ticks (Only if not already rendered inside image/GIF/video overlay) ──
                 if (!isImageOnly && !isVideoMessage) {
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
                     Row(
                         modifier = Modifier
                             .align(Alignment.End)
                             .then(
                                 if (isFrameless) {
                                     Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (isDark) Color(0xFF0B141A).copy(alpha = 0.72f)
+                                            else Color(0xFF1E293B).copy(alpha = 0.56f)
+                                        )
+                                        .padding(horizontal = 7.dp, vertical = 2.5.dp)
                                 } else {
                                     Modifier.padding(end = 4.dp, bottom = 2.dp)
                                 }
                             ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        val framelessTint = Color.White.copy(alpha = 0.88f)
                         if (message.isEdited && !isDeleted) {
                             Text(
                                 text = "Edited",
@@ -4466,7 +4724,7 @@ private fun MessageBubble(
                                     fontSize = 9.sp,
                                     fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
                                 ),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                color = if (isFrameless) framelessTint else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                         }
@@ -4483,7 +4741,7 @@ private fun MessageBubble(
                             Icon(
                                 Icons.Default.Schedule,
                                 contentDescription = "Disappearing",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                tint = if (isFrameless) framelessTint else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                 modifier = Modifier.size(10.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
@@ -4492,7 +4750,11 @@ private fun MessageBubble(
                         Text(
                             text = timeString,
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                            color = if (isOutgoing) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            color = when {
+                                isFrameless -> Color.White.copy(alpha = 0.94f)
+                                isOutgoing -> Color.White.copy(alpha = 0.85f)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            }
                         )
                         if (isOutgoing) {
                             Spacer(modifier = Modifier.width(4.dp))
