@@ -1207,7 +1207,7 @@ class WebRtcEngine {
       }
 
       // Hold state audio synchronization
-      const remoteHold = data.isOnHold === true || data.onHold === true;
+      const remoteHold = data.isHold === true || data.isOnHold === true || data.onHold === true;
       if (remoteHold !== this.isOnHold) {
         this.isOnHold = remoteHold;
         if (remoteHold) {
@@ -1215,6 +1215,9 @@ class WebRtcEngine {
         } else {
           callSounds.playUnholdTone();
         }
+      }
+      if (this.onCallStateChange && data.status !== 'ENDED' && data.status !== 'DECLINED' && data.status !== 'MISSED') {
+        this.onCallStateChange({ id: snapshot.id, ...data, isHold: remoteHold });
       }
 
       if (data.status === 'ENDED' || data.status === 'DECLINED' || data.status === 'MISSED') {
@@ -1300,6 +1303,50 @@ class WebRtcEngine {
   toggleVideo(isVideoEnabled) {
     if (this.localStream) {
       this.localStream.getVideoTracks().forEach(t => t.enabled = isVideoEnabled);
+    }
+  }
+
+  async toggleHold(shouldHold) {
+    if (!this.activeCallId) return false;
+    this.isCallHeld = shouldHold;
+
+    // Mute/unmute local tracks
+    if (this.localStream) {
+      this.localStream.getAudioTracks().forEach(t => t.enabled = !shouldHold);
+      this.localStream.getVideoTracks().forEach(t => t.enabled = !shouldHold);
+    }
+
+    if (shouldHold) {
+      callSounds.playHoldTone();
+    } else {
+      callSounds.playUnholdTone();
+    }
+
+    try {
+      await updateDoc(doc(db, 'calls', this.activeCallId), {
+        isHold: shouldHold,
+        isOnHold: shouldHold,
+        heldBy: shouldHold ? (this.currentUser?.phoneNumber || 'User') : null,
+        holdUpdatedAt: serverTimestamp()
+      });
+      return true;
+    } catch (e) {
+      console.warn("Failed to update call hold in Firestore:", e);
+      return false;
+    }
+  }
+
+  sendDtmf(digit) {
+    callSounds.playDtmfTone(digit);
+    if (!this.peerConnection) return;
+    try {
+      const senders = this.peerConnection.getSenders();
+      const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+      if (audioSender && audioSender.dtmf) {
+        audioSender.dtmf.insertDTMF(digit, 160, 70);
+      }
+    } catch (e) {
+      console.warn("DTMF tone sending via peerConnection failed:", e);
     }
   }
 

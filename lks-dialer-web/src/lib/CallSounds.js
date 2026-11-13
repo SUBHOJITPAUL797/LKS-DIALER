@@ -455,6 +455,49 @@ class CallSoundsManager {
     }
   }
 
+  /**
+   * Plays authentic dual-frequency DTMF tone for a digit ('0'-'9', '*', '#').
+   * Gives instant tactile audio feedback on dialer press, exactly like standard phones.
+   */
+  playDtmfTone(digit) {
+    const ctx = this.getAudioContext();
+    if (!ctx) return;
+
+    const DTMF_MAP = {
+      '1': [697, 1209], '2': [697, 1336], '3': [697, 1477],
+      '4': [770, 1209], '5': [770, 1336], '6': [770, 1477],
+      '7': [852, 1209], '8': [852, 1336], '9': [852, 1477],
+      '*': [941, 1209], '0': [941, 1336], '#': [941, 1477]
+    };
+
+    const freqs = DTMF_MAP[digit] || [700, 1200];
+    try {
+      const now = ctx.currentTime;
+      const dur = 0.12; // 120ms crisp beep
+
+      freqs.forEach((freq) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, now);
+
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(0.12, now + 0.015);
+        gain.gain.setValueAtTime(0.12, now + dur - 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(now);
+        osc.stop(now + dur);
+      });
+    } catch (e) {
+      console.warn("Error playing DTMF tone:", e);
+    }
+  }
+
   stopHoldReminder() {
     if (this.holdReminderInterval) {
       clearInterval(this.holdReminderInterval);

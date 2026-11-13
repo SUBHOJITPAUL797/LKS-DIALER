@@ -432,3 +432,176 @@ body {
     transform: scale(1);
   }
 }
+
+/* 🌊 Liquid Glass Design System (Matching Native Android HUD) */
+.liquid-glass-bg {
+  background: radial-gradient(circle at 50% 20%, #1A2639 0%, #0B111E 65%, #050811 100%);
+  color: #FFFFFF;
+}
+
+.liquid-glass-card {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.liquid-glass-chip {
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+  color: #FFFFFF;
+}
+
+/* Glass Keypad Buttons (Tactile Dialpad) */
+.glass-keypad-btn {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  width: 72px;
+  height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #FFFFFF;
+  transition: all 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.glass-keypad-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.35);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.glass-keypad-btn:active {
+  transform: scale(0.92);
+  background: rgba(0, 230, 118, 0.28);
+  border-color: #00E676;
+  box-shadow: 0 0 20px rgba(0, 230, 118, 0.4);
+}
+
+/* Glass Floating Call Control Buttons */
+.glass-control-btn {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #FFFFFF;
+  transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  user-select: none;
+}
+
+.glass-control-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.glass-control-btn:active {
+  transform: scale(0.92);
+}
+
+.glass-control-btn.active {
+  background: rgba(0, 230, 118, 0.25);
+  border-color: #00E676;
+  color: #00E676;
+  box-shadow: 0 0 20px rgba(0, 230, 118, 0.4);
+}
+
+.glass-control-btn.warn {
+  background: rgba(255, 179, 0, 0.25);
+  border-color: #FFB300;
+  color: #FFB300;
+  box-shadow: 0 0 20px rgba(255, 179, 0, 0.4);
+}
+
+.glass-control-btn.danger {
+  background: linear-gradient(135deg, #FF1744 0%, #D50000 100%);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #FFFFFF;
+  box-shadow: 0 8px 26px rgba(255, 23, 68, 0.55);
+}
+
+.glass-control-btn.danger:hover {
+  background: linear-gradient(135deg, #FF5252 0%, #FF1744 100%);
+  box-shadow: 0 12px 32px rgba(255, 23, 68, 0.7);
+}
+
+/* Pulsing Avatar Halo Waves */
+@keyframes haloPulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 0.25;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+.pulsing-halo-ring {
+  position: absolute;
+  top: -16px;
+  left: -16px;
+  right: -16px;
+  bottom: -16px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 230, 118, 0.6);
+  animation: haloPulse 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.pulsing-halo-ring-2 {
+  position: absolute;
+  top: -30px;
+  left: -30px;
+  right: -30px;
+  bottom: -30px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 230, 118, 0.35);
+  animation: haloPulse 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+  animation-delay: 0.8s;
+  pointer-events: none;
+}
+
+@keyframes holdGlowPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 14px rgba(255, 179, 0, 0.5);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.04);
+    box-shadow: 0 0 24px rgba(255, 179, 0, 0.85);
+  }
+}
+
+.on-hold-pulse {
+  animation: holdGlowPulse 1.6s ease-in-out infinite;
+}
+
