@@ -55,6 +55,41 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
+enum class ScheduledMessageStatus {
+    PENDING,
+    SENDING,
+    RETRYING,
+    SENT,
+    CANCELLED;
+
+    val isActiveInQueue: Boolean
+        get() = this == PENDING || this == SENDING || this == RETRYING
+
+    val isTerminal: Boolean
+        get() = this == SENT || this == CANCELLED
+
+    companion object {
+        fun fromWire(raw: String?): ScheduledMessageStatus =
+            entries.find { it.name.equals(raw, ignoreCase = true) } ?: PENDING
+    }
+}
+
+sealed interface ScheduledTransitionEvent {
+    data object BeginDispatch : ScheduledTransitionEvent
+    data object DispatchSucceeded : ScheduledTransitionEvent
+    data class DispatchFailed(
+        val error: String?,
+        val nowMs: Long = System.currentTimeMillis(),
+        val fixedBackoffMs: Long? = null
+    ) : ScheduledTransitionEvent
+    data class Reschedule(
+        val newScheduledAtMillis: Long,
+        val payloadText: String,
+        val previewText: String
+    ) : ScheduledTransitionEvent
+    data object Cancel : ScheduledTransitionEvent
+}
+
 data class ScheduledChatMessage(
     val id: String,
     val recipientNumber: String,
@@ -63,9 +98,11 @@ data class ScheduledChatMessage(
     val previewText: String,
     val scheduledAtMillis: Long,
     val createdAtMillis: Long,
+    val originalScheduledAtMillis: Long = scheduledAtMillis,
+    val nextAttemptAtMillis: Long = scheduledAtMillis,
     val retryCount: Int = 0,
     val lastError: String? = null,
-    val status: String = "PENDING"
+    val status: ScheduledMessageStatus = ScheduledMessageStatus.PENDING
 )
 
 object ScheduledMessageManager {
@@ -76,10 +113,64 @@ object ScheduledMessageManager {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val watcherStarted = AtomicBoolean(false)
     private val networkCallbackRegistered = AtomicBoolean(false)
-    private val inFlightIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     private val _scheduledMessages = MutableStateFlow<List<ScheduledChatMessage>>(emptyList())
     val scheduledMessages: StateFlow<List<ScheduledChatMessage>> = _scheduledMessages.asStateFlow()
+
+    /**
+     * Deterministic state machine reducer for scheduled messages.
+     * Prevents invalid transitions (e.g., terminal SENT/CANCELLED items re-entering RETRYING).
+     */
+    fun reduceTransition(
+        item: ScheduledChatMessage,
+        event: ScheduledTransitionEvent
+    ): ScheduledChatMessage {
+        if (item.status.isTerminal) return item
+        return when (event) {
+            ScheduledTransitionEvent.BeginDispatch -> {
+                if (item.status == ScheduledMessageStatus.PENDING || item.status == ScheduledMessageStatus.RETRYING) {
+                    item.copy(status = ScheduledMessageStatus.SENDING, lastError = null)
+                } else {
+                    item
+                }
+            }
+            ScheduledTransitionEvent.DispatchSucceeded -> {
+                item.copy(status = ScheduledMessageStatus.SENT, lastError = null)
+            }
+            is ScheduledTransitionEvent.DispatchFailed -> {
+                if (item.status != ScheduledMessageStatus.SENDING &&
+                    item.status != ScheduledMessageStatus.PENDING &&
+                    item.status != ScheduledMessageStatus.RETRYING
+                ) {
+                    item
+                } else {
+                    val nextRetry = item.retryCount + 1
+                    val backoffMs = event.fixedBackoffMs ?: (nextRetry * 5_000L).coerceAtMost(60_000L)
+                    item.copy(
+                        retryCount = nextRetry,
+                        lastError = event.error ?: "Delivery error",
+                        status = ScheduledMessageStatus.RETRYING,
+                        nextAttemptAtMillis = event.nowMs + backoffMs
+                    )
+                }
+            }
+            is ScheduledTransitionEvent.Reschedule -> {
+                item.copy(
+                    payloadText = event.payloadText,
+                    previewText = event.previewText.ifBlank { event.payloadText },
+                    scheduledAtMillis = event.newScheduledAtMillis,
+                    originalScheduledAtMillis = event.newScheduledAtMillis,
+                    nextAttemptAtMillis = event.newScheduledAtMillis,
+                    retryCount = 0,
+                    lastError = null,
+                    status = ScheduledMessageStatus.PENDING
+                )
+            }
+            ScheduledTransitionEvent.Cancel -> {
+                item.copy(status = ScheduledMessageStatus.CANCELLED)
+            }
+        }
+    }
 
     fun ensureStarted(context: Context) {
         val appCtx = context.applicationContext
@@ -98,7 +189,7 @@ object ScheduledMessageManager {
                     } catch (e: Exception) {
                         com.example.util.logging.LksLogger.w(TAG, "Scheduled message watcher loop error: ${e.message}", e)
                     }
-                    delay(1_200L)
+                    delay(1_000L)
                 }
             }
         }
@@ -142,6 +233,17 @@ object ScheduledMessageManager {
                 val recipientNumber = obj.optString("recipientNumber", "")
                 val payloadText = obj.optString("payloadText", "")
                 if (id.isBlank() || recipientNumber.isBlank() || payloadText.isBlank()) continue
+                val schedMs = obj.optLong("scheduledAtMillis", 0L)
+                val origMs = obj.optLong("originalScheduledAtMillis", schedMs).let { if (it > 0L) it else schedMs }
+                val rawStatus = ScheduledMessageStatus.fromWire(obj.optString("status", "PENDING"))
+                if (rawStatus.isTerminal) continue
+                // Recover stale SENDING states left over from an abrupt process kill
+                val recoveredStatus = if (rawStatus == ScheduledMessageStatus.SENDING) {
+                    ScheduledMessageStatus.PENDING
+                } else {
+                    rawStatus
+                }
+                val nextAttempt = obj.optLong("nextAttemptAtMillis", schedMs).let { if (it > 0L) it else schedMs }
                 parsed.add(
                     ScheduledChatMessage(
                         id = id,
@@ -149,11 +251,13 @@ object ScheduledMessageManager {
                         recipientName = obj.optString("recipientName", recipientNumber),
                         payloadText = payloadText,
                         previewText = obj.optString("previewText", payloadText),
-                        scheduledAtMillis = obj.optLong("scheduledAtMillis", 0L),
+                        scheduledAtMillis = origMs,
                         createdAtMillis = obj.optLong("createdAtMillis", System.currentTimeMillis()),
+                        originalScheduledAtMillis = origMs,
+                        nextAttemptAtMillis = nextAttempt,
                         retryCount = obj.optInt("retryCount", 0),
                         lastError = obj.optString("lastError", "").ifBlank { null },
-                        status = obj.optString("status", "PENDING").ifBlank { "PENDING" }
+                        status = recoveredStatus
                     )
                 )
             }
@@ -166,7 +270,8 @@ object ScheduledMessageManager {
     @Synchronized
     private fun persistToPrefs(context: Context, list: List<ScheduledChatMessage>) {
         try {
-            val sorted = list.sortedBy { it.scheduledAtMillis }
+            val activeOnly = list.filter { it.status.isActiveInQueue }
+            val sorted = activeOnly.sortedBy { it.scheduledAtMillis }
             val arr = JSONArray()
             sorted.forEach { item ->
                 val obj = JSONObject()
@@ -177,9 +282,11 @@ object ScheduledMessageManager {
                 obj.put("previewText", item.previewText)
                 obj.put("scheduledAtMillis", item.scheduledAtMillis)
                 obj.put("createdAtMillis", item.createdAtMillis)
+                obj.put("originalScheduledAtMillis", item.originalScheduledAtMillis)
+                obj.put("nextAttemptAtMillis", item.nextAttemptAtMillis)
                 obj.put("retryCount", item.retryCount)
                 obj.put("lastError", item.lastError ?: "")
-                obj.put("status", item.status)
+                obj.put("status", item.status.name)
                 arr.put(obj)
             }
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -208,21 +315,35 @@ object ScheduledMessageManager {
         } else {
             ContactsHelper.normalizePhoneNumber(recipientNumber)
         }
-        val item = ScheduledChatMessage(
-            id = existingId ?: UUID.randomUUID().toString(),
-            recipientNumber = normPeer,
-            recipientName = recipientName.ifBlank { normPeer },
-            payloadText = payloadText,
-            previewText = previewText.ifBlank { payloadText },
-            scheduledAtMillis = scheduledAtMillis,
-            createdAtMillis = System.currentTimeMillis(),
-            retryCount = 0,
-            lastError = null,
-            status = "PENDING"
-        )
+        val item: ScheduledChatMessage
         synchronized(this) {
-            val updated = _scheduledMessages.value
-                .filterNot { it.id == item.id } + item
+            val existingItem = existingId?.let { id -> _scheduledMessages.value.firstOrNull { it.id == id } }
+            item = if (existingItem != null) {
+                reduceTransition(
+                    existingItem,
+                    ScheduledTransitionEvent.Reschedule(
+                        newScheduledAtMillis = scheduledAtMillis,
+                        payloadText = payloadText,
+                        previewText = previewText
+                    )
+                )
+            } else {
+                ScheduledChatMessage(
+                    id = existingId ?: UUID.randomUUID().toString(),
+                    recipientNumber = normPeer,
+                    recipientName = recipientName.ifBlank { normPeer },
+                    payloadText = payloadText,
+                    previewText = previewText.ifBlank { payloadText },
+                    scheduledAtMillis = scheduledAtMillis,
+                    createdAtMillis = System.currentTimeMillis(),
+                    originalScheduledAtMillis = scheduledAtMillis,
+                    nextAttemptAtMillis = scheduledAtMillis,
+                    retryCount = 0,
+                    lastError = null,
+                    status = ScheduledMessageStatus.PENDING
+                )
+            }
+            val updated = _scheduledMessages.value.filterNot { it.id == item.id } + item
             persistToPrefs(appCtx, updated)
         }
         com.example.util.logging.LksLogger.event(
@@ -240,57 +361,84 @@ object ScheduledMessageManager {
     fun cancelScheduledMessage(context: Context, id: String) {
         val appCtx = context.applicationContext
         synchronized(this) {
-            val updated = _scheduledMessages.value.filterNot { it.id == id }
+            val updated = _scheduledMessages.value.mapNotNull { item ->
+                if (item.id == id) {
+                    val cancelled = reduceTransition(item, ScheduledTransitionEvent.Cancel)
+                    cancelled.takeIf { it.status.isActiveInQueue }
+                } else {
+                    item
+                }
+            }
             persistToPrefs(appCtx, updated)
         }
         com.example.util.logging.LksLogger.event("SCHEDULED_MSG", "MESSAGE_CANCELLED", mapOf("id" to id))
     }
 
     @Synchronized
-    private fun updateItemState(context: Context, updatedItem: ScheduledChatMessage) {
-        val updated = _scheduledMessages.value.map { if (it.id == updatedItem.id) updatedItem else it }
+    private fun tryClaimForDispatch(context: Context, id: String): ScheduledChatMessage? {
+        val target = _scheduledMessages.value.firstOrNull { it.id == id } ?: return null
+        if (target.status != ScheduledMessageStatus.PENDING && target.status != ScheduledMessageStatus.RETRYING) {
+            return null
+        }
+        val claimed = reduceTransition(target, ScheduledTransitionEvent.BeginDispatch)
+        val updated = _scheduledMessages.value.map { if (it.id == id) claimed else it }
         persistToPrefs(context.applicationContext, updated)
+        return claimed
+    }
+
+    @Synchronized
+    private fun applyTransition(context: Context, id: String, event: ScheduledTransitionEvent): ScheduledChatMessage? {
+        val current = _scheduledMessages.value.firstOrNull { it.id == id } ?: return null
+        val next = reduceTransition(current, event)
+        val updated = _scheduledMessages.value.mapNotNull { item ->
+            if (item.id == id) {
+                next.takeIf { it.status.isActiveInQueue }
+            } else {
+                item
+            }
+        }
+        persistToPrefs(context.applicationContext, updated)
+        return next
     }
 
     fun sendNow(context: Context, id: String) {
         val appCtx = context.applicationContext
-        val target = _scheduledMessages.value.firstOrNull { it.id == id } ?: return
-        if (!inFlightIds.add(id)) return
-        updateItemState(appCtx, target.copy(status = "SENDING", lastError = null))
+        val claimed = tryClaimForDispatch(appCtx, id) ?: return
         scope.launch {
             try {
                 val res = ChatRepository.getInstance(appCtx).sendMessage(
-                    recipientNumber = target.recipientNumber,
-                    recipientName = target.recipientName,
-                    text = target.payloadText,
-                    mediaType = ChatMediaType.TEXT
+                    recipientNumber = claimed.recipientNumber,
+                    recipientName = claimed.recipientName,
+                    text = claimed.payloadText,
+                    mediaType = ChatMediaType.TEXT,
+                    customTimestampMs = System.currentTimeMillis()
                 )
                 if (res.isSuccess) {
-                    cancelScheduledMessage(appCtx, id)
+                    applyTransition(appCtx, id, ScheduledTransitionEvent.DispatchSucceeded)
                     com.example.util.logging.LksLogger.event(
                         "SCHEDULED_MSG",
                         "SEND_NOW_SUCCESS",
-                        mapOf("id" to id, "recipient" to target.recipientNumber)
+                        mapOf("id" to id, "recipient" to claimed.recipientNumber)
                     )
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(appCtx, "✅ Scheduled message sent to ${target.recipientName}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(appCtx, "✅ Scheduled message sent to ${claimed.recipientName}", Toast.LENGTH_SHORT).show()
                     }
                 } else {
                     val err = res.exceptionOrNull()?.message ?: "Delivery error"
-                    val nextRetry = target.retryCount + 1
-                    updateItemState(
+                    val updatedItem = applyTransition(
                         appCtx,
-                        target.copy(
-                            retryCount = nextRetry,
-                            lastError = err,
-                            status = "RETRYING",
-                            scheduledAtMillis = System.currentTimeMillis() + 4_000L
-                        )
+                        id,
+                        ScheduledTransitionEvent.DispatchFailed(error = err, fixedBackoffMs = 4_000L)
                     )
                     com.example.util.logging.LksLogger.errorEvent(
                         subsystem = "SCHEDULED_MSG",
                         errorName = "SEND_NOW_FAILED_WILL_RETRY",
-                        details = mapOf("id" to id, "recipient" to target.recipientNumber, "retry" to nextRetry, "error" to err),
+                        details = mapOf(
+                            "id" to id,
+                            "recipient" to claimed.recipientNumber,
+                            "retry" to (updatedItem?.retryCount ?: (claimed.retryCount + 1)),
+                            "error" to err
+                        ),
                         throwable = res.exceptionOrNull(),
                         autoUploadToCloud = true
                     )
@@ -299,53 +447,58 @@ object ScheduledMessageManager {
                     }
                 }
             } catch (e: Exception) {
-                val nextRetry = target.retryCount + 1
-                updateItemState(
+                val updatedItem = applyTransition(
                     appCtx,
-                    target.copy(
-                        retryCount = nextRetry,
-                        lastError = e.message ?: "Exception",
-                        status = "RETRYING",
-                        scheduledAtMillis = System.currentTimeMillis() + 5_000L
-                    )
+                    id,
+                    ScheduledTransitionEvent.DispatchFailed(error = e.message ?: "Exception", fixedBackoffMs = 5_000L)
                 )
                 com.example.util.logging.LksLogger.errorEvent(
                     subsystem = "SCHEDULED_MSG",
                     errorName = "SEND_NOW_EXCEPTION",
-                    details = mapOf("id" to id, "recipient" to target.recipientNumber, "retry" to nextRetry),
+                    details = mapOf(
+                        "id" to id,
+                        "recipient" to claimed.recipientNumber,
+                        "retry" to (updatedItem?.retryCount ?: (claimed.retryCount + 1))
+                    ),
                     throwable = e,
                     autoUploadToCloud = true
                 )
-            } finally {
-                inFlightIds.remove(id)
             }
         }
     }
 
     private suspend fun dispatchDueMessages(context: Context, forceRetryDue: Boolean = false) {
         val now = System.currentTimeMillis()
-        val dueList = _scheduledMessages.value.filter {
-            (it.scheduledAtMillis <= now || (forceRetryDue && it.status == "RETRYING")) && !inFlightIds.contains(it.id)
+        val dueList = _scheduledMessages.value.filter { item ->
+            when (item.status) {
+                ScheduledMessageStatus.PENDING -> item.nextAttemptAtMillis <= now
+                ScheduledMessageStatus.RETRYING -> item.nextAttemptAtMillis <= now || forceRetryDue
+                ScheduledMessageStatus.SENDING,
+                ScheduledMessageStatus.SENT,
+                ScheduledMessageStatus.CANCELLED -> false
+            }
         }
         if (dueList.isEmpty()) return
 
-        for (item in dueList) {
-            if (!inFlightIds.add(item.id)) continue
-            updateItemState(context, item.copy(status = "SENDING"))
+        for (candidate in dueList) {
+            val item = tryClaimForDispatch(context, candidate.id) ?: continue
             try {
                 com.example.util.logging.LksLogger.event(
                     "SCHEDULED_MSG",
                     "AUTO_DISPATCH_ATTEMPT",
                     mapOf("id" to item.id, "recipient" to item.recipientNumber, "retryCount" to item.retryCount)
                 )
+                // Use the exact scheduled delivery timestamp so the sent message lands at its scheduled time in sequence
+                val effectiveDeliveryTs = item.originalScheduledAtMillis.takeIf { it > 0L } ?: item.scheduledAtMillis
                 val sendResult = ChatRepository.getInstance(context).sendMessage(
                     recipientNumber = item.recipientNumber,
                     recipientName = item.recipientName,
                     text = item.payloadText,
-                    mediaType = ChatMediaType.TEXT
+                    mediaType = ChatMediaType.TEXT,
+                    customTimestampMs = effectiveDeliveryTs
                 )
                 if (sendResult.isSuccess) {
-                    cancelScheduledMessage(context, item.id)
+                    applyTransition(context, item.id, ScheduledTransitionEvent.DispatchSucceeded)
                     com.example.util.logging.LksLogger.event(
                         "SCHEDULED_MSG",
                         "AUTO_DISPATCH_SUCCESS",
@@ -360,17 +513,14 @@ object ScheduledMessageManager {
                     }
                 } else {
                     val errMsg = sendResult.exceptionOrNull()?.message ?: "Send failed"
-                    val nextRetry = item.retryCount + 1
-                    val backoffMs = (nextRetry * 5_000L).coerceAtMost(60_000L)
-                    updateItemState(
+                    val updated = applyTransition(
                         context,
-                        item.copy(
-                            retryCount = nextRetry,
-                            lastError = errMsg,
-                            status = "RETRYING",
-                            scheduledAtMillis = System.currentTimeMillis() + backoffMs
-                        )
+                        item.id,
+                        ScheduledTransitionEvent.DispatchFailed(error = errMsg)
                     )
+                    val nextRetry = updated?.retryCount ?: (item.retryCount + 1)
+                    val backoffMs = (updated?.nextAttemptAtMillis?.minus(System.currentTimeMillis()))?.coerceAtLeast(0L)
+                        ?: (nextRetry * 5_000L).coerceAtMost(60_000L)
                     com.example.util.logging.LksLogger.errorEvent(
                         subsystem = "SCHEDULED_MSG",
                         errorName = "AUTO_DISPATCH_RETRY_SCHEDULED",
@@ -386,17 +536,12 @@ object ScheduledMessageManager {
                     )
                 }
             } catch (e: Exception) {
-                val nextRetry = item.retryCount + 1
-                val backoffMs = (nextRetry * 5_000L).coerceAtMost(60_000L)
-                updateItemState(
+                val updated = applyTransition(
                     context,
-                    item.copy(
-                        retryCount = nextRetry,
-                        lastError = e.message ?: "Unexpected error",
-                        status = "RETRYING",
-                        scheduledAtMillis = System.currentTimeMillis() + backoffMs
-                    )
+                    item.id,
+                    ScheduledTransitionEvent.DispatchFailed(error = e.message ?: "Unexpected error")
                 )
+                val nextRetry = updated?.retryCount ?: (item.retryCount + 1)
                 com.example.util.logging.LksLogger.errorEvent(
                     subsystem = "SCHEDULED_MSG",
                     errorName = "AUTO_DISPATCH_EXCEPTION",
@@ -404,8 +549,6 @@ object ScheduledMessageManager {
                     throwable = e,
                     autoUploadToCloud = true
                 )
-            } finally {
-                inFlightIds.remove(item.id)
             }
         }
     }
@@ -455,7 +598,346 @@ object ScheduledMessageManager {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 1. Live In-Chat Scheduled Message Strip (Appears above the Input Bar)
+// 1. Native In-Chat Scheduled Outgoing Message Bubble (Renders inside LazyColumn)
+// ──────────────────────────────────────────────────────────────────────────────
+@Composable
+fun ScheduledChatMessageBubble(
+    item: ScheduledChatMessage,
+    onSendNowClick: (ScheduledChatMessage) -> Unit,
+    onRescheduleClick: (ScheduledChatMessage) -> Unit,
+    onCancelClick: (ScheduledChatMessage) -> Unit,
+    onReplyQuoteClick: (String) -> Unit = {}
+) {
+    val themeColor = LocalThemeColor.current
+    val haptic = LocalHapticFeedback.current
+
+    var nowTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(item.id, item.scheduledAtMillis) {
+        while (true) {
+            nowTick = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+
+    val effectiveScheduleTs = item.originalScheduledAtMillis.takeIf { it > 0L } ?: item.scheduledAtMillis
+    val friendlyTime = remember(effectiveScheduleTs, nowTick) {
+        ScheduledMessageManager.formatFriendlyScheduleTime(effectiveScheduleTs)
+    }
+    val countdownText = remember(item.scheduledAtMillis, item.nextAttemptAtMillis, item.status, nowTick) {
+        when (item.status) {
+            ScheduledMessageStatus.SENDING -> "Sending..."
+            ScheduledMessageStatus.RETRYING -> "Retrying..."
+            ScheduledMessageStatus.SENT -> "Sent"
+            ScheduledMessageStatus.CANCELLED -> "Cancelled"
+            ScheduledMessageStatus.PENDING -> ScheduledMessageManager.formatRelativeCountdown(item.scheduledAtMillis, nowTick)
+        }
+    }
+    val shortScheduledClock = remember(effectiveScheduleTs) {
+        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(effectiveScheduleTs))
+    }
+    val shortCreatedClock = remember(item.createdAtMillis) {
+        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(item.createdAtMillis))
+    }
+
+    // Parse optional reply context from payloadText JSON
+    val parsedReply = remember(item.payloadText) {
+        try {
+            val obj = JSONObject(item.payloadText)
+            if (obj.has("replyTo")) {
+                val replyTo = obj.getJSONObject("replyTo")
+                Triple(
+                    replyTo.optString("id", ""),
+                    replyTo.optString("senderLabel", ""),
+                    replyTo.optString("text", "")
+                )
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    val bubbleShape = RoundedCornerShape(
+        topStart = 20.dp,
+        topEnd = 20.dp,
+        bottomStart = 20.dp,
+        bottomEnd = 6.dp
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        contentAlignment = Alignment.CenterEnd
+    ) {
+        Surface(
+            color = themeColor.primary,
+            shape = bubbleShape,
+            border = BorderStroke(1.2.dp, Color.White.copy(alpha = 0.42f)),
+            shadowElevation = 2.5.dp,
+            modifier = Modifier
+                .widthIn(min = 220.dp, max = 316.dp)
+                .clip(bubbleShape)
+                .clickable {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onRescheduleClick(item)
+                }
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                // ── 1. Top Scheduled Time & Live Countdown Pill ──
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.Black.copy(alpha = 0.22f),
+                    border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.24f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f, fill = false)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ScheduleSend,
+                                contentDescription = "Scheduled",
+                                tint = Color(0xFFFFE082),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = "Scheduled • $friendlyTime",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFFFE082).copy(alpha = 0.22f),
+                            border = BorderStroke(0.6.dp, Color(0xFFFFE082).copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = countdownText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFFFFF59D),
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(7.dp))
+
+                // ── 2. Optional Reply Quote Block ──
+                if (parsedReply != null) {
+                    val (replyMsgId, senderLbl, rawReplyText) = parsedReply
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.18f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = replyMsgId.isNotBlank()) {
+                                onReplyQuoteClick(replyMsgId)
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(3.dp)
+                                    .height(28.dp)
+                                    .background(Color(0xFFFFE082), RoundedCornerShape(2.dp))
+                            )
+                            Spacer(modifier = Modifier.width(7.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                if (senderLbl.isNotBlank()) {
+                                    Text(
+                                        text = senderLbl,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFFFFE082),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    text = rawReplyText,
+                                    fontSize = 12.sp,
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
+                // ── 3. Message Content (Identical to Normal Outgoing Bubble) ──
+                Text(
+                    text = item.previewText,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 15.sp,
+                        lineHeight = 20.sp
+                    ),
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 3.dp)
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                HorizontalDivider(
+                    color = Color.White.copy(alpha = 0.16f),
+                    thickness = 0.7.dp
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // ── 4. Inline Action Pills + Scheduled Time Footer ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        // Send Now Pill
+                        Surface(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onSendNowClick(item)
+                            },
+                            shape = RoundedCornerShape(9.dp),
+                            color = Color.White.copy(alpha = 0.22f),
+                            border = BorderStroke(0.7.dp, Color.White.copy(alpha = 0.38f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send Now",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Send Now",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+
+                        // Reschedule Pill
+                        Surface(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRescheduleClick(item)
+                            },
+                            shape = RoundedCornerShape(9.dp),
+                            color = Color.Black.copy(alpha = 0.18f),
+                            border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.22f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.EditCalendar,
+                                    contentDescription = "Reschedule",
+                                    tint = Color.White.copy(alpha = 0.92f),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = "Edit",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White.copy(alpha = 0.92f),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+
+                        // Cancel Pill
+                        Surface(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onCancelClick(item)
+                            },
+                            shape = RoundedCornerShape(9.dp),
+                            color = Color.Black.copy(alpha = 0.18f),
+                            border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.22f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancel Scheduled Message",
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .size(12.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // Bottom-Right Timestamp & Schedule Clock Icon (Matches Normal Bubble Footer)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (shortCreatedClock != shortScheduledClock) {
+                                "$shortCreatedClock → $shortScheduledClock"
+                            } else {
+                                shortScheduledClock
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = Color.White.copy(alpha = 0.88f),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = "Scheduled",
+                            tint = Color(0xFFFFE082),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 1b. Optional Compact Strip (with non-wrapping countdown)
 // ──────────────────────────────────────────────────────────────────────────────
 @Composable
 fun ScheduledMessagesInChatBanner(
@@ -533,7 +1015,8 @@ fun ScheduledMessagesInChatBanner(
                         ),
                         color = themeColor.primary,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
@@ -545,6 +1028,8 @@ fun ScheduledMessagesInChatBanner(
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = themeColor.primary,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                         )
                     }
@@ -582,7 +1067,9 @@ fun ScheduledMessagesInChatBanner(
                         text = "Send Now",
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = GreenCall
+                        color = GreenCall,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }
@@ -624,8 +1111,7 @@ fun ScheduleMessageDialog(
     }
 
     var selectedTimestampMs by remember { mutableLongStateOf(initialTargetMs) }
-    var showDatePickerModal by remember { mutableStateOf(false) }
-    var showTimePickerModal by remember { mutableStateOf(false) }
+    var activePickerModal by remember { mutableStateOf(SchedulePickerModal.NONE) }
     var useKeyboardTimeInput by remember { mutableStateOf(false) }
 
     val selectedCal = remember(selectedTimestampMs) {
@@ -884,7 +1370,7 @@ fun ScheduleMessageDialog(
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        showDatePickerModal = true
+                        activePickerModal = SchedulePickerModal.DATE
                     },
                     shape = RoundedCornerShape(18.dp),
                     color = if (isDark) Color(0xFF1B2836) else Color(0xFFF3F6FA),
@@ -965,7 +1451,7 @@ fun ScheduleMessageDialog(
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        showTimePickerModal = true
+                        activePickerModal = SchedulePickerModal.TIME
                     },
                     shape = RoundedCornerShape(18.dp),
                     color = if (isDark) Color(0xFF1B2836) else Color(0xFFF3F6FA),
@@ -1174,107 +1660,113 @@ fun ScheduleMessageDialog(
         }
     }
 
-    // ── Material 3 DatePicker Modal ──
-    if (showDatePickerModal) {
-        val datePickerState = rememberDatePickerState(
-            initialSelectedDateMillis = selectedTimestampMs
-        )
-        DatePickerDialog(
-            onDismissRequest = { showDatePickerModal = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val pickedUtcMs = datePickerState.selectedDateMillis
-                        if (pickedUtcMs != null) {
-                            val utcCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
-                                timeInMillis = pickedUtcMs
+    when (activePickerModal) {
+        SchedulePickerModal.NONE -> Unit
+        SchedulePickerModal.DATE -> {
+            val datePickerState = rememberDatePickerState(
+                initialSelectedDateMillis = selectedTimestampMs
+            )
+            DatePickerDialog(
+                onDismissRequest = { activePickerModal = SchedulePickerModal.NONE },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val pickedUtcMs = datePickerState.selectedDateMillis
+                            if (pickedUtcMs != null) {
+                                val utcCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+                                    timeInMillis = pickedUtcMs
+                                }
+                                val updatedCal = (selectedCal.clone() as Calendar).apply {
+                                    set(Calendar.YEAR, utcCal.get(Calendar.YEAR))
+                                    set(Calendar.MONTH, utcCal.get(Calendar.MONTH))
+                                    set(Calendar.DAY_OF_MONTH, utcCal.get(Calendar.DAY_OF_MONTH))
+                                }
+                                selectedTimestampMs = updatedCal.timeInMillis
                             }
+                            activePickerModal = SchedulePickerModal.NONE
+                        }
+                    ) {
+                        Text("Confirm Date", fontWeight = FontWeight.Bold, color = themeColor.primary)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activePickerModal = SchedulePickerModal.NONE }) {
+                        Text("Cancel")
+                    }
+                }
+            ) {
+                DatePicker(state = datePickerState)
+            }
+        }
+        SchedulePickerModal.TIME -> {
+            val timePickerState = rememberTimePickerState(
+                initialHour = selectedCal.get(Calendar.HOUR_OF_DAY),
+                initialMinute = selectedCal.get(Calendar.MINUTE),
+                is24Hour = false
+            )
+            AlertDialog(
+                onDismissRequest = { activePickerModal = SchedulePickerModal.NONE },
+                title = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Select Delivery Time",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                        IconButton(onClick = { useKeyboardTimeInput = !useKeyboardTimeInput }) {
+                            Icon(
+                                imageVector = if (useKeyboardTimeInput) Icons.Default.AccessTime else Icons.Default.Keyboard,
+                                contentDescription = "Switch input mode",
+                                tint = themeColor.primary
+                            )
+                        }
+                    }
+                },
+                text = {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (useKeyboardTimeInput) {
+                            TimeInput(state = timePickerState)
+                        } else {
+                            TimePicker(state = timePickerState)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
                             val updatedCal = (selectedCal.clone() as Calendar).apply {
-                                set(Calendar.YEAR, utcCal.get(Calendar.YEAR))
-                                set(Calendar.MONTH, utcCal.get(Calendar.MONTH))
-                                set(Calendar.DAY_OF_MONTH, utcCal.get(Calendar.DAY_OF_MONTH))
+                                set(Calendar.HOUR_OF_DAY, timePickerState.hour)
+                                set(Calendar.MINUTE, timePickerState.minute)
+                                set(Calendar.SECOND, 0)
+                                set(Calendar.MILLISECOND, 0)
                             }
                             selectedTimestampMs = updatedCal.timeInMillis
+                            activePickerModal = SchedulePickerModal.NONE
                         }
-                        showDatePickerModal = false
+                    ) {
+                        Text("Set Time", fontWeight = FontWeight.Bold, color = themeColor.primary)
                     }
-                ) {
-                    Text("Confirm Date", fontWeight = FontWeight.Bold, color = themeColor.primary)
+                },
+                dismissButton = {
+                    TextButton(onClick = { activePickerModal = SchedulePickerModal.NONE }) {
+                        Text("Cancel")
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDatePickerModal = false }) {
-                    Text("Cancel")
-                }
-            }
-        ) {
-            DatePicker(state = datePickerState)
+            )
         }
     }
+}
 
-    // ── Material 3 TimePicker Modal (Dial + Keyboard Input Switch) ──
-    if (showTimePickerModal) {
-        val timePickerState = rememberTimePickerState(
-            initialHour = selectedCal.get(Calendar.HOUR_OF_DAY),
-            initialMinute = selectedCal.get(Calendar.MINUTE),
-            is24Hour = false
-        )
-        AlertDialog(
-            onDismissRequest = { showTimePickerModal = false },
-            title = {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Select Delivery Time",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    IconButton(onClick = { useKeyboardTimeInput = !useKeyboardTimeInput }) {
-                        Icon(
-                            imageVector = if (useKeyboardTimeInput) Icons.Default.AccessTime else Icons.Default.Keyboard,
-                            contentDescription = "Switch input mode",
-                            tint = themeColor.primary
-                        )
-                    }
-                }
-            },
-            text = {
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (useKeyboardTimeInput) {
-                        TimeInput(state = timePickerState)
-                    } else {
-                        TimePicker(state = timePickerState)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val updatedCal = (selectedCal.clone() as Calendar).apply {
-                            set(Calendar.HOUR_OF_DAY, timePickerState.hour)
-                            set(Calendar.MINUTE, timePickerState.minute)
-                            set(Calendar.SECOND, 0)
-                            set(Calendar.MILLISECOND, 0)
-                        }
-                        selectedTimestampMs = updatedCal.timeInMillis
-                        showTimePickerModal = false
-                    }
-                ) {
-                    Text("Set Time", fontWeight = FontWeight.Bold, color = themeColor.primary)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTimePickerModal = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+private enum class SchedulePickerModal {
+    NONE,
+    DATE,
+    TIME
 }
 
 @Composable

@@ -50,11 +50,29 @@ private const val TAG = "CallerTuneTrimmer"
 private const val MAX_TUNE_DURATION_MS = 30_000L // 30 seconds standard caller tune limit
 private const val MIN_TUNE_DURATION_MS = 5_000L  // 5 seconds minimum
 
+private sealed interface CallerTuneDurationState {
+    data object Loading : CallerTuneDurationState
+    data class Ready(val totalDurationMs: Long) : CallerTuneDurationState
+    data object Failed : CallerTuneDurationState
+}
+
+private enum class CallerTunePreviewPhase {
+    IDLE,
+    PREPARING,
+    PLAYING
+}
+
+private sealed interface CallerTuneSaveState {
+    data object Idle : CallerTuneSaveState
+    data object Saving : CallerTuneSaveState
+    data class Error(val message: String) : CallerTuneSaveState
+}
+
 /**
  * CallerTuneTrimmerDialog
  * High-end visual audio portion selector tailored specifically for Caller Tunes (Hello Tunes).
  * Constrains selection to a maximum of 30 seconds, provides instant play preview of the cut,
- * and encodes into Base64 for instant peer-to-peer Firestore calling synchronization.
+ * and encodes into Base64 for instant peer-to-peer Firestore synchronization.
  */
 @Composable
 fun CallerTuneTrimmerDialog(
@@ -72,19 +90,16 @@ fun CallerTuneTrimmerDialog(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    var totalDurationMs by remember { mutableLongStateOf(0L) }
-    var isLoadingDuration by remember { mutableStateOf(true) }
+    var durationState by remember { mutableStateOf<CallerTuneDurationState>(CallerTuneDurationState.Loading) }
 
     var startFraction by remember { mutableFloatStateOf(0f) }
     var endFraction by remember { mutableFloatStateOf(1f) }
 
-    var isPreviewPlaying by remember { mutableStateOf(false) }
-    var isPreparingPreview by remember { mutableStateOf(false) }
+    var previewPhase by remember { mutableStateOf(CallerTunePreviewPhase.IDLE) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewProgress by remember { mutableFloatStateOf(0f) }
 
-    var isSaving by remember { mutableStateOf(false) }
-    var statusError by remember { mutableStateOf("") }
+    var saveState by remember { mutableStateOf<CallerTuneSaveState>(CallerTuneSaveState.Idle) }
 
     fun stopPreviewPlayback() {
         try {
@@ -92,8 +107,7 @@ fun CallerTuneTrimmerDialog(
             previewPlayer?.release()
         } catch (_: Exception) {}
         previewPlayer = null
-        isPreviewPlaying = false
-        isPreparingPreview = false
+        previewPhase = CallerTunePreviewPhase.IDLE
     }
 
     DisposableEffect(Unit) {
@@ -104,14 +118,14 @@ fun CallerTuneTrimmerDialog(
 
     // Read total duration of audio file
     LaunchedEffect(sourceUri) {
-        isLoadingDuration = true
-        withContext(Dispatchers.IO) {
+        durationState = CallerTuneDurationState.Loading
+        val loadedMs = withContext(Dispatchers.IO) {
             var mmr: android.media.MediaMetadataRetriever? = null
             try {
                 mmr = android.media.MediaMetadataRetriever()
                 setRetrieverDataSource(context, mmr, sourceUri)
                 val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                totalDurationMs = durationStr?.toLongOrNull() ?: 0L
+                durationStr?.toLongOrNull() ?: 0L
             } catch (e: Exception) {
                 Log.w(TAG, "MediaMetadataRetriever error: ${e.message}")
                 var player: MediaPlayer? = null
@@ -119,10 +133,10 @@ fun CallerTuneTrimmerDialog(
                     player = MediaPlayer()
                     setMediaPlayerDataSource(context, player, sourceUri)
                     player.prepare()
-                    totalDurationMs = player.duration.toLong()
+                    player.duration.toLong()
                 } catch (e2: Exception) {
                     Log.w(TAG, "MediaPlayer duration fallback error: ${e2.message}")
-                    totalDurationMs = 60_000L // Default 60s fallback
+                    60_000L // Default 60s fallback
                 } finally {
                     try { player?.release() } catch (_: Throwable) {}
                 }
@@ -130,19 +144,21 @@ fun CallerTuneTrimmerDialog(
                 try { mmr?.release() } catch (_: Throwable) {}
             }
         }
-        isLoadingDuration = false
+        durationState = if (loadedMs > 0L) CallerTuneDurationState.Ready(loadedMs) else CallerTuneDurationState.Failed
 
         // Default initial window: start at 0s, end at min(30s, totalDuration)
-        if (totalDurationMs > 0) {
-            val maxInitialEnd = minOf(MAX_TUNE_DURATION_MS, totalDurationMs)
-            endFraction = maxInitialEnd.toFloat() / totalDurationMs
+        if (loadedMs > 0L) {
+            val maxInitialEnd = minOf(MAX_TUNE_DURATION_MS, loadedMs)
+            endFraction = maxInitialEnd.toFloat() / loadedMs
             startFraction = 0f
         }
     }
 
+    val totalDurationMs = (durationState as? CallerTuneDurationState.Ready)?.totalDurationMs ?: 0L
+
     // Playback loop for preview
-    LaunchedEffect(isPreviewPlaying) {
-        while (isPreviewPlaying) {
+    LaunchedEffect(previewPhase, totalDurationMs) {
+        while (previewPhase == CallerTunePreviewPhase.PLAYING) {
             val p = previewPlayer
             if (p != null) {
                 try {
@@ -241,16 +257,16 @@ fun CallerTuneTrimmerDialog(
 
                 Spacer(Modifier.height(18.dp))
 
-                when {
-                    isLoadingDuration -> {
+                when (durationState) {
+                    CallerTuneDurationState.Loading -> {
                         CircularProgressIndicator(modifier = Modifier.size(32.dp), color = themeColor.primary)
                         Spacer(Modifier.height(8.dp))
                         Text("Analyzing audio track...", style = MaterialTheme.typography.bodySmall)
                     }
-                    totalDurationMs <= 0L -> {
+                    CallerTuneDurationState.Failed -> {
                         Text("Could not process this audio track", color = MaterialTheme.colorScheme.error)
                     }
-                    else -> {
+                    is CallerTuneDurationState.Ready -> {
                         // Time Information Cards
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -324,7 +340,7 @@ fun CallerTuneTrimmerDialog(
                                 val ex = endFraction * size.width
                                 drawRoundRect(brush = selectedBrush, topLeft = Offset(sx, 0f), size = Size(ex - sx, size.height), cornerRadius = r)
 
-                                if (isPreviewPlaying || (previewProgress > startFraction && previewProgress <= endFraction)) {
+                                if (previewPhase == CallerTunePreviewPhase.PLAYING || (previewProgress > startFraction && previewProgress <= endFraction)) {
                                     val px = previewProgress * size.width
                                     drawLine(
                                         color = Color.White,
@@ -457,15 +473,15 @@ fun CallerTuneTrimmerDialog(
                         // Preview Button
                         OutlinedButton(
                             onClick = {
-                                if (isPreviewPlaying || isPreparingPreview) {
+                                if (previewPhase != CallerTunePreviewPhase.IDLE) {
                                     stopPreviewPlayback()
                                 } else {
-                                    isPreparingPreview = true
-                                    statusError = ""
+                                    previewPhase = CallerTunePreviewPhase.PREPARING
+                                    if (saveState is CallerTuneSaveState.Error) saveState = CallerTuneSaveState.Idle
                                     coroutineScope.launch {
                                         try {
                                             stopPreviewPlayback()
-                                            isPreparingPreview = true
+                                            previewPhase = CallerTunePreviewPhase.PREPARING
 
                                             val p = MediaPlayer()
                                             p.setAudioAttributes(
@@ -506,8 +522,7 @@ fun CallerTuneTrimmerDialog(
                                                     try {
                                                         p.start()
                                                         previewPlayer = p
-                                                        isPreviewPlaying = true
-                                                        isPreparingPreview = false
+                                                        previewPhase = CallerTunePreviewPhase.PLAYING
                                                         previewProgress = startFraction
                                                     } catch (e: Exception) {
                                                         Log.e(TAG, "Failed starting preview after seek: ${e.message}", e)
@@ -523,14 +538,13 @@ fun CallerTuneTrimmerDialog(
                                                 p.seekTo(0)
                                                 p.start()
                                                 previewPlayer = p
-                                                isPreviewPlaying = true
-                                                isPreparingPreview = false
+                                                previewPhase = CallerTunePreviewPhase.PLAYING
                                                 previewProgress = startFraction
                                             }
                                         } catch (e: Exception) {
                                             Log.e(TAG, "Preview playback error: ${e.message}", e)
                                             stopPreviewPlayback()
-                                            statusError = "Could not preview audio. Please try again."
+                                            saveState = CallerTuneSaveState.Error("Could not preview audio. Please try again.")
                                         }
                                     }
                                 }
@@ -538,39 +552,53 @@ fun CallerTuneTrimmerDialog(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp)
                         ) {
-                            if (isPreparingPreview) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = GreenCall
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text("Preparing Preview...", fontWeight = FontWeight.Bold)
-                            } else {
-                                Icon(
-                                    if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
-                                    contentDescription = null,
-                                    tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview 30s Caller Tune")
+                            when (previewPhase) {
+                                CallerTunePreviewPhase.PREPARING -> {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = GreenCall
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Preparing Preview...", fontWeight = FontWeight.Bold)
+                                }
+                                CallerTunePreviewPhase.PLAYING -> {
+                                    Icon(
+                                        Icons.Default.StopCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Stop Preview")
+                                }
+                                CallerTunePreviewPhase.IDLE -> {
+                                    Icon(
+                                        Icons.Default.PlayCircle,
+                                        contentDescription = null,
+                                        tint = GreenCall,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("▶  Preview 30s Caller Tune")
+                                }
                             }
                         }
 
                         Spacer(Modifier.height(10.dp))
 
-                        if (statusError.isNotBlank()) {
-                            Text(statusError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        val errorMessage = (saveState as? CallerTuneSaveState.Error)?.message
+                        if (!errorMessage.isNullOrBlank()) {
+                            Text(errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(6.dp))
                         }
 
+                        val isSaving = saveState is CallerTuneSaveState.Saving
                         // Save as Caller Tune Button
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    isSaving = true
-                                    statusError = ""
+                                    saveState = CallerTuneSaveState.Saving
                                     stopPreviewPlayback()
 
                                     // 1. Trim audio clip
@@ -605,11 +633,10 @@ fun CallerTuneTrimmerDialog(
                                             endMs = tuneInfo.endMs
                                         )
 
-                                        isSaving = false
+                                        saveState = CallerTuneSaveState.Idle
                                         onTuneSaved(tuneInfo)
                                     } else {
-                                        isSaving = false
-                                        statusError = "Could not trim audio section. Please try another range."
+                                        saveState = CallerTuneSaveState.Error("Could not trim audio section. Please try another range.")
                                     }
                                 }
                             },

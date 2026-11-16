@@ -59,8 +59,7 @@ fun DialerScreen(
     val context = LocalContext.current
     var dialNumber by remember { mutableStateOf("") }
     var selectedCountry by remember { mutableStateOf(CountryCodes.defaultCountry) }
-    var showCountryPicker by remember { mutableStateOf(false) }
-    var showSimPicker by remember { mutableStateOf(false) }
+    var activePickerModal by remember { mutableStateOf<DialerPickerModal>(DialerPickerModal.None) }
 
     // Progressive Disclosure States (OFF by default so optional features never clutter core work)
     var showFieldHudTools by remember { mutableStateOf(false) }
@@ -179,42 +178,43 @@ fun DialerScreen(
         }
     }
 
-    if (showCountryPicker) {
-        CountryCodePickerModal(
-            selectedCountry = selectedCountry,
-            onCountrySelected = { selectedCountry = it },
-            onDismissRequest = { showCountryPicker = false }
-        )
-    }
-
-    var simPickerTargetName by remember { mutableStateOf<String?>(null) }
-
-    if (showSimPicker && dialNumber.isNotBlank()) {
-        val calleeName = simPickerTargetName
-            ?: matchedUser?.displayName
-            ?: nonLksContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
-            ?: syncedContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
-            ?: fullDialNumber
-        SimCallPickerModal(
-            phoneNumber = fullDialNumber,
-            displayName = calleeName,
-            isRegisteredOnLks = matchedUser != null,
-            activeSims = activeSims,
-            onDismissRequest = {
-                showSimPicker = false
-                simPickerTargetName = null
-            },
-            onStartVoipCall = { type ->
-                safeCall(fullDialNumber, calleeName, type)
-            },
-            onStartCellularCall = { sim ->
-                SimManager.placeCellularCall(context, fullDialNumber, sim)
-                val simLabel = sim?.displayName ?: "SIM"
-                firebaseManager.recordCellularCall(fullDialNumber, calleeName, simLabel)
-                Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
-                simPickerTargetName = null
+    when (val modal = activePickerModal) {
+        DialerPickerModal.None -> Unit
+        DialerPickerModal.CountryPicker -> {
+            CountryCodePickerModal(
+                selectedCountry = selectedCountry,
+                onCountrySelected = { selectedCountry = it },
+                onDismissRequest = { activePickerModal = DialerPickerModal.None }
+            )
+        }
+        is DialerPickerModal.SimPicker -> {
+            if (dialNumber.isNotBlank()) {
+                val calleeName = modal.targetName
+                    ?: matchedUser?.displayName
+                    ?: nonLksContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+                    ?: syncedContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
+                    ?: fullDialNumber
+                SimCallPickerModal(
+                    phoneNumber = fullDialNumber,
+                    displayName = calleeName,
+                    isRegisteredOnLks = matchedUser != null,
+                    activeSims = activeSims,
+                    onDismissRequest = {
+                        activePickerModal = DialerPickerModal.None
+                    },
+                    onStartVoipCall = { type ->
+                        safeCall(fullDialNumber, calleeName, type)
+                    },
+                    onStartCellularCall = { sim ->
+                        SimManager.placeCellularCall(context, fullDialNumber, sim)
+                        val simLabel = sim?.displayName ?: "SIM"
+                        firebaseManager.recordCellularCall(fullDialNumber, calleeName, simLabel)
+                        Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                        activePickerModal = DialerPickerModal.None
+                    }
+                )
             }
-        )
+        }
     }
 
     Column(
@@ -379,7 +379,7 @@ fun DialerScreen(
                                         if (matchedUser != null) {
                                             safeCall(fullDialNumber, calleeName, CallType.AUDIO)
                                         } else {
-                                            showSimPicker = true
+                                            activePickerModal = DialerPickerModal.SimPicker()
                                         }
                                     } else {
                                         val lastCalled = callLogs.firstOrNull()?.otherPartyNumber
@@ -575,8 +575,7 @@ fun DialerScreen(
                                     } else {
                                         val clean = match.phoneNumber.filter { it.isDigit() || it == '+' }
                                         dialNumber = clean
-                                        simPickerTargetName = match.name
-                                        showSimPicker = true
+                                        activePickerModal = DialerPickerModal.SimPicker(targetName = match.name)
                                     }
                                 }
                             )
@@ -745,7 +744,7 @@ fun DialerScreen(
                     ) {
                         // Country Code Selector Chip (>= 48dp touch target)
                         Surface(
-                            onClick = { showCountryPicker = true },
+                            onClick = { activePickerModal = DialerPickerModal.CountryPicker },
                             modifier = Modifier
                                 .defaultMinSize(minHeight = 48.dp)
                                 .testTag("country_code_chip"),
@@ -909,8 +908,7 @@ fun DialerScreen(
                                 onClick = {
                                     if (dialNumber.isNotBlank()) {
                                         if (activeSims.size > 1) {
-                                            simPickerTargetName = null
-                                            showSimPicker = true
+                                            activePickerModal = DialerPickerModal.SimPicker()
                                         } else {
                                             val calleeName = matchedUser?.displayName
                                                 ?: nonLksContacts.firstOrNull { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, fullDialNumber) }?.name
@@ -928,7 +926,7 @@ fun DialerScreen(
                                 },
                                 onLongClick = {
                                     if (dialNumber.isNotBlank()) {
-                                        showSimPicker = true
+                                        activePickerModal = DialerPickerModal.SimPicker()
                                     }
                                 }
                             )
@@ -974,7 +972,7 @@ fun DialerScreen(
                                         if (matchedUser != null) {
                                             safeCall(fullDialNumber, calleeName, CallType.AUDIO)
                                         } else {
-                                            showSimPicker = true
+                                            activePickerModal = DialerPickerModal.SimPicker()
                                         }
                                     } else {
                                         val lastCalled = callLogs.firstOrNull()?.otherPartyNumber
@@ -987,7 +985,7 @@ fun DialerScreen(
                                 },
                                 onLongClick = {
                                     if (dialNumber.isNotBlank()) {
-                                        showSimPicker = true
+                                        activePickerModal = DialerPickerModal.SimPicker()
                                     }
                                 }
                             )
@@ -1298,4 +1296,10 @@ private fun T9SuggestionChip(
             }
         }
     }
+}
+
+private sealed interface DialerPickerModal {
+    data object None : DialerPickerModal
+    data object CountryPicker : DialerPickerModal
+    data class SimPicker(val targetName: String? = null) : DialerPickerModal
 }

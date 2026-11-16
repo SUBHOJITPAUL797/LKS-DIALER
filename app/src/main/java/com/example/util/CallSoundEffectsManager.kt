@@ -25,31 +25,37 @@ import java.io.FileInputStream
  * 5. Call Hold Tone: Soft prompt double-chime when call is placed on hold + periodic reminder.
  * 6. Call Resume / Unhold Tone: Rising confirmation chime when call is taken off hold.
  */
+enum class OutgoingAudioPhase {
+    IDLE,
+    CONNECTING,
+    RINGING_BUFFERING,
+    RINGING_CALLER_TUNE,
+    RINGING_RINGBACK,
+    ANSWERED;
+
+    val isConnecting: Boolean get() = this == CONNECTING
+    val isRinging: Boolean
+        get() = this == RINGING_BUFFERING || this == RINGING_CALLER_TUNE || this == RINGING_RINGBACK
+    val isRingbackActive: Boolean
+        get() = this == RINGING_CALLER_TUNE || this == RINGING_RINGBACK
+}
+
 object CallSoundEffectsManager {
 
     private const val TAG = "CallSoundEffects"
     private val handler = Handler(Looper.getMainLooper())
 
     @Volatile
-    private var connectingToneGenerator: ToneGenerator? = null
+    var audioPhase: OutgoingAudioPhase = OutgoingAudioPhase.IDLE
+        private set
+
     @Volatile
-    private var isConnectingActive = false
+    private var connectingToneGenerator: ToneGenerator? = null
     private var connectingRunnable: Runnable? = null
 
     @Volatile
     private var ringbackToneGenerator: ToneGenerator? = null
-    @Volatile
-    private var isRingbackActive = false
     private var ringbackRunnable: Runnable? = null
-
-    @Volatile
-    private var callerTunePlayer: MediaPlayer? = null
-    @Volatile
-    private var isCallerTunePrepared = false
-    @Volatile
-    private var isRingingState = false
-    @Volatile
-    private var isCallAnswered = false
 
     private data class PendingTune(
         val audioBase64: String?,
@@ -59,8 +65,31 @@ object CallSoundEffectsManager {
         val isBase64Playing: Boolean
     )
 
+    private sealed interface CallerTuneLoadState {
+        data object Empty : CallerTuneLoadState
+        data class Preparing(val tune: PendingTune, val player: MediaPlayer) : CallerTuneLoadState
+        data class Prepared(val tune: PendingTune, val player: MediaPlayer) : CallerTuneLoadState
+        data class Playing(val tune: PendingTune, val player: MediaPlayer) : CallerTuneLoadState
+
+        val tuneOrNull: PendingTune?
+            get() = when (this) {
+                Empty -> null
+                is Preparing -> tune
+                is Prepared -> tune
+                is Playing -> tune
+            }
+
+        val playerOrNull: MediaPlayer?
+            get() = when (this) {
+                Empty -> null
+                is Preparing -> player
+                is Prepared -> player
+                is Playing -> player
+            }
+    }
+
     @Volatile
-    private var pendingTune: PendingTune? = null
+    private var callerTuneState: CallerTuneLoadState = CallerTuneLoadState.Empty
 
     private var holdReminderRunnable: Runnable? = null
 
@@ -71,13 +100,11 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun startConnectingTone(context: Context) {
-        if (isConnectingActive) return
-        isCallAnswered = false
+        if (audioPhase == OutgoingAudioPhase.CONNECTING) return
         stopConnectingTone()
         internalStopToneGenerator()
 
-        isConnectingActive = true
-        isRingingState = false
+        audioPhase = OutgoingAudioPhase.CONNECTING
         Log.i(TAG, "Starting outgoing connecting tone (tuk... tuk...)")
 
         try {
@@ -97,14 +124,14 @@ object CallSoundEffectsManager {
 
         connectingRunnable = object : Runnable {
             override fun run() {
-                if (!isConnectingActive) return
+                if (audioPhase != OutgoingAudioPhase.CONNECTING) return
                 try {
                     // Pulse 1: "tuk" (65ms)
                     connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 65)
 
                     // Pulse 2: "tuk" (65ms) after 160ms
                     handler.postDelayed({
-                        if (isConnectingActive) {
+                        if (audioPhase == OutgoingAudioPhase.CONNECTING) {
                             try {
                                 connectingToneGenerator?.startTone(ToneGenerator.TONE_PROP_PROMPT, 65)
                             } catch (_: Exception) {}
@@ -115,7 +142,7 @@ object CallSoundEffectsManager {
                 }
 
                 // Repeat cadence every 1400ms: "tuk... tuk...      tuk... tuk..."
-                if (isConnectingActive) {
+                if (audioPhase == OutgoingAudioPhase.CONNECTING) {
                     handler.postDelayed(this, 1400L)
                 }
             }
@@ -126,8 +153,10 @@ object CallSoundEffectsManager {
 
     @Synchronized
     fun stopConnectingTone() {
-        if (!isConnectingActive && connectingToneGenerator == null) return
-        isConnectingActive = false
+        if (audioPhase != OutgoingAudioPhase.CONNECTING && connectingToneGenerator == null) return
+        if (audioPhase == OutgoingAudioPhase.CONNECTING) {
+            audioPhase = OutgoingAudioPhase.IDLE
+        }
         Log.d(TAG, "Stopping outgoing connecting tone")
         connectingRunnable?.let { handler.removeCallbacks(it) }
         connectingRunnable = null
@@ -154,22 +183,19 @@ object CallSoundEffectsManager {
         startMs: Long = 0L
     ) {
         if (audioBase64.isNullOrBlank() && audioUrl.isNullOrBlank()) {
-            pendingTune = null
+            stopCallerTune()
             return
         }
 
-        // Avoid recreating if already preparing the same tune
-        if (pendingTune != null && pendingTune?.title == title && callerTunePlayer != null) {
+        // Avoid recreating if already preparing/prepared/playing the same tune
+        if (callerTuneState.tuneOrNull?.title == title && callerTuneState.playerOrNull != null) {
             return
         }
 
         stopCallerTune()
-        isCallerTunePrepared = false
 
         try {
             val player = MediaPlayer()
-            callerTunePlayer = player
-
             val httpHeaders = mapOf("User-Agent" to "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36")
             var isBase64Playing = false
             var isStreamingUrl = false
@@ -208,18 +234,17 @@ object CallSoundEffectsManager {
                     if (bindAudioUrlOrCache()) {
                         Log.w(TAG, "Base64 caller tune missing or corrupted; using URL/cache fallback: $audioUrl")
                     } else {
-                        callerTunePlayer = null
                         try { player.release() } catch (_: Exception) {}
                         return
                     }
                 }
             } else if (!bindAudioUrlOrCache()) {
-                callerTunePlayer = null
                 try { player.release() } catch (_: Exception) {}
                 return
             }
 
-            pendingTune = PendingTune(audioBase64, audioUrl, title, startMs, isBase64Playing)
+            val tuneInfo = PendingTune(audioBase64, audioUrl, title, startMs, isBase64Playing)
+            callerTuneState = CallerTuneLoadState.Preparing(tuneInfo, player)
 
             player.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -232,11 +257,12 @@ object CallSoundEffectsManager {
 
             player.setOnPreparedListener { mp ->
                 synchronized(this) {
-                    if (callerTunePlayer == mp) {
-                        isCallerTunePrepared = true
-                        Log.i(TAG, "🎵 Caller Tune prepared in memory: $title (isRingingState=$isRingingState)")
-                        if (isRingingState) {
-                            startPreparedCallerTune(mp, context)
+                    val current = callerTuneState
+                    if (current is CallerTuneLoadState.Preparing && current.player == mp) {
+                        callerTuneState = CallerTuneLoadState.Prepared(current.tune, mp)
+                        Log.i(TAG, "🎵 Caller Tune prepared in memory: $title (audioPhase=$audioPhase)")
+                        if (audioPhase.isRinging) {
+                            startPreparedCallerTune(mp, current.tune, context)
                         }
                     } else {
                         try { mp.release() } catch (_: Exception) {}
@@ -246,15 +272,19 @@ object CallSoundEffectsManager {
 
             player.setOnErrorListener { _, what, extra ->
                 Log.w(TAG, "Caller tune prepare error ($what, $extra) [isBase64=$isBase64Playing, isStreaming=$isStreamingUrl]")
-                val wasRinging = isRingingState
+                val wasRinging = audioPhase.isRinging
                 stopCallerTune()
                 if (isBase64Playing && validUrl) {
                     Log.i(TAG, "Retrying caller tune playback via URL/cache fallback: $audioUrl")
-                    isRingingState = wasRinging
+                    if (wasRinging && audioPhase != OutgoingAudioPhase.ANSWERED) {
+                        audioPhase = OutgoingAudioPhase.RINGING_BUFFERING
+                    }
                     prepareCallerTune(context, null, audioUrl, title, startMs)
-                } else if (isStreamingUrl && validUrl && !isCallAnswered) {
+                } else if (isStreamingUrl && validUrl && audioPhase != OutgoingAudioPhase.ANSWERED) {
                     // OkHttp download fallback for CDNs rejected by MediaPlayer HTTP stack
-                    isRingingState = wasRinging
+                    if (wasRinging) {
+                        audioPhase = OutgoingAudioPhase.RINGING_BUFFERING
+                    }
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
                             val dl = YouTubeSearchHelper.downloadSongToTempFile(context, audioUrl!!)
@@ -262,7 +292,7 @@ object CallSoundEffectsManager {
                                 dl.copyTo(cachedUrlFile, overwrite = true)
                                 try { dl.delete() } catch (_: Exception) {}
                                 withContext(Dispatchers.Main) {
-                                    if (!isCallAnswered && isRingingState) {
+                                    if (audioPhase.isRinging) {
                                         prepareCallerTune(context, null, audioUrl, title, startMs)
                                     }
                                 }
@@ -272,10 +302,10 @@ object CallSoundEffectsManager {
                             }
                         } catch (_: Exception) {}
                         withContext(Dispatchers.Main) {
-                            if (isRingingState && !isCallAnswered) startRingbackTone(context)
+                            if (audioPhase.isRinging) startRingbackTone(context)
                         }
                     }
-                } else if (wasRinging) {
+                } else if (wasRinging && audioPhase != OutgoingAudioPhase.ANSWERED) {
                     startRingbackTone(context)
                 }
                 true
@@ -288,22 +318,22 @@ object CallSoundEffectsManager {
         }
     }
 
-    private fun startPreparedCallerTune(mp: MediaPlayer, context: Context) {
+    private fun startPreparedCallerTune(mp: MediaPlayer, tuneInfo: PendingTune, context: Context) {
         try {
             stopConnectingTone()
             internalStopToneGenerator()
 
-            val info = pendingTune
-            if (info != null && !info.isBase64Playing && info.startMs > 0) {
+            if (!tuneInfo.isBase64Playing && tuneInfo.startMs > 0) {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    mp.seekTo(info.startMs, MediaPlayer.SEEK_CLOSEST)
+                    mp.seekTo(tuneInfo.startMs, MediaPlayer.SEEK_CLOSEST)
                 } else {
-                    mp.seekTo(info.startMs.toInt())
+                    mp.seekTo(tuneInfo.startMs.toInt())
                 }
             }
             mp.start()
-            isRingbackActive = true
-            Log.i(TAG, "🎵 Outgoing Caller Tune playing INSTANTLY: ${info?.title ?: "Song"} (startMs=${info?.startMs ?: 0})")
+            callerTuneState = CallerTuneLoadState.Playing(tuneInfo, mp)
+            audioPhase = OutgoingAudioPhase.RINGING_CALLER_TUNE
+            Log.i(TAG, "🎵 Outgoing Caller Tune playing INSTANTLY: ${tuneInfo.title ?: "Song"} (startMs=${tuneInfo.startMs})")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to start prepared caller tune: ${e.message}")
             startRingbackTone(context)
@@ -321,20 +351,30 @@ object CallSoundEffectsManager {
         title: String? = null,
         startMs: Long = 0L
     ) {
-        if (isCallAnswered) return
-        isRingingState = true
+        if (audioPhase == OutgoingAudioPhase.ANSWERED) return
         stopConnectingTone()
+        audioPhase = OutgoingAudioPhase.RINGING_BUFFERING
 
-        val existingPlayer = callerTunePlayer
-        if (existingPlayer != null && isCallerTunePrepared && pendingTune?.title == title) {
-            startPreparedCallerTune(existingPlayer, context)
-            return
+        when (val existing = callerTuneState) {
+            is CallerTuneLoadState.Playing -> {
+                if (existing.tune.title == title) {
+                    audioPhase = OutgoingAudioPhase.RINGING_CALLER_TUNE
+                    return
+                }
+            }
+            is CallerTuneLoadState.Prepared -> {
+                if (existing.tune.title == title) {
+                    startPreparedCallerTune(existing.player, existing.tune, context)
+                    return
+                }
+            }
+            else -> Unit
         }
 
         prepareCallerTune(context, audioBase64, audioUrl, title, startMs)
-        val player = callerTunePlayer
-        if (player != null && isCallerTunePrepared) {
-            startPreparedCallerTune(player, context)
+        val afterPrepare = callerTuneState
+        if (afterPrepare is CallerTuneLoadState.Prepared) {
+            startPreparedCallerTune(afterPrepare.player, afterPrepare.tune, context)
         }
     }
 
@@ -347,31 +387,36 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun onCallRinging(context: Context) {
-        if (isCallAnswered) return
+        if (audioPhase == OutgoingAudioPhase.ANSWERED) return
         Log.i(TAG, "Call transitioned to RINGING")
-        isRingingState = true
         stopConnectingTone()
+        audioPhase = OutgoingAudioPhase.RINGING_BUFFERING
 
-        val player = callerTunePlayer
-        if (player != null && isCallerTunePrepared) {
-            startPreparedCallerTune(player, context)
-            return
-        }
-
-        if (pendingTune != null && player != null) {
-            Log.i(TAG, "Caller Tune is buffering in background; setting 3.5s timeout fallback to ringback tone")
-            handler.postDelayed({
-                synchronized(this) {
-                    if (isRingingState && !isCallAnswered && !isCallerTunePrepared && !isRingbackActive) {
-                        Log.i(TAG, "Caller Tune buffer timeout reached, falling back to standard ringback tone")
-                        startRingbackTone(context)
+        when (val state = callerTuneState) {
+            is CallerTuneLoadState.Prepared -> {
+                startPreparedCallerTune(state.player, state.tune, context)
+                return
+            }
+            is CallerTuneLoadState.Playing -> {
+                audioPhase = OutgoingAudioPhase.RINGING_CALLER_TUNE
+                return
+            }
+            is CallerTuneLoadState.Preparing -> {
+                Log.i(TAG, "Caller Tune is buffering in background; setting 3.5s timeout fallback to ringback tone")
+                handler.postDelayed({
+                    synchronized(this) {
+                        if (audioPhase == OutgoingAudioPhase.RINGING_BUFFERING && callerTuneState is CallerTuneLoadState.Preparing) {
+                            Log.i(TAG, "Caller Tune buffer timeout reached, falling back to standard ringback tone")
+                            startRingbackTone(context)
+                        }
                     }
-                }
-            }, 3500L)
-            return
+                }, 3500L)
+                return
+            }
+            CallerTuneLoadState.Empty -> {
+                startRingbackTone(context)
+            }
         }
-
-        startRingbackTone(context)
     }
 
     /**
@@ -381,13 +426,13 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun startRingbackTone(context: Context) {
-        if (isCallAnswered) return
-        if (isRingbackActive && ringbackToneGenerator != null) return
+        if (audioPhase == OutgoingAudioPhase.ANSWERED) return
+        if (audioPhase == OutgoingAudioPhase.RINGING_RINGBACK && ringbackToneGenerator != null) return
         stopConnectingTone()
         stopCallerTune()
         internalStopToneGenerator()
 
-        isRingbackActive = true
+        audioPhase = OutgoingAudioPhase.RINGING_RINGBACK
         Log.i(TAG, "Starting outgoing supervisory ringback tone cadence (ring ring)")
 
         try {
@@ -407,7 +452,7 @@ object CallSoundEffectsManager {
 
         ringbackRunnable = object : Runnable {
             override fun run() {
-                if (!isRingbackActive || isCallAnswered) return
+                if (audioPhase != OutgoingAudioPhase.RINGING_RINGBACK) return
                 try {
                     // Play 1.6 second standard supervisory ring tone
                     ringbackToneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1600)
@@ -416,7 +461,7 @@ object CallSoundEffectsManager {
                 }
 
                 // Standard telecom supervisory cycle: 1.6s ring + 2.2s silence = 3.8s cadence
-                if (isRingbackActive && !isCallAnswered) {
+                if (audioPhase == OutgoingAudioPhase.RINGING_RINGBACK) {
                     handler.postDelayed(this, 3800L)
                 }
             }
@@ -427,7 +472,7 @@ object CallSoundEffectsManager {
     @Synchronized
     fun stopCallerTune() {
         try {
-            callerTunePlayer?.let { player ->
+            callerTuneState.playerOrNull?.let { player ->
                 if (player.isPlaying) {
                     try { player.stop() } catch (_: Exception) {}
                 }
@@ -436,9 +481,10 @@ object CallSoundEffectsManager {
         } catch (e: Exception) {
             Log.w(TAG, "Error releasing caller tune player: ${e.message}")
         } finally {
-            callerTunePlayer = null
-            isCallerTunePrepared = false
-            pendingTune = null
+            callerTuneState = CallerTuneLoadState.Empty
+            if (audioPhase == OutgoingAudioPhase.RINGING_CALLER_TUNE) {
+                audioPhase = OutgoingAudioPhase.RINGING_BUFFERING
+            }
         }
     }
 
@@ -448,15 +494,16 @@ object CallSoundEffectsManager {
      */
     @Synchronized
     fun stopRingbackTone() {
-        isCallAnswered = true
+        audioPhase = OutgoingAudioPhase.ANSWERED
         stopConnectingTone()
         stopCallerTune()
         internalStopToneGenerator()
-        isRingingState = false
     }
 
     private fun internalStopToneGenerator() {
-        isRingbackActive = false
+        if (audioPhase == OutgoingAudioPhase.RINGING_RINGBACK) {
+            audioPhase = OutgoingAudioPhase.IDLE
+        }
         ringbackRunnable?.let { handler.removeCallbacks(it) }
         ringbackRunnable = null
         Log.d(TAG, "Stopping outgoing ringback tone")
@@ -591,10 +638,12 @@ object CallSoundEffectsManager {
     /**
      * Reset all call sound effects (e.g. when app goes IDLE).
      */
+    @Synchronized
     fun resetAll() {
-        isCallAnswered = false
         stopConnectingTone()
-        stopRingbackTone()
+        stopCallerTune()
+        internalStopToneGenerator()
         stopHoldReminder()
+        audioPhase = OutgoingAudioPhase.IDLE
     }
 }

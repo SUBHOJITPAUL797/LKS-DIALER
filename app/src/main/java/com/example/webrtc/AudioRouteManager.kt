@@ -22,6 +22,20 @@ import com.example.data.model.CallType
  * Dedicated manager for VoIP audio routing across Speaker, Earpiece, Bluetooth SCO/BLE,
  * and Wired Headsets, with Samsung Voice Focus enhancement and Telecom subsystem synchronization.
  */
+sealed interface AudioRoutePhase {
+    data class Unconfigured(val preferredDevice: AudioDeviceType? = null) : AudioRoutePhase
+    data class Active(
+        val selectedDevice: AudioDeviceType,
+        val availableDevices: List<AudioDeviceOption> = emptyList(),
+        val explicitOverride: AudioDeviceType? = null,
+        val explicitOverrideAtMs: Long = 0L,
+        val lastNonBtDevice: AudioDeviceType = AudioDeviceType.EARPIECE,
+        val focusGrantedAtMs: Long = 0L,
+        val lastTelecomRoute: Int? = null
+    ) : AudioRoutePhase
+    data class InterruptedByCellular(val resumeState: Active) : AudioRoutePhase
+}
+
 class AudioRouteManager(
     private val context: Context,
     private val onRouteChanged: (
@@ -45,8 +59,24 @@ class AudioRouteManager(
     private val delayedRefreshRunnable400 = Runnable { refreshAvailableAudioDevices() }
     private val delayedRefreshRunnable1000 = Runnable { refreshAvailableAudioDevices() }
     private val pendingBtRetries = java.util.concurrent.CopyOnWriteArrayList<Runnable>()
+
     @Volatile
-    private var lastSetTelecomRoute: Int? = null
+    var phase: AudioRoutePhase = AudioRoutePhase.Unconfigured()
+        private set
+
+    private inline fun activePhaseOrNull(): AudioRoutePhase.Active? = when (val p = phase) {
+        is AudioRoutePhase.Active -> p
+        is AudioRoutePhase.InterruptedByCellular -> p.resumeState
+        is AudioRoutePhase.Unconfigured -> null
+    }
+
+    private fun updateActivePhase(transform: (AudioRoutePhase.Active) -> AudioRoutePhase.Active) {
+        when (val p = phase) {
+            is AudioRoutePhase.Active -> phase = transform(p)
+            is AudioRoutePhase.InterruptedByCellular -> phase = p.copy(resumeState = transform(p.resumeState))
+            is AudioRoutePhase.Unconfigured -> Unit
+        }
+    }
 
     private fun cancelPendingBtRetries() {
         for (r in pendingBtRetries) {
@@ -60,23 +90,18 @@ class AudioRouteManager(
         mainHandler.postDelayed(debouncedRefreshRunnable, 150L)
     }
 
-    private var lastNonBluetoothAudioDevice: AudioDeviceType = AudioDeviceType.EARPIECE
-    @Volatile
-    private var lastUserExplicitSelectionTime: Long = 0L
-    @Volatile
-    private var userExplicitSelectedDevice: AudioDeviceType? = null
-    @Volatile
-    private var isCellularCallInterrupting: Boolean = false
-    @Volatile
-    private var callAudioFocusGrantedAt: Long = 0L
-    @Volatile
-    var isAudioConfigured: Boolean = false
-        private set
+    val isAudioConfigured: Boolean
+        get() = phase !is AudioRoutePhase.Unconfigured
 
-    var currentAvailableDevices: List<AudioDeviceOption> = emptyList()
-        private set
-    var currentSelectedDevice: AudioDeviceType = AudioDeviceType.EARPIECE
-        private set
+    val currentAvailableDevices: List<AudioDeviceOption>
+        get() = activePhaseOrNull()?.availableDevices ?: emptyList()
+
+    val currentSelectedDevice: AudioDeviceType
+        get() = when (val p = phase) {
+            is AudioRoutePhase.Unconfigured -> p.preferredDevice ?: AudioDeviceType.EARPIECE
+            is AudioRoutePhase.Active -> p.selectedDevice
+            is AudioRoutePhase.InterruptedByCellular -> p.resumeState.selectedDevice
+        }
 
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         Log.d(TAG, "AudioFocus changed: $focusChange")
@@ -87,24 +112,27 @@ class AudioRouteManager(
                 Log.d(TAG, "AudioFocus transient can duck received ── maintaining active VoIP call (media ducked)")
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                val timeSinceFocusGrant = System.currentTimeMillis() - callAudioFocusGrantedAt
+                val active = phase as? AudioRoutePhase.Active ?: return@OnAudioFocusChangeListener
+                val timeSinceFocusGrant = System.currentTimeMillis() - active.focusGrantedAtMs
                 if (timeSinceFocusGrant < 5000L) {
                     Log.d(TAG, "Suppressing auto-hold: audio focus granted only ${timeSinceFocusGrant}ms ago (startup transient)")
                     return@OnAudioFocusChangeListener
                 }
                 Log.i(TAG, "Cellular call or alarm interruption detected ── placing VoIP call on hold")
-                isCellularCallInterrupting = true
+                phase = AudioRoutePhase.InterruptedByCellular(active)
                 onCellularInterruption(true)
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
+                val active = phase as? AudioRoutePhase.Active ?: return@OnAudioFocusChangeListener
                 Log.i(TAG, "Permanent audio focus loss ── placing VoIP call on hold")
-                isCellularCallInterrupting = true
+                phase = AudioRoutePhase.InterruptedByCellular(active)
                 onCellularInterruption(true)
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
-                if (isCellularCallInterrupting) {
+                val interrupted = phase as? AudioRoutePhase.InterruptedByCellular
+                if (interrupted != null) {
                     Log.i(TAG, "Regained audio focus after cellular call ── resuming VoIP call")
-                    isCellularCallInterrupting = false
+                    phase = interrupted.resumeState
                     onCellularInterruption(false)
                 }
             }
@@ -112,9 +140,14 @@ class AudioRouteManager(
     }
 
     fun configureAudio(callType: CallType) {
-        isAudioConfigured = true
-        val isSpeaker = callType == CallType.VIDEO || currentSelectedDevice == AudioDeviceType.SPEAKERPHONE
-        lastNonBluetoothAudioDevice = if (isSpeaker) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
+        val preferred = (phase as? AudioRoutePhase.Unconfigured)?.preferredDevice ?: currentSelectedDevice
+        val isSpeaker = callType == CallType.VIDEO || preferred == AudioDeviceType.SPEAKERPHONE
+        val initialNonBt = if (isSpeaker) AudioDeviceType.SPEAKERPHONE else AudioDeviceType.EARPIECE
+        phase = AudioRoutePhase.Active(
+            selectedDevice = if (isSpeaker) AudioDeviceType.SPEAKERPHONE else preferred,
+            lastNonBtDevice = initialNonBt,
+            explicitOverride = if (preferred == AudioDeviceType.SPEAKERPHONE) AudioDeviceType.SPEAKERPHONE else null
+        )
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
         // Activate Samsung One UI Voice Focus hardware noise suppression pipeline
@@ -143,7 +176,8 @@ class AudioRouteManager(
                 AudioManager.AUDIOFOCUS_GAIN
             )
         }
-        callAudioFocusGrantedAt = System.currentTimeMillis()
+        val focusAt = System.currentTimeMillis()
+        updateActivePhase { it.copy(focusGrantedAtMs = focusAt) }
 
         // Ensure voice call volume is clear and un-ducked
         try {
@@ -422,27 +456,32 @@ class AudioRouteManager(
             )
         }
 
+        val activeSnapshot = activePhaseOrNull()
         val currentSelected = currentSelectedDevice
-        val hadBluetoothBefore = currentAvailableDevices.any { it.type == AudioDeviceType.BLUETOOTH }
+        val hadBluetoothBefore = (activeSnapshot?.availableDevices ?: emptyList()).any { it.type == AudioDeviceType.BLUETOOTH }
         val hasBluetoothNow = deviceList.any { it.type == AudioDeviceType.BLUETOOTH }
         val btOption = deviceList.firstOrNull { it.type == AudioDeviceType.BLUETOOTH }
         val wiredOption = deviceList.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
         val speakerOption = deviceList.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
         val earpieceOption = deviceList.firstOrNull { it.type == AudioDeviceType.EARPIECE }
+        val explicitSelected = activeSnapshot?.explicitOverride
+        val lastNonBt = activeSnapshot?.lastNonBtDevice ?: AudioDeviceType.EARPIECE
         val targetDevice: AudioDeviceOption
 
-        val now = System.currentTimeMillis()
-        if (defaultCallType == null && userExplicitSelectedDevice != null) {
-            val explicitType = userExplicitSelectedDevice ?: return
-            val target = deviceList.firstOrNull { it.type == explicitType }
-                ?: (if (explicitType == AudioDeviceType.SPEAKERPHONE) speakerOption ?: earpieceOption else earpieceOption ?: speakerOption)
+        if (defaultCallType == null && explicitSelected != null) {
+            val target = deviceList.firstOrNull { it.type == explicitSelected }
+                ?: (if (explicitSelected == AudioDeviceType.SPEAKERPHONE) speakerOption ?: earpieceOption else earpieceOption ?: speakerOption)
                 ?: deviceList.first()
             val updatedList = deviceList.map {
                 it.copy(isSelected = it.id == target.id || it.type == target.type)
             }
-            currentAvailableDevices = updatedList
             val routeChanged = currentSelectedDevice != target.type
-            currentSelectedDevice = target.type
+            updateActivePhase {
+                it.copy(
+                    availableDevices = updatedList,
+                    selectedDevice = target.type
+                )
+            }
             onRouteChanged(target, updatedList, target.type == AudioDeviceType.SPEAKERPHONE)
             // Only re-assert audio routing if the target device type actually changed to prevent recursive Telecom loop
             if (routeChanged) {
@@ -456,7 +495,7 @@ class AudioRouteManager(
                 btOption != null -> btOption
                 wiredOption != null -> wiredOption
                 defaultCallType == CallType.VIDEO -> speakerOption ?: earpieceOption ?: deviceList.first()
-                userExplicitSelectedDevice == AudioDeviceType.SPEAKERPHONE || currentSelected == AudioDeviceType.SPEAKERPHONE -> speakerOption ?: earpieceOption ?: deviceList.first()
+                explicitSelected == AudioDeviceType.SPEAKERPHONE || currentSelected == AudioDeviceType.SPEAKERPHONE -> speakerOption ?: earpieceOption ?: deviceList.first()
                 else -> earpieceOption ?: speakerOption ?: deviceList.first()
             }
             val routeChanged = currentSelectedDevice != targetDevice.type
@@ -467,14 +506,14 @@ class AudioRouteManager(
             targetDevice = when {
                 !hadBluetoothBefore && hasBluetoothNow && btOption != null -> {
                     if (currentSelected != AudioDeviceType.BLUETOOTH) {
-                        lastNonBluetoothAudioDevice = currentSelected
+                        updateActivePhase { it.copy(lastNonBtDevice = currentSelected) }
                     }
                     Log.i(TAG, "🎧 Bluetooth connected during call -> Auto-switching to Bluetooth")
                     btOption
                 }
                 hadBluetoothBefore && !hasBluetoothNow && currentSelected == AudioDeviceType.BLUETOOTH -> {
-                    Log.i(TAG, "🎧 Bluetooth disconnected during call -> Reverting to: $lastNonBluetoothAudioDevice")
-                    when (lastNonBluetoothAudioDevice) {
+                    Log.i(TAG, "🎧 Bluetooth disconnected during call -> Reverting to: $lastNonBt")
+                    when (lastNonBt) {
                         AudioDeviceType.SPEAKERPHONE -> speakerOption ?: earpieceOption ?: deviceList.first()
                         AudioDeviceType.WIRED_HEADSET -> wiredOption ?: earpieceOption ?: deviceList.first()
                         else -> earpieceOption ?: speakerOption ?: deviceList.first()
@@ -495,25 +534,30 @@ class AudioRouteManager(
         val updatedList = deviceList.map {
             it.copy(isSelected = it.id == targetDevice.id || it.type == targetDevice.type)
         }
-        currentAvailableDevices = updatedList
-        currentSelectedDevice = targetDevice.type
+        updateActivePhase {
+            it.copy(
+                availableDevices = updatedList,
+                selectedDevice = targetDevice.type
+            )
+        }
         onRouteChanged(targetDevice, updatedList, targetDevice.type == AudioDeviceType.SPEAKERPHONE)
     }
 
     fun selectAudioDevice(device: AudioDeviceOption, updateDeviceList: Boolean = true) {
-        if (updateDeviceList) {
-            lastUserExplicitSelectionTime = System.currentTimeMillis()
-            userExplicitSelectedDevice = device.type
-        }
-
-        if (device.type != AudioDeviceType.BLUETOOTH) {
-            lastNonBluetoothAudioDevice = device.type
-        }
-
-        if (!isAudioConfigured) {
+        val currentPhase = phase
+        if (currentPhase is AudioRoutePhase.Unconfigured) {
             Log.d(TAG, "🛡️ selectAudioDevice: Audio not yet configured (call not active). Storing preferred device ${device.type} without modifying hardware audioManager.")
-            currentSelectedDevice = device.type
+            phase = AudioRoutePhase.Unconfigured(preferredDevice = device.type)
             return
+        }
+
+        val now = System.currentTimeMillis()
+        updateActivePhase { active ->
+            active.copy(
+                explicitOverride = if (updateDeviceList) device.type else active.explicitOverride,
+                explicitOverrideAtMs = if (updateDeviceList) now else active.explicitOverrideAtMs,
+                lastNonBtDevice = if (device.type != AudioDeviceType.BLUETOOTH) device.type else active.lastNonBtDevice
+            )
         }
 
         Log.i(TAG, "🔊 Switching audio route to: ${device.type} (${device.name})")
@@ -554,8 +598,9 @@ class AudioRouteManager(
                         AudioDeviceType.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
                         AudioDeviceType.WIRED_HEADSET -> android.telecom.CallAudioState.ROUTE_WIRED_HEADSET
                     }
-                    if (lastSetTelecomRoute != telecomRoute) {
-                        lastSetTelecomRoute = telecomRoute
+                    val lastRoute = activePhaseOrNull()?.lastTelecomRoute
+                    if (lastRoute != telecomRoute) {
+                        updateActivePhase { it.copy(lastTelecomRoute = telecomRoute) }
                         com.example.services.LksConnectionService.setAudioRoute(telecomRoute)
                     }
                 } catch (e: Exception) {
@@ -766,8 +811,12 @@ class AudioRouteManager(
             val updatedList = currentAvailableDevices.map {
                 it.copy(isSelected = it.id == device.id || it.type == device.type)
             }
-            currentAvailableDevices = updatedList
-            currentSelectedDevice = device.type
+            updateActivePhase {
+                it.copy(
+                    availableDevices = updatedList,
+                    selectedDevice = device.type
+                )
+            }
             onRouteChanged(device, updatedList, device.type == AudioDeviceType.SPEAKERPHONE)
         }
     }
@@ -784,19 +833,24 @@ class AudioRouteManager(
                 },
                 type = type
             )
-        userExplicitSelectedDevice = type
-        lastUserExplicitSelectionTime = System.currentTimeMillis()
+        updateActivePhase {
+            it.copy(
+                explicitOverride = type,
+                explicitOverrideAtMs = System.currentTimeMillis()
+            )
+        }
         selectAudioDevice(target, updateDeviceList = true)
     }
 
     fun onTelecomAudioRouteChanged(targetType: AudioDeviceType) {
-        if (!isAudioConfigured) {
+        val active = activePhaseOrNull()
+        if (active == null) {
             Log.d(TAG, "🛡️ Suppressing onTelecomAudioRouteChanged($targetType): Audio not configured / call not active")
             return
         }
 
-        val explicit = userExplicitSelectedDevice
-        val current = currentSelectedDevice
+        val explicit = active.explicitOverride
+        val current = active.selectedDevice
 
         Log.d(TAG, "Telecom onTelecomAudioRouteChanged: targetType=$targetType, current=$current, explicit=$explicit")
         com.example.util.logging.LksLogger.breadcrumb("AUDIO_ROUTE", "Telecom route event: target=$targetType, current=$current, explicit=$explicit")
@@ -825,11 +879,10 @@ class AudioRouteManager(
             AudioDeviceType.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
             AudioDeviceType.WIRED_HEADSET -> android.telecom.CallAudioState.ROUTE_WIRED_HEADSET
         }
-        lastSetTelecomRoute = telecomRoute
+        updateActivePhase { it.copy(lastTelecomRoute = telecomRoute) }
 
         if (current != targetType) {
             Log.i(TAG, "Syncing route from Telecom: $targetType")
-            userExplicitSelectedDevice = targetType
             selectAudioDeviceType(targetType)
         }
     }
@@ -839,27 +892,26 @@ class AudioRouteManager(
             refreshAvailableAudioDevices()
         }
         val current = currentSelectedDevice
-        if (current == AudioDeviceType.SPEAKERPHONE) {
+        val target = if (current == AudioDeviceType.SPEAKERPHONE) {
             val bt = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.BLUETOOTH }
             val wired = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.WIRED_HEADSET }
             val earpiece = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.EARPIECE }
-            val target = bt ?: wired ?: earpiece ?: AudioDeviceOption(id = "earpiece_default", name = "Phone Earpiece", type = AudioDeviceType.EARPIECE)
-            userExplicitSelectedDevice = target.type
-            lastUserExplicitSelectionTime = System.currentTimeMillis()
-            selectAudioDevice(target, updateDeviceList = true)
+            bt ?: wired ?: earpiece ?: AudioDeviceOption(id = "earpiece_default", name = "Phone Earpiece", type = AudioDeviceType.EARPIECE)
         } else {
-            val speaker = currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
+            currentAvailableDevices.firstOrNull { it.type == AudioDeviceType.SPEAKERPHONE }
                 ?: AudioDeviceOption(id = "speaker_default", name = "Speaker", type = AudioDeviceType.SPEAKERPHONE)
-            userExplicitSelectedDevice = AudioDeviceType.SPEAKERPHONE
-            lastUserExplicitSelectionTime = System.currentTimeMillis()
-            selectAudioDevice(speaker, updateDeviceList = true)
         }
+        updateActivePhase {
+            it.copy(
+                explicitOverride = target.type,
+                explicitOverrideAtMs = System.currentTimeMillis()
+            )
+        }
+        selectAudioDevice(target, updateDeviceList = true)
     }
 
     fun resetAudioRouting() {
-        isAudioConfigured = false
-        userExplicitSelectedDevice = null
-        lastUserExplicitSelectionTime = 0L
+        phase = AudioRoutePhase.Unconfigured()
 
         // Release Samsung One UI Voice Focus pipeline
         com.example.util.SamsungVoiceFocusManager.stop()
@@ -894,8 +946,6 @@ class AudioRouteManager(
             @Suppress("DEPRECATION")
             audioManager.isSpeakerphoneOn = false
         } catch (_: Exception) {}
-
-        isCellularCallInterrupting = false
     }
 
     /**

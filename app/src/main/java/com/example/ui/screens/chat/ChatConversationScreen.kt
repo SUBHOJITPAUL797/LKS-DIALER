@@ -192,6 +192,69 @@ fun formatReplyPreview(message: MessageEntity): String {
     }
 }
 
+private sealed class ChatTimelineItem {
+    abstract val sortTimestamp: Long
+    abstract val key: String
+
+    data class RealMessage(
+        val message: MessageEntity,
+        val messageIndex: Int
+    ) : ChatTimelineItem() {
+        override val sortTimestamp: Long get() = message.timestamp
+        override val key: String get() = "msg_${message.id}"
+    }
+
+    data class ScheduledBubble(
+        val scheduled: ScheduledChatMessage
+    ) : ChatTimelineItem() {
+        override val sortTimestamp: Long get() = scheduled.createdAtMillis
+        override val key: String get() = "sched_${scheduled.id}"
+    }
+}
+
+private sealed interface ComposerMode {
+    data object Normal : ComposerMode
+    data class Replying(val context: ReplyContext) : ComposerMode
+    data class Editing(val message: MessageEntity) : ComposerMode
+}
+
+private enum class ComposerTrayState {
+    NONE,
+    ATTACHMENT_SHEET,
+    EMOJI_STICKER_PICKER
+}
+
+private sealed interface ChatOverlay {
+    data object None : ChatOverlay
+    data object OptionsMenu : ChatOverlay
+    data object GroupInfo : ChatOverlay
+    data object ExitGroupConfirm : ChatOverlay
+    data object DeleteGroupConfirm : ChatOverlay
+    data object AddMembers : ChatOverlay
+    data class RemoveMemberConfirm(val memberPhone: String) : ChatOverlay
+    data object ClearChat : ChatOverlay
+    data object BlockConfirm : ChatOverlay
+    data object SpamConfirm : ChatOverlay
+    data object MediaGallery : ChatOverlay
+    data object StarredMessages : ChatOverlay
+    data object DisappearingMessages : ChatOverlay
+    data object WallpaperPicker : ChatOverlay
+    data object LocationSharing : ChatOverlay
+    data object ShareContact : ChatOverlay
+    data object CreatePoll : ChatOverlay
+    data class ScheduleComposer(val editingItem: ScheduledChatMessage? = null) : ChatOverlay
+    data object ScheduledQueue : ChatOverlay
+    data class MessageOptions(val message: MessageEntity) : ChatOverlay
+    data class ImageViewer(
+        val path: String,
+        val subtitle: String? = null,
+        val viewOnceMessageId: String? = null
+    ) : ChatOverlay
+    data class VideoPlayer(val file: File) : ChatOverlay
+    data object NativeCamera : ChatOverlay
+    data class MediaReview(val photos: List<File>) : ChatOverlay
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Main Screen
 // ──────────────────────────────────────────────────────────────────────────────
@@ -215,7 +278,7 @@ fun ChatConversationScreen(
     val coroutineScope = rememberCoroutineScope()
     val chatRepository = remember { ChatRepository.getInstance(context) }
     val voiceHelper = remember { VoiceRecorderHelper(context) }
-    var showMediaPicker by remember { mutableStateOf(false) }
+    var trayState by remember { mutableStateOf(ComposerTrayState.NONE) }
 
     val isGroup = remember(peerPhoneNumber) { peerPhoneNumber.startsWith("group_") }
     val normPeer = remember(peerPhoneNumber, isGroup) {
@@ -228,11 +291,12 @@ fun ChatConversationScreen(
     }.collectAsState(initial = null)
     val effectiveGroupDto = liveGroupDto ?: groupDto
 
-    var showGroupInfoDialog by remember { mutableStateOf(false) }
-    var showExitGroupDialog by remember { mutableStateOf(false) }
-    var showDeleteGroupDialog by remember { mutableStateOf(false) }
-    var showAddMembersDialog by remember { mutableStateOf(false) }
-    var memberToRemove by remember { mutableStateOf<String?>(null) }
+    var activeOverlay by remember {
+        mutableStateOf<ChatOverlay>(
+            if (!initialSharedPhotos.isNullOrEmpty()) ChatOverlay.MediaReview(initialSharedPhotos)
+            else ChatOverlay.None
+        )
+    }
     LaunchedEffect(normPeer, isGroup) {
         if (isGroup) {
             groupDto = chatRepository.getGroup(normPeer)
@@ -297,18 +361,7 @@ fun ChatConversationScreen(
             }
         }
     }
-    var selectedImagePreviewPath by remember { mutableStateOf<String?>(null) }
-    var selectedImagePreviewSubtitle by remember { mutableStateOf<String?>(null) }
-    var activeViewOnceMessageId by remember { mutableStateOf<String?>(null) }
-    var selectedVideoPreviewFile by remember { mutableStateOf<File?>(null) }
-    var showOptionsMenu by remember { mutableStateOf(false) }
-    var showClearChatDialog by remember { mutableStateOf(false) }
-    var showMediaGalleryDialog by remember { mutableStateOf(false) }
-    var showBlockConfirmDialog by remember { mutableStateOf(false) }
-    var showSpamConfirmDialog by remember { mutableStateOf(false) }
-    var showStarredMessagesSheet by remember { mutableStateOf(false) }  // Starred messages viewer
-    var showDisappearingDialog by remember { mutableStateOf(false) }
-    var showWallpaperDialog by remember { mutableStateOf(false) }
+    var composerMode by remember { mutableStateOf<ComposerMode>(ComposerMode.Normal) }
     val disappearingDuration by chatRepository.getDisappearingDurationFlow(normPeer).collectAsState(initial = 0L)
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
@@ -318,8 +371,6 @@ fun ChatConversationScreen(
     val wallpaperManager = remember { ChatWallpaperManager.getInstance(context) }
     val wallpaperConfig by wallpaperManager.config.collectAsState()
 
-    // Swipe-to-reply state
-    var replyingTo by remember { mutableStateOf<ReplyContext?>(null) }
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     // One-time swipe gesture hint — persisted via SharedPreferences
     val prefs = remember { context.getSharedPreferences("lks_chat_prefs", android.content.Context.MODE_PRIVATE) }
@@ -338,18 +389,6 @@ fun ChatConversationScreen(
     // Active file transfer progress (P2P or relay): messageId → FileTransferProgress
     val activeTransfers by chatRepository.activeTransfers.collectAsState()
 
-    var showAttachmentMenu by remember { mutableStateOf(false) }
-    var showLocationSharingDialog by remember { mutableStateOf(false) }
-    var showShareContactDialog by remember { mutableStateOf(false) }
-    var showCreatePollDialog by remember { mutableStateOf(false) }
-    var showScheduleMessageDialog by remember { mutableStateOf(false) }
-    var editingScheduledMessage by remember { mutableStateOf<ScheduledChatMessage?>(null) }
-    var showScheduledQueueDialog by remember { mutableStateOf(false) }
-    var showNativeCamera by remember { mutableStateOf(false) }
-    var photosToPreview by remember { mutableStateOf<List<File>?>(initialSharedPhotos) }
-    var selectedMessageForOptions by remember { mutableStateOf<MessageEntity?>(null) }
-    var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
-
     LaunchedEffect(Unit) {
         ScheduledMessageManager.ensureStarted(context)
     }
@@ -360,9 +399,21 @@ fun ChatConversationScreen(
 
     val listState = rememberLazyListState()
 
+    val timelineItems = remember(messages, peerScheduledMessages) {
+        val realItems = messages.mapIndexed { idx, msg ->
+            ChatTimelineItem.RealMessage(message = msg, messageIndex = idx)
+        }
+        val scheduledItems = peerScheduledMessages.map { sched ->
+            ChatTimelineItem.ScheduledBubble(scheduled = sched)
+        }
+        (realItems + scheduledItems).sortedByDescending { it.sortTimestamp }
+    }
+
     val onReplyQuoteClick: (String) -> Unit = { targetId ->
         if (targetId.isNotBlank()) {
-            val index = messages.indexOfFirst { it.id == targetId }
+            val index = timelineItems.indexOfFirst {
+                it is ChatTimelineItem.RealMessage && it.message.id == targetId
+            }
             if (index != -1) {
                 coroutineScope.launch {
                     listState.animateScrollToItem(index)
@@ -377,7 +428,9 @@ fun ChatConversationScreen(
                     pageSize = (pageSize + 50).coerceAtMost(totalMessageCount)
                     coroutineScope.launch {
                         delay(300)
-                        val newIndex = messages.indexOfFirst { it.id == targetId }
+                        val newIndex = timelineItems.indexOfFirst {
+                            it is ChatTimelineItem.RealMessage && it.message.id == targetId
+                        }
                         if (newIndex != -1) {
                             listState.animateScrollToItem(newIndex)
                             highlightedMessageId = targetId
@@ -404,25 +457,33 @@ fun ChatConversationScreen(
         currentSearchIdx = 0
     }
 
-    val matchingIndices = remember(messages, searchQuery) {
+    val matchingIndices = remember(timelineItems, searchQuery) {
         if (searchQuery.isBlank()) emptyList<Int>()
         else {
             val q = searchQuery.trim().lowercase()
-            messages.mapIndexedNotNull { index, msg ->
-                val textToSearch = when {
-                    msg.mediaType == ChatMediaType.TEXT.name -> {
-                        try {
-                            val obj = org.json.JSONObject(msg.text)
-                            obj.optString("text", msg.text)
-                        } catch (_: Exception) { msg.text }
+            timelineItems.mapIndexedNotNull { index, item ->
+                when (item) {
+                    is ChatTimelineItem.RealMessage -> {
+                        val msg = item.message
+                        val textToSearch = when {
+                            msg.mediaType == ChatMediaType.TEXT.name -> {
+                                try {
+                                    val obj = org.json.JSONObject(msg.text)
+                                    obj.optString("text", msg.text)
+                                } catch (_: Exception) { msg.text }
+                            }
+                            msg.mediaType == ChatMediaType.DOCUMENT.name -> msg.text
+                            msg.mediaType == ChatMediaType.IMAGE.name -> {
+                                if (msg.text.startsWith("[gif:") || msg.text.startsWith("http")) "" else msg.text
+                            }
+                            else -> msg.text
+                        }
+                        if (textToSearch.lowercase().contains(q)) index else null
                     }
-                    msg.mediaType == ChatMediaType.DOCUMENT.name -> msg.text
-                    msg.mediaType == ChatMediaType.IMAGE.name -> {
-                        if (msg.text.startsWith("[gif:") || msg.text.startsWith("http")) "" else msg.text
+                    is ChatTimelineItem.ScheduledBubble -> {
+                        if (item.scheduled.previewText.lowercase().contains(q)) index else null
                     }
-                    else -> msg.text
                 }
-                if (textToSearch.lowercase().contains(q)) index else null
             }
         }
     }
@@ -455,7 +516,7 @@ fun ChatConversationScreen(
     // Handle shared incoming photos
     LaunchedEffect(initialSharedPhotos) {
         if (!initialSharedPhotos.isNullOrEmpty()) {
-            photosToPreview = initialSharedPhotos
+            activeOverlay = ChatOverlay.MediaReview(initialSharedPhotos)
         }
     }
 
@@ -583,29 +644,24 @@ fun ChatConversationScreen(
 
     // Prioritized in-chat BackHandler so Back closes open panels/bars before exiting the chat
     androidx.activity.compose.BackHandler(
-        enabled = !photosToPreview.isNullOrEmpty() ||
-            showNativeCamera ||
-            showAttachmentMenu ||
-            showMediaPicker ||
+        enabled = activeOverlay !is ChatOverlay.None ||
+            trayState != ComposerTrayState.NONE ||
             isSearching ||
-            editingMessage != null ||
-            replyingTo != null
+            composerMode !is ComposerMode.Normal
     ) {
         when {
-            !photosToPreview.isNullOrEmpty() -> photosToPreview = null
-            showNativeCamera -> showNativeCamera = false
-            showAttachmentMenu -> showAttachmentMenu = false
-            showMediaPicker -> showMediaPicker = false
+            activeOverlay !is ChatOverlay.None -> activeOverlay = ChatOverlay.None
+            trayState != ComposerTrayState.NONE -> trayState = ComposerTrayState.NONE
             isSearching -> {
                 isSearching = false
                 searchQuery = ""
                 currentSearchIdx = 0
             }
-            editingMessage != null -> {
-                editingMessage = null
+            composerMode is ComposerMode.Editing -> {
+                composerMode = ComposerMode.Normal
                 inputText = ""
             }
-            replyingTo != null -> replyingTo = null
+            composerMode is ComposerMode.Replying -> composerMode = ComposerMode.Normal
         }
     }
 
@@ -675,7 +731,7 @@ fun ChatConversationScreen(
 
                     // Open photo review carousel for any selected photos
                     if (photoFiles.isNotEmpty()) {
-                        photosToPreview = photoFiles
+                        activeOverlay = ChatOverlay.MediaReview(photoFiles)
                     }
                 } catch (e: Exception) {
                     Toast.makeText(context, "Failed to load media: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -872,14 +928,17 @@ fun ChatConversationScreen(
                                 modifier = Modifier
                                     .clip(CircleShape)
                                     .clickable {
-                                        activeViewOnceMessageId = null
-                                        selectedImagePreviewSubtitle = if (isGroup) "Group Photo" else normPeer
-                                        selectedImagePreviewPath = if (peerProfilePic.isNotBlank()) {
+                                        val path = if (peerProfilePic.isNotBlank()) {
                                             peerProfilePic
                                         } else {
                                             val avatarRes = com.example.ui.theme.Avatar3dHelper.getAvatarResId(peerDisplayName, normPeer)
                                             "android.resource://${context.packageName}/$avatarRes"
                                         }
+                                        activeOverlay = ChatOverlay.ImageViewer(
+                                            path = path,
+                                            subtitle = if (isGroup) "Group Photo" else normPeer,
+                                            viewOnceMessageId = null
+                                        )
                                     }
                             ) {
                                 ChatAvatar(
@@ -896,11 +955,7 @@ fun ChatConversationScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clickable {
-                                        if (isGroup) {
-                                            showGroupInfoDialog = true
-                                        } else {
-                                            showMediaGalleryDialog = true
-                                        }
+                                        activeOverlay = if (isGroup) ChatOverlay.GroupInfo else ChatOverlay.MediaGallery
                                     }
                             ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -982,24 +1037,27 @@ fun ChatConversationScreen(
                             }
                         }
                         Box {
+                            val isOptionsMenuOpen = activeOverlay == ChatOverlay.OptionsMenu
                             Surface(
-                                onClick = { showOptionsMenu = true },
+                                onClick = { activeOverlay = ChatOverlay.OptionsMenu },
                                 shape = CircleShape,
-                                color = if (showOptionsMenu) TealPrimary.copy(alpha = 0.16f) else Color.Transparent,
+                                color = if (isOptionsMenuOpen) TealPrimary.copy(alpha = 0.16f) else Color.Transparent,
                                 modifier = Modifier.size(40.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         Icons.Default.MoreVert,
                                         contentDescription = "Options",
-                                        tint = if (showOptionsMenu) TealPrimary else MaterialTheme.colorScheme.onSurface
+                                        tint = if (isOptionsMenuOpen) TealPrimary else MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
                             val isDarkMenu = com.example.ui.theme.LocalIsDarkTheme.current
                             DropdownMenu(
-                                expanded = showOptionsMenu,
-                                onDismissRequest = { showOptionsMenu = false },
+                                expanded = isOptionsMenuOpen,
+                                onDismissRequest = {
+                                    if (activeOverlay == ChatOverlay.OptionsMenu) activeOverlay = ChatOverlay.None
+                                },
                                 shape = RoundedCornerShape(22.dp),
                                 containerColor = if (isDarkMenu) Color(0xFF182229) else Color.White,
                                 tonalElevation = if (isDarkMenu) 8.dp else 2.dp,
@@ -1059,10 +1117,7 @@ fun ChatConversationScreen(
                                         subtitle = "Members & group settings",
                                         icon = Icons.Default.People,
                                         iconTint = Color(0xFF0284C7),
-                                        onClick = {
-                                            showOptionsMenu = false
-                                            showGroupInfoDialog = true
-                                        }
+                                        onClick = { activeOverlay = ChatOverlay.GroupInfo }
                                     )
                                 } else {
                                     WhatsAppStyledMenuItem(
@@ -1070,10 +1125,7 @@ fun ChatConversationScreen(
                                         subtitle = "Profile & shared media",
                                         icon = Icons.Default.Person,
                                         iconTint = Color(0xFF0284C7),
-                                        onClick = {
-                                            showOptionsMenu = false
-                                            showMediaGalleryDialog = true
-                                        }
+                                        onClick = { activeOverlay = ChatOverlay.MediaGallery }
                                     )
                                 }
 
@@ -1083,10 +1135,7 @@ fun ChatConversationScreen(
                                     subtitle = "Photos, videos & files",
                                     icon = Icons.Default.PhotoLibrary,
                                     iconTint = Color(0xFF9333EA),
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        showMediaGalleryDialog = true
-                                    }
+                                    onClick = { activeOverlay = ChatOverlay.MediaGallery }
                                 )
 
                                 // 3. Search in chat
@@ -1096,7 +1145,7 @@ fun ChatConversationScreen(
                                     icon = Icons.Default.Search,
                                     iconTint = Color(0xFF0EA5E9),
                                     onClick = {
-                                        showOptionsMenu = false
+                                        activeOverlay = ChatOverlay.None
                                         isSearching = true
                                     }
                                 )
@@ -1107,10 +1156,7 @@ fun ChatConversationScreen(
                                     subtitle = "Important saved messages",
                                     icon = Icons.Default.Star,
                                     iconTint = Color(0xFFF59E0B),
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        showStarredMessagesSheet = true
-                                    }
+                                    onClick = { activeOverlay = ChatOverlay.StarredMessages }
                                 )
 
                                 // 5. Disappearing messages
@@ -1126,10 +1172,7 @@ fun ChatConversationScreen(
                                     icon = Icons.Default.Schedule,
                                     iconTint = Color(0xFF059669),
                                     badgeText = disappearingBadge,
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        showDisappearingDialog = true
-                                    }
+                                    onClick = { activeOverlay = ChatOverlay.DisappearingMessages }
                                 )
 
                                 // 6. Scheduled messages
@@ -1141,12 +1184,10 @@ fun ChatConversationScreen(
                                     iconTint = Color(0xFF6366F1),
                                     badgeText = if (peerScheduledMessages.isNotEmpty()) "${peerScheduledMessages.size}" else null,
                                     onClick = {
-                                        showOptionsMenu = false
-                                        if (peerScheduledMessages.isNotEmpty()) {
-                                            showScheduledQueueDialog = true
+                                        activeOverlay = if (peerScheduledMessages.isNotEmpty()) {
+                                            ChatOverlay.ScheduledQueue
                                         } else {
-                                            editingScheduledMessage = null
-                                            showScheduleMessageDialog = true
+                                            ChatOverlay.ScheduleComposer(editingItem = null)
                                         }
                                     }
                                 )
@@ -1157,10 +1198,7 @@ fun ChatConversationScreen(
                                     subtitle = "Customize chat background",
                                     icon = Icons.Default.Wallpaper,
                                     iconTint = Color(0xFF6366F1),
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        showWallpaperDialog = true
-                                    }
+                                    onClick = { activeOverlay = ChatOverlay.WallpaperPicker }
                                 )
 
                                 HorizontalDivider(
@@ -1174,10 +1212,7 @@ fun ChatConversationScreen(
                                     icon = Icons.Default.DeleteSweep,
                                     iconTint = Color(0xFFFB7185),
                                     isDestructive = true,
-                                    onClick = {
-                                        showOptionsMenu = false
-                                        showClearChatDialog = true
-                                    }
+                                    onClick = { activeOverlay = ChatOverlay.ClearChat }
                                 )
 
                                 // 8. Group or Contact Moderation Actions
@@ -1187,10 +1222,7 @@ fun ChatConversationScreen(
                                         icon = Icons.Default.ExitToApp,
                                         iconTint = Color(0xFFEF4444),
                                         isDestructive = true,
-                                        onClick = {
-                                            showOptionsMenu = false
-                                            showExitGroupDialog = true
-                                        }
+                                        onClick = { activeOverlay = ChatOverlay.ExitGroupConfirm }
                                     )
                                     val myPhone = firebaseManager.currentUser.value?.phoneNumber ?: ""
                                     val isGroupAdmin = ContactsHelper.numbersMatch(groupDto?.adminPhone ?: "", myPhone)
@@ -1200,10 +1232,7 @@ fun ChatConversationScreen(
                                             icon = Icons.Default.Delete,
                                             iconTint = Color(0xFFEF4444),
                                             isDestructive = true,
-                                            onClick = {
-                                                showOptionsMenu = false
-                                                showDeleteGroupDialog = true
-                                            }
+                                            onClick = { activeOverlay = ChatOverlay.DeleteGroupConfirm }
                                         )
                                     }
                                 } else {
@@ -1213,7 +1242,7 @@ fun ChatConversationScreen(
                                             icon = Icons.Default.CheckCircle,
                                             iconTint = Color(0xFF4ADE80),
                                             onClick = {
-                                                showOptionsMenu = false
+                                                activeOverlay = ChatOverlay.None
                                                 firebaseManager.unblockNumber(normPeer)
                                                 firebaseManager.unmarkSpam(normPeer)
                                                 Toast.makeText(context, "Contact unblocked", Toast.LENGTH_SHORT).show()
@@ -1225,20 +1254,14 @@ fun ChatConversationScreen(
                                             icon = Icons.Default.Block,
                                             iconTint = Color(0xFFEF4444),
                                             isDestructive = true,
-                                            onClick = {
-                                                showOptionsMenu = false
-                                                showBlockConfirmDialog = true
-                                            }
+                                            onClick = { activeOverlay = ChatOverlay.BlockConfirm }
                                         )
                                         WhatsAppStyledMenuItem(
                                             title = "Report spam",
                                             icon = Icons.Default.Report,
                                             iconTint = Color(0xFFF97316),
                                             isDestructive = true,
-                                            onClick = {
-                                                showOptionsMenu = false
-                                                showSpamConfirmDialog = true
-                                            }
+                                            onClick = { activeOverlay = ChatOverlay.SpamConfirm }
                                         )
                                     }
                                 }
@@ -1315,7 +1338,7 @@ fun ChatConversationScreen(
             // ── Messages List ────────────────────────────────────────────────
             Box(modifier = Modifier.weight(1f)) {
                 val currentMatchedMessageId = if (matchingIndices.isNotEmpty() && currentSearchIdx in matchingIndices.indices) {
-                    messages.getOrNull(matchingIndices[currentSearchIdx])?.id
+                    (timelineItems.getOrNull(matchingIndices[currentSearchIdx]) as? ChatTimelineItem.RealMessage)?.message?.id
                 } else null
 
                 LazyColumn(
@@ -1326,52 +1349,78 @@ fun ChatConversationScreen(
                         .padding(horizontal = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    // Message items: index 0 is newest, rendered at the bottom!
-                    itemsIndexed(messages, key = { _, msg -> msg.id }) { index, msg ->
-                        val myDisplayName = firebaseManager.currentUser.collectAsState().value?.displayName ?: "Me"
-                        val isMsgMatched = isSearching && searchQuery.isNotBlank() && matchingIndices.contains(index)
-                        val isCurrentMsg = isMsgMatched && msg.id == currentMatchedMessageId
+                    // Unified timeline items (real messages + scheduled outgoing bubbles): index 0 is newest at the bottom!
+                    itemsIndexed(timelineItems, key = { _, item -> item.key }) { index, timelineItem ->
+                        when (timelineItem) {
+                            is ChatTimelineItem.ScheduledBubble -> {
+                                val schedItem = timelineItem.scheduled
+                                ScheduledChatMessageBubble(
+                                    item = schedItem,
+                                    onSendNowClick = { target ->
+                                        ScheduledMessageManager.sendNow(context, target.id)
+                                        Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onRescheduleClick = { target ->
+                                        activeOverlay = ChatOverlay.ScheduleComposer(editingItem = target)
+                                    },
+                                    onCancelClick = { target ->
+                                        ScheduledMessageManager.cancelScheduledMessage(context, target.id)
+                                        Toast.makeText(context, "Scheduled message cancelled", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onReplyQuoteClick = onReplyQuoteClick
+                                )
+                            }
+                            is ChatTimelineItem.RealMessage -> {
+                                val msg = timelineItem.message
+                                val myDisplayName = firebaseManager.currentUser.collectAsState().value?.displayName ?: "Me"
+                                val isMsgMatched = isSearching && searchQuery.isNotBlank() && matchingIndices.contains(index)
+                                val isCurrentMsg = isMsgMatched && msg.id == currentMatchedMessageId
 
-                        SwipeableMessageWrapper(
-                            message = msg,
-                            peerDisplayName = peerDisplayName,
-                            myDisplayName = myDisplayName,
-                            onReply = { replyCtx -> replyingTo = replyCtx }
-                        ) {
-                            val isMsgPlaying = isPlaying && currentPlayingPath != null &&
-                                    (currentPlayingPath == msg.mediaPath || (msg.mediaPath?.let { File(it).absolutePath } == currentPlayingPath))
-                            val msgProgress = if (isMsgPlaying) playbackProgress else 0f
-                            val activeDurationMs = if (isMsgPlaying && playbackDurationMs > 0L) playbackDurationMs else msg.mediaDurationMs
-                            MessageBubble(
-                                message = msg,
-                                isPlaying = isMsgPlaying,
-                                playbackProgress = msgProgress,
-                                playbackDurationMs = activeDurationMs,
-                                playbackSpeed = playbackSpeed,
-                                onCycleSpeed = { voiceHelper.cyclePlaybackSpeed() },
-                                onSeekAudio = { ratio -> voiceHelper.seekTo(ratio) },
-                                onPlayAudio = { path -> voiceHelper.playAudio(path) },
-                                onImageClick = { path, viewOnceMsgId ->
-                                    selectedImagePreviewPath = path
-                                    activeViewOnceMessageId = viewOnceMsgId
-                                    val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(msg.timestamp))
-                                    val rawCap = msg.text.trim()
-                                    selectedImagePreviewSubtitle = if (rawCap.isNotBlank() && !rawCap.startsWith("[gif:") && !rawCap.startsWith("http")) {
-                                        "$rawCap • $timeStr"
-                                    } else {
-                                        timeStr
-                                    }
-                                },
-                                onVideoClick = { file -> selectedVideoPreviewFile = file },
-                                onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
-                                onMessageLongClick = { selectedMessageForOptions = it },
-                                transferProgress = activeTransfers[msg.id],
-                                onCancelTransfer = { chatRepository.cancelTransfer(msg.id) },
-                                isSearchMatch = isMsgMatched,
-                                isCurrentSearchMatch = isCurrentMsg,
-                                isHighlighted = (msg.id == highlightedMessageId),
-                                onReplyQuoteClick = onReplyQuoteClick
-                            )
+                                SwipeableMessageWrapper(
+                                    message = msg,
+                                    peerDisplayName = peerDisplayName,
+                                    myDisplayName = myDisplayName,
+                                    onReply = { replyCtx -> composerMode = ComposerMode.Replying(replyCtx) }
+                                ) {
+                                    val isMsgPlaying = isPlaying && currentPlayingPath != null &&
+                                            (currentPlayingPath == msg.mediaPath || (msg.mediaPath?.let { File(it).absolutePath } == currentPlayingPath))
+                                    val msgProgress = if (isMsgPlaying) playbackProgress else 0f
+                                    val activeDurationMs = if (isMsgPlaying && playbackDurationMs > 0L) playbackDurationMs else msg.mediaDurationMs
+                                    MessageBubble(
+                                        message = msg,
+                                        isPlaying = isMsgPlaying,
+                                        playbackProgress = msgProgress,
+                                        playbackDurationMs = activeDurationMs,
+                                        playbackSpeed = playbackSpeed,
+                                        onCycleSpeed = { voiceHelper.cyclePlaybackSpeed() },
+                                        onSeekAudio = { ratio -> voiceHelper.seekTo(ratio) },
+                                        onPlayAudio = { path -> voiceHelper.playAudio(path) },
+                                        onImageClick = { path, viewOnceMsgId ->
+                                            val timeStr = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(msg.timestamp))
+                                            val rawCap = msg.text.trim()
+                                            val subtitle = if (rawCap.isNotBlank() && !rawCap.startsWith("[gif:") && !rawCap.startsWith("http")) {
+                                                "$rawCap • $timeStr"
+                                            } else {
+                                                timeStr
+                                            }
+                                            activeOverlay = ChatOverlay.ImageViewer(
+                                                path = path,
+                                                subtitle = subtitle,
+                                                viewOnceMessageId = viewOnceMsgId
+                                            )
+                                        },
+                                        onVideoClick = { file -> activeOverlay = ChatOverlay.VideoPlayer(file) },
+                                        onMarkMessageRead = { id -> chatRepository.markMessageRead(id, normPeer) },
+                                        onMessageLongClick = { activeOverlay = ChatOverlay.MessageOptions(it) },
+                                        transferProgress = activeTransfers[msg.id],
+                                        onCancelTransfer = { chatRepository.cancelTransfer(msg.id) },
+                                        isSearchMatch = isMsgMatched,
+                                        isCurrentSearchMatch = isCurrentMsg,
+                                        isHighlighted = (msg.id == highlightedMessageId),
+                                        onReplyQuoteClick = onReplyQuoteClick
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -1520,8 +1569,10 @@ fun ChatConversationScreen(
             }
 
             // ── Reply Preview Bar ────────────────────────────────────────────
-            AnimatedVisibility(visible = replyingTo != null) {
-                if (replyingTo != null) {
+            val replyMode = composerMode as? ComposerMode.Replying
+            AnimatedVisibility(visible = replyMode != null) {
+                if (replyMode != null) {
+                    val reply = replyMode.context
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = if (isDark) Color(0xFF1F2C34) else Color(0xFFE0F7FA),
@@ -1531,41 +1582,40 @@ fun ChatConversationScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    replyingTo?.messageId?.let { onReplyQuoteClick(it) }
+                                    onReplyQuoteClick(reply.messageId)
                                 }
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val reply = replyingTo
                             // Accent bar
                             Box(
                                 modifier = Modifier
                                     .width(4.dp)
                                     .height(40.dp)
                                     .clip(RoundedCornerShape(2.dp))
-                                    .background(if (reply?.isOutgoing == true) TealPrimary else GreenCall)
+                                    .background(if (reply.isOutgoing) TealPrimary else GreenCall)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Replying to ${reply?.senderLabel ?: ""}",
+                                    text = "Replying to ${reply.senderLabel}",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = if (reply?.isOutgoing == true) TealPrimary else GreenCall
+                                        color = if (reply.isOutgoing) TealPrimary else GreenCall
                                     )
                                 )
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    val isVoice = reply?.text?.contains("Voice message", ignoreCase = true) == true || reply?.text?.startsWith("🎤") == true
+                                    val isVoice = reply.text.contains("Voice message", ignoreCase = true) || reply.text.startsWith("🎤")
                                     if (isVoice) {
                                         Icon(
                                             Icons.Default.Mic,
                                             contentDescription = null,
-                                            tint = if (reply?.isOutgoing == true) TealPrimary else GreenCall,
+                                            tint = if (reply.isOutgoing) TealPrimary else GreenCall,
                                             modifier = Modifier.size(14.dp).padding(end = 2.dp)
                                         )
                                     }
                                     Text(
-                                        text = (reply?.text ?: "").removePrefix("🎤 ").trim(),
+                                        text = reply.text.removePrefix("🎤 ").trim(),
                                         style = MaterialTheme.typography.bodySmall,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -1574,7 +1624,7 @@ fun ChatConversationScreen(
                                 }
                             }
                             IconButton(
-                                onClick = { replyingTo = null },
+                                onClick = { composerMode = ComposerMode.Normal },
                                 modifier = Modifier.size(32.dp)
                             ) {
                                 Icon(Icons.Default.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp))
@@ -1585,7 +1635,8 @@ fun ChatConversationScreen(
             }
 
             // ── Edit Preview Bar ──────────────────────────────────────────────
-            val currentEditingMsg = editingMessage
+            val editingMode = composerMode as? ComposerMode.Editing
+            val currentEditingMsg = editingMode?.message
             AnimatedVisibility(visible = currentEditingMsg != null) {
                 if (currentEditingMsg != null) {
                     val editPreviewText = remember(currentEditingMsg.text) {
@@ -1631,7 +1682,7 @@ fun ChatConversationScreen(
                             }
                             IconButton(
                                 onClick = {
-                                    editingMessage = null
+                                    composerMode = ComposerMode.Normal
                                     inputText = ""
                                 },
                                 modifier = Modifier.size(32.dp)
@@ -1756,10 +1807,14 @@ fun ChatConversationScreen(
 
             // ── WhatsApp Floating Attachment Sheet (Pops up above input bar) ──
             WhatsAppFloatingAttachmentSheet(
-                visible = showAttachmentMenu,
-                onDismiss = { showAttachmentMenu = false },
+                visible = trayState == ComposerTrayState.ATTACHMENT_SHEET,
+                onDismiss = {
+                    if (trayState == ComposerTrayState.ATTACHMENT_SHEET) {
+                        trayState = ComposerTrayState.NONE
+                    }
+                },
                 onDocumentClick = {
-                    showAttachmentMenu = false
+                    trayState = ComposerTrayState.NONE
                     documentPickerLauncher.launch(
                         arrayOf(
                             "application/pdf",
@@ -1773,11 +1828,11 @@ fun ChatConversationScreen(
                     )
                 },
                 onCameraClick = {
-                    showAttachmentMenu = false
-                    showNativeCamera = true
+                    trayState = ComposerTrayState.NONE
+                    activeOverlay = ChatOverlay.NativeCamera
                 },
                 onGalleryClick = {
-                    showAttachmentMenu = false
+                    trayState = ComposerTrayState.NONE
                     try {
                         galleryMultipleLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
@@ -1787,35 +1842,24 @@ fun ChatConversationScreen(
                     }
                 },
                 onAudioClick = {
-                    showAttachmentMenu = false
+                    trayState = ComposerTrayState.NONE
                     audioPickerLauncher.launch(arrayOf("audio/*"))
                 },
                 onLocationClick = {
-                    showAttachmentMenu = false
-                    showLocationSharingDialog = true
+                    trayState = ComposerTrayState.NONE
+                    activeOverlay = ChatOverlay.LocationSharing
                 },
                 onContactClick = {
-                    showAttachmentMenu = false
-                    showShareContactDialog = true
+                    trayState = ComposerTrayState.NONE
+                    activeOverlay = ChatOverlay.ShareContact
                 },
                 onPollClick = {
-                    showAttachmentMenu = false
-                    showCreatePollDialog = true
+                    trayState = ComposerTrayState.NONE
+                    activeOverlay = ChatOverlay.CreatePoll
                 },
                 onScheduleClick = {
-                    showAttachmentMenu = false
-                    editingScheduledMessage = null
-                    showScheduleMessageDialog = true
-                }
-            )
-
-            // ── Live Scheduled Messages Banner (Appears when messages are queued for this chat) ──
-            ScheduledMessagesInChatBanner(
-                scheduledList = peerScheduledMessages,
-                onOpenQueueClick = { showScheduledQueueDialog = true },
-                onSendNowClick = { item ->
-                    ScheduledMessageManager.sendNow(context, item.id)
-                    Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
+                    trayState = ComposerTrayState.NONE
+                    activeOverlay = ChatOverlay.ScheduleComposer(editingItem = null)
                 }
             )
 
@@ -1977,7 +2021,7 @@ fun ChatConversationScreen(
                                     color = if (isDark) Color(0xFF1F2C34) else Color(0xFFF1F5F9),
                                     border = BorderStroke(
                                         1.dp,
-                                        if (showAttachmentMenu || showMediaPicker) TealPrimary.copy(alpha = 0.6f)
+                                        if (trayState != ComposerTrayState.NONE) TealPrimary.copy(alpha = 0.6f)
                                         else if (isDark) Color.White.copy(alpha = 0.08f)
                                         else Color(0xFFCBD5E1)
                                     )
@@ -1991,20 +2035,19 @@ fun ChatConversationScreen(
                                         // Emoji / Sticker / GIF Keyboard Toggle (Smooth animated icon)
                                         IconButton(
                                             onClick = {
-                                                showAttachmentMenu = false
-                                                if (showMediaPicker) {
-                                                    showMediaPicker = false
+                                                if (trayState == ComposerTrayState.EMOJI_STICKER_PICKER) {
+                                                    trayState = ComposerTrayState.NONE
                                                     keyboardController?.show()
                                                 } else {
                                                     focusManager.clearFocus()
                                                     keyboardController?.hide()
-                                                    showMediaPicker = true
+                                                    trayState = ComposerTrayState.EMOJI_STICKER_PICKER
                                                 }
                                             },
                                             modifier = Modifier.size(40.dp)
                                         ) {
                                             AnimatedContent(
-                                                targetState = showMediaPicker,
+                                                targetState = trayState == ComposerTrayState.EMOJI_STICKER_PICKER,
                                                 transitionSpec = {
                                                     (scaleIn(initialScale = 0.75f, animationSpec = tween(150)) + fadeIn(tween(150))) togetherWith
                                                         (scaleOut(targetScale = 0.75f, animationSpec = tween(100)) + fadeOut(tween(100)))
@@ -2026,11 +2069,12 @@ fun ChatConversationScreen(
                                             onValueChange = { text ->
                                                 inputText = text
                                                 chatRepository.setTyping(normPeer, text.isNotBlank())
-                                                if (showMediaPicker) showMediaPicker = false
-                                                if (showAttachmentMenu) showAttachmentMenu = false
+                                                if (trayState != ComposerTrayState.NONE) {
+                                                    trayState = ComposerTrayState.NONE
+                                                }
                                             },
                                             placeholder = {
-                                                val currentReply = replyingTo
+                                                val currentReply = (composerMode as? ComposerMode.Replying)?.context
                                                 Text(
                                                     text = if (currentReply != null) "Reply to ${currentReply.senderLabel}…"
                                                     else "Message",
@@ -2041,9 +2085,8 @@ fun ChatConversationScreen(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .onFocusChanged { focusState ->
-                                                    if (focusState.isFocused) {
-                                                        if (showMediaPicker) showMediaPicker = false
-                                                        if (showAttachmentMenu) showAttachmentMenu = false
+                                                    if (focusState.isFocused && trayState != ComposerTrayState.NONE) {
+                                                        trayState = ComposerTrayState.NONE
                                                     }
                                                 },
                                             maxLines = 4,
@@ -2064,10 +2107,8 @@ fun ChatConversationScreen(
                                         IconButton(
                                             onClick = {
                                                 keyboardController?.hide()
-                                                showMediaPicker = false
-                                                showAttachmentMenu = false
-                                                editingScheduledMessage = null
-                                                showScheduleMessageDialog = true
+                                                trayState = ComposerTrayState.NONE
+                                                activeOverlay = ChatOverlay.ScheduleComposer(editingItem = null)
                                             },
                                             modifier = Modifier.size(38.dp)
                                         ) {
@@ -2096,15 +2137,18 @@ fun ChatConversationScreen(
                                         IconButton(
                                             onClick = {
                                                 keyboardController?.hide()
-                                                showMediaPicker = false
-                                                showAttachmentMenu = !showAttachmentMenu
+                                                trayState = if (trayState == ComposerTrayState.ATTACHMENT_SHEET) {
+                                                    ComposerTrayState.NONE
+                                                } else {
+                                                    ComposerTrayState.ATTACHMENT_SHEET
+                                                }
                                             },
                                             modifier = Modifier.size(38.dp)
                                         ) {
                                             Icon(
                                                 Icons.Default.AttachFile,
                                                 contentDescription = "Attach",
-                                                tint = if (showAttachmentMenu) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
+                                                tint = if (trayState == ComposerTrayState.ATTACHMENT_SHEET) GreenCall else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
 
@@ -2112,9 +2156,8 @@ fun ChatConversationScreen(
                                         if (inputText.isBlank()) {
                                             IconButton(
                                                 onClick = {
-                                                    showAttachmentMenu = false
-                                                    showMediaPicker = false
-                                                    showNativeCamera = true
+                                                    trayState = ComposerTrayState.NONE
+                                                    activeOverlay = ChatOverlay.NativeCamera
                                                 },
                                                 modifier = Modifier.size(38.dp)
                                             ) {
@@ -2129,14 +2172,14 @@ fun ChatConversationScreen(
                                 }
 
                                 // Right circular action button (Save Edit / Send / Mic)
-                                if (editingMessage != null) {
+                                val activeEditMode = composerMode as? ComposerMode.Editing
+                                if (activeEditMode != null) {
                                     IconButton(
                                         onClick = {
                                             val textToEdit = inputText.trim()
-                                            val editMsg = editingMessage
-                                            if (textToEdit.isNotEmpty() && editMsg != null) {
-                                                val targetId = editMsg.id
-                                                editingMessage = null
+                                            if (textToEdit.isNotEmpty()) {
+                                                val targetId = activeEditMode.message.id
+                                                composerMode = ComposerMode.Normal
                                                 inputText = ""
                                                 chatRepository.setTyping(normPeer, false)
                                                 coroutineScope.launch {
@@ -2158,12 +2201,11 @@ fun ChatConversationScreen(
                                     IconButton(
                                         onClick = {
                                             val textToSend = inputText.trim()
-                                            val currentReply = replyingTo
+                                            val currentReply = (composerMode as? ComposerMode.Replying)?.context
                                             if (textToSend.isNotEmpty()) {
                                                 inputText = ""
-                                                replyingTo = null
-                                                showMediaPicker = false
-                                                showAttachmentMenu = false
+                                                composerMode = ComposerMode.Normal
+                                                trayState = ComposerTrayState.NONE
                                                 dismissedTypingUrl = null
                                                 chatRepository.setTyping(normPeer, false)
                                                 coroutineScope.launch {
@@ -2193,8 +2235,7 @@ fun ChatConversationScreen(
                                 } else {
                                     IconButton(
                                         onClick = {
-                                            showAttachmentMenu = false
-                                            showMediaPicker = false
+                                            trayState = ComposerTrayState.NONE
                                             val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
                                                 context,
                                                 android.Manifest.permission.RECORD_AUDIO
@@ -2220,7 +2261,7 @@ fun ChatConversationScreen(
 
                     // ── Smooth Animated Emoji / 3D Clay Sticker / GIF Media Keyboard ──
                     AnimatedVisibility(
-                        visible = showMediaPicker,
+                        visible = trayState == ComposerTrayState.EMOJI_STICKER_PICKER,
                         enter = slideInVertically(
                             initialOffsetY = { it / 2 },
                             animationSpec = spring(
@@ -2243,7 +2284,7 @@ fun ChatConversationScreen(
                         ) + fadeOut(animationSpec = tween(140))
                     ) {
                         ChatMediaKeyboardPicker(
-                            onClose = { showMediaPicker = false },
+                            onClose = { trayState = ComposerTrayState.NONE },
                             onEmojiSelected = { emoji ->
                                 inputText += emoji
                                 chatRepository.setTyping(normPeer, true)
@@ -2284,485 +2325,19 @@ fun ChatConversationScreen(
         }
     }
 
-    // Clear Chat Granular Dialog
-    if (showClearChatDialog) {
-        var storageBytes by remember { mutableStateOf(0L) }
-        LaunchedEffect(Unit) {
-            try {
-                val ranked = chatRepository.getRankedChatStorageList()
-                val match = ranked.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
-                storageBytes = match?.totalBytes ?: 0L
-            } catch (_: Exception) {}
-        }
-        ClearChatDialog(
-            peerDisplayName = peerDisplayName,
-            currentStorageBytes = storageBytes,
-            onDismiss = { showClearChatDialog = false },
-            onConfirmClear = { mode ->
-                coroutineScope.launch {
-                    val freed = chatRepository.clearChat(normPeer, mode)
-                    val freedStr = if (freed > 0) {
-                        val mb = freed / (1024.0 * 1024.0)
-                        if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
-                    } else "0 KB"
-                    when (mode) {
-                        ClearChatMode.MEDIA_ONLY -> Toast.makeText(context, "Media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
-                        ClearChatMode.TEXT_ONLY -> Toast.makeText(context, "Text messages cleared", Toast.LENGTH_SHORT).show()
-                        ClearChatMode.BOTH -> Toast.makeText(context, "Chat and media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        )
-    }
-
-    // Block Contact Confirmation Dialog
-    if (showBlockConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showBlockConfirmDialog = false },
-            icon = {
-                Icon(
-                    Icons.Default.Block,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(32.dp)
-                )
-            },
-            title = { Text("Block $peerDisplayName?") },
-            text = {
-                Text("Blocked contacts will no longer be able to call you or send you messages.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        firebaseManager.blockNumber(normPeer)
-                        Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
-                        showBlockConfirmDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Block", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBlockConfirmDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Report Spam Confirmation Dialog
-    if (showSpamConfirmDialog) {
-        AlertDialog(
-            onDismissRequest = { showSpamConfirmDialog = false },
-            icon = {
-                Icon(
-                    Icons.Default.Report,
-                    contentDescription = null,
-                    tint = Color(0xFFFF9800),
-                    modifier = Modifier.size(32.dp)
-                )
-            },
-            title = { Text("Report Spam & Block?") },
-            text = {
-                Text("Report $peerDisplayName ($normPeer) as spam and block them from calling or messaging you.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        firebaseManager.reportSpam(normPeer)
-                        Toast.makeText(context, "Reported as spam and blocked", Toast.LENGTH_SHORT).show()
-                        showSpamConfirmDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
-                ) {
-                    Text("Report Spam", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSpamConfirmDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Media, Links and Docs Gallery Dialog
-    if (showMediaGalleryDialog) {
-        ChatMediaGalleryDialog(
-            messages = messages,
-            peerDisplayName = peerDisplayName,
-            onDismissRequest = { showMediaGalleryDialog = false },
-            onSelectImage = { path ->
-                showMediaGalleryDialog = false
-                selectedImagePreviewPath = path
-            },
-            onSelectVideo = { file ->
-                showMediaGalleryDialog = false
-                selectedVideoPreviewFile = file
-            }
-        )
-    }
-
-    // Group Info Dialog
-    if (showGroupInfoDialog) {
-        if (effectiveGroupDto != null) {
-            GroupInfoDialog(
-                group = effectiveGroupDto,
-                firebaseManager = firebaseManager,
-                onDismiss = { showGroupInfoDialog = false },
-                onExitGroup = {
-                    showGroupInfoDialog = false
-                    showExitGroupDialog = true
-                },
-                onDeleteGroup = {
-                    showGroupInfoDialog = false
-                    showDeleteGroupDialog = true
-                },
-                onRemoveMember = { memberPhone ->
-                    memberToRemove = memberPhone
-                },
-                onAddMembersClick = {
-                    showAddMembersDialog = true
-                },
-                onUpdateGroupIcon = { base64 ->
-                    coroutineScope.launch {
-                        val res = chatRepository.updateGroupIcon(normPeer, base64)
-                        if (res.isSuccess) {
-                            groupDto = effectiveGroupDto?.copy(iconUrl = base64)
-                            Toast.makeText(context, "Group photo updated", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "Failed to update group photo", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            )
-        } else {
-            LaunchedEffect(normPeer) {
-                groupDto = chatRepository.getGroup(normPeer)
-            }
-        }
-    }
-
-    // Exit Group Confirmation Dialog
-    if (showExitGroupDialog) {
-        AlertDialog(
-            onDismissRequest = { showExitGroupDialog = false },
-            icon = { Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Exit group?", fontWeight = FontWeight.Bold) },
-            text = { Text("Are you sure you want to exit \"${groupDto?.name ?: "this group"}\"? You will no longer receive messages from this group.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showExitGroupDialog = false
-                        coroutineScope.launch {
-                            chatRepository.leaveGroup(normPeer)
-                            Toast.makeText(context, "You left the group", Toast.LENGTH_SHORT).show()
-                            onBackClick()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Exit", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showExitGroupDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Delete Group Confirmation Dialog
-    if (showDeleteGroupDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteGroupDialog = false },
-            icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Delete group?", fontWeight = FontWeight.Bold) },
-            text = { Text("Are you sure you want to permanently delete \"${groupDto?.name ?: "this group"}\"? The group will be deleted for all members.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteGroupDialog = false
-                        coroutineScope.launch {
-                            chatRepository.deleteGroup(normPeer)
-                            Toast.makeText(context, "Group deleted", Toast.LENGTH_SHORT).show()
-                            onBackClick()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Delete", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteGroupDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Remove Member Confirmation Dialog
-    memberToRemove?.let { mPhone ->
-        AlertDialog(
-            onDismissRequest = { memberToRemove = null },
-            icon = { Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Remove member?", fontWeight = FontWeight.Bold) },
-            text = { Text("Are you sure you want to remove $mPhone from the group?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val target = mPhone
-                        memberToRemove = null
-                        coroutineScope.launch {
-                            chatRepository.removeMemberFromGroup(normPeer, target)
-                            groupDto = chatRepository.getGroup(normPeer)
-                            Toast.makeText(context, "Member removed", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Remove", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { memberToRemove = null }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Add Participants Dialog
-    if (showAddMembersDialog) {
-        var addMemberSearch by remember { mutableStateOf("") }
-        var selectedNewMembers by remember { mutableStateOf(setOf<String>()) }
-        val currentGroupMembers = remember(groupDto) { groupDto?.members?.map { ContactsHelper.normalizePhoneNumber(it) }?.toSet() ?: emptySet() }
-        val candidates = remember(syncedContacts, registeredUsers, currentGroupMembers, addMemberSearch) {
-            syncedContacts.mapNotNull { contact ->
-                val p = ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
-                if (p.isBlank() || currentGroupMembers.contains(p)) {
-                    null
-                } else {
-                    val regUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, p) }
-                    val resolvedName = contact.name.ifBlank { regUser?.displayName ?: contact.phoneNumber }
-                    val resolvedPic = contact.profilePictureUrl.ifBlank { regUser?.profilePictureUrl ?: "" }
-                    if (addMemberSearch.isBlank() ||
-                        resolvedName.contains(addMemberSearch, ignoreCase = true) ||
-                        contact.phoneNumber.contains(addMemberSearch)
-                    ) {
-                        com.example.data.model.UserDto(
-                            phoneNumber = p,
-                            displayName = resolvedName,
-                            profilePictureUrl = resolvedPic
-                        )
-                    } else null
-                }
-            }.distinctBy { it.phoneNumber }
-        }
-
-        AlertDialog(
-            onDismissRequest = { showAddMembersDialog = false },
-            title = { Text("Add Participants", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = addMemberSearch,
-                        onValueChange = { addMemberSearch = it },
-                        placeholder = { Text("Search users...") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    if (candidates.isEmpty()) {
-                        Text(
-                            text = "No additional users available",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(vertical = 16.dp)
-                        )
-                    } else {
-                        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-                            items(candidates) { user ->
-                                val p = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
-                                val isSelected = selectedNewMembers.contains(p)
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
-                                        }
-                                        .padding(vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    ChatAvatar(name = user.displayName, profilePic = user.profilePictureUrl, size = 32.dp, fontSize = 14.sp)
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(user.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                                        Text(user.phoneNumber, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = {
-                                            selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val toAdd = selectedNewMembers.toList()
-                        showAddMembersDialog = false
-                        if (toAdd.isNotEmpty()) {
-                            coroutineScope.launch {
-                                chatRepository.addMembersToGroup(normPeer, toAdd)
-                                groupDto = chatRepository.getGroup(normPeer)
-                                Toast.makeText(context, "Added ${toAdd.size} member(s)", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    enabled = selectedNewMembers.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
-                ) {
-                    Text("Add (${selectedNewMembers.size})", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddMembersDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Starred Messages Dialog
-    if (showStarredMessagesSheet) {
-        com.example.ui.components.ChatStarredMessagesDialog(
-            messages = messages,
-            peerDisplayName = peerDisplayName,
-            onDismissRequest = { showStarredMessagesSheet = false },
-            onUnstarMessage = { msgId ->
-                coroutineScope.launch {
-                    chatRepository.unstarMessage(msgId)
-                    Toast.makeText(context, "Message unstarred", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onSelectMessage = { msg ->
-                showStarredMessagesSheet = false
-                val idx = messages.indexOfFirst { it.id == msg.id }
-                if (idx != -1) {
-                    coroutineScope.launch {
-                        listState.animateScrollToItem(idx)
-                    }
-                } else if (msg.mediaType == ChatMediaType.IMAGE.name && msg.mediaPath != null) {
-                    selectedImagePreviewPath = msg.mediaPath
-                }
-            }
-        )
-    }
-
-    // Disappearing Messages Selection Dialog
-    if (showDisappearingDialog) {
-        val options = listOf(
-            0L to "Off",
-            24 * 60 * 60 * 1000L to "24 hours",
-            7 * 24 * 60 * 60 * 1000L to "7 days",
-            90 * 24 * 60 * 60 * 1000L to "90 days"
-        )
-        AlertDialog(
-            onDismissRequest = { showDisappearingDialog = false },
-            icon = {
-                Icon(
-                    Icons.Default.Schedule,
-                    contentDescription = null,
-                    tint = TealPrimary,
-                    modifier = Modifier.size(28.dp)
-                )
-            },
-            title = {
-                Text("Disappearing Messages", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "For more privacy and storage, new messages sent in this chat will disappear after the selected duration.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    options.forEach { (duration, label) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    showDisappearingDialog = false
-                                    coroutineScope.launch {
-                                        chatRepository.setDisappearingDuration(normPeer, duration)
-                                        val toastMsg = if (duration == 0L) {
-                                            "Disappearing messages turned off"
-                                        } else {
-                                            "Disappearing messages set to $label"
-                                        }
-                                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = (disappearingDuration == duration),
-                                onClick = {
-                                    showDisappearingDialog = false
-                                    coroutineScope.launch {
-                                        chatRepository.setDisappearingDuration(normPeer, duration)
-                                        val toastMsg = if (duration == 0L) {
-                                            "Disappearing messages turned off"
-                                        } else {
-                                            "Disappearing messages set to $label"
-                                        }
-                                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                colors = RadioButtonDefaults.colors(selectedColor = TealPrimary)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontWeight = if (disappearingDuration == duration) FontWeight.Bold else FontWeight.Normal
-                                )
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showDisappearingDialog = false }) {
-                    Text("Close")
-                }
-            }
-        )
-    }
-
     // Hardened View Once Security: If user backgrounds app, locks screen, or leaves screen while viewing, auto-destroy immediately!
-    DisposableEffect(activeViewOnceMessageId, lifecycleOwner) {
-        val viewOnceId = activeViewOnceMessageId
-        val pathToDelete = selectedImagePreviewPath
+    val currentImageViewer = activeOverlay as? ChatOverlay.ImageViewer
+    val activeViewOnceId = currentImageViewer?.viewOnceMessageId
+    val activeViewOncePath = currentImageViewer?.path
+    DisposableEffect(activeViewOnceId, activeViewOncePath, lifecycleOwner) {
+        val viewOnceId = activeViewOnceId
+        val pathToDelete = activeViewOncePath
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_PAUSE || event == Lifecycle.Event.ON_STOP) {
-                val currentId = activeViewOnceMessageId
-                val currentPath = selectedImagePreviewPath
-                selectedImagePreviewPath = null
-                activeViewOnceMessageId = null
+                val viewer = activeOverlay as? ChatOverlay.ImageViewer
+                val currentId = viewer?.viewOnceMessageId
+                val currentPath = viewer?.path
+                activeOverlay = ChatOverlay.None
                 if (currentId != null) {
                     chatRepository.markViewOnceOpened(currentId, normPeer)
                     if (currentPath != null) {
@@ -2779,8 +2354,8 @@ fun ChatConversationScreen(
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // If composable is disposed while actively viewing a View Once media
-            if (viewOnceId != null && activeViewOnceMessageId == viewOnceId) {
+            val viewerAfter = activeOverlay as? ChatOverlay.ImageViewer
+            if (viewOnceId != null && viewerAfter?.viewOnceMessageId == viewOnceId) {
                 chatRepository.markViewOnceOpened(viewOnceId, normPeer)
                 if (pathToDelete != null) {
                     try {
@@ -2792,396 +2367,834 @@ fun ChatConversationScreen(
         }
     }
 
-    // Fullscreen Image Preview (WhatsApp-Style Interactive Pinch-To-Zoom, Double-Tap Zoom & Pan)
-    if (selectedImagePreviewPath != null) {
-        com.example.ui.components.ZoomableImageViewerDialog(
-            imageModel = selectedImagePreviewPath,
-            title = peerDisplayName,
-            subtitle = if (activeViewOnceMessageId != null) "View Once Photo" else selectedImagePreviewSubtitle,
-            isViewOnce = activeViewOnceMessageId != null,
-            onDismissRequest = {
-                val viewOnceId = activeViewOnceMessageId
-                val pathToDelete = selectedImagePreviewPath
-                selectedImagePreviewPath = null
-                selectedImagePreviewSubtitle = null
-                activeViewOnceMessageId = null
-                if (viewOnceId != null) {
-                    chatRepository.markViewOnceOpened(viewOnceId, normPeer)
-                    if (pathToDelete != null) {
+    // ── Mutually-Exclusive Active Overlay State Machine ──────────────────────
+    when (val overlay = activeOverlay) {
+        ChatOverlay.None, ChatOverlay.OptionsMenu -> Unit
+
+        ChatOverlay.ClearChat -> {
+            var storageBytes by remember { mutableStateOf(0L) }
+            LaunchedEffect(Unit) {
+                try {
+                    val ranked = chatRepository.getRankedChatStorageList()
+                    val match = ranked.find { ContactsHelper.numbersMatch(it.phoneNumber, normPeer) }
+                    storageBytes = match?.totalBytes ?: 0L
+                } catch (_: Exception) {}
+            }
+            ClearChatDialog(
+                peerDisplayName = peerDisplayName,
+                currentStorageBytes = storageBytes,
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onConfirmClear = { mode ->
+                    coroutineScope.launch {
+                        val freed = chatRepository.clearChat(normPeer, mode)
+                        val freedStr = if (freed > 0) {
+                            val mb = freed / (1024.0 * 1024.0)
+                            if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
+                        } else "0 KB"
+                        when (mode) {
+                            ClearChatMode.MEDIA_ONLY -> Toast.makeText(context, "Media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
+                            ClearChatMode.TEXT_ONLY -> Toast.makeText(context, "Text messages cleared", Toast.LENGTH_SHORT).show()
+                            ClearChatMode.BOTH -> Toast.makeText(context, "Chat and media cleared! Freed $freedStr", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.BlockConfirm -> {
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = {
+                    Icon(
+                        Icons.Default.Block,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(32.dp)
+                    )
+                },
+                title = { Text("Block $peerDisplayName?") },
+                text = {
+                    Text("Blocked contacts will no longer be able to call you or send you messages.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            firebaseManager.blockNumber(normPeer)
+                            Toast.makeText(context, "Contact blocked", Toast.LENGTH_SHORT).show()
+                            activeOverlay = ChatOverlay.None
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Block", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.SpamConfirm -> {
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = {
+                    Icon(
+                        Icons.Default.Report,
+                        contentDescription = null,
+                        tint = Color(0xFFFF9800),
+                        modifier = Modifier.size(32.dp)
+                    )
+                },
+                title = { Text("Report Spam & Block?") },
+                text = {
+                    Text("Report $peerDisplayName ($normPeer) as spam and block them from calling or messaging you.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            firebaseManager.reportSpam(normPeer)
+                            Toast.makeText(context, "Reported as spam and blocked", Toast.LENGTH_SHORT).show()
+                            activeOverlay = ChatOverlay.None
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Report Spam", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.MediaGallery -> {
+            ChatMediaGalleryDialog(
+                messages = messages,
+                peerDisplayName = peerDisplayName,
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                onSelectImage = { path ->
+                    activeOverlay = ChatOverlay.ImageViewer(path = path)
+                },
+                onSelectVideo = { file ->
+                    activeOverlay = ChatOverlay.VideoPlayer(file = file)
+                }
+            )
+        }
+
+        ChatOverlay.GroupInfo -> {
+            if (effectiveGroupDto != null) {
+                GroupInfoDialog(
+                    group = effectiveGroupDto,
+                    firebaseManager = firebaseManager,
+                    onDismiss = { activeOverlay = ChatOverlay.None },
+                    onExitGroup = { activeOverlay = ChatOverlay.ExitGroupConfirm },
+                    onDeleteGroup = { activeOverlay = ChatOverlay.DeleteGroupConfirm },
+                    onRemoveMember = { memberPhone ->
+                        activeOverlay = ChatOverlay.RemoveMemberConfirm(memberPhone)
+                    },
+                    onAddMembersClick = { activeOverlay = ChatOverlay.AddMembers },
+                    onUpdateGroupIcon = { base64 ->
+                        coroutineScope.launch {
+                            val res = chatRepository.updateGroupIcon(normPeer, base64)
+                            if (res.isSuccess) {
+                                groupDto = effectiveGroupDto?.copy(iconUrl = base64)
+                                Toast.makeText(context, "Group photo updated", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Failed to update group photo", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                )
+            } else {
+                LaunchedEffect(normPeer) {
+                    groupDto = chatRepository.getGroup(normPeer)
+                }
+            }
+        }
+
+        ChatOverlay.ExitGroupConfirm -> {
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = { Icon(Icons.Default.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Exit group?", fontWeight = FontWeight.Bold) },
+                text = { Text("Are you sure you want to exit \"${groupDto?.name ?: "this group"}\"? You will no longer receive messages from this group.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            activeOverlay = ChatOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.leaveGroup(normPeer)
+                                Toast.makeText(context, "You left the group", Toast.LENGTH_SHORT).show()
+                                onBackClick()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Exit", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.DeleteGroupConfirm -> {
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Delete group?", fontWeight = FontWeight.Bold) },
+                text = { Text("Are you sure you want to permanently delete \"${groupDto?.name ?: "this group"}\"? The group will be deleted for all members.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            activeOverlay = ChatOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.deleteGroup(normPeer)
+                                Toast.makeText(context, "Group deleted", Toast.LENGTH_SHORT).show()
+                                onBackClick()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        is ChatOverlay.RemoveMemberConfirm -> {
+            val mPhone = overlay.memberPhone
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = { Icon(Icons.Default.Close, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Remove member?", fontWeight = FontWeight.Bold) },
+                text = { Text("Are you sure you want to remove $mPhone from the group?") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            activeOverlay = ChatOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.removeMemberFromGroup(normPeer, mPhone)
+                                groupDto = chatRepository.getGroup(normPeer)
+                                Toast.makeText(context, "Member removed", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Remove", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.AddMembers -> {
+            var addMemberSearch by remember { mutableStateOf("") }
+            var selectedNewMembers by remember { mutableStateOf(setOf<String>()) }
+            val currentGroupMembers = remember(groupDto) { groupDto?.members?.map { ContactsHelper.normalizePhoneNumber(it) }?.toSet() ?: emptySet() }
+            val candidates = remember(syncedContacts, registeredUsers, currentGroupMembers, addMemberSearch) {
+                syncedContacts.mapNotNull { contact ->
+                    val p = ContactsHelper.normalizePhoneNumber(contact.phoneNumber)
+                    if (p.isBlank() || currentGroupMembers.contains(p)) {
+                        null
+                    } else {
+                        val regUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, p) }
+                        val resolvedName = contact.name.ifBlank { regUser?.displayName ?: contact.phoneNumber }
+                        val resolvedPic = contact.profilePictureUrl.ifBlank { regUser?.profilePictureUrl ?: "" }
+                        if (addMemberSearch.isBlank() ||
+                            resolvedName.contains(addMemberSearch, ignoreCase = true) ||
+                            contact.phoneNumber.contains(addMemberSearch)
+                        ) {
+                            com.example.data.model.UserDto(
+                                phoneNumber = p,
+                                displayName = resolvedName,
+                                profilePictureUrl = resolvedPic
+                            )
+                        } else null
+                    }
+                }.distinctBy { it.phoneNumber }
+            }
+
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                title = { Text("Add Participants", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = addMemberSearch,
+                            onValueChange = { addMemberSearch = it },
+                            placeholder = { Text("Search users...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (candidates.isEmpty()) {
+                            Text(
+                                text = "No additional users available",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
+                        } else {
+                            LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                                items(candidates) { user ->
+                                    val p = ContactsHelper.normalizePhoneNumber(user.phoneNumber)
+                                    val isSelected = selectedNewMembers.contains(p)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
+                                            }
+                                            .padding(vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        ChatAvatar(name = user.displayName, profilePic = user.profilePictureUrl, size = 32.dp, fontSize = 14.sp)
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(user.displayName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                            Text(user.phoneNumber, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = {
+                                                selectedNewMembers = if (isSelected) selectedNewMembers - p else selectedNewMembers + p
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val toAdd = selectedNewMembers.toList()
+                            activeOverlay = ChatOverlay.None
+                            if (toAdd.isNotEmpty()) {
+                                coroutineScope.launch {
+                                    chatRepository.addMembersToGroup(normPeer, toAdd)
+                                    groupDto = chatRepository.getGroup(normPeer)
+                                    Toast.makeText(context, "Added ${toAdd.size} member(s)", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        enabled = selectedNewMembers.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                    ) {
+                        Text("Add (${selectedNewMembers.size})", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.StarredMessages -> {
+            com.example.ui.components.ChatStarredMessagesDialog(
+                messages = messages,
+                peerDisplayName = peerDisplayName,
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                onUnstarMessage = { msgId ->
+                    coroutineScope.launch {
+                        chatRepository.unstarMessage(msgId)
+                        Toast.makeText(context, "Message unstarred", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onSelectMessage = { msg ->
+                    val idx = messages.indexOfFirst { it.id == msg.id }
+                    if (idx != -1) {
+                        activeOverlay = ChatOverlay.None
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(idx)
+                        }
+                    } else if (msg.mediaType == ChatMediaType.IMAGE.name && msg.mediaPath != null) {
+                        activeOverlay = ChatOverlay.ImageViewer(path = msg.mediaPath)
+                    } else {
+                        activeOverlay = ChatOverlay.None
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.DisappearingMessages -> {
+            val options = listOf(
+                0L to "Off",
+                24 * 60 * 60 * 1000L to "24 hours",
+                7 * 24 * 60 * 60 * 1000L to "7 days",
+                90 * 24 * 60 * 60 * 1000L to "90 days"
+            )
+            AlertDialog(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                icon = {
+                    Icon(
+                        Icons.Default.Schedule,
+                        contentDescription = null,
+                        tint = TealPrimary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text("Disappearing Messages", fontWeight = FontWeight.Bold)
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "For more privacy and storage, new messages sent in this chat will disappear after the selected duration.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        options.forEach { (duration, label) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        activeOverlay = ChatOverlay.None
+                                        coroutineScope.launch {
+                                            chatRepository.setDisappearingDuration(normPeer, duration)
+                                            val toastMsg = if (duration == 0L) {
+                                                "Disappearing messages turned off"
+                                            } else {
+                                                "Disappearing messages set to $label"
+                                            }
+                                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = (disappearingDuration == duration),
+                                    onClick = {
+                                        activeOverlay = ChatOverlay.None
+                                        coroutineScope.launch {
+                                            chatRepository.setDisappearingDuration(normPeer, duration)
+                                            val toastMsg = if (duration == 0L) {
+                                                "Disappearing messages turned off"
+                                            } else {
+                                                "Disappearing messages set to $label"
+                                            }
+                                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = RadioButtonDefaults.colors(selectedColor = TealPrimary)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontWeight = if (disappearingDuration == duration) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { activeOverlay = ChatOverlay.None }) {
+                        Text("Close")
+                    }
+                }
+            )
+        }
+
+        is ChatOverlay.ImageViewer -> {
+            com.example.ui.components.ZoomableImageViewerDialog(
+                imageModel = overlay.path,
+                title = peerDisplayName,
+                subtitle = if (overlay.viewOnceMessageId != null) "View Once Photo" else overlay.subtitle,
+                isViewOnce = overlay.viewOnceMessageId != null,
+                onDismissRequest = {
+                    val viewOnceId = overlay.viewOnceMessageId
+                    val pathToDelete = overlay.path
+                    activeOverlay = ChatOverlay.None
+                    if (viewOnceId != null) {
+                        chatRepository.markViewOnceOpened(viewOnceId, normPeer)
                         try {
                             val f = File(pathToDelete)
                             if (f.exists()) f.delete()
                         } catch (_: Exception) {}
+                        Toast.makeText(context, "View once photo viewed & destroyed", Toast.LENGTH_SHORT).show()
                     }
-                    Toast.makeText(context, "View once photo viewed & destroyed", Toast.LENGTH_SHORT).show()
                 }
-            }
-        )
-    }
+            )
+        }
 
-    // Fullscreen Video Player
-    val videoPreview = selectedVideoPreviewFile
-    if (videoPreview != null) {
-        com.example.ui.components.VideoPlayerDialog(
-            videoFile = videoPreview,
-            onDismissRequest = { selectedVideoPreviewFile = null }
-        )
-    }
+        is ChatOverlay.VideoPlayer -> {
+            com.example.ui.components.VideoPlayerDialog(
+                videoFile = overlay.file,
+                onDismissRequest = { activeOverlay = ChatOverlay.None }
+            )
+        }
 
-    // ── WhatsApp Google Maps Location Sharing Dialog ─────────────────────
-    if (showLocationSharingDialog) {
-        WhatsAppLocationSharingDialog(
-            onDismiss = { showLocationSharingDialog = false },
-            onSendLocation = { locationData ->
-                showLocationSharingDialog = false
-                coroutineScope.launch {
-                    val payload = locationData.toMessageJson()
-                    replyingTo = null
-                    chatRepository.markConversationAsRead(normPeer)
-                    chatRepository.sendMessage(
-                        recipientNumber = normPeer,
-                        recipientName = peerDisplayName,
-                        text = payload,
-                        mediaType = ChatMediaType.TEXT
-                    )
-                    listState.animateScrollToItem(0)
-                }
-            }
-        )
-    }
-
-    // ── WhatsApp Contact Sharing Dialog ──────────────────────────────────
-    if (showShareContactDialog) {
-        WhatsAppShareContactDialog(
-            contacts = syncedContacts,
-            onDismiss = { showShareContactDialog = false },
-            onSendContact = { contactData ->
-                showShareContactDialog = false
-                coroutineScope.launch {
-                    val payload = contactData.toMessageJson()
-                    chatRepository.markConversationAsRead(normPeer)
-                    chatRepository.sendMessage(
-                        recipientNumber = normPeer,
-                        recipientName = peerDisplayName,
-                        text = payload,
-                        mediaType = ChatMediaType.TEXT
-                    )
-                    listState.animateScrollToItem(0)
-                }
-            }
-        )
-    }
-
-    // ── WhatsApp Poll Creator Dialog ─────────────────────────────────────
-    if (showCreatePollDialog) {
-        WhatsAppCreatePollDialog(
-            onDismiss = { showCreatePollDialog = false },
-            onSendPoll = { pollData ->
-                showCreatePollDialog = false
-                coroutineScope.launch {
-                    val payload = pollData.toMessageJson()
-                    chatRepository.markConversationAsRead(normPeer)
-                    chatRepository.sendMessage(
-                        recipientNumber = normPeer,
-                        recipientName = peerDisplayName,
-                        text = payload,
-                        mediaType = ChatMediaType.TEXT
-                    )
-                    listState.animateScrollToItem(0)
-                }
-            }
-        )
-    }
-
-    // ── WhatsApp Quick Wallpaper Picker Dialog ───────────────────────────
-    if (showWallpaperDialog) {
-        WhatsAppQuickWallpaperDialog(
-            wallpaperManager = wallpaperManager,
-            onDismiss = { showWallpaperDialog = false }
-        )
-    }
-
-    // ── Schedule Message Date & Time Picker Dialog ───────────────────────
-    if (showScheduleMessageDialog) {
-        ScheduleMessageDialog(
-            recipientName = peerDisplayName,
-            initialMessageText = inputText,
-            editingItem = editingScheduledMessage,
-            onDismiss = {
-                showScheduleMessageDialog = false
-                editingScheduledMessage = null
-            },
-            onConfirmSchedule = { msgText, scheduledAtMs, existingId ->
-                val currentReply = replyingTo
-                val payload = if (existingId == null && currentReply != null) {
-                    """{"text":${escapeJson(msgText)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
-                } else {
-                    msgText
-                }
-                ScheduledMessageManager.scheduleMessage(
-                    context = context,
-                    recipientNumber = normPeer,
-                    recipientName = peerDisplayName,
-                    payloadText = payload,
-                    previewText = msgText,
-                    scheduledAtMillis = scheduledAtMs,
-                    existingId = existingId
-                )
-                if (existingId == null && inputText.trim() == msgText.trim()) {
-                    inputText = ""
-                    replyingTo = null
-                    chatRepository.setTyping(normPeer, false)
-                }
-                showScheduleMessageDialog = false
-                editingScheduledMessage = null
-                val friendly = ScheduledMessageManager.formatFriendlyScheduleTime(scheduledAtMs)
-                Toast.makeText(
-                    context,
-                    "⏰ Message scheduled for $friendly",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        )
-    }
-
-    // ── Scheduled Messages Queue Manager Dialog ──────────────────────────
-    if (showScheduledQueueDialog) {
-        ScheduledMessagesQueueDialog(
-            recipientName = peerDisplayName,
-            scheduledList = peerScheduledMessages,
-            onDismiss = { showScheduledQueueDialog = false },
-            onScheduleNewClick = {
-                showScheduledQueueDialog = false
-                editingScheduledMessage = null
-                showScheduleMessageDialog = true
-            },
-            onEditItemClick = { item ->
-                showScheduledQueueDialog = false
-                editingScheduledMessage = item
-                showScheduleMessageDialog = true
-            },
-            onSendNowClick = { item ->
-                ScheduledMessageManager.sendNow(context, item.id)
-                Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
-            },
-            onCancelItemClick = { item ->
-                ScheduledMessageManager.cancelScheduledMessage(context, item.id)
-                Toast.makeText(context, "Scheduled message cancelled", Toast.LENGTH_SHORT).show()
-            }
-        )
-    }
-
-    // ── Native WhatsApp Camera Screen ─────────────────────────────
-    if (showNativeCamera) {
-        WhatsAppCameraScreen(
-            onPhotoCaptured = { capturedFile ->
-                showNativeCamera = false
-                photosToPreview = listOf(capturedFile)
-            },
-            onPhotosSelectedFromGallery = { files ->
-                showNativeCamera = false
-                val (videos, photos) = files.partition { file ->
-                    val ext = file.extension.lowercase(Locale.getDefault())
-                    ext in listOf("mp4", "mkv", "webm", "mov", "3gp", "avi", "m4v")
-                }
-                videos.forEach { videoFile ->
+        ChatOverlay.LocationSharing -> {
+            WhatsAppLocationSharingDialog(
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onSendLocation = { locationData ->
+                    activeOverlay = ChatOverlay.None
                     coroutineScope.launch {
+                        val payload = locationData.toMessageJson()
+                        composerMode = ComposerMode.Normal
+                        chatRepository.markConversationAsRead(normPeer)
                         chatRepository.sendMessage(
                             recipientNumber = normPeer,
                             recipientName = peerDisplayName,
-                            text = videoFile.name,
-                            mediaType = ChatMediaType.DOCUMENT,
-                            mediaFile = videoFile
+                            text = payload,
+                            mediaType = ChatMediaType.TEXT
                         )
+                        listState.animateScrollToItem(0)
                     }
                 }
-                if (videos.isNotEmpty()) {
-                    coroutineScope.launch { listState.animateScrollToItem(0) }
-                }
-                if (photos.isNotEmpty()) {
-                    photosToPreview = photos
-                }
-            },
-            onClose = { showNativeCamera = false }
-        )
-    }
+            )
+        }
 
-    // ── WhatsApp Multi-Photo Review, Carousel & Captions ─────────
-    val activePhotos = photosToPreview
-    if (!activePhotos.isNullOrEmpty()) {
-        WhatsAppMediaPreviewScreen(
-            initialPhotos = activePhotos,
-            initialCaption = initialSharedText ?: "",
-            onSendPhotos = { results, isViewOnce ->
-                photosToPreview = null
-                onSharedContentConsumed()
-                coroutineScope.launch {
-                    results.forEach { (file, caption) ->
+        ChatOverlay.ShareContact -> {
+            WhatsAppShareContactDialog(
+                contacts = syncedContacts,
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onSendContact = { contactData ->
+                    activeOverlay = ChatOverlay.None
+                    coroutineScope.launch {
+                        val payload = contactData.toMessageJson()
+                        chatRepository.markConversationAsRead(normPeer)
                         chatRepository.sendMessage(
                             recipientNumber = normPeer,
                             recipientName = peerDisplayName,
-                            text = caption,
-                            mediaType = ChatMediaType.IMAGE,
-                            mediaFile = file,
-                            isViewOnce = isViewOnce
+                            text = payload,
+                            mediaType = ChatMediaType.TEXT
                         )
+                        listState.animateScrollToItem(0)
                     }
-                    listState.animateScrollToItem(0)
                 }
-            },
-            onClose = {
-                photosToPreview = null
-                onSharedContentConsumed()
-            }
-        )
-    }
+            )
+        }
 
-    // ── Message Options Bottom Sheet (Reply, Copy, Edit, Delete) ──
-    val targetMsg = selectedMessageForOptions
-    if (targetMsg != null) {
-        val isDeleted = targetMsg.text.startsWith("🚫 ")
-        val isEligibleForEdit = targetMsg.isOutgoing &&
+        ChatOverlay.CreatePoll -> {
+            WhatsAppCreatePollDialog(
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onSendPoll = { pollData ->
+                    activeOverlay = ChatOverlay.None
+                    coroutineScope.launch {
+                        val payload = pollData.toMessageJson()
+                        chatRepository.markConversationAsRead(normPeer)
+                        chatRepository.sendMessage(
+                            recipientNumber = normPeer,
+                            recipientName = peerDisplayName,
+                            text = payload,
+                            mediaType = ChatMediaType.TEXT
+                        )
+                        listState.animateScrollToItem(0)
+                    }
+                }
+            )
+        }
+
+        ChatOverlay.WallpaperPicker -> {
+            WhatsAppQuickWallpaperDialog(
+                wallpaperManager = wallpaperManager,
+                onDismiss = { activeOverlay = ChatOverlay.None }
+            )
+        }
+
+        is ChatOverlay.ScheduleComposer -> {
+            ScheduleMessageDialog(
+                recipientName = peerDisplayName,
+                initialMessageText = inputText,
+                editingItem = overlay.editingItem,
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onConfirmSchedule = { msgText, scheduledAtMs, existingId ->
+                    val currentReply = (composerMode as? ComposerMode.Replying)?.context
+                    val payload = if (existingId == null && currentReply != null) {
+                        """{"text":${escapeJson(msgText)},"replyTo":{"id":${escapeJson(currentReply.messageId)},"text":${escapeJson(currentReply.text)},"senderLabel":${escapeJson(currentReply.senderLabel)}}}"""
+                    } else {
+                        msgText
+                    }
+                    ScheduledMessageManager.scheduleMessage(
+                        context = context,
+                        recipientNumber = normPeer,
+                        recipientName = peerDisplayName,
+                        payloadText = payload,
+                        previewText = msgText,
+                        scheduledAtMillis = scheduledAtMs,
+                        existingId = existingId
+                    )
+                    if (existingId == null && inputText.trim() == msgText.trim()) {
+                        inputText = ""
+                        composerMode = ComposerMode.Normal
+                        chatRepository.setTyping(normPeer, false)
+                    }
+                    activeOverlay = ChatOverlay.None
+                    if (existingId == null) {
+                        coroutineScope.launch {
+                            delay(80)
+                            listState.animateScrollToItem(0)
+                        }
+                    }
+                    val friendly = ScheduledMessageManager.formatFriendlyScheduleTime(scheduledAtMs)
+                    Toast.makeText(
+                        context,
+                        "⏰ Message scheduled for $friendly",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+
+        ChatOverlay.ScheduledQueue -> {
+            ScheduledMessagesQueueDialog(
+                recipientName = peerDisplayName,
+                scheduledList = peerScheduledMessages,
+                onDismiss = { activeOverlay = ChatOverlay.None },
+                onScheduleNewClick = {
+                    activeOverlay = ChatOverlay.ScheduleComposer(editingItem = null)
+                },
+                onEditItemClick = { item ->
+                    activeOverlay = ChatOverlay.ScheduleComposer(editingItem = item)
+                },
+                onSendNowClick = { item ->
+                    ScheduledMessageManager.sendNow(context, item.id)
+                    Toast.makeText(context, "Sending scheduled message now…", Toast.LENGTH_SHORT).show()
+                },
+                onCancelItemClick = { item ->
+                    ScheduledMessageManager.cancelScheduledMessage(context, item.id)
+                    Toast.makeText(context, "Scheduled message cancelled", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+
+        ChatOverlay.NativeCamera -> {
+            WhatsAppCameraScreen(
+                onPhotoCaptured = { capturedFile ->
+                    activeOverlay = ChatOverlay.MediaReview(listOf(capturedFile))
+                },
+                onPhotosSelectedFromGallery = { files ->
+                    val (videos, photos) = files.partition { file ->
+                        val ext = file.extension.lowercase(Locale.getDefault())
+                        ext in listOf("mp4", "mkv", "webm", "mov", "3gp", "avi", "m4v")
+                    }
+                    videos.forEach { videoFile ->
+                        coroutineScope.launch {
+                            chatRepository.sendMessage(
+                                recipientNumber = normPeer,
+                                recipientName = peerDisplayName,
+                                text = videoFile.name,
+                                mediaType = ChatMediaType.DOCUMENT,
+                                mediaFile = videoFile
+                            )
+                        }
+                    }
+                    if (videos.isNotEmpty()) {
+                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                    }
+                    activeOverlay = if (photos.isNotEmpty()) {
+                        ChatOverlay.MediaReview(photos)
+                    } else {
+                        ChatOverlay.None
+                    }
+                },
+                onClose = { activeOverlay = ChatOverlay.None }
+            )
+        }
+
+        is ChatOverlay.MediaReview -> {
+            WhatsAppMediaPreviewScreen(
+                initialPhotos = overlay.photos,
+                initialCaption = initialSharedText ?: "",
+                onSendPhotos = { results, isViewOnce ->
+                    activeOverlay = ChatOverlay.None
+                    onSharedContentConsumed()
+                    coroutineScope.launch {
+                        results.forEach { (file, caption) ->
+                            chatRepository.sendMessage(
+                                recipientNumber = normPeer,
+                                recipientName = peerDisplayName,
+                                text = caption,
+                                mediaType = ChatMediaType.IMAGE,
+                                mediaFile = file,
+                                isViewOnce = isViewOnce
+                            )
+                        }
+                        listState.animateScrollToItem(0)
+                    }
+                },
+                onClose = {
+                    activeOverlay = ChatOverlay.None
+                    onSharedContentConsumed()
+                }
+            )
+        }
+
+        is ChatOverlay.MessageOptions -> {
+            val targetMsg = overlay.message
+            val isDeleted = targetMsg.text.startsWith("🚫 ")
+            val isEligibleForEdit = targetMsg.isOutgoing &&
                 !isDeleted &&
                 targetMsg.mediaType == ChatMediaType.TEXT.name &&
                 (System.currentTimeMillis() - targetMsg.timestamp <= 10 * 60 * 1000L)
-        val isDarkSheet = com.example.ui.theme.LocalIsDarkTheme.current
+            val isDarkSheet = com.example.ui.theme.LocalIsDarkTheme.current
 
-        ModalBottomSheet(
-            onDismissRequest = { selectedMessageForOptions = null },
-            containerColor = if (isDarkSheet) Color(0xFF182229) else Color.White,
-            contentColor = if (isDarkSheet) Color.White else Color(0xFF0F172A),
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp)
+            ModalBottomSheet(
+                onDismissRequest = { activeOverlay = ChatOverlay.None },
+                containerColor = if (isDarkSheet) Color(0xFF182229) else Color.White,
+                contentColor = if (isDarkSheet) Color.White else Color(0xFF0F172A),
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
             ) {
-                Text(
-                    text = "Message options",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isDarkSheet) Color(0xFF94A3B8) else Color(0xFF64748B),
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                ) {
+                    Text(
+                        text = "Message options",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDarkSheet) Color(0xFF94A3B8) else Color(0xFF64748B),
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+                    )
 
-                // ── Star / Unstar ──────────────────────────────────────────
-                WhatsAppStyledMenuItem(
-                    title = if (targetMsg.isStarred) "Unstar message" else "Star message",
-                    subtitle = if (targetMsg.isStarred) "Remove from starred messages" else "Save for quick access later",
-                    icon = if (targetMsg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
-                    iconTint = Color(0xFFF59E0B),
-                    onClick = {
-                        val msgId = targetMsg.id
-                        val willStar = !targetMsg.isStarred
-                        selectedMessageForOptions = null
-                        coroutineScope.launch {
-                            if (willStar) chatRepository.starMessage(msgId)
-                            else chatRepository.unstarMessage(msgId)
-                            val label = if (willStar) "⭐ Message starred" else "Message unstarred"
-                            Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                )
-
-                if (!isDeleted) {
-                    // Reply
+                    // ── Star / Unstar ──────────────────────────────────────────
                     WhatsAppStyledMenuItem(
-                        title = "Reply",
-                        subtitle = "Quote this message in your reply",
-                        icon = Icons.AutoMirrored.Filled.Reply,
-                        iconTint = Color(0xFF0284C7),
+                        title = if (targetMsg.isStarred) "Unstar message" else "Star message",
+                        subtitle = if (targetMsg.isStarred) "Remove from starred messages" else "Save for quick access later",
+                        icon = if (targetMsg.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
+                        iconTint = Color(0xFFF59E0B),
                         onClick = {
-                            val previewText = formatReplyPreview(targetMsg)
-                            replyingTo = ReplyContext(
-                                messageId = targetMsg.id,
-                                text = previewText,
-                                senderLabel = if (targetMsg.isOutgoing) (firebaseManager.currentUser.value?.displayName ?: "You") else peerDisplayName,
-                                isOutgoing = targetMsg.isOutgoing
-                            )
-                            selectedMessageForOptions = null
+                            val msgId = targetMsg.id
+                            val willStar = !targetMsg.isStarred
+                            activeOverlay = ChatOverlay.None
+                            coroutineScope.launch {
+                                if (willStar) chatRepository.starMessage(msgId)
+                                else chatRepository.unstarMessage(msgId)
+                                val label = if (willStar) "⭐ Message starred" else "Message unstarred"
+                                Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     )
 
-                    // Copy (if text)
-                    if (targetMsg.mediaType == ChatMediaType.TEXT.name) {
-                        val rawText = try {
-                            val obj = org.json.JSONObject(targetMsg.text)
-                            obj.optString("text", targetMsg.text)
-                        } catch (_: Exception) { targetMsg.text }
+                    if (!isDeleted) {
+                        // Reply
                         WhatsAppStyledMenuItem(
-                            title = "Copy",
-                            subtitle = "Copy message text to clipboard",
-                            icon = Icons.Default.ContentCopy,
-                            iconTint = Color(0xFF6366F1),
+                            title = "Reply",
+                            subtitle = "Quote this message in your reply",
+                            icon = Icons.AutoMirrored.Filled.Reply,
+                            iconTint = Color(0xFF0284C7),
                             onClick = {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                                val clip = android.content.ClipData.newPlainText("Copied message", rawText)
-                                clipboard?.setPrimaryClip(clip)
-                                Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                                selectedMessageForOptions = null
+                                val previewText = formatReplyPreview(targetMsg)
+                                composerMode = ComposerMode.Replying(
+                                    ReplyContext(
+                                        messageId = targetMsg.id,
+                                        text = previewText,
+                                        senderLabel = if (targetMsg.isOutgoing) (firebaseManager.currentUser.value?.displayName ?: "You") else peerDisplayName,
+                                        isOutgoing = targetMsg.isOutgoing
+                                    )
+                                )
+                                activeOverlay = ChatOverlay.None
                             }
                         )
-                    }
 
-                    // Edit (if outgoing, text, and within 10 min)
-                    if (isEligibleForEdit) {
-                        val rawText = try {
-                            val obj = org.json.JSONObject(targetMsg.text)
-                            obj.optString("text", targetMsg.text)
-                        } catch (_: Exception) { targetMsg.text }
-                        WhatsAppStyledMenuItem(
-                            title = "Edit message",
-                            subtitle = "Available within 10 minutes of sending",
-                            icon = Icons.Default.Edit,
-                            iconTint = Color(0xFF059669),
-                            onClick = {
-                                editingMessage = targetMsg
-                                inputText = rawText
-                                selectedMessageForOptions = null
-                            }
-                        )
-                    }
-
-                    HorizontalDivider(
-                        color = if (isDarkSheet) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                    )
-
-                    // Delete for everyone (WhatsApp style: outgoing only, not already deleted)
-                    if (targetMsg.isOutgoing) {
-                        WhatsAppStyledMenuItem(
-                            title = "Delete for everyone",
-                            subtitle = "Remove for all participants in this chat",
-                            icon = Icons.Default.DeleteSweep,
-                            iconTint = Color(0xFFEF4444),
-                            isDestructive = true,
-                            onClick = {
-                                val idToDelete = targetMsg.id
-                                selectedMessageForOptions = null
-                                coroutineScope.launch {
-                                    chatRepository.deleteMessageForEveryone(idToDelete, normPeer)
+                        // Copy (if text)
+                        if (targetMsg.mediaType == ChatMediaType.TEXT.name) {
+                            val rawText = try {
+                                val obj = org.json.JSONObject(targetMsg.text)
+                                obj.optString("text", targetMsg.text)
+                            } catch (_: Exception) { targetMsg.text }
+                            WhatsAppStyledMenuItem(
+                                title = "Copy",
+                                subtitle = "Copy message text to clipboard",
+                                icon = Icons.Default.ContentCopy,
+                                iconTint = Color(0xFF6366F1),
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                    val clip = android.content.ClipData.newPlainText("Copied message", rawText)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                    activeOverlay = ChatOverlay.None
                                 }
-                            }
-                        )
-                    }
-                }
+                            )
+                        }
 
-                // Delete for me
-                WhatsAppStyledMenuItem(
-                    title = "Delete for me",
-                    subtitle = "Remove from your device only",
-                    icon = Icons.Default.Delete,
-                    iconTint = Color(0xFFEF4444),
-                    isDestructive = true,
-                    onClick = {
-                        val idToDelete = targetMsg.id
-                        selectedMessageForOptions = null
-                        coroutineScope.launch {
-                            chatRepository.deleteMessage(idToDelete)
+                        // Edit (if outgoing, text, and within 10 min)
+                        if (isEligibleForEdit) {
+                            val rawText = try {
+                                val obj = org.json.JSONObject(targetMsg.text)
+                                obj.optString("text", targetMsg.text)
+                            } catch (_: Exception) { targetMsg.text }
+                            WhatsAppStyledMenuItem(
+                                title = "Edit message",
+                                subtitle = "Available within 10 minutes of sending",
+                                icon = Icons.Default.Edit,
+                                iconTint = Color(0xFF059669),
+                                onClick = {
+                                    composerMode = ComposerMode.Editing(targetMsg)
+                                    inputText = rawText
+                                    activeOverlay = ChatOverlay.None
+                                }
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = if (isDarkSheet) Color.White.copy(alpha = 0.08f) else Color(0xFFE2E8F0),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+
+                        // Delete for everyone (WhatsApp style: outgoing only, not already deleted)
+                        if (targetMsg.isOutgoing) {
+                            WhatsAppStyledMenuItem(
+                                title = "Delete for everyone",
+                                subtitle = "Remove for all participants in this chat",
+                                icon = Icons.Default.DeleteSweep,
+                                iconTint = Color(0xFFEF4444),
+                                isDestructive = true,
+                                onClick = {
+                                    val idToDelete = targetMsg.id
+                                    activeOverlay = ChatOverlay.None
+                                    coroutineScope.launch {
+                                        chatRepository.deleteMessageForEveryone(idToDelete, normPeer)
+                                    }
+                                }
+                            )
                         }
                     }
-                )
+
+                    // Delete for me
+                    WhatsAppStyledMenuItem(
+                        title = "Delete for me",
+                        subtitle = "Remove from your device only",
+                        icon = Icons.Default.Delete,
+                        iconTint = Color(0xFFEF4444),
+                        isDestructive = true,
+                        onClick = {
+                            val idToDelete = targetMsg.id
+                            activeOverlay = ChatOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.deleteMessage(idToDelete)
+                            }
+                        }
+                    )
+                }
             }
         }
     }

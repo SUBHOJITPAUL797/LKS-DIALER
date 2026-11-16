@@ -48,9 +48,7 @@ fun ChatStorageManagementScreen(
     var rankedChats by remember { mutableStateOf<List<ConversationStorageItem>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
-    var selectedChatForClean by remember { mutableStateOf<ConversationStorageItem?>(null) }
-    var showMasterMediaConfirm by remember { mutableStateOf(false) }
-    var showMasterAllChatsConfirm by remember { mutableStateOf(false) }
+    var dialogState by remember { mutableStateOf<StorageDialogState>(StorageDialogState.None) }
 
     fun refreshStorageData() {
         coroutineScope.launch {
@@ -133,8 +131,8 @@ fun ChatStorageManagementScreen(
                     MasterCleanActionsCard(
                         summary = summary,
                         formatBytes = ::formatBytes,
-                        onClearAllMediaClick = { showMasterMediaConfirm = true },
-                        onClearAllChatsClick = { showMasterAllChatsConfirm = true }
+                        onClearAllMediaClick = { dialogState = StorageDialogState.MasterMediaConfirm },
+                        onClearAllChatsClick = { dialogState = StorageDialogState.MasterAllChatsConfirm }
                     )
                 }
 
@@ -208,7 +206,7 @@ fun ChatStorageManagementScreen(
                         RankedChatItemCard(
                             item = chatItem,
                             formatBytes = ::formatBytes,
-                            onCleanClick = { selectedChatForClean = chatItem },
+                            onCleanClick = { dialogState = StorageDialogState.SelectiveClean(chatItem) },
                             onItemClick = { onOpenChat(chatItem.phoneNumber, chatItem.displayName) }
                         )
                     }
@@ -221,93 +219,99 @@ fun ChatStorageManagementScreen(
         }
     }
 
-    // ── Selective Clean Dialog for a Specific Chat ───────────────────────────
-    selectedChatForClean?.let { chatItem ->
-        SelectiveChatCleanModal(
-            item = chatItem,
-            formatBytes = ::formatBytes,
-            onDismiss = { selectedChatForClean = null },
-            onConfirmClean = { v, p, a, d, t ->
-                coroutineScope.launch {
-                    val bytesFreed = chatRepository.clearConversationSpecificMedia(
-                        phoneNumber = chatItem.phoneNumber,
-                        deleteVideos = v,
-                        deletePhotos = p,
-                        deleteAudio = a,
-                        deleteDocs = d,
-                        deleteText = t
-                    )
-                    Toast.makeText(context, "Freed ${formatBytes(bytesFreed)} of storage!", Toast.LENGTH_SHORT).show()
-                    selectedChatForClean = null
-                    refreshStorageData()
+    when (val currentDialog = dialogState) {
+        StorageDialogState.None -> Unit
+        is StorageDialogState.SelectiveClean -> {
+            val chatItem = currentDialog.item
+            SelectiveChatCleanModal(
+                item = chatItem,
+                formatBytes = ::formatBytes,
+                onDismiss = { dialogState = StorageDialogState.None },
+                onConfirmClean = { v, p, a, d, t ->
+                    coroutineScope.launch {
+                        val bytesFreed = chatRepository.clearConversationSpecificMedia(
+                            phoneNumber = chatItem.phoneNumber,
+                            deleteVideos = v,
+                            deletePhotos = p,
+                            deleteAudio = a,
+                            deleteDocs = d,
+                            deleteText = t
+                        )
+                        Toast.makeText(context, "Freed ${formatBytes(bytesFreed)} of storage!", Toast.LENGTH_SHORT).show()
+                        dialogState = StorageDialogState.None
+                        refreshStorageData()
+                    }
                 }
-            }
-        )
+            )
+        }
+        StorageDialogState.MasterMediaConfirm -> {
+            AlertDialog(
+                onDismissRequest = { dialogState = StorageDialogState.None },
+                icon = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = TealPrimary) },
+                title = { Text("Delete All Media Across All Chats?") },
+                text = {
+                    Text("This will delete all downloaded videos, photos, audio notes, and documents from your phone to free up storage space. Your chat text conversations will remain intact.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            dialogState = StorageDialogState.None
+                            coroutineScope.launch {
+                                val freed = chatRepository.clearAllChatMedia()
+                                Toast.makeText(context, "Cleared all media! Freed ${formatBytes(freed)}", Toast.LENGTH_LONG).show()
+                                refreshStorageData()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                    ) {
+                        Text("Delete All Media")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { dialogState = StorageDialogState.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+        StorageDialogState.MasterAllChatsConfirm -> {
+            AlertDialog(
+                onDismissRequest = { dialogState = StorageDialogState.None },
+                icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Clear All Chats & Media?") },
+                text = {
+                    Text("Are you sure you want to permanently delete ALL chats, messages, and all media files from this device? This action cannot be undone.")
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            dialogState = StorageDialogState.None
+                            coroutineScope.launch {
+                                chatRepository.clearAllChats()
+                                Toast.makeText(context, "All chats and media cleared", Toast.LENGTH_LONG).show()
+                                refreshStorageData()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete Everything", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { dialogState = StorageDialogState.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
     }
+}
 
-    // ── Master Media Confirm Dialog ──────────────────────────────────────────
-    if (showMasterMediaConfirm) {
-        AlertDialog(
-            onDismissRequest = { showMasterMediaConfirm = false },
-            icon = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = TealPrimary) },
-            title = { Text("Delete All Media Across All Chats?") },
-            text = {
-                Text("This will delete all downloaded videos, photos, audio notes, and documents from your phone to free up storage space. Your chat text conversations will remain intact.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showMasterMediaConfirm = false
-                        coroutineScope.launch {
-                            val freed = chatRepository.clearAllChatMedia()
-                            Toast.makeText(context, "Cleared all media! Freed ${formatBytes(freed)}", Toast.LENGTH_LONG).show()
-                            refreshStorageData()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
-                ) {
-                    Text("Delete All Media")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showMasterMediaConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // ── Master All Chats Confirm Dialog ──────────────────────────────────────
-    if (showMasterAllChatsConfirm) {
-        AlertDialog(
-            onDismissRequest = { showMasterAllChatsConfirm = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Clear All Chats & Media?") },
-            text = {
-                Text("Are you sure you want to permanently delete ALL chats, messages, and all media files from this device? This action cannot be undone.")
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showMasterAllChatsConfirm = false
-                        coroutineScope.launch {
-                            chatRepository.clearAllChats()
-                            Toast.makeText(context, "All chats and media cleared", Toast.LENGTH_LONG).show()
-                            refreshStorageData()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Delete Everything", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showMasterAllChatsConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+private sealed interface StorageDialogState {
+    data object None : StorageDialogState
+    data class SelectiveClean(val item: ConversationStorageItem) : StorageDialogState
+    data object MasterMediaConfirm : StorageDialogState
+    data object MasterAllChatsConfirm : StorageDialogState
 }
 
 @Composable

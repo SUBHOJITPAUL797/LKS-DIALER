@@ -171,7 +171,7 @@ object LksLogUploader {
                         "id" to it.id,
                         "recipient" to it.recipientNumber,
                         "retryCount" to it.retryCount,
-                        "status" to it.status,
+                        "status" to it.status.name,
                         "lastError" to (it.lastError ?: "")
                     )
                 }

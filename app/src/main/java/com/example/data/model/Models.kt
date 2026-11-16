@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import com.google.firebase.firestore.Exclude
 import com.google.firebase.firestore.PropertyName
 
 data class UserDto(
@@ -160,6 +161,44 @@ enum class GroupLayoutMode {
     GRID, SPEAKER
 }
 
+enum class GroupRoomStatus {
+    ACTIVE, ENDED;
+
+    companion object {
+        fun fromWire(raw: String?): GroupRoomStatus =
+            entries.find { it.name.equals(raw, ignoreCase = true) } ?: ACTIVE
+    }
+}
+
+enum class GroupParticipantRole(val sortPriority: Int) {
+    HOST(0),
+    CO_HOST(1),
+    PARTICIPANT(2);
+
+    companion object {
+        fun fromWire(raw: String?): GroupParticipantRole =
+            entries.find { it.name.equals(raw, ignoreCase = true) } ?: PARTICIPANT
+    }
+}
+
+enum class GroupJoinState {
+    INVITED, WAITING_LOBBY, JOINED, REMOVED, LEFT, DECLINED;
+
+    companion object {
+        fun fromWire(raw: String?): GroupJoinState =
+            entries.find { it.name.equals(raw, ignoreCase = true) } ?: INVITED
+    }
+}
+
+enum class QrSessionStatus {
+    PENDING, SCANNED, APPROVED, EXPIRED;
+
+    companion object {
+        fun fromWire(raw: String?): QrSessionStatus =
+            entries.find { it.name.equals(raw, ignoreCase = true) } ?: PENDING
+    }
+}
+
 data class GroupCallRoomDto(
     val roomId: String = "",
     val title: String = "Team Conference",
@@ -167,7 +206,7 @@ data class GroupCallRoomDto(
     val hostName: String = "",
     val coHostPhones: List<String> = emptyList(),
     val callType: CallType = CallType.VIDEO,
-    val status: String = "ACTIVE", // ACTIVE, ENDED
+    val status: String = GroupRoomStatus.ACTIVE.name, // ACTIVE, ENDED
     @get:PropertyName("isLocked") @set:PropertyName("isLocked")
     var isLocked: Boolean = false,
     @get:PropertyName("waitingRoomEnabled") @set:PropertyName("waitingRoomEnabled")
@@ -179,14 +218,18 @@ data class GroupCallRoomDto(
     val unmuteAllRequestTimestamp: Long = 0L,
     val createdAt: Long = 0L,
     val endedAt: Long? = null
-)
+) {
+    @get:Exclude
+    val roomStatus: GroupRoomStatus
+        get() = GroupRoomStatus.fromWire(status)
+}
 
 data class GroupParticipantDto(
     val phoneNumber: String = "",
     val displayName: String = "",
     val profilePicUrl: String = "",
-    val role: String = "PARTICIPANT", // HOST, CO_HOST, PARTICIPANT
-    val joinState: String = "INVITED", // INVITED, WAITING_LOBBY, JOINED, REMOVED, LEFT, DECLINED
+    val role: String = GroupParticipantRole.PARTICIPANT.name, // HOST, CO_HOST, PARTICIPANT
+    val joinState: String = GroupJoinState.INVITED.name, // INVITED, WAITING_LOBBY, JOINED, REMOVED, LEFT, DECLINED
     @get:PropertyName("isMuted") @set:PropertyName("isMuted")
     var isMuted: Boolean = false,
     @get:PropertyName("isVideoEnabled") @set:PropertyName("isVideoEnabled")
@@ -202,7 +245,15 @@ data class GroupParticipantDto(
     val filterConfigStr: String = "",
     val joinedAt: Long = 0L,
     val updatedAt: Long = 0L
-)
+) {
+    @get:Exclude
+    val roleEnum: GroupParticipantRole
+        get() = GroupParticipantRole.fromWire(role)
+
+    @get:Exclude
+    val joinStateEnum: GroupJoinState
+        get() = GroupJoinState.fromWire(joinState)
+}
 
 data class GroupPeerLinkDto(
     val linkId: String = "",          // sorted "phoneA_phoneB"

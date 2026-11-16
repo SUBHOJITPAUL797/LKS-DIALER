@@ -30,6 +30,43 @@ import java.nio.ByteBuffer
  * If call disconnects abruptly or power is lost, recorded frames up to that exact
  * millisecond remain completely intact and playable.
  */
+sealed interface CallRecordingPhase {
+    data object Idle : CallRecordingPhase
+    data class InitializingCodec(
+        val callId: String,
+        val file: File,
+        val startedAtMs: Long,
+        val durationSeconds: Int = 0
+    ) : CallRecordingPhase
+    data class Encoding(
+        val callId: String,
+        val file: File,
+        val startedAtMs: Long,
+        val durationSeconds: Int = 0
+    ) : CallRecordingPhase
+
+    val activeCallId: String?
+        get() = when (this) {
+            Idle -> null
+            is InitializingCodec -> callId
+            is Encoding -> callId
+        }
+
+    val activeFile: File?
+        get() = when (this) {
+            Idle -> null
+            is InitializingCodec -> file
+            is Encoding -> file
+        }
+
+    val activeStartedAtMs: Long
+        get() = when (this) {
+            Idle -> 0L
+            is InitializingCodec -> startedAtMs
+            is Encoding -> startedAtMs
+        }
+}
+
 class CallAudioRecorder private constructor(private val context: Context) {
 
     companion object {
@@ -63,6 +100,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private val _phase = MutableStateFlow<CallRecordingPhase>(CallRecordingPhase.Idle)
+    val phase: StateFlow<CallRecordingPhase> = _phase.asStateFlow()
+
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
@@ -72,15 +112,34 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private val _activeRecordingCallId = MutableStateFlow<String?>(null)
     val activeRecordingCallId: StateFlow<String?> = _activeRecordingCallId.asStateFlow()
 
-    private var currentRecordingFile: File? = null
     private var outputStream: FileOutputStream? = null
     private var mediaCodec: MediaCodec? = null
-    private var isCodecInitialized = false
 
-    private var recordingStartTime = 0L
     private val mixerBuffer = AudioMixerBuffer()
     private var encodeJob: Job? = null
     private var timerRunnable: Runnable? = null
+
+    @Synchronized
+    private fun commitPhase(next: CallRecordingPhase) {
+        _phase.value = next
+        when (next) {
+            CallRecordingPhase.Idle -> {
+                _isRecording.value = false
+                _activeRecordingCallId.value = null
+                _recordingDurationSeconds.value = 0
+            }
+            is CallRecordingPhase.InitializingCodec -> {
+                _isRecording.value = true
+                _activeRecordingCallId.value = next.callId
+                _recordingDurationSeconds.value = next.durationSeconds
+            }
+            is CallRecordingPhase.Encoding -> {
+                _isRecording.value = true
+                _activeRecordingCallId.value = next.callId
+                _recordingDurationSeconds.value = next.durationSeconds
+            }
+        }
+    }
 
     /**
      * Starts recording the ongoing call.
@@ -95,8 +154,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
         otherPartyName: String = "",
         otherPartyNumber: String = ""
     ): Boolean {
-        if (_isRecording.value) {
-            Log.w(TAG, "Recording already in progress for callId: ${_activeRecordingCallId.value}")
+        val current = _phase.value
+        if (current !is CallRecordingPhase.Idle) {
+            Log.w(TAG, "Recording already in progress for callId: ${current.activeCallId}")
             return true
         }
 
@@ -107,14 +167,15 @@ class CallAudioRecorder private constructor(private val context: Context) {
             val fileName = "REC_${cleanCallId}_${timestamp}.m4a"
             val file = File(recordingsDir, fileName)
 
-            currentRecordingFile = file
             outputStream = FileOutputStream(file)
-            _activeRecordingCallId.value = callId
-            recordingStartTime = System.currentTimeMillis()
-            _recordingDurationSeconds.value = 0
             mixerBuffer.clear()
-            isCodecInitialized = false
-            _isRecording.value = true
+            commitPhase(
+                CallRecordingPhase.InitializingCodec(
+                    callId = callId,
+                    file = file,
+                    startedAtMs = System.currentTimeMillis()
+                )
+            )
 
             // Start 1-second UI duration timer
             startDurationTimer()
@@ -135,7 +196,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
      * Receives raw PCM audio samples from local microphone (WebRTC JavaAudioDeviceModule).
      */
     fun onLocalPcmSamples(sampleRate: Int, channelCount: Int, pcmData: ByteArray) {
-        if (!_isRecording.value || pcmData.isEmpty()) return
+        if (_phase.value is CallRecordingPhase.Idle || pcmData.isEmpty()) return
         val normalized = normalizeTo16kMono(pcmData, sampleRate, channelCount)
         mixerBuffer.pushLocal(normalized)
     }
@@ -144,7 +205,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
      * Receives raw PCM audio samples from remote party (WebRTC WebRtcAudioTrack playout).
      */
     fun onRemotePcmSamples(sampleRate: Int, channelCount: Int, pcmData: ByteArray) {
-        if (!_isRecording.value || pcmData.isEmpty()) return
+        if (_phase.value is CallRecordingPhase.Idle || pcmData.isEmpty()) return
         val normalized = normalizeTo16kMono(pcmData, sampleRate, channelCount)
         mixerBuffer.pushRemote(normalized)
     }
@@ -163,18 +224,19 @@ class CallAudioRecorder private constructor(private val context: Context) {
      */
     @Synchronized
     fun stopRecording(callId: String? = null): File? {
-        if (!_isRecording.value) return null
-        if (callId != null && _activeRecordingCallId.value != null && _activeRecordingCallId.value != callId) {
-            Log.w(TAG, "Stop requested for callId=$callId but active recording is for ${_activeRecordingCallId.value}")
+        val current = _phase.value
+        if (current is CallRecordingPhase.Idle) return null
+        if (callId != null && current.activeCallId != null && current.activeCallId != callId) {
+            Log.w(TAG, "Stop requested for callId=$callId but active recording is for ${current.activeCallId}")
             return null
         }
 
-        Log.i(TAG, "⏹️ Stopping dual-party call recording for callId: ${_activeRecordingCallId.value}")
-        val recordedFile = currentRecordingFile
+        Log.i(TAG, "⏹️ Stopping dual-party call recording for callId: ${current.activeCallId}")
+        val recordedFile = current.activeFile
 
         try {
             stopDurationTimer()
-            _isRecording.value = false
+            commitPhase(CallRecordingPhase.Idle)
 
             // Drain remaining queued PCM buffers
             drainRemainingPcm()
@@ -205,9 +267,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping recording: ${e.message}", e)
         } finally {
-            _activeRecordingCallId.value = null
-            _recordingDurationSeconds.value = 0
-            isCodecInitialized = false
+            commitPhase(CallRecordingPhase.Idle)
             mixerBuffer.clear()
         }
 
@@ -226,7 +286,8 @@ class CallAudioRecorder private constructor(private val context: Context) {
      * Checks if recording is active for a specific call.
      */
     fun isRecordingForCall(callId: String): Boolean {
-        return _isRecording.value && _activeRecordingCallId.value == callId
+        val current = _phase.value
+        return current !is CallRecordingPhase.Idle && current.activeCallId == callId
     }
 
     /**
@@ -293,10 +354,18 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private fun startDurationTimer() {
         timerRunnable = object : Runnable {
             override fun run() {
-                if (_isRecording.value) {
-                    val elapsedSec = ((System.currentTimeMillis() - recordingStartTime) / 1000).toInt()
-                    _recordingDurationSeconds.value = elapsedSec
-                    mainHandler.postDelayed(this, 1000)
+                when (val current = _phase.value) {
+                    is CallRecordingPhase.InitializingCodec -> {
+                        val elapsedSec = ((System.currentTimeMillis() - current.startedAtMs) / 1000).toInt()
+                        commitPhase(current.copy(durationSeconds = elapsedSec))
+                        mainHandler.postDelayed(this, 1000)
+                    }
+                    is CallRecordingPhase.Encoding -> {
+                        val elapsedSec = ((System.currentTimeMillis() - current.startedAtMs) / 1000).toInt()
+                        commitPhase(current.copy(durationSeconds = elapsedSec))
+                        mainHandler.postDelayed(this, 1000)
+                    }
+                    CallRecordingPhase.Idle -> Unit
                 }
             }
         }
@@ -311,9 +380,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private fun startEncodeLoop() {
         encodeJob?.cancel()
         encodeJob = scope.launch {
-            while (_isRecording.value) {
+            while (_phase.value !is CallRecordingPhase.Idle) {
                 // Poll 640 bytes = 320 samples = 20ms of 16kHz mono audio
-                val mixedChunk = mixerBuffer.pollMixed(640, _isRecording.value)
+                val mixedChunk = mixerBuffer.pollMixed(640, _phase.value !is CallRecordingPhase.Idle)
                 if (mixedChunk != null) {
                     processPcmChunk(mixedChunk)
                 } else {
@@ -330,8 +399,9 @@ class CallAudioRecorder private constructor(private val context: Context) {
         }
     }
 
+    @Synchronized
     private fun initCodecIfNeeded() {
-        if (isCodecInitialized) return
+        val current = _phase.value as? CallRecordingPhase.InitializingCodec ?: return
         try {
             val format = MediaFormat.createAudioFormat(
                 MediaFormat.MIMETYPE_AUDIO_AAC,
@@ -347,7 +417,14 @@ class CallAudioRecorder private constructor(private val context: Context) {
                 configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 start()
             }
-            isCodecInitialized = true
+            commitPhase(
+                CallRecordingPhase.Encoding(
+                    callId = current.callId,
+                    file = current.file,
+                    startedAtMs = current.startedAtMs,
+                    durationSeconds = current.durationSeconds
+                )
+            )
             Log.i(TAG, "MediaCodec AAC encoder initialized: rate=$RECORD_SAMPLE_RATE, channels=$RECORD_CHANNELS, bitrate=$AAC_BITRATE")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaCodec: ${e.message}", e)
@@ -357,6 +434,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
     private fun processPcmChunk(pcmData: ByteArray) {
         initCodecIfNeeded()
         val codec = mediaCodec ?: return
+        val startedAtMs = _phase.value.activeStartedAtMs.takeIf { it > 0L } ?: System.currentTimeMillis()
 
         try {
             val inputIndex = codec.dequeueInputBuffer(10_000L)
@@ -364,7 +442,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
                 val inputBuffer = codec.getInputBuffer(inputIndex)
                 inputBuffer?.clear()
                 inputBuffer?.put(pcmData)
-                val presentationTimeUs = (System.currentTimeMillis() - recordingStartTime) * 1000
+                val presentationTimeUs = (System.currentTimeMillis() - startedAtMs) * 1000
                 codec.queueInputBuffer(inputIndex, 0, pcmData.size, presentationTimeUs, 0)
             }
 
@@ -520,9 +598,7 @@ class CallAudioRecorder private constructor(private val context: Context) {
 
     private fun cleanup() {
         stopDurationTimer()
-        _isRecording.value = false
-        _activeRecordingCallId.value = null
-        _recordingDurationSeconds.value = 0
+        commitPhase(CallRecordingPhase.Idle)
         try { mediaCodec?.release() } catch (_: Exception) {}
         mediaCodec = null
         try { outputStream?.close() } catch (_: Exception) {}
@@ -530,7 +606,6 @@ class CallAudioRecorder private constructor(private val context: Context) {
         encodeJob?.cancel()
         encodeJob = null
         mixerBuffer.clear()
-        isCodecInitialized = false
     }
 
     /**

@@ -676,6 +676,14 @@ fun StartGroupCallModal(
  * - Real-Time Custom Video Filter & Studio Lighting Drawer
  * - Raise Hand & Floating Emoji Reactions
  */
+private sealed interface GroupCallSheetState {
+    data object None : GroupCallSheetState
+    data object Participants : GroupCallSheetState
+    data object FilterStudio : GroupCallSheetState
+    data object InviteMore : GroupCallSheetState
+    data object HostEndConfirm : GroupCallSheetState
+}
+
 @Composable
 fun ActiveGroupCallScreen(
     state: GroupCallUiState,
@@ -690,11 +698,8 @@ fun ActiveGroupCallScreen(
     val room = state.room ?: return
     val isHost = groupCallEngine.isHostOrCoHost(myPhone)
 
-    var showParticipantsSheet by remember { mutableStateOf(false) }
-    var showFilterStudioSheet by remember { mutableStateOf(false) }
-    var showInviteMoreModal by remember { mutableStateOf(false) }
+    var activeSheet by remember { mutableStateOf<GroupCallSheetState>(GroupCallSheetState.None) }
     var showReactionBar by remember { mutableStateOf(false) }
-    var showHostEndConfirmSheet by remember { mutableStateOf(false) }
 
     val mins = state.callDurationSeconds / 60
     val secs = state.callDurationSeconds % 60
@@ -836,7 +841,7 @@ fun ActiveGroupCallScreen(
                     }
 
                     Surface(
-                        onClick = { showFilterStudioSheet = true },
+                        onClick = { activeSheet = GroupCallSheetState.FilterStudio },
                         shape = CircleShape,
                         color = CyberMint.copy(alpha = 0.22f),
                         border = BorderStroke(1.dp, CyberMint),
@@ -1082,7 +1087,7 @@ fun ActiveGroupCallScreen(
                                             if (state.waitingParticipants.size == 1) {
                                                 groupCallEngine.declineWaitingParticipant(firstWaiting.phoneNumber)
                                             } else {
-                                                showParticipantsSheet = true
+                                                activeSheet = GroupCallSheetState.Participants
                                             }
                                         }
                                     ) {
@@ -1127,8 +1132,8 @@ fun ActiveGroupCallScreen(
                                 phoneNumber = myPhone,
                                 displayName = currentUser?.displayName ?: "You",
                                 profilePicUrl = currentUser?.profilePictureUrl ?: "",
-                                role = "HOST",
-                                joinState = "JOINED",
+                                role = com.example.data.model.GroupParticipantRole.HOST.name,
+                                joinState = com.example.data.model.GroupJoinState.JOINED.name,
                                 isMuted = state.isMuted,
                                 isVideoEnabled = state.isVideoEnabled,
                                 filterConfigStr = state.filterConfig.toCompactString()
@@ -1337,7 +1342,7 @@ fun ActiveGroupCallScreen(
                             isActive = !state.filterConfig.isDefault,
                             activeColor = CyberMint.copy(alpha = 0.28f),
                             inactiveColor = Color.White.copy(alpha = 0.16f),
-                            onClick = { showFilterStudioSheet = true }
+                            onClick = { activeSheet = GroupCallSheetState.FilterStudio }
                         )
 
                         // Participants & Host Control Center
@@ -1348,7 +1353,7 @@ fun ActiveGroupCallScreen(
                                 isActive = state.waitingParticipants.isNotEmpty(),
                                 activeColor = SignalAmber.copy(alpha = 0.28f),
                                 inactiveColor = Color.White.copy(alpha = 0.16f),
-                                onClick = { showParticipantsSheet = true }
+                                onClick = { activeSheet = GroupCallSheetState.Participants }
                             )
                             if (state.waitingParticipants.isNotEmpty()) {
                                 Badge(
@@ -1378,7 +1383,7 @@ fun ActiveGroupCallScreen(
                             isActive = false,
                             activeColor = CyberMint.copy(alpha = 0.24f),
                             inactiveColor = Color.White.copy(alpha = 0.16f),
-                            onClick = { showInviteMoreModal = true }
+                            onClick = { activeSheet = GroupCallSheetState.InviteMore }
                         )
 
                         // End / Leave Call
@@ -1390,7 +1395,7 @@ fun ActiveGroupCallScreen(
                             inactiveColor = RedEndCall,
                             onClick = {
                                 if (isHost && state.joinedParticipants.size > 1) {
-                                    showHostEndConfirmSheet = true
+                                    activeSheet = GroupCallSheetState.HostEndConfirm
                                 } else {
                                     groupCallEngine.leaveGroupCall()
                                 }
@@ -1403,96 +1408,94 @@ fun ActiveGroupCallScreen(
 
         // ── OVERLAY SHEETS & MODALS ───────────────────────────────────────────────
 
-        if (showFilterStudioSheet) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.45f))
-                    .clickable { showFilterStudioSheet = false },
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                Box(modifier = Modifier.clickable(enabled = false) {}) {
-                    VideoFilterStudioSheet(
-                        filterConfig = state.filterConfig,
-                        onSelectPreset = { filterManager.selectPreset(it) },
-                        onUpdateConfig = { filterManager.updateConfig(it) },
-                        onReset = { filterManager.resetToDefault() },
-                        onDismiss = { showFilterStudioSheet = false }
-                    )
+        when (activeSheet) {
+            GroupCallSheetState.None -> Unit
+            GroupCallSheetState.FilterStudio -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .clickable { activeSheet = GroupCallSheetState.None },
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Box(modifier = Modifier.clickable(enabled = false) {}) {
+                        VideoFilterStudioSheet(
+                            filterConfig = state.filterConfig,
+                            onSelectPreset = { filterManager.selectPreset(it) },
+                            onUpdateConfig = { filterManager.updateConfig(it) },
+                            onReset = { filterManager.resetToDefault() },
+                            onDismiss = { activeSheet = GroupCallSheetState.None }
+                        )
+                    }
                 }
             }
-        }
-
-        if (showParticipantsSheet) {
-            GroupParticipantsHostSheet(
-                state = state,
-                isHost = isHost,
-                myPhone = myPhone,
-                groupCallEngine = groupCallEngine,
-                onInviteClick = {
-                    showParticipantsSheet = false
-                    showInviteMoreModal = true
-                },
-                onDismiss = { showParticipantsSheet = false }
-            )
-        }
-
-        if (showInviteMoreModal) {
-            StartGroupCallModal(
-                firebaseManager = firebaseManager,
-                isAddingToExistingCall = true,
-                existingTitle = room.title,
-                onStartGroupCall = { _, _, _, _ -> },
-                onAddParticipants = { newGuests ->
-                    groupCallEngine.inviteAdditionalParticipants(newGuests)
-                },
-                onDismiss = { showInviteMoreModal = false }
-            )
-        }
-
-        // Host Prompt: End Meeting for All vs. Leave Meeting
-        if (showHostEndConfirmSheet) {
-            AlertDialog(
-                onDismissRequest = { showHostEndConfirmSheet = false },
-                containerColor = Color(0xFF0F172A),
-                titleContentColor = Color.White,
-                textContentColor = Color.White.copy(alpha = 0.85f),
-                title = {
-                    Text(
-                        text = "End or Leave Conference?",
-                        fontFamily = SpaceGroteskFontFamily,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                text = {
-                    Text(
-                        text = "As the Host, you can either end the meeting for all participants or leave the meeting and automatically transfer Host privileges to the next participant.",
-                        fontFamily = SpaceGroteskFontFamily
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            showHostEndConfirmSheet = false
-                            groupCallEngine.endGroupCallForAll()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
-                    ) {
-                        Text("End Meeting for All", color = Color.White, fontWeight = FontWeight.Bold)
+            GroupCallSheetState.Participants -> {
+                GroupParticipantsHostSheet(
+                    state = state,
+                    isHost = isHost,
+                    myPhone = myPhone,
+                    groupCallEngine = groupCallEngine,
+                    onInviteClick = {
+                        activeSheet = GroupCallSheetState.InviteMore
+                    },
+                    onDismiss = { activeSheet = GroupCallSheetState.None }
+                )
+            }
+            GroupCallSheetState.InviteMore -> {
+                StartGroupCallModal(
+                    firebaseManager = firebaseManager,
+                    isAddingToExistingCall = true,
+                    existingTitle = room.title,
+                    onStartGroupCall = { _, _, _, _ -> },
+                    onAddParticipants = { newGuests ->
+                        groupCallEngine.inviteAdditionalParticipants(newGuests)
+                    },
+                    onDismiss = { activeSheet = GroupCallSheetState.None }
+                )
+            }
+            GroupCallSheetState.HostEndConfirm -> {
+                AlertDialog(
+                    onDismissRequest = { activeSheet = GroupCallSheetState.None },
+                    containerColor = Color(0xFF0F172A),
+                    titleContentColor = Color.White,
+                    textContentColor = Color.White.copy(alpha = 0.85f),
+                    title = {
+                        Text(
+                            text = "End or Leave Conference?",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "As the Host, you can either end the meeting for all participants or leave the meeting and automatically transfer Host privileges to the next participant.",
+                            fontFamily = SpaceGroteskFontFamily
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                activeSheet = GroupCallSheetState.None
+                                groupCallEngine.endGroupCallForAll()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = RedEndCall)
+                        ) {
+                            Text("End Meeting for All", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = {
+                                activeSheet = GroupCallSheetState.None
+                                groupCallEngine.leaveGroupCall()
+                            },
+                            border = BorderStroke(1.dp, CyberMint)
+                        ) {
+                            Text("Leave & Transfer Host", color = CyberMint, fontWeight = FontWeight.Bold)
+                        }
                     }
-                },
-                dismissButton = {
-                    OutlinedButton(
-                        onClick = {
-                            showHostEndConfirmSheet = false
-                            groupCallEngine.leaveGroupCall()
-                        },
-                        border = BorderStroke(1.dp, CyberMint)
-                    ) {
-                        Text("Leave & Transfer Host", color = CyberMint, fontWeight = FontWeight.Bold)
-                    }
-                }
-            )
+                )
+            }
         }
 
         // Participant Prompt when Host requests Unmute
@@ -1728,7 +1731,7 @@ private fun GroupParticipantTile(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (participant.role == "HOST") {
+                    if (participant.roleEnum == com.example.data.model.GroupParticipantRole.HOST) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "HOST",
@@ -1952,7 +1955,7 @@ private fun GroupParticipantsHostSheet(
                                             fontSize = 14.sp,
                                             color = Color.White
                                         )
-                                        if (p.role == "HOST") {
+                                        if (p.roleEnum == com.example.data.model.GroupParticipantRole.HOST) {
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Surface(
                                                 shape = RoundedCornerShape(6.dp),

@@ -61,6 +61,21 @@ import java.util.concurrent.Executors
 
 private const val TAG = "WhatsAppCameraScreen"
 
+private enum class CameraShutterPhase {
+    READY,
+    CAPTURING
+}
+
+private sealed interface FocusReticleState {
+    data object Hidden : FocusReticleState
+    data class Visible(val offset: Offset, val token: Long = System.nanoTime()) : FocusReticleState
+}
+
+private sealed interface ZoomHudState {
+    data object Hidden : ZoomHudState
+    data class Visible(val ratio: Float, val token: Long = System.nanoTime()) : ZoomHudState
+}
+
 @Composable
 fun WhatsAppCameraScreen(
     onPhotoCaptured: (File) -> Unit,
@@ -172,15 +187,15 @@ fun WhatsAppCameraScreen(
         return
     }
 
-    // Camera Configuration State
+    // Camera Configuration & Explicit UI State Machines
     var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
     var flashMode by remember { mutableStateOf(ImageCapture.FLASH_MODE_OFF) } // OFF, ON, AUTO
-    var isCapturing by remember { mutableStateOf(false) }
+    var shutterPhase by remember { mutableStateOf(CameraShutterPhase.READY) }
 
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var cameraInfo by remember { mutableStateOf<CameraInfo?>(null) }
     var zoomRatio by remember { mutableFloatStateOf(1f) }
-    var showZoomBadge by remember { mutableStateOf(false) }
+    var zoomHudState by remember { mutableStateOf<ZoomHudState>(ZoomHudState.Hidden) }
 
     // RULE 1: 3D AR Character Studio State — Strictly OFF by default
     var arState by remember { mutableStateOf(ArCharacterState(enabled = false)) }
@@ -199,8 +214,7 @@ fun WhatsAppCameraScreen(
     }
 
     // Tap to focus state
-    var focusRingOffset by remember { mutableStateOf<Offset?>(null) }
-    var showFocusRing by remember { mutableStateOf(false) }
+    var focusReticleState by remember { mutableStateOf<FocusReticleState>(FocusReticleState.Hidden) }
 
     // Lens flip animation
     var flipRotationTarget by remember { mutableFloatStateOf(0f) }
@@ -350,7 +364,7 @@ fun WhatsAppCameraScreen(
                             val newZoom = (currentZoom * zoom).coerceIn(1f, 8f)
                             zoomRatio = newZoom
                             cameraControl?.setZoomRatio(newZoom)
-                            showZoomBadge = true
+                            zoomHudState = ZoomHudState.Visible(newZoom)
                         }
                     }
                 }
@@ -362,8 +376,7 @@ fun WhatsAppCameraScreen(
                         val action = FocusMeteringAction.Builder(point).build()
                         cameraControl?.startFocusAndMetering(action)
 
-                        focusRingOffset = offset
-                        showFocusRing = true
+                        focusReticleState = FocusReticleState.Visible(offset)
                         view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     }
                 }
@@ -398,26 +411,27 @@ fun WhatsAppCameraScreen(
         }
 
         // Hide zoom badge after inactivity
-        LaunchedEffect(zoomRatio) {
-            if (showZoomBadge) {
+        LaunchedEffect(zoomHudState) {
+            if (zoomHudState is ZoomHudState.Visible) {
                 kotlinx.coroutines.delay(1800)
-                showZoomBadge = false
+                zoomHudState = ZoomHudState.Hidden
             }
         }
 
         // Hide focus ring after 1.2 seconds
-        LaunchedEffect(focusRingOffset) {
-            if (showFocusRing) {
+        LaunchedEffect(focusReticleState) {
+            if (focusReticleState is FocusReticleState.Visible) {
                 kotlinx.coroutines.delay(1200)
-                showFocusRing = false
+                focusReticleState = FocusReticleState.Hidden
             }
         }
 
         // Tap to Focus Ring Animation
-        val ringOffset = focusRingOffset
-        if (showFocusRing && ringOffset != null) {
+        val activeFocusReticle = focusReticleState as? FocusReticleState.Visible
+        if (activeFocusReticle != null) {
+            val ringOffset = activeFocusReticle.offset
             val ringScale by animateFloatAsState(
-                targetValue = if (showFocusRing) 1f else 1.3f,
+                targetValue = 1f,
                 animationSpec = tween(250),
                 label = "focusScale"
             )
@@ -547,8 +561,9 @@ fun WhatsAppCameraScreen(
         }
 
         // Center Floating Zoom Badge (Appears when pinching camera zoom)
+        val activeZoomHud = zoomHudState as? ZoomHudState.Visible
         AnimatedVisibility(
-            visible = showZoomBadge && !arState.enabled,
+            visible = activeZoomHud != null && !arState.enabled,
             enter = fadeIn() + scaleIn(),
             exit = fadeOut() + scaleOut(),
             modifier = Modifier.align(Alignment.Center)
@@ -560,7 +575,7 @@ fun WhatsAppCameraScreen(
                 modifier = Modifier.padding(bottom = 120.dp)
             ) {
                 Text(
-                    text = String.format(Locale.US, "%.1fX", zoomRatio),
+                    text = String.format(Locale.US, "%.1fX", activeZoomHud?.ratio ?: zoomRatio),
                     fontFamily = JetBrainsMonoFontFamily,
                     color = SignalAmber,
                     fontWeight = FontWeight.Bold,
@@ -654,11 +669,12 @@ fun WhatsAppCameraScreen(
                     }
 
                     // 2. Capture Shutter Button (Primary Action Highlight)
+                    val isCapturing = shutterPhase == CameraShutterPhase.CAPTURING
                     val scaleAnimation by animateFloatAsState(if (isCapturing) 0.92f else 1f, label = "shutterScale")
                     Surface(
                         onClick = {
-                            if (!isCapturing) {
-                                isCapturing = true
+                            if (shutterPhase == CameraShutterPhase.READY) {
+                                shutterPhase = CameraShutterPhase.CAPTURING
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
 
                                 val capturedArState = arState
@@ -690,16 +706,16 @@ fun WhatsAppCameraScreen(
                                                     Log.e(TAG, "3D Character photo composite error: ${e.message}", e)
                                                 }
                                             }
-                                            isCapturing = false
                                             ContextCompat.getMainExecutor(context).execute {
+                                                shutterPhase = CameraShutterPhase.READY
                                                 onPhotoCaptured(photoFile)
                                             }
                                         }
 
                                         override fun onError(exception: ImageCaptureException) {
-                                            isCapturing = false
                                             Log.e(TAG, "Photo capture failed: ${exception.message}", exception)
                                             ContextCompat.getMainExecutor(context).execute {
+                                                shutterPhase = CameraShutterPhase.READY
                                                 Toast.makeText(context, "Capture failed: ${exception.message}", Toast.LENGTH_SHORT).show()
                                             }
                                         }

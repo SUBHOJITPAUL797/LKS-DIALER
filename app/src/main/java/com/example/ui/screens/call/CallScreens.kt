@@ -2058,6 +2058,13 @@ fun ActiveAudioCallScreen(
     }
 }
 
+private enum class ActiveVideoOverlay {
+    NONE,
+    AUDIO_DIALOG,
+    FILTER_STUDIO,
+    MORE_MENU
+}
+
 @Composable
 fun ActiveVideoCallScreen(
     state: WebRtcState,
@@ -2072,15 +2079,13 @@ fun ActiveVideoCallScreen(
     val filterContext = androidx.compose.ui.platform.LocalContext.current
     val videoFilterManager = remember { VideoFilterManager.getInstance(filterContext) }
     val localFilterConfig by videoFilterManager.filterConfig.collectAsState()
-    var showFilterStudioSheet by remember { mutableStateOf(false) }
+    var activeOverlay by remember { mutableStateOf(ActiveVideoOverlay.NONE) }
 
     var endCallClicked by remember { mutableStateOf(false) }
     var areControlsVisible by remember { mutableStateOf(true) }
     var isControlsPinned by remember { mutableStateOf(false) }
     var lastInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var isSwapped by remember { mutableStateOf(false) }
-    var showMoreMenu by remember { mutableStateOf(false) }
-    var showAudioDialog by remember { mutableStateOf(false) }
     var isRemoteFirstFrameRendered by remember(state.remoteVideoTrack) { mutableStateOf(false) }
 
     // Auto-hide controls after 5.5s of inactivity unless pinned by the user
@@ -2131,11 +2136,11 @@ fun ActiveVideoCallScreen(
         label = "pulseAlpha"
     )
 
-    if (showAudioDialog) {
+    if (activeOverlay == ActiveVideoOverlay.AUDIO_DIALOG) {
         AudioOutputSelectionDialog(
             state = state,
             onSelectDevice = { webRtcEngine.selectAudioDevice(it) },
-            onDismiss = { showAudioDialog = false }
+            onDismiss = { activeOverlay = ActiveVideoOverlay.NONE }
         )
     }
 
@@ -2640,7 +2645,7 @@ fun ActiveVideoCallScreen(
                         IconButton(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
-                                showFilterStudioSheet = true
+                                activeOverlay = ActiveVideoOverlay.FILTER_STUDIO
                             },
                             modifier = Modifier
                                 .size(44.dp)
@@ -2722,7 +2727,7 @@ fun ActiveVideoCallScreen(
                             IconButton(
                                 onClick = {
                                     lastInteractionTime = System.currentTimeMillis()
-                                    showMoreMenu = true
+                                    activeOverlay = ActiveVideoOverlay.MORE_MENU
                                 },
                                 modifier = Modifier
                                     .size(44.dp)
@@ -2739,8 +2744,12 @@ fun ActiveVideoCallScreen(
                             }
 
                             DropdownMenu(
-                                expanded = showMoreMenu,
-                                onDismissRequest = { showMoreMenu = false },
+                                expanded = activeOverlay == ActiveVideoOverlay.MORE_MENU,
+                                onDismissRequest = {
+                                    if (activeOverlay == ActiveVideoOverlay.MORE_MENU) {
+                                        activeOverlay = ActiveVideoOverlay.NONE
+                                    }
+                                },
                                 modifier = Modifier.background(Color(0xFF1E293B))
                             ) {
                                 DropdownMenuItem(
@@ -2753,8 +2762,7 @@ fun ActiveVideoCallScreen(
                                         )
                                     },
                                     onClick = {
-                                        showMoreMenu = false
-                                        showFilterStudioSheet = true
+                                        activeOverlay = ActiveVideoOverlay.FILTER_STUDIO
                                     }
                                 )
                                 if (onAddPersonToGroup != null) {
@@ -2768,7 +2776,7 @@ fun ActiveVideoCallScreen(
                                             )
                                         },
                                         onClick = {
-                                            showMoreMenu = false
+                                            activeOverlay = ActiveVideoOverlay.NONE
                                             onAddPersonToGroup()
                                         }
                                     )
@@ -2783,7 +2791,7 @@ fun ActiveVideoCallScreen(
                                         )
                                     },
                                     onClick = {
-                                        showMoreMenu = false
+                                        activeOverlay = ActiveVideoOverlay.NONE
                                         isControlsPinned = !isControlsPinned
                                         lastInteractionTime = System.currentTimeMillis()
                                     }
@@ -2798,7 +2806,7 @@ fun ActiveVideoCallScreen(
                                         )
                                     },
                                     onClick = {
-                                        showMoreMenu = false
+                                        activeOverlay = ActiveVideoOverlay.NONE
                                         if (state.isOnHold) {
                                             if (state.isHeldLocally) webRtcEngine.putCallOnHold(false)
                                         } else {
@@ -2816,7 +2824,7 @@ fun ActiveVideoCallScreen(
                                         )
                                     },
                                     onClick = {
-                                        showMoreMenu = false
+                                        activeOverlay = ActiveVideoOverlay.NONE
                                         val started = webRtcEngine.toggleCallRecording()
                                         android.widget.Toast.makeText(
                                             context,
@@ -2836,7 +2844,7 @@ fun ActiveVideoCallScreen(
                                             )
                                         },
                                         onClick = {
-                                            showMoreMenu = false
+                                            activeOverlay = ActiveVideoOverlay.NONE
                                             (context.findActivity() as? com.example.MainActivity)?.enterPipMode()
                                         }
                                     )
@@ -3058,7 +3066,7 @@ fun ActiveVideoCallScreen(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
                                 webRtcEngine.refreshAvailableAudioDevices()
-                                showAudioDialog = true
+                                activeOverlay = ActiveVideoOverlay.AUDIO_DIALOG
                             },
                             modifier = Modifier
                                 .weight(1f)
@@ -3081,7 +3089,7 @@ fun ActiveVideoCallScreen(
                         Surface(
                             onClick = {
                                 lastInteractionTime = System.currentTimeMillis()
-                                showFilterStudioSheet = true
+                                activeOverlay = ActiveVideoOverlay.FILTER_STUDIO
                             },
                             modifier = Modifier
                                 .weight(1f)
@@ -3132,13 +3140,13 @@ fun ActiveVideoCallScreen(
         }
 
         // Video Filter & Studio Lighting Bottom Drawer inside 1-to-1 Video Call
-        if (showFilterStudioSheet) {
+        if (activeOverlay == ActiveVideoOverlay.FILTER_STUDIO) {
             Box(
                 modifier = Modifier
                     .zIndex(50f)
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.45f))
-                    .clickable { showFilterStudioSheet = false },
+                    .clickable { activeOverlay = ActiveVideoOverlay.NONE },
                 contentAlignment = Alignment.BottomCenter
             ) {
                 Box(modifier = Modifier.clickable(enabled = false) {}) {
@@ -3147,7 +3155,7 @@ fun ActiveVideoCallScreen(
                         onSelectPreset = { videoFilterManager.selectPreset(it) },
                         onUpdateConfig = { videoFilterManager.updateConfig(it) },
                         onReset = { videoFilterManager.resetToDefault() },
-                        onDismiss = { showFilterStudioSheet = false }
+                        onDismiss = { activeOverlay = ActiveVideoOverlay.NONE }
                     )
                 }
             }

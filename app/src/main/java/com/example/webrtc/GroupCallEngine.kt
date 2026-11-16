@@ -38,16 +38,34 @@ data class GroupCallUiState(
     val statusBannerText: String? = null
 ) {
     val isActive: Boolean
-        get() = room != null && room.status == "ACTIVE"
+        get() = room != null && room.roomStatus == GroupRoomStatus.ACTIVE
 
     val joinedParticipants: List<GroupParticipantDto>
-        get() = participants.filter { it.joinState == "JOINED" }
+        get() = participants.filter { it.joinStateEnum == GroupJoinState.JOINED }
 
     val waitingParticipants: List<GroupParticipantDto>
-        get() = participants.filter { it.joinState == "WAITING_LOBBY" }
+        get() = participants.filter { it.joinStateEnum == GroupJoinState.WAITING_LOBBY }
 
     val invitedParticipants: List<GroupParticipantDto>
-        get() = participants.filter { it.joinState == "INVITED" }
+        get() = participants.filter { it.joinStateEnum == GroupJoinState.INVITED }
+}
+
+enum class PeerLinkStage {
+    INITIALIZING,
+    OFFER_PUBLISHED,
+    REMOTE_SDP_SET,
+    DISPOSED
+}
+
+private class PeerLinkSession(
+    val remotePhone: String,
+    val peerConnection: PeerConnection
+) {
+    @Volatile
+    var stage: PeerLinkStage = PeerLinkStage.INITIALIZING
+    var listener: ListenerRegistration? = null
+    val seenCandidates: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    val pendingCandidates: MutableList<IceCandidate> = mutableListOf()
 }
 
 class GroupCallEngine(
@@ -83,11 +101,7 @@ class GroupCallEngine(
     private var videoCapturer: CameraVideoCapturer? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
-    private val peerConnections = ConcurrentHashMap<String, PeerConnection>()
-    private val peerLinkListeners = ConcurrentHashMap<String, ListenerRegistration>()
-    private val processedCandidates = ConcurrentHashMap<String, MutableSet<String>>()
-    private val remoteSdpSetPeers = ConcurrentHashMap.newKeySet<String>()
-    private val pendingCandidatesByPeer = ConcurrentHashMap<String, MutableList<IceCandidate>>()
+    private val peerSessions = ConcurrentHashMap<String, PeerLinkSession>()
 
     private var roomListener: ListenerRegistration? = null
     private var participantsListener: ListenerRegistration? = null
@@ -179,7 +193,7 @@ class GroupCallEngine(
     private fun attachIncomingGroupInviteListener(myPhone: String) {
         incomingInvitesListener?.remove()
         incomingInvitesListener = groupCallsCollection()
-            .whereEqualTo("status", "ACTIVE")
+            .whereEqualTo("status", GroupRoomStatus.ACTIVE.name)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) return@addSnapshotListener
                 val currentActiveRoomId = _state.value.room?.roomId
@@ -260,7 +274,7 @@ class GroupCallEngine(
             hostName = me.displayName.ifBlank { myNormPhone },
             coHostPhones = emptyList(),
             callType = callType,
-            status = "ACTIVE",
+            status = GroupRoomStatus.ACTIVE.name,
             isLocked = false,
             waitingRoomEnabled = waitingRoomEnabled,
             spotlightPhone = null,
@@ -273,8 +287,8 @@ class GroupCallEngine(
             phoneNumber = myNormPhone,
             displayName = me.displayName.ifBlank { myNormPhone },
             profilePicUrl = me.profilePictureUrl,
-            role = "HOST",
-            joinState = "JOINED",
+            role = GroupParticipantRole.HOST.name,
+            joinState = GroupJoinState.JOINED.name,
             isMuted = false,
             isVideoEnabled = callType == CallType.VIDEO,
             filterConfigStr = filterManager.filterConfig.value.toCompactString(),
@@ -307,8 +321,8 @@ class GroupCallEngine(
                     phoneNumber = guest.phoneNumber,
                     displayName = guest.name.ifBlank { guest.phoneNumber },
                     profilePicUrl = guest.profilePictureUrl,
-                    role = "PARTICIPANT",
-                    joinState = "INVITED",
+                    role = GroupParticipantRole.PARTICIPANT.name,
+                    joinState = GroupJoinState.INVITED.name,
                     isMuted = false,
                     isVideoEnabled = callType == CallType.VIDEO,
                     joinedAt = 0L,
@@ -344,8 +358,8 @@ class GroupCallEngine(
                 phoneNumber = guest.phoneNumber,
                 displayName = guest.name.ifBlank { guest.phoneNumber },
                 profilePicUrl = guest.profilePictureUrl,
-                role = "PARTICIPANT",
-                joinState = "INVITED",
+                role = GroupParticipantRole.PARTICIPANT.name,
+                joinState = GroupJoinState.INVITED.name,
                 isMuted = false,
                 isVideoEnabled = room.callType == CallType.VIDEO,
                 joinedAt = 0L,
@@ -367,9 +381,9 @@ class GroupCallEngine(
         val now = System.currentTimeMillis()
 
         val initialJoinState = if (invite.waitingRoomEnabled && normHostPhone != myNormPhone) {
-            "WAITING_LOBBY"
+            GroupJoinState.WAITING_LOBBY
         } else {
-            "JOINED"
+            GroupJoinState.JOINED
         }
 
         prepareLocalMedia(enableVideo = invite.callType == CallType.VIDEO)
@@ -378,8 +392,8 @@ class GroupCallEngine(
             phoneNumber = myNormPhone,
             displayName = me.displayName.ifBlank { myNormPhone },
             profilePicUrl = me.profilePictureUrl,
-            role = if (normHostPhone == myNormPhone) "HOST" else "PARTICIPANT",
-            joinState = initialJoinState,
+            role = if (normHostPhone == myNormPhone) GroupParticipantRole.HOST.name else GroupParticipantRole.PARTICIPANT.name,
+            joinState = initialJoinState.name,
             isMuted = false,
             isVideoEnabled = invite.callType == CallType.VIDEO,
             filterConfigStr = filterManager.filterConfig.value.toCompactString(),
@@ -390,7 +404,7 @@ class GroupCallEngine(
         _state.value = _state.value.copy(
             room = invite,
             incomingInviteRoom = null,
-            isInWaitingLobby = initialJoinState == "WAITING_LOBBY",
+            isInWaitingLobby = initialJoinState == GroupJoinState.WAITING_LOBBY,
             isMuted = false,
             isVideoEnabled = invite.callType == CallType.VIDEO,
             isSpeakerOn = true,
@@ -398,7 +412,7 @@ class GroupCallEngine(
             callDurationSeconds = 0
         )
 
-        if (initialJoinState == "JOINED") {
+        if (initialJoinState == GroupJoinState.JOINED) {
             startDurationTimer()
         }
 
@@ -422,7 +436,7 @@ class GroupCallEngine(
                 .document(invite.roomId)
                 .collection("participants")
                 .document(myNormPhone)
-                .update("joinState", "DECLINED")
+                .update("joinState", GroupJoinState.DECLINED.name)
             firebaseManager.logCall(
                 direction = CallDirection.INCOMING,
                 otherPartyNumber = invite.hostPhone,
@@ -442,7 +456,7 @@ class GroupCallEngine(
         groupCallsCollection().document(roomId).get()
             .addOnSuccessListener { doc ->
                 val room = doc.toObject(GroupCallRoomDto::class.java) ?: return@addOnSuccessListener
-                if (room.status != "ACTIVE") return@addOnSuccessListener
+                if (room.roomStatus != GroupRoomStatus.ACTIVE) return@addOnSuccessListener
                 _state.value = _state.value.copy(incomingInviteRoom = room)
                 answerIncomingGroupInvite()
             }
@@ -509,7 +523,7 @@ class GroupCallEngine(
             if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
             val room = snapshot.toObject(GroupCallRoomDto::class.java) ?: return@addSnapshotListener
 
-            if (room.status == "ENDED") {
+            if (room.roomStatus == GroupRoomStatus.ENDED) {
                 endLocalSessionImmediate("Host ended the meeting for all")
                 return@addSnapshotListener
             }
@@ -544,34 +558,33 @@ class GroupCallEngine(
                 val allParticipants = snapshot.documents.mapNotNull {
                     it.toObject(GroupParticipantDto::class.java)
                 }.sortedWith(
-                    compareBy<GroupParticipantDto> {
-                        when (it.role) {
-                            "HOST" -> 0
-                            "CO_HOST" -> 1
-                            else -> 2
-                        }
-                    }.thenBy { it.joinedAt }
+                    compareBy<GroupParticipantDto> { it.roleEnum.sortPriority }
+                        .thenBy { it.joinedAt }
                 )
 
                 val meDto = allParticipants.find { it.phoneNumber == myPhone }
                 if (meDto != null) {
-                    if (meDto.joinState == "REMOVED") {
-                        endLocalSessionImmediate("Removed from meeting by Host")
-                        return@addSnapshotListener
-                    }
-                    if (meDto.joinState == "DECLINED") {
-                        endLocalSessionImmediate("Entry declined by Host")
-                        return@addSnapshotListener
-                    }
-
-                    val wasInLobby = _state.value.isInWaitingLobby
-                    val nowJoined = meDto.joinState == "JOINED"
-                    if (wasInLobby && nowJoined) {
-                        _state.value = _state.value.copy(
-                            isInWaitingLobby = false,
-                            statusBannerText = "Admitted by Host"
-                        )
-                        startDurationTimer()
+                    when (meDto.joinStateEnum) {
+                        GroupJoinState.REMOVED -> {
+                            endLocalSessionImmediate("Removed from meeting by Host")
+                            return@addSnapshotListener
+                        }
+                        GroupJoinState.DECLINED -> {
+                            endLocalSessionImmediate("Entry declined by Host")
+                            return@addSnapshotListener
+                        }
+                        GroupJoinState.JOINED -> {
+                            if (_state.value.isInWaitingLobby) {
+                                _state.value = _state.value.copy(
+                                    isInWaitingLobby = false,
+                                    statusBannerText = "Admitted by Host"
+                                )
+                                startDurationTimer()
+                            }
+                        }
+                        GroupJoinState.INVITED,
+                        GroupJoinState.WAITING_LOBBY,
+                        GroupJoinState.LEFT -> Unit
                     }
 
                     // Host remote mute enforcement
@@ -603,19 +616,19 @@ class GroupCallEngine(
                 _state.value = _state.value.copy(participants = allParticipants)
 
                 // If we are JOINED, synchronize peer connections with all other JOINED participants
-                if (meDto?.joinState == "JOINED") {
+                if (meDto?.joinStateEnum == GroupJoinState.JOINED) {
                     val joinedOthers = allParticipants
-                        .filter { it.joinState == "JOINED" && it.phoneNumber != myPhone }
+                        .filter { it.joinStateEnum == GroupJoinState.JOINED && it.phoneNumber != myPhone }
                         .map { it.phoneNumber }
                         .toSet()
 
                     // Remove disconnected peers
-                    val stalePeers = peerConnections.keys.filter { !joinedOthers.contains(it) }
+                    val stalePeers = peerSessions.keys.filter { !joinedOthers.contains(it) }
                     stalePeers.forEach { removePeerConnection(it) }
 
                     // Establish peer connections for newly joined peers
                     joinedOthers.forEach { remotePhone ->
-                        if (!peerConnections.containsKey(remotePhone)) {
+                        if (!peerSessions.containsKey(remotePhone)) {
                             establishPeerLink(roomId, myPhone, remotePhone)
                         }
                     }
@@ -674,9 +687,8 @@ class GroupCallEngine(
         localAudioTrack?.let { pc.addTrack(it, listOf("GRP_STREAM_$myPhone")) }
         localVideoTrack?.let { pc.addTrack(it, listOf("GRP_STREAM_$myPhone")) }
 
-        peerConnections[remotePhone] = pc
-        processedCandidates[remotePhone] = ConcurrentHashMap.newKeySet()
-        pendingCandidatesByPeer[remotePhone] = mutableListOf()
+        val session = PeerLinkSession(remotePhone = remotePhone, peerConnection = pc)
+        peerSessions[remotePhone] = session
 
         if (isInitiator) {
             val linkDto = GroupPeerLinkDto(
@@ -687,14 +699,18 @@ class GroupCallEngine(
                 updatedAt = System.currentTimeMillis()
             )
             linkRef.set(linkDto).addOnSuccessListener {
+                if (session.stage == PeerLinkStage.DISPOSED) return@addOnSuccessListener
                 val constraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
                 }
                 pc.createOffer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {
-                        if (desc == null) return
+                        if (desc == null || session.stage == PeerLinkStage.DISPOSED) return
                         pc.setLocalDescription(SimpleSdpObserver(), desc)
+                        if (session.stage == PeerLinkStage.INITIALIZING) {
+                            session.stage = PeerLinkStage.OFFER_PUBLISHED
+                        }
                         linkRef.update("offerSdp", desc.description)
                     }
                     override fun onSetSuccess() {}
@@ -705,22 +721,25 @@ class GroupCallEngine(
         }
 
         val listener = linkRef.addSnapshotListener { snapshot, error ->
-            if (error != null || snapshot == null || !snapshot.exists()) return@addSnapshotListener
+            if (error != null || snapshot == null || !snapshot.exists() || session.stage == PeerLinkStage.DISPOSED) {
+                return@addSnapshotListener
+            }
             val link = snapshot.toObject(GroupPeerLinkDto::class.java) ?: return@addSnapshotListener
 
-            if (!isInitiator && !link.offerSdp.isNullOrBlank() && !remoteSdpSetPeers.contains(remotePhone)) {
-                remoteSdpSetPeers.add(remotePhone)
+            if (!isInitiator && !link.offerSdp.isNullOrBlank() && session.stage < PeerLinkStage.REMOTE_SDP_SET) {
+                session.stage = PeerLinkStage.REMOTE_SDP_SET
                 val offer = SessionDescription(SessionDescription.Type.OFFER, link.offerSdp)
                 pc.setRemoteDescription(object : SdpObserver {
                     override fun onSetSuccess() {
-                        flushPendingCandidates(remotePhone, pc)
+                        if (session.stage == PeerLinkStage.DISPOSED) return
+                        flushPendingCandidates(session)
                         val constraints = MediaConstraints().apply {
                             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
                             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
                         }
                         pc.createAnswer(object : SdpObserver {
                             override fun onCreateSuccess(answerDesc: SessionDescription?) {
-                                if (answerDesc == null) return
+                                if (answerDesc == null || session.stage == PeerLinkStage.DISPOSED) return
                                 pc.setLocalDescription(SimpleSdpObserver(), answerDesc)
                                 linkRef.update("answerSdp", answerDesc.description)
                             }
@@ -733,12 +752,13 @@ class GroupCallEngine(
                     override fun onCreateFailure(p0: String?) {}
                     override fun onSetFailure(p0: String?) {}
                 }, offer)
-            } else if (isInitiator && !link.answerSdp.isNullOrBlank() && !remoteSdpSetPeers.contains(remotePhone)) {
-                remoteSdpSetPeers.add(remotePhone)
+            } else if (isInitiator && !link.answerSdp.isNullOrBlank() && session.stage < PeerLinkStage.REMOTE_SDP_SET) {
+                session.stage = PeerLinkStage.REMOTE_SDP_SET
                 val answer = SessionDescription(SessionDescription.Type.ANSWER, link.answerSdp)
                 pc.setRemoteDescription(object : SdpObserver {
                     override fun onSetSuccess() {
-                        flushPendingCandidates(remotePhone, pc)
+                        if (session.stage == PeerLinkStage.DISPOSED) return
+                        flushPendingCandidates(session)
                     }
                     override fun onCreateSuccess(p0: SessionDescription?) {}
                     override fun onCreateFailure(p0: String?) {}
@@ -747,9 +767,8 @@ class GroupCallEngine(
             }
 
             val remoteCands = if (isInitiator) link.responderCandidates else link.initiatorCandidates
-            val seenSet = processedCandidates[remotePhone] ?: return@addSnapshotListener
             remoteCands.forEach { raw ->
-                if (seenSet.add(raw)) {
+                if (session.seenCandidates.add(raw)) {
                     val parts = raw.split("|", limit = 3)
                     if (parts.size == 3) {
                         val candidate = IceCandidate(
@@ -757,43 +776,47 @@ class GroupCallEngine(
                             parts[1].toIntOrNull() ?: 0,
                             parts[2]
                         )
-                        if (remoteSdpSetPeers.contains(remotePhone)) {
+                        if (session.stage == PeerLinkStage.REMOTE_SDP_SET) {
                             try {
                                 pc.addIceCandidate(candidate)
                             } catch (_: Throwable) {}
                         } else {
-                            pendingCandidatesByPeer[remotePhone]?.add(candidate)
+                            synchronized(session.pendingCandidates) {
+                                session.pendingCandidates.add(candidate)
+                            }
                         }
                     }
                 }
             }
         }
-        peerLinkListeners[remotePhone] = listener
+        session.listener = listener
     }
 
-    private fun flushPendingCandidates(remotePhone: String, pc: PeerConnection) {
-        val list = pendingCandidatesByPeer[remotePhone] ?: return
-        val copy = ArrayList(list)
-        list.clear()
+    private fun flushPendingCandidates(session: PeerLinkSession) {
+        val copy = synchronized(session.pendingCandidates) {
+            ArrayList(session.pendingCandidates).also { session.pendingCandidates.clear() }
+        }
         copy.forEach { cand ->
             try {
-                pc.addIceCandidate(cand)
+                session.peerConnection.addIceCandidate(cand)
             } catch (_: Throwable) {}
         }
     }
 
     private fun removePeerConnection(remotePhone: String) {
-        peerLinkListeners.remove(remotePhone)?.remove()
-        processedCandidates.remove(remotePhone)
-        pendingCandidatesByPeer.remove(remotePhone)
-        remoteSdpSetPeers.remove(remotePhone)
+        val session = peerSessions.remove(remotePhone)
+        session?.stage = PeerLinkStage.DISPOSED
+        session?.listener?.remove()
+        synchronized(session?.pendingCandidates ?: Any()) {
+            session?.pendingCandidates?.clear()
+        }
 
         // Detach remote video track from UI state first (0ms) so SurfaceViewRenderer removes sink safely
         val updatedTracks = _state.value.remoteVideoTracks.toMutableMap()
         updatedTracks.remove(remotePhone)
         _state.value = _state.value.copy(remoteVideoTracks = updatedTracks)
 
-        val pc = peerConnections.remove(remotePhone)
+        val pc = session?.peerConnection
         if (pc != null) {
             mediaTeardownScope.launch {
                 delay(90)
@@ -850,9 +873,9 @@ class GroupCallEngine(
             ensureFactory()?.let { factory ->
                 startLocalCamera(factory)
                 localVideoTrack?.let { newTrack ->
-                    peerConnections.forEach { (_, pc) ->
+                    peerSessions.forEach { (_, session) ->
                         try {
-                            pc.addTrack(newTrack, listOf("GRP_STREAM_$myPhone"))
+                            session.peerConnection.addTrack(newTrack, listOf("GRP_STREAM_$myPhone"))
                         } catch (_: Throwable) {}
                     }
                 }
@@ -916,7 +939,7 @@ class GroupCallEngine(
             .collection("participants").document(phoneNumber)
             .update(
                 mapOf(
-                    "joinState" to "JOINED",
+                    "joinState" to GroupJoinState.JOINED.name,
                     "joinedAt" to System.currentTimeMillis()
                 )
             )
@@ -929,7 +952,7 @@ class GroupCallEngine(
         _state.value.waitingParticipants.forEach { waiting ->
             groupCallsCollection().document(roomId)
                 .collection("participants").document(waiting.phoneNumber)
-                .update(mapOf("joinState" to "JOINED", "joinedAt" to now))
+                .update(mapOf("joinState" to GroupJoinState.JOINED.name, "joinedAt" to now))
         }
     }
 
@@ -938,7 +961,7 @@ class GroupCallEngine(
         val roomId = _state.value.room?.roomId ?: return
         groupCallsCollection().document(roomId)
             .collection("participants").document(phoneNumber)
-            .update("joinState", "DECLINED")
+            .update("joinState", GroupJoinState.DECLINED.name)
     }
 
     fun hostMuteParticipant(phoneNumber: String) {
@@ -1018,8 +1041,8 @@ class GroupCallEngine(
 
         val roomRef = groupCallsCollection().document(room.roomId)
         roomRef.update(mapOf("hostPhone" to newHostPhone, "hostName" to newHostName))
-        roomRef.collection("participants").document(myPhone).update("role", "PARTICIPANT")
-        roomRef.collection("participants").document(newHostPhone).update("role", "HOST")
+        roomRef.collection("participants").document(myPhone).update("role", GroupParticipantRole.PARTICIPANT.name)
+        roomRef.collection("participants").document(newHostPhone).update("role", GroupParticipantRole.HOST.name)
     }
 
     fun hostRemoveParticipant(phoneNumber: String) {
@@ -1027,7 +1050,7 @@ class GroupCallEngine(
         val roomId = _state.value.room?.roomId ?: return
         groupCallsCollection().document(roomId)
             .collection("participants").document(phoneNumber)
-            .update("joinState", "REMOVED")
+            .update("joinState", GroupJoinState.REMOVED.name)
     }
 
     /**
@@ -1050,11 +1073,11 @@ class GroupCallEngine(
 
         if (myPhone.isNotBlank()) {
             roomRef.collection("participants").document(myPhone)
-                .update("joinState", "LEFT")
+                .update("joinState", GroupJoinState.LEFT.name)
         }
 
         if (remainingJoined.isEmpty()) {
-            roomRef.update(mapOf("status" to "ENDED", "endedAt" to System.currentTimeMillis()))
+            roomRef.update(mapOf("status" to GroupRoomStatus.ENDED.name, "endedAt" to System.currentTimeMillis()))
         } else if (ContactsHelper.normalizePhoneNumber(room.hostPhone) == myPhone) {
             val nextHost = remainingJoined.first()
             roomRef.update(
@@ -1064,7 +1087,7 @@ class GroupCallEngine(
                 )
             )
             roomRef.collection("participants").document(nextHost.phoneNumber)
-                .update("role", "HOST")
+                .update("role", GroupParticipantRole.HOST.name)
         }
 
         firebaseManager.logCall(
@@ -1088,7 +1111,7 @@ class GroupCallEngine(
         val duration = _state.value.callDurationSeconds
         declinedOrLeftRoomIds.add(room.roomId)
         groupCallsCollection().document(room.roomId)
-            .update(mapOf("status" to "ENDED", "endedAt" to System.currentTimeMillis()))
+            .update(mapOf("status" to GroupRoomStatus.ENDED.name, "endedAt" to System.currentTimeMillis()))
 
         firebaseManager.logCall(
             direction = CallDirection.OUTGOING,
@@ -1128,14 +1151,16 @@ class GroupCallEngine(
         participantsListener?.remove()
         participantsListener = null
 
-        peerLinkListeners.values.forEach { it.remove() }
-        peerLinkListeners.clear()
-        processedCandidates.clear()
-        pendingCandidatesByPeer.clear()
-        remoteSdpSetPeers.clear()
-
-        val pcsToDispose = ArrayList(peerConnections.values)
-        peerConnections.clear()
+        val sessions = ArrayList(peerSessions.values)
+        peerSessions.clear()
+        sessions.forEach { session ->
+            session.stage = PeerLinkStage.DISPOSED
+            session.listener?.remove()
+            synchronized(session.pendingCandidates) {
+                session.pendingCandidates.clear()
+            }
+        }
+        val pcsToDispose = sessions.map { it.peerConnection }
 
         val capturerToStop = videoCapturer
         val helperToDispose = surfaceTextureHelper

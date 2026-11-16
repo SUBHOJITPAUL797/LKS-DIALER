@@ -89,18 +89,22 @@ fun ContactsScreen(
     var showSwipeHint by remember { mutableStateOf(false) }
     val demoSwipeOffset = remember { Animatable(0f) }
 
-    // Per-Contact Ringtone Picker State
-    var ringtoneModalContact by remember { mutableStateOf<Pair<String, String>?>(null) } // Pair(Name, PhoneNumber)
+    // Overlays (Per-Contact Ringtone Sheet, Song Trimmer, Dual SIM Picker)
+    var overlay by remember { mutableStateOf<ContactsOverlay>(ContactsOverlay.None) }
     var contactRingtoneState by remember { mutableStateOf<Pair<Uri, String>?>(null) }
     var isPreviewPlaying by remember { mutableStateOf(false) }
 
-    // Dual SIM Picker Modal State
     val activeSims = remember { SimManager.getActiveSimCards(context) }
-    var simPickerContact by remember { mutableStateOf<Triple<String, String, Boolean>?>(null) } // Triple(Name, PhoneNumber, isLks)
 
-    LaunchedEffect(ringtoneModalContact) {
-        ringtoneModalContact?.let {
-            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, it.second)
+    val activeRingtoneContact = when (val current = overlay) {
+        is ContactsOverlay.RingtoneSheet -> current.name to current.phone
+        is ContactsOverlay.SongTrimmer -> current.contactName to current.contactPhone
+        else -> null
+    }
+
+    LaunchedEffect(activeRingtoneContact) {
+        activeRingtoneContact?.let { (_, phone) ->
+            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, phone)
         } ?: run {
             LksRingtoneManager.stopPreview()
             isPreviewPlaying = false
@@ -119,7 +123,7 @@ fun ContactsScreen(
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
             val pickedUri = result.data?.getParcelableExtra<Uri>(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
-            val contact = ringtoneModalContact
+            val contact = activeRingtoneContact
             if (pickedUri != null && contact != null) {
                 LksRingtoneManager.setContactRingtone(context, contact.second, pickedUri)
                 contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
@@ -128,19 +132,18 @@ fun ContactsScreen(
         }
     }
 
-    // Song Trimmer Dialog state — opened after user picks a song file
-    var trimmerUri by remember { mutableStateOf<Uri?>(null) }
-    var trimmerSongTitle by remember { mutableStateOf("") }
-    var trimmerTarget by remember { mutableStateOf("contact") } // "contact" or "app"
-
     // Audio File / Song Picker for Selected Contact — opens trimmer
     val contactAudioFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { pickedUri ->
-        if (pickedUri != null && ringtoneModalContact != null) {
-            trimmerTarget = "contact"
-            trimmerUri = pickedUri
-            trimmerSongTitle = LksRingtoneManager.getRingtoneTitle(context, pickedUri)
+        val contact = activeRingtoneContact
+        if (pickedUri != null && contact != null) {
+            overlay = ContactsOverlay.SongTrimmer(
+                uri = pickedUri,
+                songTitle = LksRingtoneManager.getRingtoneTitle(context, pickedUri),
+                contactName = contact.first,
+                contactPhone = contact.second
+            )
         }
     }
 
@@ -656,7 +659,7 @@ fun ContactsScreen(
                             },
                             onRingtoneClick = {
                                 lastInteractionTime = System.currentTimeMillis()
-                                ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
+                                overlay = ContactsOverlay.RingtoneSheet(contact.name, contact.phoneNumber)
                             },
                             onOpenChat = onOpenChat?.let { fn -> { fn(contact.phoneNumber, contact.name) } }
                         )
@@ -679,11 +682,11 @@ fun ContactsScreen(
                             onInvite = { shareInvite(contact) },
                             onRingtoneClick = {
                                 lastInteractionTime = System.currentTimeMillis()
-                                ringtoneModalContact = Pair(contact.name, contact.phoneNumber)
+                                overlay = ContactsOverlay.RingtoneSheet(contact.name, contact.phoneNumber)
                             },
                             onCellularCall = {
                                 if (activeSims.size > 1) {
-                                    simPickerContact = Triple(contact.name, contact.phoneNumber, false)
+                                    overlay = ContactsOverlay.SimPicker(contact.name, contact.phoneNumber, false)
                                 } else {
                                     val targetSim = activeSims.firstOrNull()
                                     SimManager.placeCellularCall(context, contact.phoneNumber, targetSim)
@@ -698,21 +701,20 @@ fun ContactsScreen(
             }
         }
 
-        // Contact Custom Ringtone Bottom Sheet
-        ringtoneModalContact?.let { contactPair ->
-            // Look up profile picture from synced contacts list and registeredUsers with robust number matching
+        // Contact Custom Ringtone Bottom Sheet (stays visible behind SongTrimmer)
+        activeRingtoneContact?.let { (contactName, contactPhone) ->
             val contactDto = syncedContacts.find {
-                it.phoneNumber == contactPair.second || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPair.second)
+                it.phoneNumber == contactPhone || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPhone)
             }
             val regUser = registeredUsers.find {
-                it.phoneNumber == contactPair.second || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPair.second)
+                it.phoneNumber == contactPhone || com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, contactPhone)
             }
             val profilePic = contactDto?.profilePictureUrl?.takeIf { it.isNotBlank() }
-                             ?: regUser?.profilePictureUrl ?: ""
+                ?: regUser?.profilePictureUrl ?: ""
 
             ContactRingtoneBottomSheet(
-                contactName = contactPair.first,
-                phoneNumber = contactPair.second,
+                contactName = contactName,
+                phoneNumber = contactPhone,
                 profilePicBase64 = profilePic,
                 customRingtone = contactRingtoneState,
                 isPreviewPlaying = isPreviewPlaying,
@@ -731,7 +733,7 @@ fun ContactsScreen(
                     val currentUri = contactRingtoneState?.first ?: LksRingtoneManager.getAppRingtone(context).first
                     val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
                         putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_RINGTONE)
-                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Ringtone for ${contactPair.first}")
+                        putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Ringtone for $contactName")
                         putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, currentUri)
                         putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
                         putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
@@ -744,67 +746,81 @@ fun ContactsScreen(
                 onResetToDefault = {
                     LksRingtoneManager.stopPreview()
                     isPreviewPlaying = false
-                    LksRingtoneManager.clearContactRingtone(context, contactPair.second)
+                    LksRingtoneManager.clearContactRingtone(context, contactPhone)
                     contactRingtoneState = null
                     Toast.makeText(context, "Reverted to App Default Ringtone", Toast.LENGTH_SHORT).show()
                 },
                 onDismiss = {
                     LksRingtoneManager.stopPreview()
                     isPreviewPlaying = false
-                    ringtoneModalContact = null
+                    overlay = ContactsOverlay.None
                 }
             )
         }
 
-        // Song Trimmer Dialog — shown after picking an audio file for contact ringtone
-        trimmerUri?.let { uri ->
-            com.example.ui.components.SongTrimmerDialog(
-                uri = uri,
-                songTitle = trimmerSongTitle,
-                onSave = { trimmedUri ->
-                    if (trimmerTarget == "contact") {
-                        val contact = ringtoneModalContact
-                        if (contact != null) {
-                            LksRingtoneManager.setContactRingtone(context, contact.second, trimmedUri)
-                            contactRingtoneState = LksRingtoneManager.getContactRingtone(context, contact.second)
-                            Toast.makeText(context, "Custom ringtone set for ${contact.first}", Toast.LENGTH_SHORT).show()
-                        }
+        when (val activeOverlay = overlay) {
+            ContactsOverlay.None, is ContactsOverlay.RingtoneSheet -> Unit
+            is ContactsOverlay.SongTrimmer -> {
+                com.example.ui.components.SongTrimmerDialog(
+                    uri = activeOverlay.uri,
+                    songTitle = activeOverlay.songTitle,
+                    onSave = { trimmedUri ->
+                        LksRingtoneManager.setContactRingtone(context, activeOverlay.contactPhone, trimmedUri)
+                        contactRingtoneState = LksRingtoneManager.getContactRingtone(context, activeOverlay.contactPhone)
+                        Toast.makeText(context, "Custom ringtone set for ${activeOverlay.contactName}", Toast.LENGTH_SHORT).show()
+                        overlay = ContactsOverlay.RingtoneSheet(activeOverlay.contactName, activeOverlay.contactPhone)
+                    },
+                    onDismiss = {
+                        overlay = ContactsOverlay.RingtoneSheet(activeOverlay.contactName, activeOverlay.contactPhone)
                     }
-                    trimmerUri = null
-                },
-                onDismiss = { trimmerUri = null }
-            )
-        }
-
-        // Dual SIM / Cellular Call Picker Modal
-        simPickerContact?.let { (name, phone, isLks) ->
-            SimCallPickerModal(
-                phoneNumber = phone,
-                displayName = name,
-                isRegisteredOnLks = isLks,
-                activeSims = activeSims,
-                onDismissRequest = { simPickerContact = null },
-                onStartVoipCall = { type ->
-                    val now = System.currentTimeMillis()
-                    if (now - lastCallClickTime > 1500L) {
-                        lastCallClickTime = now
-                        lastInteractionTime = now
-                        coroutineScope.launch {
-                            delay(200)
-                            onStartCall(phone, name, type)
+                )
+            }
+            is ContactsOverlay.SimPicker -> {
+                val (name, phone, isLks) = activeOverlay
+                SimCallPickerModal(
+                    phoneNumber = phone,
+                    displayName = name,
+                    isRegisteredOnLks = isLks,
+                    activeSims = activeSims,
+                    onDismissRequest = { overlay = ContactsOverlay.None },
+                    onStartVoipCall = { type ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastCallClickTime > 1500L) {
+                            lastCallClickTime = now
+                            lastInteractionTime = now
+                            coroutineScope.launch {
+                                delay(200)
+                                onStartCall(phone, name, type)
+                            }
                         }
+                    },
+                    onStartCellularCall = { sim ->
+                        SimManager.placeCellularCall(context, phone, sim)
+                        val simLabel = sim?.displayName ?: "SIM"
+                        firebaseManager.recordCellularCall(phone, name, simLabel)
+                        Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
+                        overlay = ContactsOverlay.None
                     }
-                },
-                onStartCellularCall = { sim ->
-                    SimManager.placeCellularCall(context, phone, sim)
-                    val simLabel = sim?.displayName ?: "SIM"
-                    firebaseManager.recordCellularCall(phone, name, simLabel)
-                    Toast.makeText(context, "Calling via $simLabel...", Toast.LENGTH_SHORT).show()
-                    simPickerContact = null
-                }
-            )
+                )
+            }
         }
     }
+}
+
+private sealed interface ContactsOverlay {
+    data object None : ContactsOverlay
+    data class RingtoneSheet(val name: String, val phone: String) : ContactsOverlay
+    data class SongTrimmer(
+        val uri: Uri,
+        val songTitle: String,
+        val contactName: String,
+        val contactPhone: String
+    ) : ContactsOverlay
+    data class SimPicker(
+        val name: String,
+        val phone: String,
+        val isRegisteredOnLks: Boolean
+    ) : ContactsOverlay
 }
 
 @Composable

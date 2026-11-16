@@ -66,16 +66,53 @@ enum class MainTab(val title: String, val icon: ImageVector) {
     PROFILE("Account", Icons.Default.Person)
 }
 
-enum class AppNavState {
-    WELCOME,
-    PHONE_INPUT,
-    PROFILE_SETUP,
-    MAIN,
-    SETTINGS,
-    CHAT_CONVERSATION,
-    STORAGE_MANAGEMENT,
-    LINKED_DEVICES
+private sealed interface AppRoute {
+    data object Welcome : AppRoute
+    data object PhoneInput : AppRoute
+    data class ProfileSetup(val phoneNumber: String, val deviceId: String) : AppRoute
+    data class Main(val tab: MainTab = MainTab.DIALER) : AppRoute
+    data class Settings(
+        val initialCategory: com.example.ui.screens.settings.SettingsCategory =
+            com.example.ui.screens.settings.SettingsCategory.ALL
+    ) : AppRoute
+    data class ChatConversation(
+        val peerNumber: String,
+        val peerName: String,
+        val peerAvatar: String,
+        val returnRoute: AppRoute
+    ) : AppRoute
+    data class StorageManagement(val returnRoute: AppRoute) : AppRoute
+    data class LinkedDevices(val returnRoute: AppRoute) : AppRoute
 }
+
+private sealed interface ShareIntakeState {
+    data object None : ShareIntakeState
+    data class NeedsTargetPicker(val payload: com.example.util.SharedIncomingPayload) : ShareIntakeState
+    data class ReadyForChat(
+        val photos: List<java.io.File>? = null,
+        val text: String? = null,
+        val documents: List<Pair<java.io.File, String>>? = null
+    ) : ShareIntakeState
+}
+
+private sealed interface GroupCallPickerState {
+    data object Hidden : GroupCallPickerState
+    data class Open(val preselectedPeer: ContactDto? = null) : GroupCallPickerState
+}
+
+private fun com.example.util.SharedIncomingPayload.toReadyShareState(): ShareIntakeState.ReadyForChat =
+    when (type) {
+        com.example.util.SharedPayloadType.IMAGES -> ShareIntakeState.ReadyForChat(
+            photos = files,
+            text = text
+        )
+        com.example.util.SharedPayloadType.TEXT -> ShareIntakeState.ReadyForChat(text = text)
+        com.example.util.SharedPayloadType.DOCUMENTS -> ShareIntakeState.ReadyForChat(
+            documents = files.mapIndexed { idx, file ->
+                Pair(file, originalNames.getOrNull(idx) ?: file.name)
+            }
+        )
+    }
 
 class MainActivity : ComponentActivity() {
 
@@ -636,15 +673,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                var navState by remember {
-                    mutableStateOf(if (currentUser != null) AppNavState.MAIN else AppNavState.WELCOME)
+                var currentRoute by remember {
+                    mutableStateOf<AppRoute>(if (currentUser != null) AppRoute.Main() else AppRoute.Welcome)
                 }
-                var selectedTab by remember { mutableStateOf(MainTab.DIALER) }
-                var newPhoneNumber by remember { mutableStateOf("") }
-                var newDeviceId by remember { mutableStateOf("") }
-                var chatPeerNumber by remember { mutableStateOf("") }
-                var chatPeerName by remember { mutableStateOf("") }
-                var chatPeerAvatar by remember { mutableStateOf("") }
                 var isCallMinimized by remember { mutableStateOf(false) }
 
                 LaunchedEffect(rtcState.callStatus) {
@@ -660,10 +691,7 @@ class MainActivity : ComponentActivity() {
                 val totalUnreadChats by chatRepo.getTotalUnreadCountFlow().collectAsState(initial = 0)
 
                 // Shared incoming content from external apps (Share Sheet)
-                var pendingSharedPayload by remember { mutableStateOf<com.example.util.SharedIncomingPayload?>(null) }
-                var pendingSharedPhotos by remember { mutableStateOf<List<java.io.File>?>(null) }
-                var pendingSharedText by remember { mutableStateOf<String?>(null) }
-                var pendingSharedDocuments by remember { mutableStateOf<List<Pair<java.io.File, String>>?>(null) }
+                var shareIntakeState by remember { mutableStateOf<ShareIntakeState>(ShareIntakeState.None) }
 
                 // Synchronize Direct Share shortcuts for top recent conversations
                 val conversationsForShortcuts by chatRepo.getConversationsFlow().collectAsState(initial = emptyList())
@@ -695,14 +723,14 @@ class MainActivity : ComponentActivity() {
 
                 // BUG-06 FIX: Navigate to MAIN automatically if user is restored, or back to WELCOME on logout
                 LaunchedEffect(currentUser) {
-                    if (currentUser != null && navState == AppNavState.WELCOME) {
-                        navState = AppNavState.MAIN
+                    if (currentUser != null && currentRoute is AppRoute.Welcome) {
+                        currentRoute = AppRoute.Main()
                     } else if (currentUser == null &&
-                        navState != AppNavState.WELCOME &&
-                        navState != AppNavState.PHONE_INPUT &&
-                        navState != AppNavState.PROFILE_SETUP
+                        currentRoute !is AppRoute.Welcome &&
+                        currentRoute !is AppRoute.PhoneInput &&
+                        currentRoute !is AppRoute.ProfileSetup
                     ) {
-                        navState = AppNavState.WELCOME
+                        currentRoute = AppRoute.Welcome
                     }
                 }
 
@@ -769,27 +797,30 @@ class MainActivity : ComponentActivity() {
 
                         val openTab = incoming.getStringExtra("open_tab")
                         if (openTab == "RECENTS") {
-                            navState = AppNavState.MAIN
-                            selectedTab = MainTab.RECENTS
+                            currentRoute = AppRoute.Main(MainTab.RECENTS)
                         } else if (openTab == "CHATS") {
-                            navState = AppNavState.MAIN
-                            selectedTab = MainTab.CHATS
+                            currentRoute = AppRoute.Main(MainTab.CHATS)
                         }
 
                         val chatPeer = incoming.getStringExtra("chat_peer_number")
+                        var resolvedChatPeerName = ""
                         if (!chatPeer.isNullOrBlank()) {
-                            chatPeerNumber = chatPeer
                             val isGroupPeer = chatPeer.startsWith("group_")
                             val peerUser = if (isGroupPeer) null else firebaseManager.lookupUserByNumber(chatPeer)
-                            chatPeerName = incoming.getStringExtra("chat_peer_name")
+                            resolvedChatPeerName = incoming.getStringExtra("chat_peer_name")
                                 ?: peerUser?.displayName?.takeIf { it.isNotBlank() }
                                 ?: if (isGroupPeer) "Group" else chatPeer
-                            chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
                             val prefill = incoming.getStringExtra("prefill_text")
                             if (!prefill.isNullOrBlank()) {
-                                pendingSharedText = prefill
+                                shareIntakeState = ShareIntakeState.ReadyForChat(text = prefill)
                             }
-                            navState = AppNavState.CHAT_CONVERSATION
+                            val returnTarget = (currentRoute as? AppRoute.ChatConversation)?.returnRoute ?: currentRoute
+                            currentRoute = AppRoute.ChatConversation(
+                                peerNumber = chatPeer,
+                                peerName = resolvedChatPeerName,
+                                peerAvatar = peerUser?.profilePictureUrl ?: "",
+                                returnRoute = returnTarget
+                            )
                         }
 
                         val remoteInputResults = androidx.core.app.RemoteInput.getResultsFromIntent(incoming)
@@ -800,7 +831,7 @@ class MainActivity : ComponentActivity() {
                                 chatRepo.markConversationAsRead(normPeer)
                                 chatRepo.sendMessage(
                                     recipientNumber = normPeer,
-                                    recipientName = chatPeerName.ifBlank { normPeer },
+                                    recipientName = resolvedChatPeerName.ifBlank { normPeer },
                                     text = replyText,
                                     mediaType = com.example.data.local.ChatMediaType.TEXT
                                 )
@@ -826,7 +857,7 @@ class MainActivity : ComponentActivity() {
                             val callBackType = try { CallType.valueOf(callBackTypeStr) } catch (_: Exception) { CallType.AUDIO }
 
                             if (myNum.isNotBlank()) {
-                                navState = AppNavState.MAIN
+                                currentRoute = AppRoute.Main()
                                 kotlinx.coroutines.delay(200)
                                 webRtcEngine.initiateCall(callBackNumber, callBackName, myNum, myName, callBackType)
                             }
@@ -843,7 +874,7 @@ class MainActivity : ComponentActivity() {
                                 val myName = currentUser?.displayName?.ifBlank { null }
                                     ?: prefs.getString("user_name", "") ?: "Me"
                                 if (myNum.isNotBlank()) {
-                                    navState = AppNavState.MAIN
+                                    currentRoute = AppRoute.Main()
                                     kotlinx.coroutines.delay(200)
                                     webRtcEngine.initiateCall(targetNumber, targetNumber, myNum, myName, CallType.AUDIO)
                                 }
@@ -861,28 +892,17 @@ class MainActivity : ComponentActivity() {
                                     val directPeer = payload.directTargetPeerNumber
                                     if (!directPeer.isNullOrBlank()) {
                                         val peerUser = firebaseManager.lookupUserByNumber(directPeer)
-                                        chatPeerNumber = directPeer
-                                        chatPeerName = peerUser?.displayName?.takeIf { it.isNotBlank() } ?: directPeer
-                                        chatPeerAvatar = peerUser?.profilePictureUrl ?: ""
-
-                                        when (payload.type) {
-                                            com.example.util.SharedPayloadType.IMAGES -> {
-                                                pendingSharedPhotos = payload.files
-                                                pendingSharedText = payload.text
-                                            }
-                                            com.example.util.SharedPayloadType.TEXT -> {
-                                                pendingSharedText = payload.text
-                                            }
-                                            com.example.util.SharedPayloadType.DOCUMENTS -> {
-                                                pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
-                                                    Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
-                                                }
-                                            }
-                                        }
-                                        navState = AppNavState.CHAT_CONVERSATION
+                                        shareIntakeState = payload.toReadyShareState()
+                                        val returnTarget = (currentRoute as? AppRoute.ChatConversation)?.returnRoute ?: currentRoute
+                                        currentRoute = AppRoute.ChatConversation(
+                                            peerNumber = directPeer,
+                                            peerName = peerUser?.displayName?.takeIf { it.isNotBlank() } ?: directPeer,
+                                            peerAvatar = peerUser?.profilePictureUrl ?: "",
+                                            returnRoute = returnTarget
+                                        )
                                     } else {
                                         // Show WhatsApp-style "Send to..." contact picker modal
-                                        pendingSharedPayload = payload
+                                        shareIntakeState = ShareIntakeState.NeedsTargetPicker(payload)
                                     }
                                 }
                             }
@@ -951,8 +971,7 @@ class MainActivity : ComponentActivity() {
 
                 val groupCallEngine = remember { GroupCallEngine.getInstance(context, firebaseManager) }
                 val groupCallState by groupCallEngine.state.collectAsState()
-                var showStartGroupCallModal by remember { mutableStateOf(false) }
-                var preselectedGroupPeer by remember { mutableStateOf<ContactDto?>(null) }
+                var groupCallPickerState by remember { mutableStateOf<GroupCallPickerState>(GroupCallPickerState.Hidden) }
 
                 LaunchedEffect(groupCallState.incomingInviteRoom?.roomId, groupCallState.isActive) {
                     val invite = groupCallState.incomingInviteRoom
@@ -962,10 +981,6 @@ class MainActivity : ComponentActivity() {
                     } else if (!isOneToOneIncomingRinging) {
                         LksIncomingRingtonePlayer.stop()
                     }
-                }
-
-                var settingsInitialCategory by remember {
-                    mutableStateOf(com.example.ui.screens.settings.SettingsCategory.ALL)
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -1003,81 +1018,80 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        var previousNavState by remember { mutableStateOf(AppNavState.MAIN) }
                         val openChatWithPeer: (String, String, String?) -> Unit = { phone, name, avatar ->
                             val resolvedAvatar = if (!avatar.isNullOrBlank()) {
                                 avatar
                             } else {
                                 firebaseManager.lookupUserByNumber(phone)?.profilePictureUrl ?: ""
                             }
-                            chatPeerNumber = phone
-                            chatPeerName = name
-                            chatPeerAvatar = resolvedAvatar
-                            if (navState != AppNavState.CHAT_CONVERSATION) {
-                                previousNavState = navState
-                            }
-                            navState = AppNavState.CHAT_CONVERSATION
+                            val returnTarget = (currentRoute as? AppRoute.ChatConversation)?.returnRoute ?: currentRoute
+                            currentRoute = AppRoute.ChatConversation(
+                                peerNumber = phone,
+                                peerName = name,
+                                peerAvatar = resolvedAvatar,
+                                returnRoute = returnTarget
+                            )
                         }
 
                         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                            when (navState) {
-                                AppNavState.WELCOME -> {
+                            when (val route = currentRoute) {
+                                AppRoute.Welcome -> {
                                     WelcomeScreen(
-                                        onGetStartedClick = { navState = AppNavState.PHONE_INPUT }
+                                        onGetStartedClick = { currentRoute = AppRoute.PhoneInput }
                                     )
                                 }
-                                AppNavState.PHONE_INPUT -> {
+                                AppRoute.PhoneInput -> {
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.WELCOME
+                                        currentRoute = AppRoute.Welcome
                                     }
                                     PhoneInputScreen(
                                         firebaseManager = firebaseManager,
-                                        onLoginSuccess = { user ->
-                                            navState = AppNavState.MAIN
+                                        onLoginSuccess = { _ ->
+                                            currentRoute = AppRoute.Main()
                                         },
                                         onNewUser = { phone, deviceId ->
-                                            newPhoneNumber = phone
-                                            newDeviceId = deviceId
-                                            navState = AppNavState.PROFILE_SETUP
+                                            currentRoute = AppRoute.ProfileSetup(
+                                                phoneNumber = phone,
+                                                deviceId = deviceId
+                                            )
                                         },
-                                        onBackClick = { navState = AppNavState.WELCOME }
+                                        onBackClick = { currentRoute = AppRoute.Welcome }
                                     )
                                 }
-                                AppNavState.PROFILE_SETUP -> {
+                                is AppRoute.ProfileSetup -> {
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.PHONE_INPUT
+                                        currentRoute = AppRoute.PhoneInput
                                     }
                                     ProfileSetupScreen(
-                                        phoneNumber = newPhoneNumber,
-                                        deviceId = newDeviceId,
+                                        phoneNumber = route.phoneNumber,
+                                        deviceId = route.deviceId,
                                         onProfileComplete = { name, status ->
-                                            firebaseManager.loginWithPhone(newPhoneNumber, name, newDeviceId, status)
-                                            navState = AppNavState.MAIN
+                                            firebaseManager.loginWithPhone(route.phoneNumber, name, route.deviceId, status)
+                                            currentRoute = AppRoute.Main()
                                         },
-                                        onBackClick = { navState = AppNavState.PHONE_INPUT }
+                                        onBackClick = { currentRoute = AppRoute.PhoneInput }
                                     )
                                 }
-                                AppNavState.SETTINGS -> {
+                                is AppRoute.Settings -> {
                                     androidx.activity.compose.BackHandler {
-                                        navState = AppNavState.MAIN
+                                        currentRoute = AppRoute.Main()
                                     }
                                     SettingsScreen(
                                         firebaseManager = firebaseManager,
-                                        initialCategory = settingsInitialCategory,
-                                        onBackClick = { navState = AppNavState.MAIN },
+                                        initialCategory = route.initialCategory,
+                                        onBackClick = { currentRoute = AppRoute.Main() },
                                         onNavigateToStorage = {
-                                            previousNavState = AppNavState.SETTINGS
-                                            navState = AppNavState.STORAGE_MANAGEMENT
+                                            currentRoute = AppRoute.StorageManagement(returnRoute = route)
                                         },
                                         onNavigateToLinkedDevices = {
-                                            previousNavState = AppNavState.SETTINGS
-                                            navState = AppNavState.LINKED_DEVICES
+                                            currentRoute = AppRoute.LinkedDevices(returnRoute = route)
                                         }
                                     )
                                 }
-                                AppNavState.MAIN -> {
+                                is AppRoute.Main -> {
+                                    val selectedTab = route.tab
                                     androidx.activity.compose.BackHandler(enabled = selectedTab != MainTab.DIALER) {
-                                        selectedTab = MainTab.DIALER
+                                        currentRoute = route.copy(tab = MainTab.DIALER)
                                     }
                                     Scaffold(
                                         modifier = Modifier.fillMaxSize(),
@@ -1106,7 +1120,7 @@ class MainActivity : ComponentActivity() {
                                                         val isSelected = selectedTab == tab
                                                         NavigationBarItem(
                                                             selected = isSelected,
-                                                            onClick = { selectedTab = tab },
+                                                            onClick = { currentRoute = route.copy(tab = tab) },
                                                             icon = {
                                                                 if (tab == MainTab.CHATS && totalUnreadChats > 0) {
                                                                     BadgedBox(
@@ -1130,14 +1144,14 @@ class MainActivity : ComponentActivity() {
                                                                     Icon(tab.icon, contentDescription = tab.title)
                                                                 }
                                                             },
-                                                            label = { 
+                                                            label = {
                                                                 Text(
                                                                     text = tab.title,
                                                                     fontFamily = com.example.ui.theme.SpaceGroteskFontFamily,
                                                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                                                     maxLines = 1,
                                                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                                                ) 
+                                                                )
                                                             },
                                                             colors = NavigationBarItemDefaults.colors(
                                                                 selectedIconColor = currentThemeColor.primary,
@@ -1162,15 +1176,13 @@ class MainActivity : ComponentActivity() {
                                                     firebaseManager = firebaseManager,
                                                     onStartCall = safeStartCall,
                                                     onNavigateToSettings = {
-                                                        settingsInitialCategory = com.example.ui.screens.settings.SettingsCategory.ALL
-                                                        navState = AppNavState.SETTINGS
+                                                        currentRoute = AppRoute.Settings(com.example.ui.screens.settings.SettingsCategory.ALL)
                                                     },
                                                     onNavigateToLinkedDevices = {
-                                                        previousNavState = AppNavState.MAIN
-                                                        navState = AppNavState.LINKED_DEVICES
+                                                        currentRoute = AppRoute.LinkedDevices(returnRoute = route)
                                                     },
-                                                    onNavigateToChats = { selectedTab = MainTab.CHATS },
-                                                    onNavigateToContacts = { selectedTab = MainTab.CONTACTS },
+                                                    onNavigateToChats = { currentRoute = route.copy(tab = MainTab.CHATS) },
+                                                    onNavigateToContacts = { currentRoute = route.copy(tab = MainTab.CONTACTS) },
                                                     onOpenDirectChat = { number, name ->
                                                         openChatWithPeer(number, name, null)
                                                     }
@@ -1181,10 +1193,9 @@ class MainActivity : ComponentActivity() {
                                                     onOpenChat = { number, name ->
                                                         openChatWithPeer(number, name, null)
                                                     },
-                                                    onNavigateToDialer = { selectedTab = MainTab.DIALER },
+                                                    onNavigateToDialer = { currentRoute = route.copy(tab = MainTab.DIALER) },
                                                     onOpenGroupCallModal = {
-                                                        preselectedGroupPeer = null
-                                                        showStartGroupCallModal = true
+                                                        groupCallPickerState = GroupCallPickerState.Open(preselectedPeer = null)
                                                     }
                                                 )
                                                 MainTab.CHATS -> ChatListScreen(
@@ -1195,16 +1206,13 @@ class MainActivity : ComponentActivity() {
                                                         openChatWithPeer(phone, name, avatar)
                                                     },
                                                     onNavigateToStorage = {
-                                                        previousNavState = AppNavState.MAIN
-                                                        navState = AppNavState.STORAGE_MANAGEMENT
+                                                        currentRoute = AppRoute.StorageManagement(returnRoute = route)
                                                     },
                                                     onNavigateToSettings = {
-                                                        settingsInitialCategory = com.example.ui.screens.settings.SettingsCategory.APPEARANCE
-                                                        navState = AppNavState.SETTINGS
+                                                        currentRoute = AppRoute.Settings(com.example.ui.screens.settings.SettingsCategory.APPEARANCE)
                                                     },
                                                     onNavigateToLinkedDevices = {
-                                                        previousNavState = AppNavState.MAIN
-                                                        navState = AppNavState.LINKED_DEVICES
+                                                        currentRoute = AppRoute.LinkedDevices(returnRoute = route)
                                                     }
                                                 )
                                                 MainTab.CONTACTS -> ContactsScreen(
@@ -1214,44 +1222,41 @@ class MainActivity : ComponentActivity() {
                                                         openChatWithPeer(number, name, null)
                                                     },
                                                     onOpenGroupCallModal = {
-                                                        preselectedGroupPeer = null
-                                                        showStartGroupCallModal = true
+                                                        groupCallPickerState = GroupCallPickerState.Open(preselectedPeer = null)
                                                     }
                                                 )
                                                 MainTab.PROFILE -> ProfileScreen(
                                                     firebaseManager = firebaseManager,
                                                     onOpenSettingsCategory = { category ->
-                                                        settingsInitialCategory = category
-                                                        navState = AppNavState.SETTINGS
+                                                        currentRoute = AppRoute.Settings(category)
                                                     }
                                                 )
                                             }
                                         }
                                     }
                                 }
-                                AppNavState.CHAT_CONVERSATION -> {
+                                is AppRoute.ChatConversation -> {
+                                    val readyShare = shareIntakeState as? ShareIntakeState.ReadyForChat
                                     val returnFromChat = {
-                                        navState = if (previousNavState == AppNavState.STORAGE_MANAGEMENT) {
-                                            AppNavState.STORAGE_MANAGEMENT
+                                        currentRoute = if (route.returnRoute is AppRoute.StorageManagement) {
+                                            route.returnRoute
                                         } else {
-                                            AppNavState.MAIN
+                                            AppRoute.Main()
                                         }
                                     }
                                     androidx.activity.compose.BackHandler {
                                         returnFromChat()
                                     }
                                     ChatConversationScreen(
-                                        peerPhoneNumber = chatPeerNumber,
-                                        peerDisplayName = chatPeerName,
-                                        peerInitialAvatar = chatPeerAvatar,
+                                        peerPhoneNumber = route.peerNumber,
+                                        peerDisplayName = route.peerName,
+                                        peerInitialAvatar = route.peerAvatar,
                                         firebaseManager = firebaseManager,
-                                        initialSharedPhotos = pendingSharedPhotos,
-                                        initialSharedText = pendingSharedText,
-                                        initialSharedDocuments = pendingSharedDocuments,
+                                        initialSharedPhotos = readyShare?.photos,
+                                        initialSharedText = readyShare?.text,
+                                        initialSharedDocuments = readyShare?.documents,
                                         onSharedContentConsumed = {
-                                            pendingSharedPhotos = null
-                                            pendingSharedText = null
-                                            pendingSharedDocuments = null
+                                            shareIntakeState = ShareIntakeState.None
                                         },
                                         onBackClick = {
                                             returnFromChat()
@@ -1259,12 +1264,12 @@ class MainActivity : ComponentActivity() {
                                         onStartCall = safeStartCall
                                     )
                                 }
-                                AppNavState.STORAGE_MANAGEMENT -> {
+                                is AppRoute.StorageManagement -> {
                                     val returnFromStorage = {
-                                        navState = if (previousNavState == AppNavState.SETTINGS) {
-                                            AppNavState.SETTINGS
+                                        currentRoute = if (route.returnRoute is AppRoute.Settings) {
+                                            route.returnRoute
                                         } else {
-                                            AppNavState.MAIN
+                                            AppRoute.Main()
                                         }
                                     }
                                     androidx.activity.compose.BackHandler {
@@ -1281,12 +1286,12 @@ class MainActivity : ComponentActivity() {
                                         }
                                     )
                                 }
-                                AppNavState.LINKED_DEVICES -> {
+                                is AppRoute.LinkedDevices -> {
                                     val returnFromLinked = {
-                                        navState = if (previousNavState == AppNavState.SETTINGS) {
-                                            AppNavState.SETTINGS
+                                        currentRoute = if (route.returnRoute is AppRoute.Settings) {
+                                            route.returnRoute
                                         } else {
-                                            AppNavState.MAIN
+                                            AppRoute.Main()
                                         }
                                     }
                                     androidx.activity.compose.BackHandler {
@@ -1304,39 +1309,24 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // WhatsApp-style "Send to..." Share Sheet contact picker
-                    val activeSharePayload = pendingSharedPayload
-                    if (activeSharePayload != null) {
+                    val targetPickerState = shareIntakeState as? ShareIntakeState.NeedsTargetPicker
+                    if (targetPickerState != null) {
                         com.example.ui.screens.chat.ShareTargetPickerModal(
-                            payload = activeSharePayload,
+                            payload = targetPickerState.payload,
                             firebaseManager = firebaseManager,
                             chatRepository = chatRepo,
                             onSelectTarget = { phone, name, avatar ->
-                                val payload = pendingSharedPayload
-                                pendingSharedPayload = null
-                                chatPeerNumber = phone
-                                chatPeerName = name
-                                chatPeerAvatar = avatar
-
-                                if (payload != null) {
-                                    when (payload.type) {
-                                        com.example.util.SharedPayloadType.IMAGES -> {
-                                            pendingSharedPhotos = payload.files
-                                            pendingSharedText = payload.text
-                                        }
-                                        com.example.util.SharedPayloadType.TEXT -> {
-                                            pendingSharedText = payload.text
-                                        }
-                                        com.example.util.SharedPayloadType.DOCUMENTS -> {
-                                            pendingSharedDocuments = payload.files.mapIndexed { idx, file ->
-                                                Pair(file, payload.originalNames.getOrNull(idx) ?: file.name)
-                                            }
-                                        }
-                                    }
-                                }
-                                navState = AppNavState.CHAT_CONVERSATION
+                                shareIntakeState = targetPickerState.payload.toReadyShareState()
+                                val returnTarget = (currentRoute as? AppRoute.ChatConversation)?.returnRoute ?: currentRoute
+                                currentRoute = AppRoute.ChatConversation(
+                                    peerNumber = phone,
+                                    peerName = name,
+                                    peerAvatar = avatar,
+                                    returnRoute = returnTarget
+                                )
                             },
                             onDismiss = {
-                                pendingSharedPayload = null
+                                shareIntakeState = ShareIntakeState.None
                             }
                         )
                     }
@@ -1435,14 +1425,15 @@ class MainActivity : ComponentActivity() {
                                             webRtcEngine = webRtcEngine,
                                             onMinimize = { isCallMinimized = true },
                                             onAddPersonToGroup = {
-                                                preselectedGroupPeer = ContactDto(
-                                                    id = otherPartyNumber,
-                                                    name = otherPartyDisplayName,
-                                                    phoneNumber = otherPartyNumber,
-                                                    profilePictureUrl = otherPartyProfilePic,
-                                                    isVoiceLinkUser = true
+                                                groupCallPickerState = GroupCallPickerState.Open(
+                                                    preselectedPeer = ContactDto(
+                                                        id = otherPartyNumber,
+                                                        name = otherPartyDisplayName,
+                                                        phoneNumber = otherPartyNumber,
+                                                        profilePictureUrl = otherPartyProfilePic,
+                                                        isVoiceLinkUser = true
+                                                    )
                                                 )
-                                                showStartGroupCallModal = true
                                             },
                                             onEndCall = {
                                                 firebaseManager.logCall(
@@ -1466,14 +1457,15 @@ class MainActivity : ComponentActivity() {
                                             webRtcEngine = webRtcEngine,
                                             onMinimize = { isCallMinimized = true },
                                             onAddPersonToGroup = {
-                                                preselectedGroupPeer = ContactDto(
-                                                    id = otherPartyNumber,
-                                                    name = otherPartyDisplayName,
-                                                    phoneNumber = otherPartyNumber,
-                                                    profilePictureUrl = otherPartyProfilePic,
-                                                    isVoiceLinkUser = true
+                                                groupCallPickerState = GroupCallPickerState.Open(
+                                                    preselectedPeer = ContactDto(
+                                                        id = otherPartyNumber,
+                                                        name = otherPartyDisplayName,
+                                                        phoneNumber = otherPartyNumber,
+                                                        profilePictureUrl = otherPartyProfilePic,
+                                                        isVoiceLinkUser = true
+                                                    )
                                                 )
-                                                showStartGroupCallModal = true
                                             },
                                             onEndCall = {
                                                 firebaseManager.logCall(
@@ -1559,11 +1551,12 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // Start / Promote Group Conference Modal
-                    if (showStartGroupCallModal) {
+                    val openGroupPicker = groupCallPickerState as? GroupCallPickerState.Open
+                    if (openGroupPicker != null) {
                         StartGroupCallModal(
                             firebaseManager = firebaseManager,
                             isAddingToExistingCall = false,
-                            preselectedContacts = listOfNotNull(preselectedGroupPeer),
+                            preselectedContacts = listOfNotNull(openGroupPicker.preselectedPeer),
                             onStartGroupCall = { title, selectedContacts, callType, waitingRoom ->
                                 // If promoting from an active 1-to-1 call, end the 1-to-1 call cleanly first
                                 if (isCallActive && activeCall != null) {
@@ -1577,8 +1570,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             },
                             onDismiss = {
-                                showStartGroupCallModal = false
-                                preselectedGroupPeer = null
+                                groupCallPickerState = GroupCallPickerState.Hidden
                             }
                         )
                     }

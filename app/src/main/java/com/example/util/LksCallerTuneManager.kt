@@ -17,6 +17,26 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 
+enum class CallerTuneSource {
+    DEFAULT,
+    YOUTUBE,
+    LOCAL,
+    PRESET,
+    LIBRARY,
+    MY_SAVED_TUNE;
+
+    companion object {
+        fun fromWire(value: String?): CallerTuneSource = when (value?.uppercase()) {
+            "YOUTUBE" -> YOUTUBE
+            "LOCAL" -> LOCAL
+            "PRESET" -> PRESET
+            "LIBRARY" -> LIBRARY
+            "MY_SAVED_TUNE" -> MY_SAVED_TUNE
+            else -> DEFAULT
+        }
+    }
+}
+
 /**
  * CallerTuneInfo
  * Represents a user's configured Caller Tune (Hello Tune).
@@ -26,12 +46,15 @@ data class CallerTuneInfo(
     val artist: String = "",
     val audioUrl: String = "",
     val audioBase64: String = "",
-    val source: String = "DEFAULT", // "YOUTUBE", "LOCAL", "PRESET", "LIBRARY", "DEFAULT", "MY_SAVED_TUNE"
+    val source: String = CallerTuneSource.DEFAULT.name, // wire string for Firestore/prefs
     val startMs: Long = 0L,
     val endMs: Long = 30000L,
     val localUri: String? = null,
     val thumbnailUrl: String? = null
 ) {
+    val sourceEnum: CallerTuneSource
+        get() = CallerTuneSource.fromWire(source)
+
     val isConfigured: Boolean
         get() = title.isNotBlank() && (audioBase64.isNotBlank() || audioUrl.isNotBlank() || !localUri.isNullOrBlank())
 }
@@ -55,7 +78,20 @@ object LksCallerTuneManager {
     private const val KEY_TUNE_LOCAL_URI = "caller_tune_local_uri"
     private const val KEY_TUNE_THUMBNAIL = "caller_tune_thumbnail"
 
-    private var previewPlayer: MediaPlayer? = null
+    private sealed interface PreviewPlayerState {
+        data object Idle : PreviewPlayerState
+        data class Preparing(val title: String, val player: MediaPlayer) : PreviewPlayerState
+        data class Playing(val title: String, val player: MediaPlayer) : PreviewPlayerState
+
+        val activePlayer: MediaPlayer?
+            get() = when (this) {
+                is Idle -> null
+                is Preparing -> player
+                is Playing -> player
+            }
+    }
+
+    private var previewState: PreviewPlayerState = PreviewPlayerState.Idle
 
     // ─────────────────────────────────────────────────────────────────────────────
     // 1. LOCAL CALLER TUNE CONFIGURATION
@@ -606,7 +642,7 @@ object LksCallerTuneManager {
         stopPreview()
         try {
             val player = MediaPlayer()
-            previewPlayer = player
+            previewState = PreviewPlayerState.Preparing(info.title, player)
 
             // Ensure normal audio routing so it plays through the speaker
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -618,7 +654,7 @@ object LksCallerTuneManager {
 
             var dataSourceSet = false
             val savedTune = getMyCallerTune(context)
-            val isExplicitlySavedTune = (info.source == "MY_SAVED_TUNE") ||
+            val isExplicitlySavedTune = (info.sourceEnum == CallerTuneSource.MY_SAVED_TUNE) ||
                     (!info.localUri.isNullOrBlank() && info.localUri.contains("my_caller_tune.mp3")) ||
                     (savedTune.isConfigured && savedTune.title.equals(info.title, ignoreCase = true))
 
@@ -738,7 +774,7 @@ object LksCallerTuneManager {
 
             player.setOnPreparedListener { mp ->
                 synchronized(this) {
-                    if (previewPlayer == mp) {
+                    if (previewState.activePlayer == mp) {
                         try {
                             if (info.startMs > 0 && !isExplicitlySavedTune) {
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -748,6 +784,7 @@ object LksCallerTuneManager {
                                 }
                             }
                             mp.start()
+                            previewState = PreviewPlayerState.Playing(info.title, mp)
                             Log.i(TAG, "Preview player started successfully for ${info.title}")
                             onStarted()
                         } catch (e: Exception) {
@@ -783,11 +820,12 @@ object LksCallerTuneManager {
 
     @Synchronized
     fun stopPreview() {
+        val player = previewState.activePlayer
+        previewState = PreviewPlayerState.Idle
         try {
-            previewPlayer?.stop()
-            previewPlayer?.release()
+            player?.stop()
+            player?.release()
         } catch (_: Exception) {}
-        previewPlayer = null
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

@@ -42,6 +42,34 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private data class CallerTuneTrimmerTarget(
+    val uri: Uri,
+    val title: String,
+    val artist: String,
+    val source: String,
+    val thumbnailUrl: String? = null,
+    val audioUrl: String = ""
+)
+
+private sealed interface TunePreviewTarget {
+    data object None : TunePreviewTarget
+    data class SearchSong(val videoId: String) : TunePreviewTarget
+    data class Curated(val id: String) : TunePreviewTarget
+}
+
+private sealed interface TuneApplyState {
+    data object Idle : TuneApplyState
+    data class DownloadingForTrim(val videoId: String) : TuneApplyState
+    data class SettingSearchSong(val videoId: String) : TuneApplyState
+    data class SettingCurated(val id: String) : TuneApplyState
+}
+
+private sealed interface SearchCatalogState {
+    data object Loading : SearchCatalogState
+    data object Empty : SearchCatalogState
+    data class Loaded(val songs: List<YouTubeSongItem>) : SearchCatalogState
+}
+
 /**
  * CallerTunePickerDialog
  * Full-featured, 100% in-app music discoverer and Caller Tune selector.
@@ -65,23 +93,12 @@ fun CallerTunePickerDialog(
 
     // Search Music State
     var searchQuery by remember { mutableStateOf("") }
-    var isSearching by remember { mutableStateOf(false) }
-    var searchResults by remember { mutableStateOf<List<YouTubeSongItem>>(emptyList()) }
-    var previewingSongId by remember { mutableStateOf<String?>(null) }
-    var downloadingSongId by remember { mutableStateOf<String?>(null) }
+    var searchCatalogState by remember { mutableStateOf<SearchCatalogState>(SearchCatalogState.Loading) }
 
-    // Trimmer State
-    var activeTrimmerUri by remember { mutableStateOf<Uri?>(null) }
-    var activeTrimmerTitle by remember { mutableStateOf("") }
-    var activeTrimmerArtist by remember { mutableStateOf("") }
-    var activeTrimmerSource by remember { mutableStateOf("LIBRARY") }
-    var activeTrimmerThumb by remember { mutableStateOf<String?>(null) }
-    var activeTrimmerAudioUrl by remember { mutableStateOf("") }
-
-    // Curated Tunes Preview & Setting State
-    var previewingCuratedId by remember { mutableStateOf<String?>(null) }
-    var settingCuratedId by remember { mutableStateOf<String?>(null) }
-    var settingSongId by remember { mutableStateOf<String?>(null) }
+    // Explicit Preview, Apply, and Trimmer State Machines
+    var previewTarget by remember { mutableStateOf<TunePreviewTarget>(TunePreviewTarget.None) }
+    var tuneApplyState by remember { mutableStateOf<TuneApplyState>(TuneApplyState.Idle) }
+    var activeTrimmer by remember { mutableStateOf<CallerTuneTrimmerTarget?>(null) }
 
     // Launcher for device audio picker
     val audioFileLauncher = rememberLauncherForActivityResult(
@@ -89,37 +106,39 @@ fun CallerTunePickerDialog(
     ) { pickedUri ->
         if (pickedUri != null) {
             val title = com.example.util.LksRingtoneManager.getRingtoneTitle(context, pickedUri)
-            activeTrimmerUri = pickedUri
-            activeTrimmerTitle = title
-            activeTrimmerArtist = "My Audio"
-            activeTrimmerSource = "LOCAL"
-            activeTrimmerThumb = null
-            activeTrimmerAudioUrl = ""
+            activeTrimmer = CallerTuneTrimmerTarget(
+                uri = pickedUri,
+                title = title,
+                artist = "My Audio",
+                source = "LOCAL",
+                thumbnailUrl = null,
+                audioUrl = ""
+            )
         }
     }
 
     // Load initial trending songs
     LaunchedEffect(Unit) {
-        isSearching = true
-        searchResults = YouTubeSearchHelper.searchSongs("Trending Songs")
-        isSearching = false
+        searchCatalogState = SearchCatalogState.Loading
+        val results = YouTubeSearchHelper.searchSongs("Trending Songs")
+        searchCatalogState = if (results.isEmpty()) SearchCatalogState.Empty else SearchCatalogState.Loaded(results)
     }
 
     // If trimmer is active, show the CallerTuneTrimmerDialog
-    val trimmerUri = activeTrimmerUri
-    if (trimmerUri != null) {
+    val trimmerTarget = activeTrimmer
+    if (trimmerTarget != null) {
         CallerTuneTrimmerDialog(
-            sourceUri = trimmerUri,
-            songTitle = activeTrimmerTitle,
-            artist = activeTrimmerArtist,
-            source = activeTrimmerSource,
-            thumbnailUrl = activeTrimmerThumb,
-            audioUrl = activeTrimmerAudioUrl,
+            sourceUri = trimmerTarget.uri,
+            songTitle = trimmerTarget.title,
+            artist = trimmerTarget.artist,
+            source = trimmerTarget.source,
+            thumbnailUrl = trimmerTarget.thumbnailUrl,
+            audioUrl = trimmerTarget.audioUrl,
             onTuneSaved = { savedTune ->
-                activeTrimmerUri = null
+                activeTrimmer = null
                 onTuneSelected(savedTune)
             },
-            onDismiss = { activeTrimmerUri = null }
+            onDismiss = { activeTrimmer = null }
         )
         return
     }
@@ -198,8 +217,7 @@ fun CallerTunePickerDialog(
                             selected = selectedTabIndex == index,
                             onClick = {
                                 LksCallerTuneManager.stopPreview()
-                                previewingSongId = null
-                                previewingCuratedId = null
+                                previewTarget = TunePreviewTarget.None
                                 selectedTabIndex = index
                             },
                             text = {
@@ -260,10 +278,10 @@ fun CallerTunePickerDialog(
                                             searchQuery = cleanText
                                             coroutineScope.launch {
                                                 LksCallerTuneManager.stopPreview()
-                                                previewingSongId = null
-                                                isSearching = true
-                                                searchResults = YouTubeSearchHelper.searchSongs(cleanText)
-                                                isSearching = false
+                                                previewTarget = TunePreviewTarget.None
+                                                searchCatalogState = SearchCatalogState.Loading
+                                                val results = YouTubeSearchHelper.searchSongs(cleanText)
+                                                searchCatalogState = if (results.isEmpty()) SearchCatalogState.Empty else SearchCatalogState.Loaded(results)
                                             }
                                         },
                                         label = { Text(genre, fontSize = 11.sp) }
@@ -278,10 +296,10 @@ fun CallerTunePickerDialog(
                                     onClick = {
                                         coroutineScope.launch {
                                             LksCallerTuneManager.stopPreview()
-                                            previewingSongId = null
-                                            isSearching = true
-                                            searchResults = YouTubeSearchHelper.searchSongs(searchQuery)
-                                            isSearching = false
+                                            previewTarget = TunePreviewTarget.None
+                                            searchCatalogState = SearchCatalogState.Loading
+                                            val results = YouTubeSearchHelper.searchSongs(searchQuery)
+                                            searchCatalogState = if (results.isEmpty()) SearchCatalogState.Empty else SearchCatalogState.Loaded(results)
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth(),
@@ -296,126 +314,132 @@ fun CallerTunePickerDialog(
 
                             Spacer(Modifier.height(10.dp))
 
-                            if (isSearching) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        CircularProgressIndicator(color = Color(0xFF6750A4), modifier = Modifier.size(36.dp))
-                                        Spacer(Modifier.height(12.dp))
-                                        Text("Searching music library...", style = MaterialTheme.typography.bodySmall)
+                            when (val catalogState = searchCatalogState) {
+                                SearchCatalogState.Loading -> {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            CircularProgressIndicator(color = Color(0xFF6750A4), modifier = Modifier.size(36.dp))
+                                            Spacer(Modifier.height(12.dp))
+                                            Text("Searching music library...", style = MaterialTheme.typography.bodySmall)
+                                        }
                                     }
                                 }
-                            } else if (searchResults.isEmpty()) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("No songs found. Try searching for song or artist name.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                SearchCatalogState.Empty -> {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("No songs found. Try searching for song or artist name.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
                                 }
-                            } else {
-                                LazyColumn(
-                                    modifier = Modifier.fillMaxSize(),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    items(searchResults) { song ->
-                                        val isPreviewPlaying = previewingSongId == song.videoId
-                                        val isDownloading = downloadingSongId == song.videoId
-                                        val isSetting = settingSongId == song.videoId
+                                is SearchCatalogState.Loaded -> {
+                                    LazyColumn(
+                                        modifier = Modifier.fillMaxSize(),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        items(catalogState.songs) { song ->
+                                            val isPreviewPlaying = previewTarget == TunePreviewTarget.SearchSong(song.videoId)
+                                            val isDownloading = tuneApplyState == TuneApplyState.DownloadingForTrim(song.videoId)
+                                            val isSetting = tuneApplyState == TuneApplyState.SettingSearchSong(song.videoId)
 
-                                        InAppMusicSongCard(
-                                            song = song,
-                                            isPreviewPlaying = isPreviewPlaying,
-                                            isDownloading = isDownloading,
-                                            isSetting = isSetting,
-                                            onTogglePreview = {
-                                                if (isPreviewPlaying) {
-                                                    LksCallerTuneManager.stopPreview()
-                                                    previewingSongId = null
-                                                } else {
-                                                    LksCallerTuneManager.stopPreview()
-                                                    previewingSongId = song.videoId
-                                                    val tuneInfo = CallerTuneInfo(
-                                                        title = song.title,
-                                                        artist = song.channelName,
-                                                        audioUrl = song.directAudioUrl,
-                                                        source = "LIBRARY"
-                                                    )
-                                                    val started = LksCallerTuneManager.playPreview(context, tuneInfo) {
-                                                        previewingSongId = null
-                                                    }
-                                                    if (!started) {
-                                                        previewingSongId = null
-                                                        Toast.makeText(context, "Audio stream preview not available for this track", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                }
-                                            },
-                                            onDirectSet = {
-                                                coroutineScope.launch {
-                                                    LksCallerTuneManager.stopPreview()
-                                                    previewingSongId = null
-                                                    settingSongId = song.videoId
-                                                    Toast.makeText(context, "Setting \"${song.title}\" as your Caller Tune...", Toast.LENGTH_SHORT).show()
-
-                                                    val tuneInfo = if (song.directAudioUrl.isNotBlank()) {
-                                                        LksCallerTuneManager.cacheAndSetTuneFromUrl(
-                                                            context = context,
+                                            InAppMusicSongCard(
+                                                song = song,
+                                                isPreviewPlaying = isPreviewPlaying,
+                                                isDownloading = isDownloading,
+                                                isSetting = isSetting,
+                                                onTogglePreview = {
+                                                    if (isPreviewPlaying) {
+                                                        LksCallerTuneManager.stopPreview()
+                                                        previewTarget = TunePreviewTarget.None
+                                                    } else {
+                                                        LksCallerTuneManager.stopPreview()
+                                                        previewTarget = TunePreviewTarget.SearchSong(song.videoId)
+                                                        val tuneInfo = CallerTuneInfo(
                                                             title = song.title,
                                                             artist = song.channelName,
-                                                            streamUrl = song.directAudioUrl,
-                                                            source = "LIBRARY",
-                                                            startMs = 0L,
-                                                            endMs = 30000L,
-                                                            thumbnailUrl = song.thumbnailUrl
+                                                            audioUrl = song.directAudioUrl,
+                                                            source = "LIBRARY"
                                                         )
-                                                    } else {
-                                                        CallerTuneInfo(
-                                                            title = song.title,
-                                                            artist = song.channelName,
-                                                            source = "LIBRARY",
-                                                            thumbnailUrl = song.thumbnailUrl
+                                                        val started = LksCallerTuneManager.playPreview(context, tuneInfo) {
+                                                            previewTarget = TunePreviewTarget.None
+                                                        }
+                                                        if (!started) {
+                                                            previewTarget = TunePreviewTarget.None
+                                                            Toast.makeText(context, "Audio stream preview not available for this track", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    }
+                                                },
+                                                onDirectSet = {
+                                                    coroutineScope.launch {
+                                                        LksCallerTuneManager.stopPreview()
+                                                        previewTarget = TunePreviewTarget.None
+                                                        tuneApplyState = TuneApplyState.SettingSearchSong(song.videoId)
+                                                        Toast.makeText(context, "Setting \"${song.title}\" as your Caller Tune...", Toast.LENGTH_SHORT).show()
+
+                                                        val tuneInfo = if (song.directAudioUrl.isNotBlank()) {
+                                                            LksCallerTuneManager.cacheAndSetTuneFromUrl(
+                                                                context = context,
+                                                                title = song.title,
+                                                                artist = song.channelName,
+                                                                streamUrl = song.directAudioUrl,
+                                                                source = "LIBRARY",
+                                                                startMs = 0L,
+                                                                endMs = 30000L,
+                                                                thumbnailUrl = song.thumbnailUrl
+                                                            )
+                                                        } else {
+                                                            CallerTuneInfo(
+                                                                title = song.title,
+                                                                artist = song.channelName,
+                                                                source = "LIBRARY",
+                                                                thumbnailUrl = song.thumbnailUrl
+                                                            )
+                                                        }
+
+                                                        com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
+                                                            title = tuneInfo.title,
+                                                            artist = tuneInfo.artist,
+                                                            audioUrl = tuneInfo.audioUrl,
+                                                            audioBase64 = tuneInfo.audioBase64,
+                                                            source = tuneInfo.source,
+                                                            startMs = tuneInfo.startMs,
+                                                            endMs = tuneInfo.endMs
                                                         )
+                                                        tuneApplyState = TuneApplyState.Idle
+                                                        Toast.makeText(context, "Caller Tune active: ${song.title}", Toast.LENGTH_LONG).show()
+                                                        onTuneSelected(tuneInfo)
                                                     }
+                                                },
+                                                onSelectAndTrim = {
+                                                    coroutineScope.launch {
+                                                        LksCallerTuneManager.stopPreview()
+                                                        previewTarget = TunePreviewTarget.None
+                                                        tuneApplyState = TuneApplyState.DownloadingForTrim(song.videoId)
 
-                                                    com.example.data.repository.FirebaseManager.getInstance(context).updateCallerTune(
-                                                        title = tuneInfo.title,
-                                                        artist = tuneInfo.artist,
-                                                        audioUrl = tuneInfo.audioUrl,
-                                                        audioBase64 = tuneInfo.audioBase64,
-                                                        source = tuneInfo.source,
-                                                        startMs = tuneInfo.startMs,
-                                                        endMs = tuneInfo.endMs
-                                                    )
-                                                    settingSongId = null
-                                                    Toast.makeText(context, "Caller Tune active: ${song.title}", Toast.LENGTH_LONG).show()
-                                                    onTuneSelected(tuneInfo)
-                                                }
-                                            },
-                                            onSelectAndTrim = {
-                                                coroutineScope.launch {
-                                                    LksCallerTuneManager.stopPreview()
-                                                    previewingSongId = null
-                                                    downloadingSongId = song.videoId
+                                                        val audioFile = if (song.directAudioUrl.isNotBlank()) {
+                                                            YouTubeSearchHelper.downloadSongToTempFile(context, song.directAudioUrl)
+                                                        } else null
 
-                                                    val audioFile = if (song.directAudioUrl.isNotBlank()) {
-                                                        YouTubeSearchHelper.downloadSongToTempFile(context, song.directAudioUrl)
-                                                    } else null
-
-                                                    downloadingSongId = null
-                                                    if (audioFile != null && audioFile.exists()) {
-                                                        activeTrimmerUri = Uri.fromFile(audioFile)
-                                                        activeTrimmerTitle = song.title
-                                                        activeTrimmerArtist = song.channelName
-                                                        activeTrimmerSource = "LIBRARY"
-                                                        activeTrimmerThumb = song.thumbnailUrl
-                                                        activeTrimmerAudioUrl = song.directAudioUrl
-                                                    } else {
-                                                        Toast.makeText(context, "Could not load track audio for trimming. Try another track or 'My Device'.", Toast.LENGTH_LONG).show()
+                                                        tuneApplyState = TuneApplyState.Idle
+                                                        if (audioFile != null && audioFile.exists()) {
+                                                            activeTrimmer = CallerTuneTrimmerTarget(
+                                                                uri = Uri.fromFile(audioFile),
+                                                                title = song.title,
+                                                                artist = song.channelName,
+                                                                source = "LIBRARY",
+                                                                thumbnailUrl = song.thumbnailUrl,
+                                                                audioUrl = song.directAudioUrl
+                                                            )
+                                                        } else {
+                                                            Toast.makeText(context, "Could not load track audio for trimming. Try another track or 'My Device'.", Toast.LENGTH_LONG).show()
+                                                        }
                                                     }
                                                 }
-                                            }
-                                        )
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -479,31 +503,37 @@ fun CallerTunePickerDialog(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             items(LksCallerTuneManager.CURATED_TUNES) { curated ->
+                                val isCuratedPreviewing = previewTarget == TunePreviewTarget.Curated(curated.id)
+                                val isCuratedSetting = tuneApplyState == TuneApplyState.SettingCurated(curated.id)
                                 CuratedTuneCard(
                                     tune = curated,
-                                    isPlaying = previewingCuratedId == curated.id,
-                                    isSetting = settingCuratedId == curated.id,
+                                    isPlaying = isCuratedPreviewing,
+                                    isSetting = isCuratedSetting,
                                     onTogglePreview = {
-                                        if (previewingCuratedId == curated.id) {
+                                        if (isCuratedPreviewing) {
                                             LksCallerTuneManager.stopPreview()
-                                            previewingCuratedId = null
+                                            previewTarget = TunePreviewTarget.None
                                         } else {
-                                            previewingCuratedId = curated.id
+                                            LksCallerTuneManager.stopPreview()
+                                            previewTarget = TunePreviewTarget.Curated(curated.id)
                                             val info = CallerTuneInfo(
                                                 title = curated.title,
                                                 artist = curated.artist,
                                                 audioUrl = curated.streamUrl,
                                                 source = "PRESET"
                                             )
-                                            LksCallerTuneManager.playPreview(context, info) {
-                                                previewingCuratedId = null
+                                            val started = LksCallerTuneManager.playPreview(context, info) {
+                                                previewTarget = TunePreviewTarget.None
+                                            }
+                                            if (!started) {
+                                                previewTarget = TunePreviewTarget.None
                                             }
                                         }
                                     },
                                     onSelect = {
                                         LksCallerTuneManager.stopPreview()
-                                        previewingCuratedId = null
-                                        settingCuratedId = curated.id
+                                        previewTarget = TunePreviewTarget.None
+                                        tuneApplyState = TuneApplyState.SettingCurated(curated.id)
                                         coroutineScope.launch {
                                             Toast.makeText(context, "Setting \"${curated.title}\" as your Caller Tune...", Toast.LENGTH_SHORT).show()
                                             val tuneInfo = LksCallerTuneManager.cacheAndSetTuneFromUrl(
@@ -524,7 +554,7 @@ fun CallerTunePickerDialog(
                                                 startMs = tuneInfo.startMs,
                                                 endMs = tuneInfo.endMs
                                             )
-                                            settingCuratedId = null
+                                            tuneApplyState = TuneApplyState.Idle
                                             Toast.makeText(context, "Caller Tune active: ${curated.title}", Toast.LENGTH_LONG).show()
                                             onTuneSelected(tuneInfo)
                                         }

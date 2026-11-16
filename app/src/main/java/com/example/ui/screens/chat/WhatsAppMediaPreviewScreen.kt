@@ -98,17 +98,14 @@ fun WhatsAppMediaPreviewScreen(
 
     val currentItem = photoItems[safeActiveIndex]
 
-    // States for cropping and adding photos
-    var isCropMode by remember { mutableStateOf(false) }
-    var showAddMediaSheet by remember { mutableStateOf(false) }
-    var showCameraToAdd by remember { mutableStateOf(false) }
+    var previewMode by remember { mutableStateOf<MediaPreviewMode>(MediaPreviewMode.Viewing) }
 
-    if (isCropMode) {
+    if (previewMode == MediaPreviewMode.Cropping) {
         WhatsAppPhotoCropper(
             imageFile = currentItem.originalFile,
             initialRotation = currentItem.rotationAngle,
             onCropDone = { croppedFile ->
-                isCropMode = false
+                previewMode = MediaPreviewMode.Viewing
                 val updated = currentItem.copy(
                     originalFile = croppedFile,
                     rotationAngle = 0f,
@@ -116,20 +113,20 @@ fun WhatsAppMediaPreviewScreen(
                 )
                 photoItems[safeActiveIndex] = updated
             },
-            onCancel = { isCropMode = false }
+            onCancel = { previewMode = MediaPreviewMode.Viewing }
         )
         return
     }
 
-    if (showCameraToAdd) {
+    if (previewMode == MediaPreviewMode.CameraToAdd) {
         WhatsAppCameraScreen(
             onPhotoCaptured = { capturedFile ->
-                showCameraToAdd = false
+                previewMode = MediaPreviewMode.Viewing
                 photoItems.add(EditablePhotoItem(originalFile = capturedFile))
                 activeIndex = photoItems.size - 1
             },
             onPhotosSelectedFromGallery = { files ->
-                showCameraToAdd = false
+                previewMode = MediaPreviewMode.Viewing
                 files.forEach { file ->
                     photoItems.add(EditablePhotoItem(originalFile = file))
                 }
@@ -137,13 +134,12 @@ fun WhatsAppMediaPreviewScreen(
                     activeIndex = photoItems.size - 1
                 }
             },
-            onClose = { showCameraToAdd = false }
+            onClose = { previewMode = MediaPreviewMode.Viewing }
         )
         return
     }
 
-    // Active item editing states
-    var isDrawMode by remember { mutableStateOf(false) }
+    val isDrawMode = previewMode == MediaPreviewMode.Drawing
     val colors = listOf(
         Color.White,
         Color(0xFFFFEB3B), // Yellow
@@ -229,7 +225,9 @@ fun WhatsAppMediaPreviewScreen(
                     }
 
                     // Pen / Draw mode toggle
-                    IconButton(onClick = { isDrawMode = !isDrawMode }) {
+                    IconButton(onClick = {
+                        previewMode = if (isDrawMode) MediaPreviewMode.Viewing else MediaPreviewMode.Drawing
+                    }) {
                         Icon(
                             Icons.Default.Brush,
                             contentDescription = "Draw",
@@ -238,7 +236,7 @@ fun WhatsAppMediaPreviewScreen(
                     }
 
                     // Crop & Rotate button
-                    IconButton(onClick = { isCropMode = true }) {
+                    IconButton(onClick = { previewMode = MediaPreviewMode.Cropping }) {
                         Icon(Icons.Default.Crop, contentDescription = "Crop", tint = Color.White)
                     }
 
@@ -322,7 +320,7 @@ fun WhatsAppMediaPreviewScreen(
                                 )
                                 .clickable {
                                     activeIndex = index
-                                    isDrawMode = false
+                                    if (isDrawMode) previewMode = MediaPreviewMode.Viewing
                                 }
                         ) {
                             AsyncImage(
@@ -361,7 +359,7 @@ fun WhatsAppMediaPreviewScreen(
                     // "+ Add" More Photos Button in Carousel
                     item {
                         Surface(
-                            onClick = { showAddMediaSheet = true },
+                            onClick = { previewMode = MediaPreviewMode.AddMediaSheet },
                             modifier = Modifier
                                 .size(60.dp)
                                 .clip(RoundedCornerShape(10.dp)),
@@ -569,9 +567,9 @@ fun WhatsAppMediaPreviewScreen(
         }
     }
 
-    if (showAddMediaSheet) {
+    if (previewMode == MediaPreviewMode.AddMediaSheet) {
         ModalBottomSheet(
-            onDismissRequest = { showAddMediaSheet = false },
+            onDismissRequest = { previewMode = MediaPreviewMode.Viewing },
             containerColor = Color(0xFF1E2428),
             dragHandle = { BottomSheetDefaults.DragHandle(color = Color.Gray) }
         ) {
@@ -595,8 +593,7 @@ fun WhatsAppMediaPreviewScreen(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.clickable {
-                            showAddMediaSheet = false
-                            showCameraToAdd = true
+                            previewMode = MediaPreviewMode.CameraToAdd
                         }
                     ) {
                         Surface(
@@ -616,7 +613,7 @@ fun WhatsAppMediaPreviewScreen(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.clickable {
-                            showAddMediaSheet = false
+                            previewMode = MediaPreviewMode.Viewing
                             addPhotosLauncher.launch("image/*")
                         }
                     ) {
@@ -637,6 +634,14 @@ fun WhatsAppMediaPreviewScreen(
             }
         }
     }
+}
+
+private enum class MediaPreviewMode {
+    Viewing,
+    Drawing,
+    Cropping,
+    AddMediaSheet,
+    CameraToAdd
 }
 
 /**

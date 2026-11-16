@@ -80,17 +80,13 @@ fun CallHistoryScreen(
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
     var selectedFilter by remember { mutableStateOf("ALL") }
-    var selectedLogForDetail by remember { mutableStateOf<CallLogDto?>(null) }
-    var showClearDialog by remember { mutableStateOf(false) }
-    var showBlockConfirmDialog by remember { mutableStateOf(false) }
-    var showSpamConfirmDialog by remember { mutableStateOf(false) }
+    var overlay by remember { mutableStateOf<CallHistoryOverlay>(CallHistoryOverlay.None) }
     val coroutineScope = rememberCoroutineScope()
 
     // Samsung Dialer Automatic Swipe Demonstration State
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
     var lastCallClickTime by remember { mutableStateOf(0L) }
-    var showSwipeHint by remember { mutableStateOf(false) }
-    var demoPhase by remember { mutableIntStateOf(0) } // 0 = idle, 1 = swipe right (Call), 2 = swipe left (Message)
+    var swipeDemoPhase by remember { mutableStateOf(SwipeDemoPhase.HIDDEN) }
     val demoSwipeOffset = remember { Animatable(0f) }
 
     // Track inactivity and play a smooth Samsung Dialer-style swipe demonstration
@@ -98,9 +94,8 @@ fun CallHistoryScreen(
         if (callLogs.isNotEmpty()) {
             delay(3800)
             if (System.currentTimeMillis() - lastInteractionTime >= 3700) {
-                showSwipeHint = true
+                swipeDemoPhase = SwipeDemoPhase.SWIPE_CALL
                 // Phase 1: Smooth Samsung Right-Swipe to Call preview
-                demoPhase = 1
                 demoSwipeOffset.animateTo(
                     targetValue = 112f,
                     animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
@@ -115,7 +110,7 @@ fun CallHistoryScreen(
                 )
                 delay(350)
                 // Phase 2: Smooth Samsung Left-Swipe to Message preview
-                demoPhase = 2
+                swipeDemoPhase = SwipeDemoPhase.SWIPE_MESSAGE
                 demoSwipeOffset.animateTo(
                     targetValue = -112f,
                     animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing)
@@ -128,7 +123,7 @@ fun CallHistoryScreen(
                         stiffness = Spring.StiffnessMediumLow
                     )
                 )
-                demoPhase = 0
+                swipeDemoPhase = SwipeDemoPhase.IDLE
             }
         }
     }
@@ -145,28 +140,35 @@ fun CallHistoryScreen(
         }
     }
 
-    if (showClearDialog) {
+    val detailLog = when (val current = overlay) {
+        is CallHistoryOverlay.LogDetail -> current.log
+        is CallHistoryOverlay.BlockConfirm -> current.log
+        is CallHistoryOverlay.SpamConfirm -> current.log
+        else -> null
+    }
+
+    if (overlay == CallHistoryOverlay.ClearConfirm) {
         AlertDialog(
-            onDismissRequest = { showClearDialog = false },
+            onDismissRequest = { overlay = CallHistoryOverlay.None },
             title = { Text("Clear Call History?") },
             text = { Text("This will remove all recent call logs from your device.") },
             confirmButton = {
                 TextButton(onClick = {
                     firebaseManager.clearCallLogs()
-                    showClearDialog = false
+                    overlay = CallHistoryOverlay.None
                 }) {
                     Text("Clear All", color = RedEndCall, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) {
+                TextButton(onClick = { overlay = CallHistoryOverlay.None }) {
                     Text("Cancel")
                 }
             }
         )
     }
 
-    selectedLogForDetail?.let { log ->
+    detailLog?.let { log ->
         val resolvedNumber = log.resolveOtherPartyNumber()
         val matchedUser = remember(resolvedNumber, registeredUsers) {
             registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber) }
@@ -179,7 +181,7 @@ fun CallHistoryScreen(
             ?: resolvedNumber.ifBlank { "Unknown" }
 
         ModalBottomSheet(
-            onDismissRequest = { selectedLogForDetail = null }
+            onDismissRequest = { overlay = CallHistoryOverlay.None }
         ) {
             Column(
                 modifier = Modifier
@@ -254,7 +256,7 @@ fun CallHistoryScreen(
                 ) {
                     Button(
                         onClick = {
-                            selectedLogForDetail = null
+                            overlay = CallHistoryOverlay.None
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
@@ -272,7 +274,7 @@ fun CallHistoryScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            selectedLogForDetail = null
+                            overlay = CallHistoryOverlay.None
                             val now = System.currentTimeMillis()
                             if (now - lastCallClickTime > 1500L) {
                                 lastCallClickTime = now
@@ -291,7 +293,7 @@ fun CallHistoryScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Button(
                             onClick = {
-                                selectedLogForDetail = null
+                                overlay = CallHistoryOverlay.None
                                 onOpenChat(resolvedNumber, displayName)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = TealPrimary),
@@ -390,7 +392,7 @@ fun CallHistoryScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                showBlockConfirmDialog = true
+                                overlay = CallHistoryOverlay.BlockConfirm(log)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(14.dp),
@@ -403,7 +405,7 @@ fun CallHistoryScreen(
 
                         OutlinedButton(
                             onClick = {
-                                showSpamConfirmDialog = true
+                                overlay = CallHistoryOverlay.SpamConfirm(log)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(14.dp),
@@ -419,15 +421,15 @@ fun CallHistoryScreen(
         }
     }
 
-    if (showBlockConfirmDialog && selectedLogForDetail != null) {
-        val targetLog = selectedLogForDetail ?: return
+    (overlay as? CallHistoryOverlay.BlockConfirm)?.let { blockOverlay ->
+        val targetLog = blockOverlay.log
         val targetNumber = targetLog.resolveOtherPartyNumber()
         val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetNumber) }
         val targetName = targetUser?.displayName?.ifBlank { null }
             ?: targetLog.resolveOtherPartyName().ifBlank { null }
             ?: targetNumber.ifBlank { "Unknown" }
         AlertDialog(
-            onDismissRequest = { showBlockConfirmDialog = false },
+            onDismissRequest = { overlay = CallHistoryOverlay.LogDetail(targetLog) },
             icon = {
                 Icon(
                     Icons.Default.Block,
@@ -445,7 +447,7 @@ fun CallHistoryScreen(
                     onClick = {
                         firebaseManager.blockNumber(targetNumber)
                         Toast.makeText(context, "Blocked $targetName", Toast.LENGTH_SHORT).show()
-                        showBlockConfirmDialog = false
+                        overlay = CallHistoryOverlay.LogDetail(targetLog)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
@@ -453,22 +455,22 @@ fun CallHistoryScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showBlockConfirmDialog = false }) {
+                TextButton(onClick = { overlay = CallHistoryOverlay.LogDetail(targetLog) }) {
                     Text("Cancel")
                 }
             }
         )
     }
 
-    if (showSpamConfirmDialog && selectedLogForDetail != null) {
-        val targetLog = selectedLogForDetail ?: return
+    (overlay as? CallHistoryOverlay.SpamConfirm)?.let { spamOverlay ->
+        val targetLog = spamOverlay.log
         val targetNumber = targetLog.resolveOtherPartyNumber()
         val targetUser = registeredUsers.find { ContactsHelper.numbersMatch(it.phoneNumber, targetNumber) }
         val targetName = targetUser?.displayName?.ifBlank { null }
             ?: targetLog.resolveOtherPartyName().ifBlank { null }
             ?: targetNumber.ifBlank { "Unknown" }
         AlertDialog(
-            onDismissRequest = { showSpamConfirmDialog = false },
+            onDismissRequest = { overlay = CallHistoryOverlay.LogDetail(targetLog) },
             icon = {
                 Icon(
                     Icons.Default.Report,
@@ -486,7 +488,7 @@ fun CallHistoryScreen(
                     onClick = {
                         firebaseManager.reportSpam(targetNumber, "Reported from Call History")
                         Toast.makeText(context, "Reported $targetName as spam and blocked", Toast.LENGTH_SHORT).show()
-                        showSpamConfirmDialog = false
+                        overlay = CallHistoryOverlay.LogDetail(targetLog)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                 ) {
@@ -494,7 +496,7 @@ fun CallHistoryScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSpamConfirmDialog = false }) {
+                TextButton(onClick = { overlay = CallHistoryOverlay.LogDetail(targetLog) }) {
                     Text("Cancel")
                 }
             }
@@ -509,7 +511,7 @@ fun CallHistoryScreen(
                 awaitEachGesture {
                     awaitFirstDown()
                     lastInteractionTime = System.currentTimeMillis()
-                    showSwipeHint = false
+                    swipeDemoPhase = SwipeDemoPhase.HIDDEN
                     coroutineScope.launch { demoSwipeOffset.snapTo(0f) }
                 }
             }
@@ -565,7 +567,7 @@ fun CallHistoryScreen(
                 }
                 if (callLogs.isNotEmpty()) {
                     IconButton(
-                        onClick = { showClearDialog = true },
+                        onClick = { overlay = CallHistoryOverlay.ClearConfirm },
                         modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
@@ -802,7 +804,7 @@ fun CallHistoryScreen(
 
         // Samsung Dialer-Style Animated Dual-Pill Gesture Indicator
         AnimatedVisibility(
-            visible = showSwipeHint && filteredLogs.isNotEmpty(),
+            visible = swipeDemoPhase.isVisible && filteredLogs.isNotEmpty(),
             enter = fadeIn() + slideInVertically(),
             exit = fadeOut() + slideOutVertically()
         ) {
@@ -810,9 +812,9 @@ fun CallHistoryScreen(
                 color = HudSurfaceContainer,
                 border = BorderStroke(
                     1.dp,
-                    when (demoPhase) {
-                        1 -> Color(0xFF10B981).copy(alpha = 0.7f)
-                        2 -> Color(0xFF0284C7).copy(alpha = 0.7f)
+                    when (swipeDemoPhase) {
+                        SwipeDemoPhase.SWIPE_CALL -> Color(0xFF10B981).copy(alpha = 0.7f)
+                        SwipeDemoPhase.SWIPE_MESSAGE -> Color(0xFF0284C7).copy(alpha = 0.7f)
                         else -> HudBorderSubtle
                     }
                 ),
@@ -830,8 +832,8 @@ fun CallHistoryScreen(
                 ) {
                     // Right Swipe Pill (Call)
                     Surface(
-                        color = if (demoPhase == 1) Color(0xFF10B981).copy(alpha = 0.22f) else Color(0xFF10B981).copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, if (demoPhase == 1) Color(0xFF10B981) else Color(0xFF10B981).copy(alpha = 0.35f)),
+                        color = if (swipeDemoPhase == SwipeDemoPhase.SWIPE_CALL) Color(0xFF10B981).copy(alpha = 0.22f) else Color(0xFF10B981).copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, if (swipeDemoPhase == SwipeDemoPhase.SWIPE_CALL) Color(0xFF10B981) else Color(0xFF10B981).copy(alpha = 0.35f)),
                         shape = RoundedCornerShape(50),
                         modifier = Modifier.weight(1f)
                     ) {
@@ -852,7 +854,7 @@ fun CallHistoryScreen(
                                 fontFamily = SpaceGroteskFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp,
-                                color = if (demoPhase == 1) Color(0xFF10B981) else HudTextPrimary,
+                                color = if (swipeDemoPhase == SwipeDemoPhase.SWIPE_CALL) Color(0xFF10B981) else HudTextPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -871,8 +873,8 @@ fun CallHistoryScreen(
 
                     // Left Swipe Pill (Message)
                     Surface(
-                        color = if (demoPhase == 2) Color(0xFF0284C7).copy(alpha = 0.22f) else Color(0xFF0284C7).copy(alpha = 0.10f),
-                        border = BorderStroke(1.dp, if (demoPhase == 2) Color(0xFF0284C7) else Color(0xFF0284C7).copy(alpha = 0.35f)),
+                        color = if (swipeDemoPhase == SwipeDemoPhase.SWIPE_MESSAGE) Color(0xFF0284C7).copy(alpha = 0.22f) else Color(0xFF0284C7).copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, if (swipeDemoPhase == SwipeDemoPhase.SWIPE_MESSAGE) Color(0xFF0284C7) else Color(0xFF0284C7).copy(alpha = 0.35f)),
                         shape = RoundedCornerShape(50),
                         modifier = Modifier.weight(1f)
                     ) {
@@ -901,7 +903,7 @@ fun CallHistoryScreen(
                                 fontFamily = SpaceGroteskFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp,
-                                color = if (demoPhase == 2) Color(0xFF0284C7) else HudTextPrimary,
+                                color = if (swipeDemoPhase == SwipeDemoPhase.SWIPE_MESSAGE) Color(0xFF0284C7) else HudTextPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -1007,7 +1009,7 @@ fun CallHistoryScreen(
                         ?: log.resolveOtherPartyName().ifBlank { null }
                         ?: resolvedNumber.ifBlank { "Unknown" }
                     val isFirstItem = index == 0
-                    val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
+                    val currentOffset = if (isFirstItem && swipeDemoPhase.isVisible) demoSwipeOffset.value else 0f
 
                     SwipeableCallLogItem(
                         log = log,
@@ -1019,7 +1021,7 @@ fun CallHistoryScreen(
                         demoOffset = currentOffset,
                         onItemClick = {
                             lastInteractionTime = System.currentTimeMillis()
-                            selectedLogForDetail = log
+                            overlay = CallHistoryOverlay.LogDetail(log)
                         },
                         onAudioCall = {
                             val now = System.currentTimeMillis()
@@ -1757,4 +1759,21 @@ private fun formatMs(ms: Int): String {
     val min = totalSec / 60
     val sec = totalSec % 60
     return String.format("%02d:%02d", min, sec)
+}
+
+private sealed interface CallHistoryOverlay {
+    data object None : CallHistoryOverlay
+    data object ClearConfirm : CallHistoryOverlay
+    data class LogDetail(val log: CallLogDto) : CallHistoryOverlay
+    data class BlockConfirm(val log: CallLogDto) : CallHistoryOverlay
+    data class SpamConfirm(val log: CallLogDto) : CallHistoryOverlay
+}
+
+private enum class SwipeDemoPhase {
+    HIDDEN,
+    IDLE,
+    SWIPE_CALL,
+    SWIPE_MESSAGE;
+
+    val isVisible: Boolean get() = this != HIDDEN
 }

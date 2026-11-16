@@ -21,6 +21,21 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.UUID
 
+enum class CallHoldPhase {
+    ACTIVE,
+    LOCAL_HOLD,
+    CELLULAR_HOLD,
+    REMOTE_HOLD
+}
+
+enum class VideoUpgradePhase {
+    NONE,
+    OUTGOING_REQUESTED,
+    INCOMING_REQUESTED,
+    ACCEPTED,
+    DECLINED
+}
+
 data class WebRtcState(
     val activeCall: CallDto? = null,
     val callStatus: CallStatus = CallStatus.IDLE,
@@ -41,13 +56,23 @@ data class WebRtcState(
     val connectionStatusText: String = "Idle",
     val localVideoTrack: VideoTrack? = null,
     val remoteVideoTrack: VideoTrack? = null,
-    val isVideoUpgradeRequested: Boolean = false,
-    val didIRequestVideoUpgrade: Boolean = false,
-    val isOnHold: Boolean = false,
-    val isHeldLocally: Boolean = false,
+    val videoUpgradePhase: VideoUpgradePhase = VideoUpgradePhase.NONE,
+    val holdPhase: CallHoldPhase = CallHoldPhase.ACTIVE,
     val isCaller: Boolean = false,
     val activeCallerTuneTitle: String? = null
-)
+) {
+    val isVideoUpgradeRequested: Boolean
+        get() = videoUpgradePhase == VideoUpgradePhase.INCOMING_REQUESTED
+
+    val didIRequestVideoUpgrade: Boolean
+        get() = videoUpgradePhase == VideoUpgradePhase.OUTGOING_REQUESTED
+
+    val isOnHold: Boolean
+        get() = holdPhase != CallHoldPhase.ACTIVE
+
+    val isHeldLocally: Boolean
+        get() = holdPhase == CallHoldPhase.LOCAL_HOLD || holdPhase == CallHoldPhase.CELLULAR_HOLD
+}
 
 class WebRtcEngine private constructor(private val context: Context) {
     // ⚡ Ultra-fast HTTP/2 connection pool with keep-alive for zero-delay push dispatch
@@ -161,6 +186,75 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
 
+    private enum class OfferPushPhase {
+        IDLE,
+        FALLBACK_SENT,
+        OFFER_SENT
+    }
+
+    private enum class CameraSwitchPhase {
+        IDLE,
+        SWITCHING
+    }
+
+    /**
+     * Explicit cohesive per-call signaling, SDP, and ICE candidate state container.
+     * Replacing/resetting `callSession` atomically clears all per-call transient state.
+     */
+    private class ActiveCallSessionContext(
+        @Volatile var sessionId: String? = null
+    ) {
+        @Volatile var hasProcessedOffer: Boolean = false
+        @Volatile var hasProcessedAnswer: Boolean = false
+        @Volatile var isDirectVideoCall: Boolean = false
+        @Volatile var lastProcessedIceRestartTimestamp: Long = 0L
+        @Volatile var prebuiltAnswerSdp: String? = null
+        @Volatile var prebuiltCallId: String? = null
+        @Volatile var preWarmDone: Boolean = false
+        @Volatile var cachedIncomingOfferSdp: String? = null
+        @Volatile var lastLocalHoldToggleTime: Long = 0L
+        val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val processedCandidateStrings = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val localGatheredCandidates = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
+
+        fun reset(newSessionId: String? = null) {
+            sessionId = newSessionId
+            hasProcessedOffer = false
+            hasProcessedAnswer = false
+            isDirectVideoCall = false
+            lastProcessedIceRestartTimestamp = 0L
+            prebuiltAnswerSdp = null
+            prebuiltCallId = null
+            preWarmDone = false
+            cachedIncomingOfferSdp = null
+            lastLocalHoldToggleTime = 0L
+            sentIceCandidateHashes.clear()
+            processedCandidateStrings.clear()
+            localGatheredCandidates.clear()
+            synchronized(queuedRemoteIceCandidates) {
+                queuedRemoteIceCandidates.clear()
+            }
+        }
+    }
+
+    private val callSession = ActiveCallSessionContext()
+
+    private inline var hasProcessedOffer: Boolean
+        get() = callSession.hasProcessedOffer
+        set(value) { callSession.hasProcessedOffer = value }
+
+    private inline var hasProcessedAnswer: Boolean
+        get() = callSession.hasProcessedAnswer
+        set(value) { callSession.hasProcessedAnswer = value }
+
+    private inline var isDirectVideoCall: Boolean
+        get() = callSession.isDirectVideoCall
+        set(value) { callSession.isDirectVideoCall = value }
+
+    private val queuedRemoteIceCandidates: MutableList<IceCandidate>
+        get() = callSession.queuedRemoteIceCandidates
+
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var timerJob: Job? = null
     private var reconnectJob: Job? = null
@@ -169,14 +263,9 @@ class WebRtcEngine private constructor(private val context: Context) {
     private var activeCallPollingJob: Job? = null
     private var callerRingWatchdogJob: Job? = null
 
-    private var hasProcessedOffer = false
-    private var hasProcessedAnswer = false
-    @Volatile private var isDirectVideoCall = false
-
     private val _state = MutableStateFlow(WebRtcState())
     val state: StateFlow<WebRtcState> = _state.asStateFlow()
     private val headsetButtonManager = com.example.services.HeadsetButtonManager(context)
-    private val queuedRemoteIceCandidates = mutableListOf<IceCandidate>()
 
     val audioRouteManager: AudioRouteManager by lazy {
         AudioRouteManager(
@@ -273,16 +362,29 @@ class WebRtcEngine private constructor(private val context: Context) {
             seenCallIds.add(callId)
         }
     }
-    private val sentIceCandidateHashes = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val sentIceCandidateHashes: MutableSet<String>
+        get() = callSession.sentIceCandidateHashes
     private var incomingCallWakeLock: android.os.PowerManager.WakeLock? = null
-    private var lastProcessedIceRestartTimestamp = 0L
+    private inline var lastProcessedIceRestartTimestamp: Long
+        get() = callSession.lastProcessedIceRestartTimestamp
+        set(value) { callSession.lastProcessedIceRestartTimestamp = value }
 
-    // Pre-warm state: answer SDP prepared during ringing so Accept tap is instant
-    @Volatile private var prebuiltAnswerSdp: String? = null
-    @Volatile private var prebuiltCallId: String? = null
-    @Volatile private var activeCallSessionId: String? = null
-    @Volatile private var preWarmDone = false
-    @Volatile private var cachedIncomingOfferSdp: String? = null
+    // Pre-warm & offer cache properties backed by ActiveCallSessionContext
+    private inline var prebuiltAnswerSdp: String?
+        get() = callSession.prebuiltAnswerSdp
+        set(value) { callSession.prebuiltAnswerSdp = value }
+    private inline var prebuiltCallId: String?
+        get() = callSession.prebuiltCallId
+        set(value) { callSession.prebuiltCallId = value }
+    private inline var activeCallSessionId: String?
+        get() = callSession.sessionId
+        set(value) { callSession.sessionId = value }
+    private inline var preWarmDone: Boolean
+        get() = callSession.preWarmDone
+        set(value) { callSession.preWarmDone = value }
+    private inline var cachedIncomingOfferSdp: String?
+        get() = callSession.cachedIncomingOfferSdp
+        set(value) { callSession.cachedIncomingOfferSdp = value }
     private var incomingOfferFetchJob: Job? = null
 
     // WebRTC Core
@@ -349,8 +451,10 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     private var iceServers: List<PeerConnection.IceServer> = buildDefaultGlobalIceServers()
-    private val processedCandidateStrings = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    private val localGatheredCandidates = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val processedCandidateStrings: MutableSet<String>
+        get() = callSession.processedCandidateStrings
+    private val localGatheredCandidates: java.util.concurrent.CopyOnWriteArrayList<String>
+        get() = callSession.localGatheredCandidates
 
     private fun parseIceServersFromJson(jsonStr: String): List<PeerConnection.IceServer>? {
         return try {
@@ -1603,7 +1707,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 calleeWebToken = calleeWeb
             )
 
-            activeCallSessionId = newCall.callId
+            callSession.reset(newCall.callId)
             isDirectVideoCall = (callType == CallType.VIDEO)
             _state.value = WebRtcState(
                 activeCall = newCall,
@@ -1614,9 +1718,6 @@ class WebRtcEngine private constructor(private val context: Context) {
                 connectionStatusText = "Calling ...",
                 activeCallerTuneTitle = calleeTuneTitle
             )
-
-            hasProcessedOffer = false
-            hasProcessedAnswer = false
 
             // Industry Standard: Initial call document set with retry for network resilience
             firestore.collection("calls").document(newCall.callId).set(newCall)
@@ -1631,8 +1732,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             
             // ⚡ In-Band Push SDP Trigger (0ms setup): Embed local Offer SDP and gathered ICE candidates directly into FCM payload
-            var hasSentPushWithOffer = false
-            var hasSentInitialPush = false
+            var offerPushPhase = OfferPushPhase.IDLE
             val pushLock = Any()
 
             val sendPushToCallee = { offer: String? ->
@@ -1640,19 +1740,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                 var sendOfferPush = false
                 synchronized(pushLock) {
                     if (offer != null) {
-                        // Real SDP offer ready!
-                        if (!hasSentPushWithOffer) {
-                            hasSentPushWithOffer = true
-                            sendOfferPush = hasSentInitialPush // if initial was already sent, this is an update push
-                            hasSentInitialPush = true
+                        if (offerPushPhase != OfferPushPhase.OFFER_SENT) {
+                            sendOfferPush = (offerPushPhase == OfferPushPhase.FALLBACK_SENT)
+                            offerPushPhase = OfferPushPhase.OFFER_SENT
                             shouldSend = true
                         }
-                    } else {
-                        // Safety fallback triggered without SDP (only if real offer hasn't been sent yet)
-                        if (!hasSentInitialPush && !hasSentPushWithOffer) {
-                            hasSentInitialPush = true
-                            shouldSend = true
-                        }
+                    } else if (offerPushPhase == OfferPushPhase.IDLE) {
+                        offerPushPhase = OfferPushPhase.FALLBACK_SENT
+                        shouldSend = true
                     }
                 }
 
@@ -3123,10 +3218,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
             }
 
-            // Video Upgrade Logic
+            // Video Upgrade Logic (explicit VideoUpgradePhase transition)
             val requesterNumber = call.videoUpgradeRequestedBy ?: snapshot?.getString("videoUpgradeRequestedBy")
             val myNumber = getEffectivePhoneNumber()
-            val didIRequest = _state.value.didIRequestVideoUpgrade || (!requesterNumber.isNullOrBlank() && (
+            val didIRequest = _state.value.videoUpgradePhase == VideoUpgradePhase.OUTGOING_REQUESTED || (!requesterNumber.isNullOrBlank() && (
                 requesterNumber == myNumber ||
                 requesterNumber.replace(Regex("[^0-9]"), "") == myNumber.replace(Regex("[^0-9]"), "")
             ))
@@ -3135,29 +3230,25 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (didIRequest) {
                     // I am the requester: NEVER show accept dialog to myself!
                     _state.value = _state.value.copy(
-                        didIRequestVideoUpgrade = true,
-                        isVideoUpgradeRequested = false,
+                        videoUpgradePhase = VideoUpgradePhase.OUTGOING_REQUESTED,
                         connectionStatusText = "Requesting video..."
                     )
-                } else if (!_state.value.isVideoUpgradeRequested) {
+                } else if (_state.value.videoUpgradePhase != VideoUpgradePhase.INCOMING_REQUESTED) {
                     // Remote party requested: show accept dialog only to recipient!
                     _state.value = _state.value.copy(
-                        isVideoUpgradeRequested = true,
-                        didIRequestVideoUpgrade = false
+                        videoUpgradePhase = VideoUpgradePhase.INCOMING_REQUESTED
                     )
                 }
             } else {
-                _state.value = _state.value.copy(
-                    isVideoUpgradeRequested = false
-                )
                 if (call.videoUpgradeStatus == null || isDirectVideoCall) {
-                    _state.value = _state.value.copy(
-                        didIRequestVideoUpgrade = false
-                    )
+                    _state.value = _state.value.copy(videoUpgradePhase = VideoUpgradePhase.NONE)
+                } else if (_state.value.videoUpgradePhase == VideoUpgradePhase.INCOMING_REQUESTED) {
+                    _state.value = _state.value.copy(videoUpgradePhase = VideoUpgradePhase.NONE)
                 }
             }
 
             if (call.videoUpgradeStatus == com.example.data.model.VideoUpgradeStatus.ACCEPTED && _state.value.callType == CallType.AUDIO) {
+                _state.value = _state.value.copy(videoUpgradePhase = VideoUpgradePhase.ACCEPTED)
                 executeVideoUpgrade(isCaller)
             }
 
@@ -3165,17 +3256,19 @@ class WebRtcEngine private constructor(private val context: Context) {
                 if (_state.value.callType == CallType.VIDEO) {
                     revertToAudioCall("Video Declined • Switched to Audio")
                 }
-                if (_state.value.didIRequestVideoUpgrade) {
-                    // Show a toast or update state so the requester knows it was declined
+                if (_state.value.videoUpgradePhase == VideoUpgradePhase.OUTGOING_REQUESTED) {
+                    // Show status so the requester knows it was declined, then reset to NONE
                     _state.value = _state.value.copy(
                         connectionStatusText = "Video Request Declined",
-                        didIRequestVideoUpgrade = false,
-                        isVideoUpgradeRequested = false
+                        videoUpgradePhase = VideoUpgradePhase.DECLINED
                     )
                     scope.launch {
                         delay(3000)
                         if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.callType == CallType.AUDIO) {
-                            _state.value = _state.value.copy(connectionStatusText = "Connected")
+                            _state.value = _state.value.copy(
+                                connectionStatusText = "Connected",
+                                videoUpgradePhase = VideoUpgradePhase.NONE
+                            )
                         }
                     }
                     // Reset the status so we can request again
@@ -3327,20 +3420,26 @@ class WebRtcEngine private constructor(private val context: Context) {
             val myPhone = getEffectivePhoneNumber()
             val isHeldByMe = heldBy.isNotBlank() && (heldBy == myPhone || com.example.util.ContactsHelper.numbersMatch(heldBy, myPhone))
             val isWithinLocalHoldCooldown = (System.currentTimeMillis() - lastLocalHoldToggleTime) < 2500L
+            val resolvedHoldPhase = when {
+                !remoteHold -> CallHoldPhase.ACTIVE
+                isHeldByMe && _state.value.holdPhase == CallHoldPhase.CELLULAR_HOLD -> CallHoldPhase.CELLULAR_HOLD
+                isHeldByMe -> CallHoldPhase.LOCAL_HOLD
+                else -> CallHoldPhase.REMOTE_HOLD
+            }
 
-            if (!isWithinLocalHoldCooldown && (remoteHold != _state.value.isOnHold || (remoteHold && _state.value.isHeldLocally != isHeldByMe))) {
-                val statusMsg = when {
-                    !remoteHold -> "Connected"
-                    isHeldByMe -> "Call On Hold"
-                    else -> "Call On Hold (Other Party)"
+            if (!isWithinLocalHoldCooldown && resolvedHoldPhase != _state.value.holdPhase) {
+                val statusMsg = when (resolvedHoldPhase) {
+                    CallHoldPhase.ACTIVE -> "Connected"
+                    CallHoldPhase.CELLULAR_HOLD -> "On Hold (Cellular Call)"
+                    CallHoldPhase.LOCAL_HOLD -> "Call On Hold"
+                    CallHoldPhase.REMOTE_HOLD -> "Call On Hold (Other Party)"
                 }
-                Log.i("WebRtcEngine", "Hold state updated from remote: remoteHold=$remoteHold, isHeldByMe=$isHeldByMe, heldBy=$heldBy")
+                Log.i("WebRtcEngine", "Hold state updated from remote: phase=$resolvedHoldPhase, heldBy=$heldBy")
                 _state.value = _state.value.copy(
-                    isOnHold = remoteHold,
-                    isHeldLocally = isHeldByMe,
+                    holdPhase = resolvedHoldPhase,
                     connectionStatusText = statusMsg
                 )
-                if (remoteHold) {
+                if (resolvedHoldPhase != CallHoldPhase.ACTIVE) {
                     com.example.util.CallSoundEffectsManager.playHoldTone(context)
                     localAudioTrack?.setEnabled(false)
                     _state.value.localVideoTrack?.setEnabled(false)
@@ -3386,8 +3485,7 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
         val myNumber = getEffectivePhoneNumber()
         _state.value = _state.value.copy(
-            didIRequestVideoUpgrade = true,
-            isVideoUpgradeRequested = false,
+            videoUpgradePhase = VideoUpgradePhase.OUTGOING_REQUESTED,
             connectionStatusText = "Requesting video..."
         )
         try {
@@ -3413,7 +3511,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             Log.w("WebRtcEngine", "Cannot accept video upgrade: callId is blank!")
             return
         }
-        _state.value = _state.value.copy(isVideoUpgradeRequested = false)
+        _state.value = _state.value.copy(videoUpgradePhase = VideoUpgradePhase.ACCEPTED)
         try {
             firestore.collection("calls").document(callId)
                 .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.ACCEPTED.name)
@@ -3432,7 +3530,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             Log.w("WebRtcEngine", "Cannot decline video upgrade: callId is blank!")
             return
         }
-        _state.value = _state.value.copy(isVideoUpgradeRequested = false)
+        _state.value = _state.value.copy(videoUpgradePhase = VideoUpgradePhase.DECLINED)
         try {
             firestore.collection("calls").document(callId)
                 .update("videoUpgradeStatus", com.example.data.model.VideoUpgradeStatus.DECLINED.name)
@@ -3565,8 +3663,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             localVideoTrack = null,
             remoteVideoTrack = null,
             isCameraOn = false,
-            isVideoUpgradeRequested = false,
-            didIRequestVideoUpgrade = false,
+            videoUpgradePhase = VideoUpgradePhase.NONE,
             connectionStatusText = reason
         )
 
@@ -3807,23 +3904,30 @@ class WebRtcEngine private constructor(private val context: Context) {
         setMicrophoneMute(!_state.value.isMuted)
     }
 
-    @Volatile
-    private var lastLocalHoldToggleTime: Long = 0L
+    private inline var lastLocalHoldToggleTime: Long
+        get() = callSession.lastLocalHoldToggleTime
+        set(value) { callSession.lastLocalHoldToggleTime = value }
 
     fun putCallOnHold(onHold: Boolean, isCellularInterruption: Boolean = false) {
         val currentCall = _state.value.activeCall ?: return
         val myNumber = getEffectivePhoneNumber()
         lastLocalHoldToggleTime = System.currentTimeMillis()
 
-        // 1. Update local UI & state FIRST so unmuteAllAudioTracks() sees the updated isOnHold=false flag!
-        val statusText = when {
-            !onHold -> "Connected"
-            isCellularInterruption -> "On Hold (Cellular Call)"
-            else -> "Call On Hold"
+        val targetPhase = when {
+            !onHold -> CallHoldPhase.ACTIVE
+            isCellularInterruption -> CallHoldPhase.CELLULAR_HOLD
+            else -> CallHoldPhase.LOCAL_HOLD
+        }
+
+        // 1. Update local UI & state FIRST so unmuteAllAudioTracks() sees the updated holdPhase!
+        val statusText = when (targetPhase) {
+            CallHoldPhase.ACTIVE -> "Connected"
+            CallHoldPhase.CELLULAR_HOLD -> "On Hold (Cellular Call)"
+            CallHoldPhase.LOCAL_HOLD -> "Call On Hold"
+            CallHoldPhase.REMOTE_HOLD -> "Call On Hold (Other Party)"
         }
         _state.value = _state.value.copy(
-            isOnHold = onHold,
-            isHeldLocally = onHold,
+            holdPhase = targetPhase,
             connectionStatusText = statusText
         )
 
@@ -3895,31 +3999,29 @@ class WebRtcEngine private constructor(private val context: Context) {
         _state.value = _state.value.copy(isCameraOn = newCameraOn)
     }
 
-    @Volatile
-    private var isSwitchingCamera: Boolean = false
+    private val cameraSwitchPhase = java.util.concurrent.atomic.AtomicReference(CameraSwitchPhase.IDLE)
 
     fun switchCamera() {
         val capturer = videoCapturer as? CameraVideoCapturer ?: return
-        if (isSwitchingCamera) {
+        if (!cameraSwitchPhase.compareAndSet(CameraSwitchPhase.IDLE, CameraSwitchPhase.SWITCHING)) {
             Log.d("WebRtcEngine", "Camera switch already in progress, ignoring duplicate click")
             return
         }
-        isSwitchingCamera = true
         try {
             capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontCamera: Boolean) {
-                    isSwitchingCamera = false
+                    cameraSwitchPhase.set(CameraSwitchPhase.IDLE)
                     _state.value = _state.value.copy(isFrontCamera = isFrontCamera)
                     Log.i("WebRtcEngine", "Camera switched successfully: isFrontCamera=$isFrontCamera")
                 }
 
                 override fun onCameraSwitchError(errorDescription: String?) {
-                    isSwitchingCamera = false
+                    cameraSwitchPhase.set(CameraSwitchPhase.IDLE)
                     Log.w("WebRtcEngine", "Camera switch error from HAL: $errorDescription")
                 }
             })
         } catch (e: Exception) {
-            isSwitchingCamera = false
+            cameraSwitchPhase.set(CameraSwitchPhase.IDLE)
             Log.w("WebRtcEngine", "Exception while switching camera: ${e.message}")
         }
     }
@@ -4103,27 +4205,15 @@ class WebRtcEngine private constructor(private val context: Context) {
         videoUpgradeWatchdogJob = null
         incomingOfferFetchJob?.cancel()
         incomingOfferFetchJob = null
-        cachedIncomingOfferSdp = null
         activeCallListener?.remove()
         activeCallListener = null
         currentListeningCallId = null
         iceCandidateListener?.remove()
         iceCandidateListener = null
-        
-        // Reset flags for next call
-        hasProcessedOffer = false
-        hasProcessedAnswer = false
-        isDirectVideoCall = false
-        lastProcessedIceRestartTimestamp = 0L
-        sentIceCandidateHashes.clear()
-        prebuiltAnswerSdp = null
-        prebuiltCallId = null
-        preWarmDone = false
-        processedCandidateStrings.clear()
-        localGatheredCandidates.clear()
-        synchronized(queuedRemoteIceCandidates) {
-            queuedRemoteIceCandidates.clear()
-        }
+
+        // Atomically reset all per-call SDP/signaling/candidate state for next call
+        cameraSwitchPhase.set(CameraSwitchPhase.IDLE)
+        callSession.reset()
 
         try {
             if (incomingCallWakeLock?.isHeld == true) incomingCallWakeLock?.release()

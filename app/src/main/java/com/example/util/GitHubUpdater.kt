@@ -33,6 +33,15 @@ data class UpdateInfo(
     val isMandatory: Boolean
 )
 
+sealed interface UpdateDiscoveryState {
+    data object Idle : UpdateDiscoveryState
+    data object Checking : UpdateDiscoveryState
+    data class Available(val info: UpdateInfo) : UpdateDiscoveryState
+    data class SuppressedWithinCooldown(val info: UpdateInfo) : UpdateDiscoveryState
+    data object UpToDate : UpdateDiscoveryState
+    data class Failed(val reason: String) : UpdateDiscoveryState
+}
+
 sealed class DownloadState {
     object Idle : DownloadState()
     data class Downloading(
@@ -66,6 +75,9 @@ class GitHubUpdater(context: Context) {
             .build()
     }
 
+    private val _discoveryState = MutableStateFlow<UpdateDiscoveryState>(UpdateDiscoveryState.Idle)
+    val discoveryState: StateFlow<UpdateDiscoveryState> = _discoveryState.asStateFlow()
+
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
 
@@ -78,6 +90,7 @@ class GitHubUpdater(context: Context) {
     }
 
     suspend fun checkForUpdates(currentVersion: String? = null, force: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
+        _discoveryState.value = UpdateDiscoveryState.Checking
         try {
             val pInfo = try {
                 context.packageManager.getPackageInfo(context.packageName, 0)
@@ -90,29 +103,30 @@ class GitHubUpdater(context: Context) {
             val dismissedTime = prefs.getLong("dismissed_time", 0L)
 
             // Tier 1: Try GitHub REST API (detailed release notes + asset metadata)
-            val apiResult = checkViaGitHubApi(resolvedLocalVersion)
-            if (apiResult != null) {
-                showUpdateAvailableNotification(apiResult)
-                if (!force && dismissedVersion == apiResult.latestVersion && (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L) {
-                    Log.d(TAG, "Update ${apiResult.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
-                    return@withContext null
-                }
-                return@withContext apiResult
+            // Tier 2: Direct GitHub Web Redirect (Bypasses the 60 req/hr rate limit on mobile carrier CGNAT IPs)
+            val discovered = checkViaGitHubApi(resolvedLocalVersion) ?: run {
+                Log.i(TAG, "GitHub API unavailable or rate-limited; attempting direct web redirect fallback...")
+                checkViaWebRedirect(resolvedLocalVersion)
             }
 
-            // Tier 2: Direct GitHub Web Redirect (Bypasses the 60 req/hr rate limit on mobile carrier CGNAT IPs!)
-            Log.i(TAG, "GitHub API unavailable or rate-limited; attempting direct web redirect fallback...")
-            val fallbackResult = checkViaWebRedirect(resolvedLocalVersion)
-            if (fallbackResult != null) {
-                showUpdateAvailableNotification(fallbackResult)
-                if (!force && dismissedVersion == fallbackResult.latestVersion && (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L) {
-                    Log.d(TAG, "Update ${fallbackResult.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
+            if (discovered != null) {
+                showUpdateAvailableNotification(discovered)
+                val withinCooldown = !force &&
+                    dismissedVersion == discovered.latestVersion &&
+                    (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L
+                if (withinCooldown) {
+                    Log.d(TAG, "Update ${discovered.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
+                    _discoveryState.value = UpdateDiscoveryState.SuppressedWithinCooldown(discovered)
                     return@withContext null
                 }
-                return@withContext fallbackResult
+                _discoveryState.value = UpdateDiscoveryState.Available(discovered)
+                return@withContext discovered
             }
+
+            _discoveryState.value = UpdateDiscoveryState.UpToDate
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check for updates", e)
+            _discoveryState.value = UpdateDiscoveryState.Failed(e.message ?: "Update check failed")
         }
         return@withContext null
     }

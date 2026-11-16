@@ -57,13 +57,21 @@ class LksKeepAliveService : Service() {
         const val ACTION_WATCHDOG_HEARTBEAT = "com.example.action.WATCHDOG_HEARTBEAT"
         private const val WATCHDOG_INTERVAL = 60 * 60 * 1000L // 1 hour
 
+        sealed interface KeepAliveRingState {
+            data object Idle : KeepAliveRingState
+            data class Ringing(val callerNumber: String) : KeepAliveRingState
+        }
+
         @Volatile
         var instance: LksKeepAliveService? = null
             private set
 
         @Volatile
-        var isRinging: Boolean = false
+        var ringState: KeepAliveRingState = KeepAliveRingState.Idle
             private set
+
+        val isRinging: Boolean
+            get() = ringState is KeepAliveRingState.Ringing
 
         /**
          * Start ringtone from the already-running keep-alive service.
@@ -183,7 +191,7 @@ class LksKeepAliveService : Service() {
         stopRingingInternal()
 
         Log.d(TAG, "Starting ringtone for caller: $callerNumber")
-        isRinging = true
+        ringState = KeepAliveRingState.Ringing(callerNumber)
 
         // Get the user's custom ringtone (per-contact → app-level → system default)
         val ringtoneUri: Uri = try {
@@ -254,7 +262,7 @@ class LksKeepAliveService : Service() {
     }
 
     fun stopRingingInternal() {
-        isRinging = false
+        ringState = KeepAliveRingState.Idle
 
         try {
             ringtonePlayer?.stop()

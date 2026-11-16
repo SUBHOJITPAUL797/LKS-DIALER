@@ -67,19 +67,13 @@ fun ChatListScreen(
     val syncedContacts by firebaseManager.syncedContacts.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
-    var showNewChatDialog by remember { mutableStateOf(false) }
-    var showNewGroupDialog by remember { mutableStateOf(false) }
-    var showOptionsMenu by remember { mutableStateOf(false) }
-    var showClearAllConfirm by remember { mutableStateOf(false) }
-    var selectedConversationForOptions by remember { mutableStateOf<ConversationEntity?>(null) }
-    var showQuickCamera by remember { mutableStateOf(false) }
-    var pendingCapturedFile by remember { mutableStateOf<java.io.File?>(null) }
+    var overlay by remember { mutableStateOf<ChatListOverlay>(ChatListOverlay.None) }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            showQuickCamera = true
+            overlay = ChatListOverlay.QuickCamera
         } else {
             Toast.makeText(context, "Camera permission required", Toast.LENGTH_SHORT).show()
         }
@@ -125,7 +119,7 @@ fun ChatListScreen(
                                 android.Manifest.permission.CAMERA
                             ) == android.content.pm.PackageManager.PERMISSION_GRANTED
                             if (hasPerm) {
-                                showQuickCamera = true
+                                overlay = ChatListOverlay.QuickCamera
                             } else {
                                 cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                             }
@@ -139,10 +133,11 @@ fun ChatListScreen(
                         )
                     }
                     Box {
+                        val isOptionsMenuOpen = overlay == ChatListOverlay.OptionsMenu
                         Surface(
-                            onClick = { showOptionsMenu = true },
+                            onClick = { overlay = ChatListOverlay.OptionsMenu },
                             shape = CircleShape,
-                            color = if (showOptionsMenu) SignalAmber.copy(alpha = 0.16f) else Color.Transparent,
+                            color = if (isOptionsMenuOpen) SignalAmber.copy(alpha = 0.16f) else Color.Transparent,
                             modifier = Modifier.size(42.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -151,8 +146,8 @@ fun ChatListScreen(
                         }
                         val isDarkMenu = com.example.ui.theme.LocalIsDarkTheme.current
                         DropdownMenu(
-                            expanded = showOptionsMenu,
-                            onDismissRequest = { showOptionsMenu = false },
+                            expanded = isOptionsMenuOpen,
+                            onDismissRequest = { overlay = ChatListOverlay.None },
                             shape = RoundedCornerShape(22.dp),
                             containerColor = if (isDarkMenu) Color(0xFF182229) else Color.White,
                             tonalElevation = if (isDarkMenu) 8.dp else 2.dp,
@@ -171,8 +166,7 @@ fun ChatListScreen(
                                 icon = Icons.Default.People,
                                 iconTint = Color(0xFF059669),
                                 onClick = {
-                                    showOptionsMenu = false
-                                    showNewGroupDialog = true
+                                    overlay = ChatListOverlay.NewGroupDialog
                                 }
                             )
                             WhatsAppStyledMenuItem(
@@ -181,7 +175,7 @@ fun ChatListScreen(
                                 icon = Icons.Default.QrCodeScanner,
                                 iconTint = Color(0xFF0284C7),
                                 onClick = {
-                                    showOptionsMenu = false
+                                    overlay = ChatListOverlay.None
                                     onNavigateToLinkedDevices()
                                 }
                             )
@@ -191,7 +185,7 @@ fun ChatListScreen(
                                 icon = Icons.Default.Storage,
                                 iconTint = Color(0xFF9333EA),
                                 onClick = {
-                                    showOptionsMenu = false
+                                    overlay = ChatListOverlay.None
                                     onNavigateToStorage()
                                 }
                             )
@@ -201,7 +195,7 @@ fun ChatListScreen(
                                 icon = Icons.Default.Wallpaper,
                                 iconTint = Color(0xFFF59E0B),
                                 onClick = {
-                                    showOptionsMenu = false
+                                    overlay = ChatListOverlay.None
                                     onNavigateToSettings()
                                 }
                             )
@@ -216,8 +210,7 @@ fun ChatListScreen(
                                 iconTint = CrimsonAlert,
                                 isDestructive = true,
                                 onClick = {
-                                    showOptionsMenu = false
-                                    showClearAllConfirm = true
+                                    overlay = ChatListOverlay.ClearAllConfirm
                                 }
                             )
                         }
@@ -230,7 +223,7 @@ fun ChatListScreen(
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showNewChatDialog = true },
+                onClick = { overlay = ChatListOverlay.NewChatDialog() },
                 containerColor = SignalAmber,
                 contentColor = HudTextPrimary,
                 shape = RoundedCornerShape(16.dp),
@@ -309,7 +302,7 @@ fun ChatListScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
-                            onClick = { showNewChatDialog = true },
+                            onClick = { overlay = ChatListOverlay.NewChatDialog() },
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = CyberMint)
                         ) {
@@ -376,7 +369,7 @@ fun ChatListScreen(
                             isInActiveCall = isInActiveCall,
                             activeCallType = activeCallType,
                             onClick = { onOpenConversation(conv.phoneNumber, conv.contactName, resolvedAvatar) },
-                            onLongClick = { selectedConversationForOptions = conv }
+                            onLongClick = { overlay = ChatListOverlay.ConversationOptions(conv) }
                         )
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 76.dp, end = 16.dp),
@@ -389,173 +382,176 @@ fun ChatListScreen(
         }
     }
 
-    if (showQuickCamera) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showQuickCamera = false },
-            properties = androidx.compose.ui.window.DialogProperties(
-                usePlatformDefaultWidth = false,
-                decorFitsSystemWindows = false
-            )
-        ) {
-            WhatsAppCameraScreen(
-                onPhotoCaptured = { capturedFile ->
-                    showQuickCamera = false
-                    pendingCapturedFile = capturedFile
-                    Toast.makeText(context, "Captured! Select a contact to send or dismiss to keep.", Toast.LENGTH_SHORT).show()
-                    showNewChatDialog = true
-                },
-                onPhotosSelectedFromGallery = { files ->
-                    showQuickCamera = false
-                    val first = files.firstOrNull()
-                    if (first != null) {
-                        pendingCapturedFile = first
-                        showNewChatDialog = true
-                    }
-                },
-                onClose = { showQuickCamera = false }
-            )
-        }
-    }
-
-    if (showNewChatDialog) {
-        NewChatPickerModal(
-            registeredUsers = registeredUsers,
-            syncedContacts = syncedContacts,
-            onUserSelected = { phone, name, avatar ->
-                showNewChatDialog = false
-                val fileToSend = pendingCapturedFile
-                pendingCapturedFile = null
-                if (fileToSend != null) {
-                    coroutineScope.launch {
-                        val ext = fileToSend.extension.lowercase(Locale.getDefault())
-                        val mediaType = if (ext in listOf("mp4", "mkv", "webm", "mov", "3gp")) {
-                            ChatMediaType.DOCUMENT
-                        } else {
-                            ChatMediaType.IMAGE
-                        }
-                        chatRepository.sendMessage(
-                            recipientNumber = phone,
-                            recipientName = name,
-                            text = if (mediaType == ChatMediaType.DOCUMENT) fileToSend.name else "",
-                            mediaType = mediaType,
-                            mediaFile = fileToSend
-                        )
-                    }
-                }
-                onOpenConversation(phone, name, avatar)
-            },
-            onOpenNewGroup = {
-                showNewChatDialog = false
-                showNewGroupDialog = true
-            },
-            onDismiss = {
-                showNewChatDialog = false
-                pendingCapturedFile = null
-            }
-        )
-    }
-
-    if (showNewGroupDialog) {
-        NewGroupDialog(
-            registeredUsers = registeredUsers,
-            syncedContacts = syncedContacts,
-            onCreateGroup = { name, selectedMembers, iconUrl ->
-                showNewGroupDialog = false
-                coroutineScope.launch {
-                    val result = chatRepository.createGroup(name, selectedMembers, iconUrl)
-                    result.onSuccess { group ->
-                        onOpenConversation(group.groupId, group.name, group.iconUrl)
-                    }.onFailure { err ->
-                        Toast.makeText(context, "Failed to create group: ${err.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            },
-            onDismiss = { showNewGroupDialog = false }
-        )
-    }
-
-    if (showClearAllConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearAllConfirm = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Clear All Chats?") },
-            text = { Text("Are you sure you want to delete all messages and media files across all chats from this device?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showClearAllConfirm = false
-                        coroutineScope.launch {
-                            chatRepository.clearAllChats()
-                            Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Clear All", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearAllConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Conversation Options Bottom Sheet (Pin, Unpin, Delete)
-    val selectedConv = selectedConversationForOptions
-    if (selectedConv != null) {
-        ModalBottomSheet(
-            onDismissRequest = { selectedConversationForOptions = null }
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp)
+    when (val activeOverlay = overlay) {
+        ChatListOverlay.None, ChatListOverlay.OptionsMenu -> Unit
+        ChatListOverlay.QuickCamera -> {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { overlay = ChatListOverlay.None },
+                properties = androidx.compose.ui.window.DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    decorFitsSystemWindows = false
+                )
             ) {
-                // Pin / Unpin
-                ListItem(
-                    headlineContent = {
-                        Text(if (selectedConv.isPinned) "Unpin chat" else "Pin chat")
+                WhatsAppCameraScreen(
+                    onPhotoCaptured = { capturedFile ->
+                        Toast.makeText(context, "Captured! Select a contact to send or dismiss to keep.", Toast.LENGTH_SHORT).show()
+                        overlay = ChatListOverlay.NewChatDialog(pendingCapturedFile = capturedFile)
                     },
-                    leadingContent = {
-                        Icon(
-                            if (selectedConv.isPinned) Icons.Default.Star else Icons.Default.StarBorder,
-                            contentDescription = null,
-                            tint = if (selectedConv.isPinned) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface
-                        )
-                    },
-                    modifier = Modifier.clickable {
-                        val willPin = !selectedConv.isPinned
-                        selectedConversationForOptions = null
-                        coroutineScope.launch {
-                            chatRepository.pinConversation(selectedConv.phoneNumber, willPin)
-                            val msg = if (willPin) "Chat pinned to top" else "Chat unpinned"
-                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    onPhotosSelectedFromGallery = { files ->
+                        val first = files.firstOrNull()
+                        overlay = if (first != null) {
+                            ChatListOverlay.NewChatDialog(pendingCapturedFile = first)
+                        } else {
+                            ChatListOverlay.None
                         }
-                    }
-                )
-
-                // Delete Conversation
-                ListItem(
-                    headlineContent = {
-                        Text("Delete chat", color = MaterialTheme.colorScheme.error)
                     },
-                    leadingContent = {
-                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                    },
-                    modifier = Modifier.clickable {
-                        val phoneToDelete = selectedConv.phoneNumber
-                        selectedConversationForOptions = null
-                        coroutineScope.launch {
-                            chatRepository.deleteConversation(phoneToDelete)
-                            Toast.makeText(context, "Chat deleted", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+                    onClose = { overlay = ChatListOverlay.None }
                 )
             }
         }
+        is ChatListOverlay.NewChatDialog -> {
+            val fileToSend = activeOverlay.pendingCapturedFile
+            NewChatPickerModal(
+                registeredUsers = registeredUsers,
+                syncedContacts = syncedContacts,
+                onUserSelected = { phone, name, avatar ->
+                    overlay = ChatListOverlay.None
+                    if (fileToSend != null) {
+                        coroutineScope.launch {
+                            val ext = fileToSend.extension.lowercase(Locale.getDefault())
+                            val mediaType = if (ext in listOf("mp4", "mkv", "webm", "mov", "3gp")) {
+                                ChatMediaType.DOCUMENT
+                            } else {
+                                ChatMediaType.IMAGE
+                            }
+                            chatRepository.sendMessage(
+                                recipientNumber = phone,
+                                recipientName = name,
+                                text = if (mediaType == ChatMediaType.DOCUMENT) fileToSend.name else "",
+                                mediaType = mediaType,
+                                mediaFile = fileToSend
+                            )
+                        }
+                    }
+                    onOpenConversation(phone, name, avatar)
+                },
+                onOpenNewGroup = {
+                    overlay = ChatListOverlay.NewGroupDialog
+                },
+                onDismiss = {
+                    overlay = ChatListOverlay.None
+                }
+            )
+        }
+        ChatListOverlay.NewGroupDialog -> {
+            NewGroupDialog(
+                registeredUsers = registeredUsers,
+                syncedContacts = syncedContacts,
+                onCreateGroup = { name, selectedMembers, iconUrl ->
+                    overlay = ChatListOverlay.None
+                    coroutineScope.launch {
+                        val result = chatRepository.createGroup(name, selectedMembers, iconUrl)
+                        result.onSuccess { group ->
+                            onOpenConversation(group.groupId, group.name, group.iconUrl)
+                        }.onFailure { err ->
+                            Toast.makeText(context, "Failed to create group: ${err.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onDismiss = { overlay = ChatListOverlay.None }
+            )
+        }
+        ChatListOverlay.ClearAllConfirm -> {
+            AlertDialog(
+                onDismissRequest = { overlay = ChatListOverlay.None },
+                icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Clear All Chats?") },
+                text = { Text("Are you sure you want to delete all messages and media files across all chats from this device?") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            overlay = ChatListOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.clearAllChats()
+                                Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Clear All", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { overlay = ChatListOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+        is ChatListOverlay.ConversationOptions -> {
+            val selectedConv = activeOverlay.conversation
+            ModalBottomSheet(
+                onDismissRequest = { overlay = ChatListOverlay.None }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp)
+                ) {
+                    // Pin / Unpin
+                    ListItem(
+                        headlineContent = {
+                            Text(if (selectedConv.isPinned) "Unpin chat" else "Pin chat")
+                        },
+                        leadingContent = {
+                            Icon(
+                                if (selectedConv.isPinned) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = null,
+                                tint = if (selectedConv.isPinned) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurface
+                            )
+                        },
+                        modifier = Modifier.clickable {
+                            val willPin = !selectedConv.isPinned
+                            overlay = ChatListOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.pinConversation(selectedConv.phoneNumber, willPin)
+                                val msg = if (willPin) "Chat pinned to top" else "Chat unpinned"
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+
+                    // Delete Conversation
+                    ListItem(
+                        headlineContent = {
+                            Text("Delete chat", color = MaterialTheme.colorScheme.error)
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        },
+                        modifier = Modifier.clickable {
+                            val phoneToDelete = selectedConv.phoneNumber
+                            overlay = ChatListOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.deleteConversation(phoneToDelete)
+                                Toast.makeText(context, "Chat deleted", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                }
+            }
+        }
     }
+}
+
+private sealed interface ChatListOverlay {
+    data object None : ChatListOverlay
+    data object OptionsMenu : ChatListOverlay
+    data object QuickCamera : ChatListOverlay
+    data class NewChatDialog(val pendingCapturedFile: java.io.File? = null) : ChatListOverlay
+    data object NewGroupDialog : ChatListOverlay
+    data object ClearAllConfirm : ChatListOverlay
+    data class ConversationOptions(val conversation: ConversationEntity) : ChatListOverlay
 }
 
 @OptIn(ExperimentalFoundationApi::class)

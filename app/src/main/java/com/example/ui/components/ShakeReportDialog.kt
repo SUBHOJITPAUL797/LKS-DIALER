@@ -56,9 +56,10 @@ fun ShakeReportDialog(
     val clipboardManager = LocalClipboardManager.current
 
     var userNote by remember { mutableStateOf("") }
-    var isUploading by remember { mutableStateOf(false) }
     var showLogPreview by remember { mutableStateOf(false) }
-    var uploadedReportId by remember { mutableStateOf<String?>(null) }
+    var uploadState by remember { mutableStateOf<CloudReportUploadState>(CloudReportUploadState.Idle) }
+    val isUploading = uploadState is CloudReportUploadState.Uploading
+    val uploadedReportId = (uploadState as? CloudReportUploadState.Uploaded)?.reportId
 
     val recentLogs = remember { LksLogger.getRecentLogs(800) }
     val errorDigest = remember { LksLogger.getErrorDigest(60) }
@@ -372,7 +373,7 @@ fun ShakeReportDialog(
 
                         Button(
                             onClick = {
-                                isUploading = true
+                                uploadState = CloudReportUploadState.Uploading
                                 coroutineScope.launch {
                                     val res = LksLogUploader.uploadDiagnosticReportWithId(
                                         context = context,
@@ -380,13 +381,13 @@ fun ShakeReportDialog(
                                         userNote = userNote,
                                         logs = recentLogs
                                     )
-                                    isUploading = false
                                     val reportId = res.getOrNull()
                                     if (reportId != null) {
-                                        uploadedReportId = reportId
+                                        uploadState = CloudReportUploadState.Uploaded(reportId)
                                         clipboardManager.setText(AnnotatedString(reportId))
                                         Toast.makeText(context, "✅ Sent to Cloud DB! Report ID copied: $reportId", Toast.LENGTH_LONG).show()
                                     } else {
+                                        uploadState = CloudReportUploadState.Idle
                                         Toast.makeText(context, "Cloud upload failed. Logs saved locally on device.", Toast.LENGTH_SHORT).show()
                                         onDismiss()
                                     }
@@ -433,8 +434,9 @@ fun LiveLogViewerDialog(
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("ALL") }
     var refreshTick by remember { mutableIntStateOf(0) }
-    var isUploadingCloud by remember { mutableStateOf(false) }
-    var lastUploadedReportId by remember { mutableStateOf<String?>(null) }
+    var cloudUploadState by remember { mutableStateOf<CloudReportUploadState>(CloudReportUploadState.Idle) }
+    val isUploadingCloud = cloudUploadState is CloudReportUploadState.Uploading
+    val lastUploadedReportId = (cloudUploadState as? CloudReportUploadState.Uploaded)?.reportId
 
     val allLogs = remember(refreshTick) { LksLogger.getRecentLogs(1500) }
 
@@ -642,7 +644,7 @@ fun LiveLogViewerDialog(
                     Button(
                         onClick = {
                             if (!isUploadingCloud) {
-                                isUploadingCloud = true
+                                cloudUploadState = CloudReportUploadState.Uploading
                                 coroutineScope.launch {
                                     val res = LksLogUploader.uploadDiagnosticReportWithId(
                                         context = context,
@@ -650,13 +652,13 @@ fun LiveLogViewerDialog(
                                         userNote = "Uploaded directly from Live Log Console (filter=$selectedFilter, query=$searchQuery)",
                                         logs = allLogs
                                     )
-                                    isUploadingCloud = false
                                     val rId = res.getOrNull()
                                     if (rId != null) {
-                                        lastUploadedReportId = rId
+                                        cloudUploadState = CloudReportUploadState.Uploaded(rId)
                                         clipboardManager.setText(AnnotatedString(rId))
                                         Toast.makeText(context, "✅ Uploaded to Cloud DB! ID copied: $rId", Toast.LENGTH_LONG).show()
                                     } else {
+                                        cloudUploadState = CloudReportUploadState.Idle
                                         Toast.makeText(context, "Cloud upload failed. Saved to local storage.", Toast.LENGTH_SHORT).show()
                                     }
                                 }
@@ -681,4 +683,10 @@ fun LiveLogViewerDialog(
             }
         }
     }
+}
+
+private sealed interface CloudReportUploadState {
+    data object Idle : CloudReportUploadState
+    data object Uploading : CloudReportUploadState
+    data class Uploaded(val reportId: String) : CloudReportUploadState
 }

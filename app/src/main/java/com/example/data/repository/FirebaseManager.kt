@@ -2,6 +2,9 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import com.example.data.model.LinkedDeviceDto
+import com.example.data.model.QrSessionStatus
+import com.example.data.model.UserDto
 import com.example.data.model.*
 import com.example.util.ContactsHelper
 import com.google.firebase.firestore.FirebaseFirestore
@@ -867,6 +870,15 @@ class FirebaseManager private constructor(private val context: Context) {
         }
     }
 
+    enum class PresenceState {
+        OFFLINE,
+        ONLINE_HEARTBEAT,
+        ONLINE_TRANSFER_HOLD
+    }
+
+    private val _presenceState = MutableStateFlow(PresenceState.OFFLINE)
+    val presenceState: StateFlow<PresenceState> = _presenceState.asStateFlow()
+
     private var presenceHeartbeatJob: kotlinx.coroutines.Job? = null
 
     /**
@@ -875,6 +887,7 @@ class FirebaseManager private constructor(private val context: Context) {
      */
     fun startPresenceHeartbeat() {
         presenceHeartbeatJob?.cancel()
+        _presenceState.value = PresenceState.ONLINE_HEARTBEAT
         updateUserPresence(true)
         presenceHeartbeatJob = scope.launch {
             while (true) {
@@ -885,19 +898,21 @@ class FirebaseManager private constructor(private val context: Context) {
     }
 
     /**
-     * Stops presence heartbeat and immediately marks user as offline in Firestore.
-     * Called when app is paused, backgrounded, or quit.
+     * Stops presence heartbeat and immediately marks user as offline in Firestore,
+     * unless an active file transfer requires preserving ONLINE_TRANSFER_HOLD.
      */
     fun stopPresenceHeartbeat() {
         // If there is an active file transfer running in background, DO NOT mark user offline!
         try {
             if (com.example.data.repository.ChatRepository.getInstance(context).hasActiveTransfers()) {
-                Log.d(TAG, "Transfer active in background — preserving user online presence")
+                _presenceState.value = PresenceState.ONLINE_TRANSFER_HOLD
+                Log.d(TAG, "Transfer active in background — transitioning to ONLINE_TRANSFER_HOLD")
                 return
             }
         } catch (_: Exception) {}
         presenceHeartbeatJob?.cancel()
         presenceHeartbeatJob = null
+        _presenceState.value = PresenceState.OFFLINE
         updateUserPresence(false)
     }
 
@@ -1790,12 +1805,12 @@ class FirebaseManager private constructor(private val context: Context) {
                         onError("Session not found or expired. Please refresh the QR code on your computer.")
                         return@addOnSuccessListener
                     }
-                    val status = snap.getString("status") ?: ""
+                    val sessionStatus = QrSessionStatus.fromWire(snap.getString("status"))
                     val expectedNonce = snap.getString("nonce") ?: ""
                     val expiresAt = snap.getLong("expiresAt") ?: 0L
                     val deviceName = snap.getString("deviceName") ?: "Web Browser"
 
-                    if (status != "PENDING" && status != "SCANNED") {
+                    if (sessionStatus != QrSessionStatus.PENDING && sessionStatus != QrSessionStatus.SCANNED) {
                         onError("This QR code has already been used or expired.")
                         return@addOnSuccessListener
                     }
@@ -1804,12 +1819,13 @@ class FirebaseManager private constructor(private val context: Context) {
                         return@addOnSuccessListener
                     }
                     if (System.currentTimeMillis() > expiresAt) {
+                        snap.reference.update("status", QrSessionStatus.EXPIRED.name)
                         onError("QR code has expired. Please refresh it on your screen.")
                         return@addOnSuccessListener
                     }
 
                     // Mark as SCANNED so the web client shows visual feedback
-                    snap.reference.update("status", "SCANNED")
+                    snap.reference.update("status", QrSessionStatus.SCANNED.name)
 
                     onValidSession(sessionId, nonce, deviceName)
                 }
@@ -1842,7 +1858,7 @@ class FirebaseManager private constructor(private val context: Context) {
 
         // 1. Update qr_sessions/{sessionId} to APPROVED with user credentials
         val approvalPayload = mapOf(
-            "status" to "APPROVED",
+            "status" to QrSessionStatus.APPROVED.name,
             "approvedAt" to now,
             "approvedByPhone" to user.phoneNumber,
             "userPhone" to user.phoneNumber,

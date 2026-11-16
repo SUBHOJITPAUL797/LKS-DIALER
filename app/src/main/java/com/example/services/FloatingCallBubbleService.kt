@@ -69,12 +69,65 @@ class FloatingCallBubbleService : Service() {
         const val EXTRA_CALLER_NUMBER = "caller_number"
         const val EXTRA_CALL_TYPE = "call_type"
 
+        sealed interface FloatingBubbleState {
+            data object Hidden : FloatingBubbleState
+            data class Incoming(
+                val callId: String,
+                val callerName: String,
+                val callerNumber: String,
+                val callType: CallType,
+                val isRingtoneSilenced: Boolean = false
+            ) : FloatingBubbleState
+            data class Active(
+                val callId: String,
+                val callerName: String,
+                val callerNumber: String,
+                val callType: CallType,
+                val startedAtMs: Long = 0L
+            ) : FloatingBubbleState
+
+            val activeCallId: String
+                get() = when (this) {
+                    Hidden -> ""
+                    is Incoming -> callId
+                    is Active -> callId
+                }
+
+            val activeCallerName: String
+                get() = when (this) {
+                    Hidden -> ""
+                    is Incoming -> callerName
+                    is Active -> callerName
+                }
+
+            val activeCallerNumber: String
+                get() = when (this) {
+                    Hidden -> ""
+                    is Incoming -> callerNumber
+                    is Active -> callerNumber
+                }
+
+            val activeCallType: CallType
+                get() = when (this) {
+                    Hidden -> CallType.AUDIO
+                    is Incoming -> callType
+                    is Active -> callType
+                }
+        }
+
+        private val _bubbleState = kotlinx.coroutines.flow.MutableStateFlow<FloatingBubbleState>(FloatingBubbleState.Hidden)
+        val bubbleState: kotlinx.coroutines.flow.StateFlow<FloatingBubbleState> = _bubbleState
+
         @Volatile var instance: FloatingCallBubbleService? = null
         @Volatile var isShowingPill: Boolean = false
-        @Volatile var currentCallId: String = ""
-        @Volatile var currentCallerName: String = ""
-        @Volatile var currentCallerNumber: String = ""
-        @Volatile var currentCallType: CallType = CallType.AUDIO
+        val currentCallId: String
+            get() = _bubbleState.value.activeCallId
+        val currentCallerName: String
+            get() = _bubbleState.value.activeCallerName
+        val currentCallerNumber: String
+            get() = _bubbleState.value.activeCallerNumber
+        val currentCallType: CallType
+            get() = _bubbleState.value.activeCallType
 
         fun silenceRingtone(context: Context) {
             com.example.util.LksIncomingRingtonePlayer.silence()
@@ -88,16 +141,20 @@ class FloatingCallBubbleService : Service() {
             callerNumber: String,
             callType: CallType
         ) {
-            currentCallId = callId
-            currentCallerName = callerName
-            currentCallerNumber = callerNumber
-            currentCallType = callType
+            val current = _bubbleState.value
+            if (current is FloatingBubbleState.Active && current.callId == callId) return
+            val silenced = (current as? FloatingBubbleState.Incoming)?.takeIf { it.callId == callId }?.isRingtoneSilenced == true
+            _bubbleState.value = FloatingBubbleState.Incoming(
+                callId = callId,
+                callerName = callerName,
+                callerNumber = callerNumber,
+                callType = callType,
+                isRingtoneSilenced = silenced
+            )
         }
 
         fun clearIncomingCallInfo() {
-            currentCallId = ""
-            currentCallerName = ""
-            currentCallerNumber = ""
+            _bubbleState.value = FloatingBubbleState.Hidden
         }
 
         fun showIncoming(
@@ -112,7 +169,8 @@ class FloatingCallBubbleService : Service() {
                 Log.w(TAG, "Cannot show incoming pill: overlay permission not granted")
                 return
             }
-            if (isShowingPill && instance?.currentMode == ACTION_SHOW_INCOMING && instance?.callId == callId) {
+            val current = _bubbleState.value
+            if (isShowingPill && current is FloatingBubbleState.Incoming && current.callId == callId) {
                 Log.d(TAG, "showIncoming called but pill already showing for callId $callId — skipping duplicate")
                 return
             }
@@ -148,7 +206,8 @@ class FloatingCallBubbleService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
                 return
             }
-            if (isShowingPill && instance?.currentMode == ACTION_SHOW_ACTIVE && instance?.callId == callId) {
+            val current = _bubbleState.value
+            if (isShowingPill && current is FloatingBubbleState.Active && current.callId == callId) {
                 Log.d(TAG, "showActive called but pill already showing for callId $callId — skipping duplicate")
                 return
             }
@@ -183,16 +242,19 @@ class FloatingCallBubbleService : Service() {
 
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
-    private var currentMode: String? = null
     private var activeTimerView: TextView? = null
     private var activeQualityBadgeView: TextView? = null
     private var activeMuteBtn: ImageView? = null
     private var activeSpeakerBtn: ImageView? = null
 
-    private var callId: String = ""
-    private var callerName: String = ""
-    private var callerNumber: String = ""
-    private var callType: CallType = CallType.AUDIO
+    private val callId: String
+        get() = _bubbleState.value.activeCallId
+    private val callerName: String
+        get() = _bubbleState.value.activeCallerName
+    private val callerNumber: String
+        get() = _bubbleState.value.activeCallerNumber
+    private val callType: CallType
+        get() = _bubbleState.value.activeCallType
 
     private val handler = Handler(Looper.getMainLooper())
     private var timerRunnable: Runnable? = null
@@ -280,10 +342,11 @@ class FloatingCallBubbleService : Service() {
                     Log.d(TAG, "callDocListener update for $cId: status=$status")
                     if (status == CallStatus.ENDED.name || status == CallStatus.DECLINED.name || status == CallStatus.MISSED.name) {
                         Log.i(TAG, "Call $cId ended/declined/missed remotely in Firestore -> instant teardown (<50ms)")
-                        val wasIncoming = currentMode == ACTION_SHOW_INCOMING
-                        val callerNum = currentCallerNumber
-                        val callerNm = currentCallerName
-                        val cType = currentCallType
+                        val currentBubble = _bubbleState.value
+                        val wasIncoming = currentBubble is FloatingBubbleState.Incoming
+                        val callerNum = currentBubble.activeCallerNumber
+                        val callerNm = currentBubble.activeCallerName
+                        val cType = currentBubble.activeCallType
 
                         stopRinging()
                         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -320,10 +383,7 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
-        currentCallId = ""
-        currentCallerName = ""
-        currentCallerNumber = ""
-        currentCallType = CallType.AUDIO
+        _bubbleState.value = FloatingBubbleState.Hidden
         val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
         if (activeStatus != CallStatus.RINGING) {
             stopRinging()
@@ -342,6 +402,10 @@ class FloatingCallBubbleService : Service() {
     }
 
     private fun silenceRingingInternal() {
+        val current = _bubbleState.value
+        if (current is FloatingBubbleState.Incoming && !current.isRingtoneSilenced) {
+            _bubbleState.value = current.copy(isRingtoneSilenced = true)
+        }
         try { com.example.util.LksIncomingRingtonePlayer.silence() } catch (_: Exception) {}
         try { LksKeepAliveService.silenceRingtone(this) } catch (_: Exception) {}
         try {
@@ -377,7 +441,7 @@ class FloatingCallBubbleService : Service() {
                         hasSeenActiveCall = true
                         stopRinging()
                         if (!com.example.MainActivity.isForeground && !com.example.MainActivity.isInPipMode) {
-                            if (currentMode != ACTION_SHOW_ACTIVE || floatingView == null) {
+                            if (_bubbleState.value !is FloatingBubbleState.Active || floatingView == null) {
                                 showActiveCallPill()
                             } else {
                                 updateActivePillControls(rtcState)
@@ -417,33 +481,42 @@ class FloatingCallBubbleService : Service() {
             lastPillX = Int.MIN_VALUE
             lastPillY = Int.MIN_VALUE
         }
-        callId = incomingCallId
-        callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "LKS User"
-        callerNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
+        val parsedName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "LKS User"
+        val parsedNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
         val typeStr = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
-        callType = try { CallType.valueOf(typeStr) } catch (_: Exception) { CallType.AUDIO }
+        val parsedType = try { CallType.valueOf(typeStr) } catch (_: Exception) { CallType.AUDIO }
 
-        currentCallId = callId
-        currentCallerName = callerName
-        currentCallerNumber = callerNumber
-        currentCallType = callType
-
-        if (callId.isNotBlank()) {
-            listenToCallDocument(callId)
+        if (incomingCallId.isNotBlank()) {
+            listenToCallDocument(incomingCallId)
         }
 
-        currentMode = action
         if (action == ACTION_SHOW_INCOMING) {
-            val ringNumber = callerNumber.ifBlank { currentCallerNumber }
+            val existingSilenced = (_bubbleState.value as? FloatingBubbleState.Incoming)
+                ?.takeIf { it.callId == incomingCallId }?.isRingtoneSilenced == true
+            _bubbleState.value = FloatingBubbleState.Incoming(
+                callId = incomingCallId,
+                callerName = parsedName,
+                callerNumber = parsedNumber,
+                callType = parsedType,
+                isRingtoneSilenced = existingSilenced
+            )
+            val ringNumber = parsedNumber.ifBlank { currentCallerNumber }
             startRinging(ringNumber)
             try {
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
-                engine.attachToCall(callId, autoAnswer = false, callerName, callerNumber, callType.name)
+                engine.attachToCall(incomingCallId, autoAnswer = false, parsedName, parsedNumber, parsedType.name)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to pre-attach WebRtcEngine: ${e.message}")
             }
             showIncomingCallPill()
         } else if (action == ACTION_SHOW_ACTIVE) {
+            _bubbleState.value = FloatingBubbleState.Active(
+                callId = incomingCallId,
+                callerName = parsedName,
+                callerNumber = parsedNumber,
+                callType = parsedType,
+                startedAtMs = System.currentTimeMillis()
+            )
             stopRinging()
             showActiveCallPill()
         }
@@ -473,12 +546,13 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Idempotency: avoid removing and re-adding if already showing incoming pill for this call
-        if (isShowingPill && currentMode == ACTION_SHOW_INCOMING && this.callId == callId && floatingView != null) {
+        val currentBubble = _bubbleState.value
+        if (isShowingPill && currentBubble is FloatingBubbleState.Incoming && currentBubble.callId == callId && floatingView != null) {
             Log.d(TAG, "Incoming call pill already visible for callId $callId — skipping duplicate addView")
             return
         }
 
-        removeFloatingView()
+        removeFloatingView(clearState = false)
         val wm = windowManager ?: return
 
         val layoutType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -574,23 +648,23 @@ class FloatingCallBubbleService : Service() {
         }
 
         // 🔇 Quick Silence / Mute Ringtone Button
-        var isRingtoneSilenced = false
+        val initialSilenced = (_bubbleState.value as? FloatingBubbleState.Incoming)?.isRingtoneSilenced == true
         val silenceBtn = ImageView(this).apply {
             setImageResource(com.example.R.drawable.ic_ringtone_silent)
-            setColorFilter(Color.WHITE)
+            setColorFilter(if (initialSilenced) 0xFF94A3B8.toInt() else Color.WHITE)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFF475569.toInt()) // Slate 600
+                setColor(if (initialSilenced) 0xFF1E293B.toInt() else 0xFF475569.toInt())
             }
             setPadding(dpToPx(8f), dpToPx(8f), dpToPx(8f), dpToPx(8f))
             layoutParams = LinearLayout.LayoutParams(dpToPx(38f), dpToPx(38f)).apply {
                 marginEnd = dpToPx(8f)
             }
             setOnClickListener {
-                if (!isRingtoneSilenced) {
-                    Log.i(TAG, "🔇 Silence pressed on incoming call pill for callId=$callId")
+                val inc = _bubbleState.value as? FloatingBubbleState.Incoming
+                if (inc != null && !inc.isRingtoneSilenced) {
+                    Log.i(TAG, "🔇 Silence pressed on incoming call pill for callId=${inc.callId}")
                     silenceRingingInternal()
-                    isRingtoneSilenced = true
                     subTextView.text = "Ringtone Silenced"
                     subTextView.setTextColor(0xFFF59E0B.toInt()) // Amber 500
                     setColorFilter(0xFF94A3B8.toInt())
@@ -733,7 +807,6 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
-            currentMode = ACTION_SHOW_INCOMING
             Log.d(TAG, "Draggable incoming call pill attached successfully")
             // BUG-24: Register screen-on receiver HERE (persistent foreground service) not in
             // CallMessagingService (which is transient and gets destroyed after onMessageReceived).
@@ -763,12 +836,12 @@ class FloatingCallBubbleService : Service() {
         }
 
         // Idempotency: avoid removing and re-adding if already showing active pill
-        if (isShowingPill && currentMode == ACTION_SHOW_ACTIVE && floatingView != null) {
+        if (isShowingPill && _bubbleState.value is FloatingBubbleState.Active && floatingView != null) {
             Log.d(TAG, "Active call pill already visible — skipping duplicate addView")
             return
         }
 
-        removeFloatingView()
+        removeFloatingView(clearState = false)
         val wm = windowManager ?: return
 
         val engine = WebRtcEngine.getInstanceIfCreated()
@@ -863,8 +936,13 @@ class FloatingCallBubbleService : Service() {
                 ?: callerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
                 ?: peerNum.ifBlank { "Active Call" }
         }
-        callerName = resolvedPeerName
-        currentCallerName = resolvedPeerName
+        _bubbleState.value = FloatingBubbleState.Active(
+            callId = callId,
+            callerName = resolvedPeerName,
+            callerNumber = callerNumber,
+            callType = callType,
+            startedAtMs = callStartTime
+        )
 
         val nameView = TextView(this).apply {
             text = resolvedPeerName
@@ -1084,7 +1162,6 @@ class FloatingCallBubbleService : Service() {
             wm.addView(pill, params)
             floatingView = pill
             isShowingPill = true
-            currentMode = ACTION_SHOW_ACTIVE
             activeTimerView = timerView
             activeQualityBadgeView = qualityBadgeView
             activeMuteBtn = muteBtn
@@ -1121,7 +1198,7 @@ class FloatingCallBubbleService : Service() {
         }
     }
 
-    private fun removeFloatingView() {
+    private fun removeFloatingView(clearState: Boolean = true) {
         timerRunnable?.let { handler.removeCallbacks(it) }
         timerRunnable = null
         activeTimerView = null
@@ -1136,12 +1213,10 @@ class FloatingCallBubbleService : Service() {
             } catch (_: Exception) {}
         }
         floatingView = null
-        currentMode = null
         isShowingPill = false
-        currentCallId = ""
-        currentCallerName = ""
-        currentCallerNumber = ""
-        currentCallType = CallType.AUDIO
+        if (clearState) {
+            _bubbleState.value = FloatingBubbleState.Hidden
+        }
         // BUG-24: Clean up screen-on receiver when pill is removed
         unregisterScreenOnReceiver()
     }
@@ -1227,7 +1302,7 @@ class FloatingCallBubbleService : Service() {
         
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                val fgsType = if (currentMode == ACTION_SHOW_ACTIVE) {
+                val fgsType = if (_bubbleState.value is FloatingBubbleState.Active) {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE

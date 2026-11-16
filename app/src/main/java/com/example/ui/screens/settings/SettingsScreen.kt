@@ -97,8 +97,7 @@ fun SettingsScreen(
     val wallpaperConfig by wallpaperManager.config.collectAsState()
     val chatRepository = remember { com.example.data.repository.ChatRepository.getInstance(context) }
     var storageSummary by remember { mutableStateOf<com.example.data.local.StorageUsageSummary?>(null) }
-    var showSettingsClearMediaConfirm by remember { mutableStateOf(false) }
-    var showSettingsClearAllConfirm by remember { mutableStateOf(false) }
+    var overlay by remember { mutableStateOf<SettingsOverlay>(SettingsOverlay.None) }
 
     LaunchedEffect(Unit) {
         try {
@@ -124,17 +123,12 @@ fun SettingsScreen(
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val syncedContacts by firebaseManager.syncedContacts.collectAsState()
     val callLogs by firebaseManager.callLogs.collectAsState()
-    var showBlockNumberDialog by remember { mutableStateOf(false) }
 
     var isNoiseSuppressionOn by remember { mutableStateOf(true) }
     var isEchoCancellationOn by remember { mutableStateOf(true) }
     var isDataSaverOn by remember { mutableStateOf(false) }
     var isVibrateOn by remember { mutableStateOf(true) }
-    var showDeveloperModal by remember { mutableStateOf(false) }
-    var showDiagnosticsDialog by remember { mutableStateOf(false) }
-    var showLiveLogsDialog by remember { mutableStateOf(false) }
     val gitHubUpdater = remember { GitHubUpdater(context) }
-    var manualUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var isCheckingForUpdate by remember { mutableStateOf(false) }
     val updateDownloadState by gitHubUpdater.downloadState.collectAsState()
     val dialerPrefs = remember { context.getSharedPreferences("dialer_prefs", android.content.Context.MODE_PRIVATE) }
@@ -149,15 +143,13 @@ fun SettingsScreen(
         )
     }
 
-    // Ringtone States
+    // Ringtone & Caller Tune (Hello Tune) States
     var appRingtoneState by remember { mutableStateOf(LksRingtoneManager.getAppRingtone(context)) }
-    var isPreviewPlaying by remember { mutableStateOf(false) }
-
-    // Caller Tune (Hello Tune) States
     var callerTuneState by remember { mutableStateOf(com.example.util.LksCallerTuneManager.getMyCallerTune(context)) }
-    var showCallerTunePicker by remember { mutableStateOf(false) }
-    var isCallerTunePreviewPlaying by remember { mutableStateOf(false) }
-    var isCallerTuneLoading by remember { mutableStateOf(false) }
+    var audioPreviewState by remember { mutableStateOf(SettingsAudioPreviewState.IDLE) }
+    val isPreviewPlaying = audioPreviewState == SettingsAudioPreviewState.RINGTONE_PLAYING
+    val isCallerTunePreviewPlaying = audioPreviewState == SettingsAudioPreviewState.CALLER_TUNE_PLAYING
+    val isCallerTuneLoading = audioPreviewState == SettingsAudioPreviewState.CALLER_TUNE_LOADING
 
     LaunchedEffect(Unit) {
         val currentLocalTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
@@ -170,8 +162,7 @@ fun SettingsScreen(
         onDispose {
             LksRingtoneManager.stopPreview()
             com.example.util.LksCallerTuneManager.stopPreview()
-            isCallerTunePreviewPlaying = false
-            isCallerTuneLoading = false
+            audioPreviewState = SettingsAudioPreviewState.IDLE
         }
     }
 
@@ -189,85 +180,136 @@ fun SettingsScreen(
         }
     }
 
-    // Device Song File Picker Launcher — now opens trimmer dialog
-    var settingsTrimmerUri by remember { mutableStateOf<Uri?>(null) }
-    var settingsTrimmerTitle by remember { mutableStateOf("") }
-
     val audioFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { pickedUri ->
         if (pickedUri != null) {
-            settingsTrimmerTitle = LksRingtoneManager.getRingtoneTitle(context, pickedUri)
-            settingsTrimmerUri = pickedUri
+            overlay = SettingsOverlay.SongTrimmer(
+                uri = pickedUri,
+                title = LksRingtoneManager.getRingtoneTitle(context, pickedUri)
+            )
         }
     }
 
-    if (showDeveloperModal) {
-        DeveloperProfileDialog(onDismiss = { showDeveloperModal = false })
-    }
-
-    if (showBlockNumberDialog) {
-        BlockNumberPickerModal(
-            firebaseManager = firebaseManager,
-            onDismiss = { showBlockNumberDialog = false }
-        )
-    }
-
-    if (showDiagnosticsDialog) {
-        com.example.ui.components.ShakeReportDialog(
-            triggerType = "MANUAL_SETTINGS",
-            onDismiss = { showDiagnosticsDialog = false }
-        )
-    }
-
-    if (showLiveLogsDialog) {
-        com.example.ui.components.LiveLogViewerDialog(
-            onDismiss = { showLiveLogsDialog = false }
-        )
-    }
-
-    manualUpdateInfo?.let { info ->
-        UpdateDialog(
-            updateInfo = info,
-            downloadState = updateDownloadState,
-            onDownloadClick = {
-                gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
-            },
-            onInstallClick = { uri ->
-                gitHubUpdater.installApk(uri)
-            },
-            onDismissRequest = {
-                gitHubUpdater.dismissUpdate(info.latestVersion)
-                manualUpdateInfo = null
-            }
-        )
-    }
-
-    // Song Trimmer Dialog — shown after user picks a song file for app ringtone
-    settingsTrimmerUri?.let { uri ->
-        com.example.ui.components.SongTrimmerDialog(
-            uri = uri,
-            songTitle = settingsTrimmerTitle,
-            onSave = { trimmedUri ->
-                LksRingtoneManager.setAppRingtone(context, trimmedUri)
-                appRingtoneState = LksRingtoneManager.getAppRingtone(context)
-                Toast.makeText(context, "Ringtone set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
-                settingsTrimmerUri = null
-            },
-            onDismiss = { settingsTrimmerUri = null }
-        )
-    }
-
-    if (showCallerTunePicker) {
-        com.example.ui.components.CallerTunePickerDialog(
-            onTuneSelected = { selectedTune ->
-                callerTuneState = selectedTune
-                showCallerTunePicker = false
-            },
-            onDismiss = {
-                showCallerTunePicker = false
-            }
-        )
+    when (val activeOverlay = overlay) {
+        SettingsOverlay.None -> Unit
+        SettingsOverlay.DeveloperProfile -> {
+            DeveloperProfileDialog(onDismiss = { overlay = SettingsOverlay.None })
+        }
+        SettingsOverlay.BlockNumber -> {
+            BlockNumberPickerModal(
+                firebaseManager = firebaseManager,
+                onDismiss = { overlay = SettingsOverlay.None }
+            )
+        }
+        SettingsOverlay.Diagnostics -> {
+            com.example.ui.components.ShakeReportDialog(
+                triggerType = "MANUAL_SETTINGS",
+                onDismiss = { overlay = SettingsOverlay.None }
+            )
+        }
+        SettingsOverlay.LiveLogs -> {
+            com.example.ui.components.LiveLogViewerDialog(
+                onDismiss = { overlay = SettingsOverlay.None }
+            )
+        }
+        is SettingsOverlay.UpdateAvailable -> {
+            val info = activeOverlay.info
+            UpdateDialog(
+                updateInfo = info,
+                downloadState = updateDownloadState,
+                onDownloadClick = {
+                    gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
+                },
+                onInstallClick = { uri ->
+                    gitHubUpdater.installApk(uri)
+                },
+                onDismissRequest = {
+                    gitHubUpdater.dismissUpdate(info.latestVersion)
+                    overlay = SettingsOverlay.None
+                }
+            )
+        }
+        is SettingsOverlay.SongTrimmer -> {
+            com.example.ui.components.SongTrimmerDialog(
+                uri = activeOverlay.uri,
+                songTitle = activeOverlay.title,
+                onSave = { trimmedUri ->
+                    LksRingtoneManager.setAppRingtone(context, trimmedUri)
+                    appRingtoneState = LksRingtoneManager.getAppRingtone(context)
+                    Toast.makeText(context, "Ringtone set: ${appRingtoneState.second}", Toast.LENGTH_SHORT).show()
+                    overlay = SettingsOverlay.None
+                },
+                onDismiss = { overlay = SettingsOverlay.None }
+            )
+        }
+        SettingsOverlay.CallerTunePicker -> {
+            com.example.ui.components.CallerTunePickerDialog(
+                onTuneSelected = { selectedTune ->
+                    callerTuneState = selectedTune
+                    overlay = SettingsOverlay.None
+                },
+                onDismiss = { overlay = SettingsOverlay.None }
+            )
+        }
+        SettingsOverlay.ClearMediaConfirm -> {
+            AlertDialog(
+                onDismissRequest = { overlay = SettingsOverlay.None },
+                icon = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = TealPrimary) },
+                title = { Text("Delete All Media Across All Chats?") },
+                text = { Text("This will permanently delete all downloaded videos, photos, and audio notes from your phone to free up space. Text chat messages will be kept.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            overlay = SettingsOverlay.None
+                            coroutineScope.launch {
+                                val freed = chatRepository.clearAllChatMedia()
+                                storageSummary = chatRepository.getStorageUsageSummary()
+                                val mb = freed / (1024.0 * 1024.0)
+                                val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
+                                Toast.makeText(context, "All media cleared! Freed $sizeStr", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
+                    ) {
+                        Text("Delete Media")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { overlay = SettingsOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+        SettingsOverlay.ClearAllConfirm -> {
+            AlertDialog(
+                onDismissRequest = { overlay = SettingsOverlay.None },
+                icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = { Text("Clear All Chats?") },
+                text = { Text("This will permanently delete ALL messages, conversations, and media files from this device.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            overlay = SettingsOverlay.None
+                            coroutineScope.launch {
+                                chatRepository.clearAllChats()
+                                storageSummary = chatRepository.getStorageUsageSummary()
+                                Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Clear Everything", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { overlay = SettingsOverlay.None }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
     }
 
     Scaffold(
@@ -1240,10 +1282,18 @@ fun SettingsScreen(
                             onClick = {
                                 if (isPreviewPlaying) {
                                     LksRingtoneManager.stopPreview()
-                                    isPreviewPlaying = false
+                                    audioPreviewState = SettingsAudioPreviewState.IDLE
                                 } else {
-                                    isPreviewPlaying = LksRingtoneManager.playPreview(context, appRingtoneState.first) {
-                                        isPreviewPlaying = false
+                                    com.example.util.LksCallerTuneManager.stopPreview()
+                                    val started = LksRingtoneManager.playPreview(context, appRingtoneState.first) {
+                                        if (audioPreviewState == SettingsAudioPreviewState.RINGTONE_PLAYING) {
+                                            audioPreviewState = SettingsAudioPreviewState.IDLE
+                                        }
+                                    }
+                                    audioPreviewState = if (started) {
+                                        SettingsAudioPreviewState.RINGTONE_PLAYING
+                                    } else {
+                                        SettingsAudioPreviewState.IDLE
                                     }
                                 }
                             }
@@ -1301,7 +1351,7 @@ fun SettingsScreen(
                     TextButton(
                         onClick = {
                             LksRingtoneManager.stopPreview()
-                            isPreviewPlaying = false
+                            if (isPreviewPlaying) audioPreviewState = SettingsAudioPreviewState.IDLE
                             LksRingtoneManager.resetAppRingtoneToDefault(context)
                             appRingtoneState = LksRingtoneManager.getAppRingtone(context)
                             Toast.makeText(context, "Reset to System Default Ringtone", Toast.LENGTH_SHORT).show()
@@ -1384,12 +1434,10 @@ fun SettingsScreen(
                                 onClick = {
                                     if (isCallerTunePreviewPlaying || isCallerTuneLoading) {
                                         com.example.util.LksCallerTuneManager.stopPreview()
-                                        isCallerTunePreviewPlaying = false
-                                        isCallerTuneLoading = false
+                                        audioPreviewState = SettingsAudioPreviewState.IDLE
                                     } else {
                                         LksRingtoneManager.stopPreview()
-                                        isPreviewPlaying = false
-                                        isCallerTuneLoading = true
+                                        audioPreviewState = SettingsAudioPreviewState.CALLER_TUNE_LOADING
                                         coroutineScope.launch {
                                             try {
                                                 val localTune = com.example.util.LksCallerTuneManager.getMyCallerTune(context)
@@ -1401,12 +1449,10 @@ fun SettingsScreen(
                                                     context = context,
                                                     info = activeTune,
                                                     onStarted = {
-                                                        isCallerTuneLoading = false
-                                                        isCallerTunePreviewPlaying = true
+                                                        audioPreviewState = SettingsAudioPreviewState.CALLER_TUNE_PLAYING
                                                     },
                                                     onCompletion = {
-                                                        isCallerTuneLoading = false
-                                                        isCallerTunePreviewPlaying = false
+                                                        audioPreviewState = SettingsAudioPreviewState.IDLE
                                                     }
                                                 )
                                                 // Refresh callerTuneState if getMyCallerTune has updated during recovery/download
@@ -1415,8 +1461,7 @@ fun SettingsScreen(
                                                     callerTuneState = refreshedTune
                                                 }
                                                 if (!started) {
-                                                    isCallerTuneLoading = false
-                                                    isCallerTunePreviewPlaying = false
+                                                    audioPreviewState = SettingsAudioPreviewState.IDLE
                                                     val errorMsg = if (activeTune.title.isNotBlank()) {
                                                         "Could not play '${activeTune.title}'. Check connection or try picking another tune."
                                                     } else {
@@ -1425,8 +1470,7 @@ fun SettingsScreen(
                                                     Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
                                                 }
                                             } catch (e: Exception) {
-                                                isCallerTuneLoading = false
-                                                isCallerTunePreviewPlaying = false
+                                                audioPreviewState = SettingsAudioPreviewState.IDLE
                                                 Toast.makeText(context, "Playback error: ${e.message ?: "Failed to play tune"}", Toast.LENGTH_SHORT).show()
                                             }
                                         }
@@ -1468,9 +1512,8 @@ fun SettingsScreen(
                         Button(
                             onClick = {
                                 com.example.util.LksCallerTuneManager.stopPreview()
-                                isCallerTunePreviewPlaying = false
-                                isCallerTuneLoading = false
-                                showCallerTunePicker = true
+                                audioPreviewState = SettingsAudioPreviewState.IDLE
+                                overlay = SettingsOverlay.CallerTunePicker
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
@@ -1485,8 +1528,7 @@ fun SettingsScreen(
                             OutlinedButton(
                                 onClick = {
                                     com.example.util.LksCallerTuneManager.stopPreview()
-                                    isCallerTunePreviewPlaying = false
-                                    isCallerTuneLoading = false
+                                    audioPreviewState = SettingsAudioPreviewState.IDLE
                                     com.example.util.LksCallerTuneManager.removeMyCallerTune(context)
                                     com.example.data.repository.FirebaseManager.getInstance(context).removeCallerTune()
                                     callerTuneState = com.example.util.CallerTuneInfo()
@@ -1757,7 +1799,7 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            IconButton(onClick = { showBlockNumberDialog = true }) {
+                            IconButton(onClick = { overlay = SettingsOverlay.BlockNumber }) {
                                 Icon(
                                     Icons.Default.AddCircle,
                                     contentDescription = "Block a number",
@@ -2016,14 +2058,14 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
-                            onClick = { showSettingsClearMediaConfirm = true },
+                            onClick = { overlay = SettingsOverlay.ClearMediaConfirm },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f)
                         ) {
                             Text("Clear All Media", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                         }
                         OutlinedButton(
-                            onClick = { showSettingsClearAllConfirm = true },
+                            onClick = { overlay = SettingsOverlay.ClearAllConfirm },
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
                             shape = RoundedCornerShape(12.dp),
@@ -2104,7 +2146,7 @@ fun SettingsScreen(
 
                     // Send diagnostic logs button
                     Button(
-                        onClick = { showDiagnosticsDialog = true },
+                        onClick = { overlay = SettingsOverlay.Diagnostics },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
@@ -2118,7 +2160,7 @@ fun SettingsScreen(
 
                     // View live logs button
                     OutlinedButton(
-                        onClick = { showLiveLogsDialog = true },
+                        onClick = { overlay = SettingsOverlay.LiveLogs },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -2210,7 +2252,7 @@ fun SettingsScreen(
                                     try {
                                         val info = gitHubUpdater.checkForUpdates(force = true)
                                         if (info != null) {
-                                            manualUpdateInfo = info
+                                            overlay = SettingsOverlay.UpdateAvailable(info)
                                         } else {
                                             Toast.makeText(context, "You are using the latest version of RB Dialer!", Toast.LENGTH_SHORT).show()
                                         }
@@ -2256,7 +2298,7 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .surfaceFinishOverlay(surfaceStyle, surfaceStyle.cornerRadiusDp.dp, currentThemeColor.primary)
                     .clip(RoundedCornerShape(surfaceStyle.cornerRadiusDp.dp))
-                    .clickable { showDeveloperModal = true }
+                    .clickable { overlay = SettingsOverlay.DeveloperProfile }
             ) {
                 Row(
                     modifier = Modifier
@@ -2314,66 +2356,26 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(40.dp))
         }
     }
+}
 
-    if (showSettingsClearMediaConfirm) {
-        AlertDialog(
-            onDismissRequest = { showSettingsClearMediaConfirm = false },
-            icon = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = TealPrimary) },
-            title = { Text("Delete All Media Across All Chats?") },
-            text = { Text("This will permanently delete all downloaded videos, photos, and audio notes from your phone to free up space. Text chat messages will be kept.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showSettingsClearMediaConfirm = false
-                        coroutineScope.launch {
-                            val freed = chatRepository.clearAllChatMedia()
-                            storageSummary = chatRepository.getStorageUsageSummary()
-                            val mb = freed / (1024.0 * 1024.0)
-                            val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${freed / 1024} KB"
-                            Toast.makeText(context, "All media cleared! Freed $sizeStr", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = TealPrimary)
-                ) {
-                    Text("Delete Media")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSettingsClearMediaConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+private enum class SettingsAudioPreviewState {
+    IDLE,
+    RINGTONE_PLAYING,
+    CALLER_TUNE_LOADING,
+    CALLER_TUNE_PLAYING
+}
 
-    if (showSettingsClearAllConfirm) {
-        AlertDialog(
-            onDismissRequest = { showSettingsClearAllConfirm = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("Clear All Chats?") },
-            text = { Text("This will permanently delete ALL messages, conversations, and media files from this device.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showSettingsClearAllConfirm = false
-                        coroutineScope.launch {
-                            chatRepository.clearAllChats()
-                            storageSummary = chatRepository.getStorageUsageSummary()
-                            Toast.makeText(context, "All chats cleared", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Clear Everything", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSettingsClearAllConfirm = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+private sealed interface SettingsOverlay {
+    data object None : SettingsOverlay
+    data object DeveloperProfile : SettingsOverlay
+    data object BlockNumber : SettingsOverlay
+    data object Diagnostics : SettingsOverlay
+    data object LiveLogs : SettingsOverlay
+    data class UpdateAvailable(val info: UpdateInfo) : SettingsOverlay
+    data class SongTrimmer(val uri: Uri, val title: String) : SettingsOverlay
+    data object CallerTunePicker : SettingsOverlay
+    data object ClearMediaConfirm : SettingsOverlay
+    data object ClearAllConfirm : SettingsOverlay
 }
 
 @Composable

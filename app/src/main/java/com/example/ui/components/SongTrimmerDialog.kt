@@ -45,6 +45,24 @@ import java.io.FileInputStream
 
 private const val TAG = "SongTrimmerDialog"
 
+private sealed interface DurationLoadState {
+    data object Loading : DurationLoadState
+    data class Ready(val totalDurationMs: Long) : DurationLoadState
+    data object Failed : DurationLoadState
+}
+
+private enum class TrimmerPreviewPhase {
+    IDLE,
+    PREPARING,
+    PLAYING
+}
+
+private sealed interface TrimmerSaveState {
+    data object Idle : TrimmerSaveState
+    data object Saving : TrimmerSaveState
+    data class Error(val message: String) : TrimmerSaveState
+}
+
 /**
  * SongTrimmerDialog
  * Full-screen dialog that lets users visually trim an audio file to a specific section.
@@ -67,19 +85,16 @@ fun SongTrimmerDialog(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    var totalDurationMs by remember { mutableLongStateOf(0L) }
-    var isLoadingDuration by remember { mutableStateOf(true) }
+    var durationState by remember { mutableStateOf<DurationLoadState>(DurationLoadState.Loading) }
 
     var startFraction by remember { mutableFloatStateOf(0f) }
     var endFraction by remember { mutableFloatStateOf(1f) }
 
-    var isPreviewPlaying by remember { mutableStateOf(false) }
-    var isPreparingPreview by remember { mutableStateOf(false) }
+    var previewPhase by remember { mutableStateOf(TrimmerPreviewPhase.IDLE) }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewProgress by remember { mutableFloatStateOf(0f) }
 
-    var isSaving by remember { mutableStateOf(false) }
-    var saveError by remember { mutableStateOf("") }
+    var saveState by remember { mutableStateOf<TrimmerSaveState>(TrimmerSaveState.Idle) }
 
     fun stopPreviewPlayback() {
         try {
@@ -87,8 +102,7 @@ fun SongTrimmerDialog(
             previewPlayer?.release()
         } catch (_: Exception) {}
         previewPlayer = null
-        isPreviewPlaying = false
-        isPreparingPreview = false
+        previewPhase = TrimmerPreviewPhase.IDLE
     }
 
     DisposableEffect(Unit) {
@@ -98,24 +112,24 @@ fun SongTrimmerDialog(
     }
 
     LaunchedEffect(uri) {
-        isLoadingDuration = true
-        withContext(Dispatchers.IO) {
+        durationState = DurationLoadState.Loading
+        val loadedMs = withContext(Dispatchers.IO) {
             var mmr: android.media.MediaMetadataRetriever? = null
             try {
                 mmr = android.media.MediaMetadataRetriever()
                 setSongRetrieverDataSource(context, mmr, uri)
                 val durationStr = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
-                totalDurationMs = durationStr?.toLongOrNull() ?: 0L
+                durationStr?.toLongOrNull() ?: 0L
             } catch (_: Exception) {
                 var player: MediaPlayer? = null
                 try {
                     player = MediaPlayer()
                     setSongMediaPlayerDataSource(context, player, uri)
                     player.prepare()
-                    totalDurationMs = player.duration.toLong()
+                    player.duration.toLong()
                 } catch (e: Exception) {
                     Log.w(TAG, "Could not read duration: ${e.message}")
-                    totalDurationMs = 0L
+                    0L
                 } finally {
                     try { player?.release() } catch (_: Throwable) {}
                 }
@@ -123,11 +137,13 @@ fun SongTrimmerDialog(
                 try { mmr?.release() } catch (_: Throwable) {}
             }
         }
-        isLoadingDuration = false
+        durationState = if (loadedMs > 0L) DurationLoadState.Ready(loadedMs) else DurationLoadState.Failed
     }
 
-    LaunchedEffect(isPreviewPlaying) {
-        while (isPreviewPlaying) {
+    val totalDurationMs = (durationState as? DurationLoadState.Ready)?.totalDurationMs ?: 0L
+
+    LaunchedEffect(previewPhase, totalDurationMs) {
+        while (previewPhase == TrimmerPreviewPhase.PLAYING) {
             val p = previewPlayer
             if (p != null) {
                 try {
@@ -199,18 +215,18 @@ fun SongTrimmerDialog(
 
                 Spacer(Modifier.height(20.dp))
 
-                when {
-                    isLoadingDuration -> {
+                when (durationState) {
+                    DurationLoadState.Loading -> {
                         CircularProgressIndicator(modifier = Modifier.size(32.dp), color = themeColor.primary)
                         Spacer(Modifier.height(8.dp))
                         Text("Loading audio...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    totalDurationMs <= 0L -> {
+                    DurationLoadState.Failed -> {
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(36.dp))
                         Spacer(Modifier.height(8.dp))
                         Text("Could not read audio duration", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                     }
-                    else -> {
+                    is DurationLoadState.Ready -> {
                         // Time labels
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column(horizontalAlignment = Alignment.Start) {
@@ -250,7 +266,7 @@ fun SongTrimmerDialog(
                                 val sx = startFraction * size.width
                                 val ex = endFraction * size.width
                                 drawRoundRect(color = selectedColor, topLeft = Offset(sx, 0f), size = Size(ex - sx, size.height), cornerRadius = r)
-                                if (isPreviewPlaying || previewProgress > startFraction) {
+                                if (previewPhase == TrimmerPreviewPhase.PLAYING || previewProgress > startFraction) {
                                     val px = previewProgress * size.width
                                     drawLine(color = progressColor, start = Offset(px, 8f), end = Offset(px, size.height - 8f), strokeWidth = 3f)
                                 }
@@ -311,14 +327,14 @@ fun SongTrimmerDialog(
                         // Preview button
                         OutlinedButton(
                             onClick = {
-                                if (isPreviewPlaying || isPreparingPreview) {
+                                if (previewPhase != TrimmerPreviewPhase.IDLE) {
                                     stopPreviewPlayback()
                                 } else {
-                                    isPreparingPreview = true
+                                    previewPhase = TrimmerPreviewPhase.PREPARING
                                     coroutineScope.launch {
                                         try {
                                             stopPreviewPlayback()
-                                            isPreparingPreview = true
+                                            previewPhase = TrimmerPreviewPhase.PREPARING
 
                                             val p = MediaPlayer()
                                             p.setAudioAttributes(
@@ -359,8 +375,7 @@ fun SongTrimmerDialog(
                                                     try {
                                                         p.start()
                                                         previewPlayer = p
-                                                        isPreviewPlaying = true
-                                                        isPreparingPreview = false
+                                                        previewPhase = TrimmerPreviewPhase.PLAYING
                                                         previewProgress = startFraction
                                                     } catch (e: Exception) {
                                                         Log.e(TAG, "Error starting after seek: ${e.message}", e)
@@ -376,8 +391,7 @@ fun SongTrimmerDialog(
                                                 p.seekTo(0)
                                                 p.start()
                                                 previewPlayer = p
-                                                isPreviewPlaying = true
-                                                isPreparingPreview = false
+                                                previewPhase = TrimmerPreviewPhase.PLAYING
                                                 previewProgress = startFraction
                                             }
                                         } catch (e: Exception) {
@@ -390,47 +404,62 @@ fun SongTrimmerDialog(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            if (isPreparingPreview) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = GreenCall
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text("Preparing Preview...", fontWeight = FontWeight.Bold)
-                            } else {
-                                Icon(
-                                    if (isPreviewPlaying) Icons.Default.StopCircle else Icons.Default.PlayCircle,
-                                    contentDescription = null,
-                                    tint = if (isPreviewPlaying) MaterialTheme.colorScheme.error else GreenCall,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(if (isPreviewPlaying) "Stop Preview" else "▶  Preview Trimmed Section")
+                            when (previewPhase) {
+                                TrimmerPreviewPhase.PREPARING -> {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = GreenCall
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Preparing Preview...", fontWeight = FontWeight.Bold)
+                                }
+                                TrimmerPreviewPhase.PLAYING -> {
+                                    Icon(
+                                        Icons.Default.StopCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Stop Preview")
+                                }
+                                TrimmerPreviewPhase.IDLE -> {
+                                    Icon(
+                                        Icons.Default.PlayCircle,
+                                        contentDescription = null,
+                                        tint = GreenCall,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("▶  Preview Trimmed Section")
+                                }
                             }
                         }
 
                         Spacer(Modifier.height(10.dp))
 
-                        if (saveError.isNotBlank()) {
-                            Text(saveError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+                        val errorMsg = (saveState as? TrimmerSaveState.Error)?.message
+                        if (!errorMsg.isNullOrBlank()) {
+                            Text(errorMsg, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(bottom = 8.dp))
                         }
 
+                        val isSaving = saveState is TrimmerSaveState.Saving
                         // Save button
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    isSaving = true; saveError = ""
+                                    saveState = TrimmerSaveState.Saving
                                     stopPreviewPlayback()
                                     val result = withContext(Dispatchers.IO) {
                                         com.example.util.AudioTrimmerUtil.trimAudio(context, uri, startMs, endMs)
                                     }
-                                    isSaving = false
                                     if (result != null) {
+                                        saveState = TrimmerSaveState.Idle
                                         onSave(result)
                                     } else {
-                                        saveError = "Could not crop this audio file. Please try another range."
+                                        saveState = TrimmerSaveState.Error("Could not crop this audio file. Please try another range.")
                                     }
                                 }
                             },

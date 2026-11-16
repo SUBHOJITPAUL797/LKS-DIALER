@@ -30,6 +30,19 @@ import com.example.data.repository.FirebaseManager
 import com.example.ui.theme.GreenCall
 import com.example.ui.theme.LocalThemeColor
 
+private sealed interface LinkedDevicesModalState {
+    data object Idle : LinkedDevicesModalState
+    data object ScanningQr : LinkedDevicesModalState
+    data object VerifyingQr : LinkedDevicesModalState
+    data class ConfirmLink(
+        val sessionId: String,
+        val nonce: String,
+        val deviceName: String,
+        val isApproving: Boolean = false
+    ) : LinkedDevicesModalState
+    data class ConfirmLogout(val device: LinkedDeviceDto) : LinkedDevicesModalState
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LinkedDevicesScreen(
@@ -45,178 +58,177 @@ fun LinkedDevicesScreen(
         firebaseManager.refreshLinkedDevices()
     }
 
-    var isScanning by remember { mutableStateOf(false) }
-    var verifyingSession by remember { mutableStateOf(false) }
+    var modalState by remember { mutableStateOf<LinkedDevicesModalState>(LinkedDevicesModalState.Idle) }
 
-    // Dialog state for confirming link
-    var pendingSessionId by remember { mutableStateOf<String?>(null) }
-    var pendingNonce by remember { mutableStateOf<String?>(null) }
-    var pendingDeviceName by remember { mutableStateOf<String?>(null) }
-
-    // Dialog state for confirming logout of a linked device
-    var deviceToLogout by remember { mutableStateOf<LinkedDeviceDto?>(null) }
-
-    if (isScanning) {
+    if (modalState is LinkedDevicesModalState.ScanningQr) {
         QrScannerView(
             onQrScanned = { rawQrText ->
-                isScanning = false
-                verifyingSession = true
+                modalState = LinkedDevicesModalState.VerifyingQr
                 firebaseManager.verifyScannedQrCode(
                     rawQrContent = rawQrText,
                     onValidSession = { sessionId, nonce, deviceName ->
-                        verifyingSession = false
-                        pendingSessionId = sessionId
-                        pendingNonce = nonce
-                        pendingDeviceName = deviceName
+                        modalState = LinkedDevicesModalState.ConfirmLink(
+                            sessionId = sessionId,
+                            nonce = nonce,
+                            deviceName = deviceName
+                        )
                     },
                     onError = { error ->
-                        verifyingSession = false
+                        modalState = LinkedDevicesModalState.Idle
                         Toast.makeText(context, error, Toast.LENGTH_LONG).show()
                     }
                 )
             },
-            onClose = { isScanning = false }
+            onClose = { modalState = LinkedDevicesModalState.Idle }
         )
         return
     }
 
-    // Confirmation dialog to approve the link
-    pendingSessionId?.let { sessionId ->
-        val nonce = pendingNonce ?: ""
-        val deviceName = pendingDeviceName ?: "Web Browser"
-
-        AlertDialog(
-            onDismissRequest = {
-                pendingSessionId = null
-                pendingNonce = null
-                pendingDeviceName = null
-            },
-            icon = {
-                Icon(
-                    Icons.Default.Laptop,
-                    contentDescription = null,
-                    tint = currentTheme.primary,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "Link this device?",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    textAlign = TextAlign.Center
-                )
-            },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Surface(
-                        color = currentTheme.primary.copy(alpha = 0.12f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = deviceName,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = currentTheme.primary,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(14.dp))
+    // Mutually-exclusive dialog rendering driven by LinkedDevicesModalState
+    when (val modal = modalState) {
+        is LinkedDevicesModalState.ConfirmLink -> {
+            val deviceName = modal.deviceName.ifBlank { "Web Browser" }
+            AlertDialog(
+                onDismissRequest = {
+                    if (!modal.isApproving) modalState = LinkedDevicesModalState.Idle
+                },
+                icon = {
+                    Icon(
+                        Icons.Default.Laptop,
+                        contentDescription = null,
+                        tint = currentTheme.primary,
+                        modifier = Modifier.size(36.dp)
+                    )
+                },
+                title = {
                     Text(
-                        text = "This will log in your LKS Dialer account (${currentUser?.phoneNumber}) on this web browser with full call and encrypted chat access.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = "Link this device?",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         textAlign = TextAlign.Center
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        firebaseManager.approveQrSession(
-                            sessionId = sessionId,
-                            nonce = nonce,
-                            deviceName = deviceName,
-                            onSuccess = {
-                                Toast.makeText(context, "Device linked successfully!", Toast.LENGTH_SHORT).show()
-                                pendingSessionId = null
-                                pendingNonce = null
-                                pendingDeviceName = null
-                            },
-                            onError = { err ->
-                                Toast.makeText(context, "Failed to link: $err", Toast.LENGTH_LONG).show()
-                                pendingSessionId = null
-                                pendingNonce = null
-                                pendingDeviceName = null
-                            }
-                        )
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Link Device", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        pendingSessionId = null
-                        pendingNonce = null
-                        pendingDeviceName = null
-                    }
-                ) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-
-    // Confirmation dialog to log out of a linked device
-    deviceToLogout?.let { device ->
-        AlertDialog(
-            onDismissRequest = { deviceToLogout = null },
-            icon = {
-                Icon(
-                    Icons.Default.ExitToApp,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(36.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "Log out from device?",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                )
-            },
-            text = {
-                Text(
-                    text = "Are you sure you want to log out of \"${device.deviceName.ifBlank { "Web Browser" }}\"? This will immediately terminate the session on that computer.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        firebaseManager.unlinkDevice(device.sessionId) { success ->
-                            if (success) {
-                                Toast.makeText(context, "Logged out from device", Toast.LENGTH_SHORT).show()
-                            }
+                },
+                text = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Surface(
+                            color = currentTheme.primary.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = deviceName,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = currentTheme.primary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(12.dp)
+                            )
                         }
-                        deviceToLogout = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("Log Out", fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "This will log in your LKS Dialer account (${currentUser?.phoneNumber}) on this web browser with full call and encrypted chat access.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = !modal.isApproving,
+                        onClick = {
+                            modalState = modal.copy(isApproving = true)
+                            firebaseManager.approveQrSession(
+                                sessionId = modal.sessionId,
+                                nonce = modal.nonce,
+                                deviceName = deviceName,
+                                onSuccess = {
+                                    Toast.makeText(context, "Device linked successfully!", Toast.LENGTH_SHORT).show()
+                                    modalState = LinkedDevicesModalState.Idle
+                                },
+                                onError = { err ->
+                                    Toast.makeText(context, "Failed to link: $err", Toast.LENGTH_LONG).show()
+                                    modalState = LinkedDevicesModalState.Idle
+                                }
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(if (modal.isApproving) "Linking..." else "Link Device", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        enabled = !modal.isApproving,
+                        onClick = { modalState = LinkedDevicesModalState.Idle }
+                    ) {
+                        Text("Cancel")
+                    }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { deviceToLogout = null }) {
-                    Text("Cancel")
+            )
+        }
+        is LinkedDevicesModalState.ConfirmLogout -> {
+            val device = modal.device
+            AlertDialog(
+                onDismissRequest = { modalState = LinkedDevicesModalState.Idle },
+                icon = {
+                    Icon(
+                        Icons.Default.ExitToApp,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(36.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Log out from device?",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Are you sure you want to log out of \"${device.deviceName.ifBlank { "Web Browser" }}\"? This will immediately terminate the session on that computer.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            firebaseManager.unlinkDevice(device.sessionId) { success ->
+                                if (success) {
+                                    Toast.makeText(context, "Logged out from device", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            modalState = LinkedDevicesModalState.Idle
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Log Out", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { modalState = LinkedDevicesModalState.Idle }) {
+                        Text("Cancel")
+                    }
                 }
-            }
-        )
+            )
+        }
+        is LinkedDevicesModalState.VerifyingQr -> {
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("Verifying QR code...") },
+                text = {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                },
+                confirmButton = {}
+            )
+        }
+        else -> Unit
     }
 
     Scaffold(
@@ -295,7 +307,7 @@ fun LinkedDevicesScreen(
                         Spacer(modifier = Modifier.height(20.dp))
 
                         Button(
-                            onClick = { isScanning = true },
+                            onClick = { modalState = LinkedDevicesModalState.ScanningQr },
                             colors = ButtonDefaults.buttonColors(containerColor = GreenCall),
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
@@ -378,7 +390,7 @@ fun LinkedDevicesScreen(
                 items(linkedDevices, key = { it.sessionId }) { device ->
                     LinkedDeviceItem(
                         device = device,
-                        onLogoutClick = { deviceToLogout = device }
+                        onLogoutClick = { modalState = LinkedDevicesModalState.ConfirmLogout(device) }
                     )
                 }
             }

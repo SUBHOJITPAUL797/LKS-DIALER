@@ -33,6 +33,20 @@ import android.util.Log
  * 5. Partial WakeLock keeps CPU running continuously through lockscreen deep-sleep.
  * 6. Native hardware volume key silence detection (background broadcast & Telecom).
  */
+enum class RingtonePlaybackBackend {
+    NONE, MEDIA_PLAYER, RINGTONE_API, TONE_GENERATOR
+}
+
+sealed interface RingtoneState {
+    data object Idle : RingtoneState
+    data class Ringing(
+        val callId: String?,
+        val startedAtMs: Long,
+        val backend: RingtonePlaybackBackend = RingtonePlaybackBackend.NONE
+    ) : RingtoneState
+    data class Silenced(val callId: String?) : RingtoneState
+}
+
 object LksIncomingRingtonePlayer {
     private const val TAG = "LksRingtonePlayer"
 
@@ -47,18 +61,22 @@ object LksIncomingRingtonePlayer {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
-    var isRinging: Boolean = false
+    var state: RingtoneState = RingtoneState.Idle
         private set
 
-    @Volatile
-    var isSilenced: Boolean = false
-        private set
+    val isRinging: Boolean
+        get() = state is RingtoneState.Ringing
 
-    @Volatile
-    var activeCallId: String? = null
-        private set
+    val isSilenced: Boolean
+        get() = state is RingtoneState.Silenced
 
-    private var ringStartTime: Long = 0L
+    val activeCallId: String?
+        get() = when (val s = state) {
+            RingtoneState.Idle -> null
+            is RingtoneState.Ringing -> s.callId
+            is RingtoneState.Silenced -> s.callId
+        }
+
     private var volumeChangeReceiver: BroadcastReceiver? = null
 
     private fun registerVolumeChangeReceiver(context: Context) {
@@ -67,9 +85,10 @@ object LksIncomingRingtonePlayer {
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, intent: Intent?) {
                     val action = intent?.action ?: return
-                    val elapsed = System.currentTimeMillis() - ringStartTime
+                    val ringing = state as? RingtoneState.Ringing ?: return
+                    val elapsed = System.currentTimeMillis() - ringing.startedAtMs
                     // Guard against initial broadcasts during audio session setup: only respond after 1.5s
-                    if (!isRinging || elapsed < 1500L) return
+                    if (elapsed < 1500L) return
 
                     if (action == "android.media.VOLUME_CHANGED_ACTION") {
                         val streamType = intent.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1)
@@ -191,29 +210,33 @@ object LksIncomingRingtonePlayer {
      */
     @Synchronized
     fun start(context: Context, callerNumber: String, callId: String? = null) {
-        // If silenced by hardware volume key for this call, do NOT restart ringtone!
-        if (isSilenced && (callId == null || callId == activeCallId)) {
-            Log.d(TAG, "Ringtone is currently silenced by user for call $activeCallId, skipping start")
-            return
+        when (val current = state) {
+            is RingtoneState.Silenced -> {
+                // If silenced by hardware volume key for this call, do NOT restart ringtone!
+                if (callId == null || callId == current.callId) {
+                    Log.d(TAG, "Ringtone is currently silenced by user for call ${current.callId}, skipping start")
+                    return
+                }
+            }
+            is RingtoneState.Ringing -> {
+                if (callId == null || callId == current.callId || current.callId == null) {
+                    if (callId != null && current.callId == null) {
+                        state = current.copy(callId = callId)
+                    }
+                    Log.d(TAG, "Already ringing actively, ensuring loop monitor is running")
+                    mainHandler.removeCallbacks(loopMonitorRunnable)
+                    mainHandler.postDelayed(loopMonitorRunnable, 800L)
+                    return
+                }
+            }
+            RingtoneState.Idle -> Unit
         }
 
-        // Reset silenced state if this is a brand new incoming call
-        if (callId != null && callId != activeCallId) {
-            isSilenced = false
-            activeCallId = callId
-        } else if (callId != null) {
-            activeCallId = callId
-        }
-
-        if (isRinging) {
-            Log.d(TAG, "Already ringing actively, ensuring loop monitor is running")
-            mainHandler.removeCallbacks(loopMonitorRunnable)
-            mainHandler.postDelayed(loopMonitorRunnable, 800L)
-            return
-        }
-
-        isRinging = true
-        ringStartTime = System.currentTimeMillis()
+        state = RingtoneState.Ringing(
+            callId = callId ?: activeCallId,
+            startedAtMs = System.currentTimeMillis(),
+            backend = RingtonePlaybackBackend.NONE
+        )
         Log.i(TAG, "🔔 STARTING BULLETPROOF RINGTONE for caller: $callerNumber (callId=$callId)")
 
         val appCtx = context.applicationContext
@@ -385,6 +408,9 @@ object LksIncomingRingtonePlayer {
             } catch (_: Exception) {}
             player.start()
             mediaPlayer = player
+            (state as? RingtoneState.Ringing)?.let {
+                state = it.copy(backend = RingtonePlaybackBackend.MEDIA_PLAYER)
+            }
             playedViaMediaPlayer = true
             Log.i(TAG, "✅ Ringtone PLAYING via MediaPlayer: $resolvedUri")
         } catch (e: Exception) {
@@ -439,6 +465,9 @@ object LksIncomingRingtonePlayer {
                 }
                 r.play()
                 ringtone = r
+                (state as? RingtoneState.Ringing)?.let {
+                    state = it.copy(backend = RingtonePlaybackBackend.RINGTONE_API)
+                }
                 Log.i(TAG, "✅ Ringtone PLAYING via IRingtonePlayer fallback")
             } else {
                 startToneGeneratorFallback()
@@ -450,11 +479,12 @@ object LksIncomingRingtonePlayer {
     }
 
     private fun startToneGeneratorFallback() {
-        if (!isRinging) return
+        val current = state as? RingtoneState.Ringing ?: return
         try {
             if (toneGenerator == null) {
                 toneGenerator = ToneGenerator(AudioManager.STREAM_RING, 100)
                 toneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+                state = current.copy(backend = RingtonePlaybackBackend.TONE_GENERATOR)
                 Log.i(TAG, "✅ Continuous hardware ToneGenerator ringing active")
             }
         } catch (e: Exception) {
@@ -463,19 +493,35 @@ object LksIncomingRingtonePlayer {
     }
 
     /**
-     * Stop ringtone and vibration immediately.
+     * Stop ringtone and vibration immediately, resetting state to Idle.
      */
     @Synchronized
     fun stop() {
-        if (!isRinging && !isSilenced && mediaPlayer == null && ringtone == null && toneGenerator == null && vibrator == null) {
+        if (state is RingtoneState.Idle && mediaPlayer == null && ringtone == null && toneGenerator == null && vibrator == null) {
             return
         }
+        Log.i(TAG, "⏹️ STOPPING RINGTONE and vibration (prev=$state)")
+        state = RingtoneState.Idle
+        releaseHardwareAndLocks()
+    }
 
-        isRinging = false
-        isSilenced = false
-        activeCallId = null
+    /**
+     * Silence ringtone (e.g. user pressed volume key) while keeping activeCallId tracked as Silenced.
+     */
+    @Synchronized
+    fun silence() {
+        val callIdForSilence = when (val current = state) {
+            is RingtoneState.Ringing -> current.callId
+            is RingtoneState.Silenced -> return
+            RingtoneState.Idle -> return
+        }
+        Log.i(TAG, "🔇 SILENCING RINGTONE & VIBRATION (activeCallId=$callIdForSilence)")
+        state = RingtoneState.Silenced(callId = callIdForSilence)
+        releaseHardwareAndLocks()
+    }
+
+    private fun releaseHardwareAndLocks() {
         unregisterVolumeChangeReceiver()
-        Log.i(TAG, "⏹️ STOPPING RINGTONE and vibration")
         mainHandler.removeCallbacks(loopMonitorRunnable)
         stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
         stopTimeoutRunnable = null
@@ -526,68 +572,6 @@ object LksIncomingRingtonePlayer {
         audioFocusRequest = null
         // NOTE: Do NOT reset isSpeakerphoneOn here - AudioRouteManager owns speaker routing after
         // the call is answered. Resetting it here would break the in-call loudspeaker.
-    }
-
-    /**
-     * Silence ringtone (e.g. user pressed volume key) while keeping call active.
-     */
-    @Synchronized
-    fun silence() {
-        if (!isRinging && !isSilenced) {
-            return
-        }
-
-        isRinging = false
-        isSilenced = true
-        Log.i(TAG, "🔇 SILENCING RINGTONE & VIBRATION (activeCallId=$activeCallId)")
-        mainHandler.removeCallbacks(loopMonitorRunnable)
-        stopTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
-        stopTimeoutRunnable = null
-        unregisterVolumeChangeReceiver()
-
-        try {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
-        } catch (_: Exception) {}
-        mediaPlayer = null
-
-        try {
-            ringtone?.stop()
-        } catch (_: Exception) {}
-        ringtone = null
-
-        try {
-            toneGenerator?.stopTone()
-            toneGenerator?.release()
-        } catch (_: Exception) {}
-        toneGenerator = null
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vm = appContext?.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-                vm?.cancel()
-            }
-            vibrator?.cancel()
-        } catch (_: Exception) {}
-        vibrator = null
-
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (_: Exception) {}
-        wakeLock = null
-
-        try {
-            val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && audioFocusRequest != null) {
-                audioFocusRequest?.let { am?.abandonAudioFocusRequest(it) }
-            }
-            if (am?.mode == AudioManager.MODE_RINGTONE) {
-                am.mode = AudioManager.MODE_NORMAL
-            }
-        } catch (_: Exception) {}
-        audioFocusRequest = null
     }
 
     private fun startVibration(context: Context) {
