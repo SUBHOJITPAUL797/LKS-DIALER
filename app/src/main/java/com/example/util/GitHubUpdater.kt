@@ -56,7 +56,7 @@ sealed class DownloadState {
 
 /**
  * Pure, testable policy determining when an automatic app update prompt or notification
- * is allowed to surface without interrupting active calls or focused user workflows.
+ * is allowed to surface without interrupting active calls, group calls, or focused user workflows.
  */
 object UpdatePromptPolicy {
     fun shouldShowAutoUpdateDialog(

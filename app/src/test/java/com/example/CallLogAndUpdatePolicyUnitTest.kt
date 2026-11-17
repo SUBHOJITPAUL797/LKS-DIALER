@@ -12,6 +12,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/**
+ * Unit tests verifying caller identity preservation, Recents call log resolution, and non-intrusive update policy.
+ */
 class CallLogAndUpdatePolicyUnitTest {
 
     @Test

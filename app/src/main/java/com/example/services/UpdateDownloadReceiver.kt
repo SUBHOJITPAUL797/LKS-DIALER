@@ -7,6 +7,9 @@ import android.content.Intent
 import android.util.Log
 import com.example.util.GitHubUpdater
 
+/**
+ * Handles "Update Now" and "Later" (24h snooze) actions from the system update notification.
+ */
 class UpdateDownloadReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return

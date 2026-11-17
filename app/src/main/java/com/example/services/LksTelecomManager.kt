@@ -83,6 +83,7 @@ object LksTelecomManager {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
             val handle = getPhoneAccountHandle(context)
 
+            // Nest custom extras inside EXTRA_INCOMING_CALL_EXTRAS so Samsung One UI Telecom preserves them
             val incomingCustomExtras = Bundle().apply {
                 putString("call_id", callId)
                 putString("caller_name", callerName)

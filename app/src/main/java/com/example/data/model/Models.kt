@@ -275,6 +275,10 @@ data class IceCandidateDto(
     val type: String = "" // "offerCandidate" or "answerCandidate"
 )
 
+/**
+ * Sanitizes and preserves caller/callee phone numbers and display names across
+ * partial Firestore snapshots, Telecom extras, and call logs.
+ */
 object CallIdentitySanitizer {
     private val placeholderNumbers = setOf("unknown", "unknown caller", "lks user", "lks caller", "null", "lks", "active call", "me", "none")
     private val placeholderNames = setOf("unknown", "unknown caller", "lks user", "lks caller", "lks", "me", "active call", "null", "none")

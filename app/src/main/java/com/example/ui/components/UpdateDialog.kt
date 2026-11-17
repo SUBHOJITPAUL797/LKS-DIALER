@@ -190,6 +190,9 @@ fun RbAppLaunchSplashOverlay(
     }
 }
 
+/**
+ * Non-intrusive, dismissible update modal with "Update Later" snooze support.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UpdateDialog(

@@ -145,7 +145,7 @@ class CallMessagingService : FirebaseMessagingService() {
 
             val callId = remoteMessage.data["callId"] ?: return
 
-            // Cache peer tokens immediately into WebRtcEngine in-memory cache (0ms lookup on answer/hangup)
+            // Cache peer tokens immediately into WebRtcEngine in-memory cache for 0ms lookup on answer/hangup
             val callerNumber = remoteMessage.data["callerNumber"] ?: ""
             val callerFcm = remoteMessage.data["callerFcmToken"] ?: ""
             val callerWeb = remoteMessage.data["callerWebToken"] ?: ""

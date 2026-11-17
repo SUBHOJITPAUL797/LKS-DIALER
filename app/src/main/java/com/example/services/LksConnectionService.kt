@@ -92,6 +92,7 @@ class LksConnectionService : ConnectionService() {
             } catch (_: Exception) {}
         }
 
+        // Read from both top-level extras and EXTRA_INCOMING_CALL_EXTRAS (for Samsung One UI compatibility)
         val topExtras = request?.extras ?: Bundle()
         val nestedExtras = topExtras.getBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS)
         val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
