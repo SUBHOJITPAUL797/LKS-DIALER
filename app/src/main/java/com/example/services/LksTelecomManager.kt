@@ -83,11 +83,18 @@ object LksTelecomManager {
             val telecomManager = context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager ?: return
             val handle = getPhoneAccountHandle(context)
 
+            val incomingCustomExtras = Bundle().apply {
+                putString("call_id", callId)
+                putString("caller_name", callerName)
+                putString("caller_number", callerNumber)
+                putString("call_type", callType.name)
+            }
             val extras = Bundle().apply {
                 putString("call_id", callId)
                 putString("caller_name", callerName)
                 putString("caller_number", callerNumber)
                 putString("call_type", callType.name)
+                putBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS, incomingCustomExtras)
                 putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
                     Uri.fromParts(PhoneAccount.SCHEME_SIP, callerNumber.ifBlank { "LKS" }, null))
                 putInt(TelecomManager.EXTRA_START_CALL_WITH_VIDEO_STATE,

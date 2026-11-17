@@ -301,7 +301,54 @@ class FirebaseManager private constructor(private val context: Context) {
             .limit(100)
             .addSnapshotListener { snapshot, e ->
                 if (e != null || snapshot == null) return@addSnapshotListener
-                val logs = snapshot.toObjects(CallLogDto::class.java)
+                val rawLogs = snapshot.toObjects(CallLogDto::class.java)
+                val logs = rawLogs.map { log ->
+                    val resolvedNum = log.resolveOtherPartyNumber()
+                    val cleanCurrentNum = CallIdentitySanitizer.cleanNumber(log.otherPartyNumber)
+                    val cleanCurrentName = CallIdentitySanitizer.cleanName(log.otherPartyName)
+                    var effectiveNum = cleanCurrentNum.ifBlank { resolvedNum }
+                    if (effectiveNum.isBlank() && log.startedAt > 0L) {
+                        val adjacent = rawLogs.firstOrNull { other ->
+                            other.id != log.id &&
+                                other.resolveOtherPartyNumber().isNotBlank() &&
+                                (
+                                    kotlin.math.abs(other.startedAt - log.startedAt) <= 180_000L ||
+                                        kotlin.math.abs((other.startedAt + other.durationSeconds * 1000L) - log.startedAt) <= 180_000L ||
+                                        kotlin.math.abs((log.startedAt + log.durationSeconds * 1000L) - other.startedAt) <= 180_000L
+                                    )
+                        }
+                        if (adjacent != null) {
+                            effectiveNum = adjacent.resolveOtherPartyNumber()
+                        }
+                    }
+                    val effectiveName = cleanCurrentName.ifBlank {
+                        if (effectiveNum.isNotBlank()) resolveDisplayNameForNumber(effectiveNum) ?: effectiveNum else ""
+                    }
+                    if (effectiveNum.isBlank() && log.id.isNotBlank() && backfilledHistoricalLogIds.add(log.id)) {
+                        scheduleCallLogIdentityBackfill(log.callId, log.id, phoneNumber, log.direction)
+                    } else if (effectiveNum.isNotBlank() && CallIdentitySanitizer.isPlaceholderNumber(log.otherPartyNumber) && log.id.isNotBlank() && backfilledHistoricalLogIds.add(log.id)) {
+                        db.collection("users").document(phoneNumber)
+                            .collection("callLogs").document(log.id)
+                            .update(
+                                mapOf(
+                                    "otherPartyNumber" to effectiveNum,
+                                    "otherPartyName" to effectiveName.ifBlank { effectiveNum },
+                                    "callerNumber" to (if (log.direction == CallDirection.INCOMING) effectiveNum else phoneNumber),
+                                    "calleeNumber" to (if (log.direction == CallDirection.OUTGOING) effectiveNum else phoneNumber)
+                                )
+                            )
+                    }
+                    if (effectiveNum != log.otherPartyNumber || (effectiveName.isNotBlank() && effectiveName != log.otherPartyName)) {
+                        log.copy(
+                            otherPartyNumber = effectiveNum.ifBlank { log.otherPartyNumber },
+                            otherPartyName = effectiveName.ifBlank { log.otherPartyName },
+                            callerNumber = if (log.direction == CallDirection.INCOMING && effectiveNum.isNotBlank()) effectiveNum else log.callerNumber,
+                            calleeNumber = if (log.direction == CallDirection.OUTGOING && effectiveNum.isNotBlank()) effectiveNum else log.calleeNumber
+                        )
+                    } else {
+                        log
+                    }
+                }
                 _callLogs.value = logs
 
                 val prefs = context.getSharedPreferences("dialer_prefs", Context.MODE_PRIVATE)
@@ -1201,6 +1248,104 @@ class FirebaseManager private constructor(private val context: Context) {
         return sp.getString("user_phone", null)?.ifBlank { null }
     }
 
+    private fun resolveDisplayNameForNumber(number: String): String? {
+        val clean = CallIdentitySanitizer.cleanNumber(number)
+        if (clean.isBlank()) return null
+        val contactName = _syncedContacts.value
+            .find { ContactsHelper.numbersMatch(it.phoneNumber, clean) }
+            ?.name
+            ?.let { CallIdentitySanitizer.cleanName(it) }
+            ?.ifBlank { null }
+        if (contactName != null) return contactName
+        return lookupUserByNumber(clean)
+            ?.displayName
+            ?.let { CallIdentitySanitizer.cleanName(it) }
+            ?.ifBlank { null }
+    }
+
+    private fun extractPhoneFromCallId(callId: String): String {
+        val candidate = callId.substringBefore('_').trim()
+        return if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
+    }
+
+    private val backfilledHistoricalLogIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private fun resolveIdentityFromBubble(callId: String): Pair<String, String> {
+        val bubble = com.example.services.FloatingCallBubbleService.bubbleState.value
+        val bubbleNum = if (bubble.activeCallId == callId) CallIdentitySanitizer.cleanNumber(bubble.activeCallerNumber) else ""
+        val bubbleName = if (bubble.activeCallId == callId) CallIdentitySanitizer.cleanName(bubble.activeCallerName) else ""
+        val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+        val cachedNum = bubbleNum.ifBlank {
+            if (callId.isNotBlank()) engine?.resolveCallerNumberForCall(callId).orEmpty() else ""
+        }
+        val cachedName = bubbleName.ifBlank {
+            if (callId.isNotBlank()) engine?.resolveCallerNameForCall(callId, null, cachedNum).orEmpty() else ""
+        }
+        return cachedNum to cachedName
+    }
+
+    private fun scheduleCallLogIdentityBackfill(
+        callId: String,
+        logId: String,
+        userPhone: String,
+        direction: CallDirection
+    ) {
+        if (!_isFirebaseConfigured.value || callId.isBlank() || callId.startsWith("sim_")) return
+        scope.launch {
+            for (waitMs in longArrayOf(0L, 1200L, 2500L)) {
+                if (waitMs > 0L) delay(waitMs)
+                val currentLog = _callLogs.value.find { it.id == logId || it.callId == callId }
+                if (currentLog != null &&
+                    !CallIdentitySanitizer.isPlaceholderNumber(currentLog.otherPartyNumber) &&
+                    !CallIdentitySanitizer.isPlaceholderName(currentLog.otherPartyName)
+                ) return@launch
+
+                try {
+                    val doc = FirebaseFirestore.getInstance().collection("calls").document(callId).get().await()
+                    if (!doc.exists()) continue
+                    val cCaller = CallIdentitySanitizer.cleanNumber(doc.getString("callerNumber"))
+                    val cCallee = CallIdentitySanitizer.cleanNumber(doc.getString("calleeNumber"))
+                    val cCallerName = CallIdentitySanitizer.cleanName(doc.getString("callerName"))
+                    val cCalleeName = CallIdentitySanitizer.cleanName(doc.getString("calleeName"))
+                    val isOutgoing = direction == CallDirection.OUTGOING
+                    val resolvedNumber = if (isOutgoing) cCallee.ifBlank { cCaller } else cCaller.ifBlank { cCallee }
+                    if (resolvedNumber.isBlank()) continue
+                    val resolvedName = (if (isOutgoing) cCalleeName.ifBlank { cCallerName } else cCallerName.ifBlank { cCalleeName })
+                        .ifBlank { resolveDisplayNameForNumber(resolvedNumber) ?: resolvedNumber }
+
+                    var patchedLogId = logId
+                    _callLogs.value = _callLogs.value.map { entry ->
+                        if (entry.id == logId || entry.callId == callId) {
+                            patchedLogId = entry.id
+                            val bestNum = CallIdentitySanitizer.cleanNumber(entry.otherPartyNumber).ifBlank { resolvedNumber }
+                            val bestName = CallIdentitySanitizer.cleanName(entry.otherPartyName).ifBlank { resolvedName }
+                            entry.copy(
+                                otherPartyNumber = bestNum,
+                                otherPartyName = bestName,
+                                callerNumber = if (direction == CallDirection.INCOMING) bestNum else userPhone,
+                                calleeNumber = if (direction == CallDirection.OUTGOING) bestNum else userPhone
+                            )
+                        } else entry
+                    }
+                    FirebaseFirestore.getInstance()
+                        .collection("users").document(userPhone)
+                        .collection("callLogs").document(patchedLogId)
+                        .update(
+                            mapOf(
+                                "otherPartyNumber" to resolvedNumber,
+                                "otherPartyName" to resolvedName,
+                                "callerNumber" to (if (direction == CallDirection.INCOMING) resolvedNumber else userPhone),
+                                "calleeNumber" to (if (direction == CallDirection.OUTGOING) resolvedNumber else userPhone)
+                            )
+                        )
+                    return@launch
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
     /**
      * Records an active call start in local state and Firestore as soon as it's answered.
      * Guarantees that even if the app crashes, is force-killed, or loses power mid-call,
@@ -1214,38 +1359,86 @@ class FirebaseManager private constructor(private val context: Context) {
         callType: CallType
     ) {
         val userPhone = getEffectiveUserPhone() ?: return
+
+        val (bubbleNum, bubbleName) = resolveIdentityFromBubble(callId)
+        val finalNumber = CallIdentitySanitizer.cleanNumber(otherPartyNumber)
+            .ifBlank { bubbleNum }
+            .ifBlank { extractPhoneFromCallId(callId) }
+
+        var finalName = CallIdentitySanitizer.cleanName(otherPartyName)
+            .ifBlank { bubbleName }
+
+        if (finalNumber.isNotBlank() && (finalName.isBlank() || finalName == finalNumber)) {
+            finalName = resolveDisplayNameForNumber(finalNumber) ?: finalNumber
+        }
+
+        val resolvedNumberOrPlaceholder = finalNumber.ifBlank { "Unknown" }
+        val resolvedNameOrPlaceholder = finalName.ifBlank {
+            if (resolvedNumberOrPlaceholder != "Unknown") resolvedNumberOrPlaceholder else "Unknown Caller"
+        }
+
+        val existingLog = _callLogs.value.find { it.callId == callId }
+        val existingLogId = activeCallLogIds[callId] ?: existingLog?.id
+
+        if (existingLogId != null) {
+            activeCallLogIds[callId] = existingLogId
+            if (existingLog != null) {
+                val curNum = CallIdentitySanitizer.cleanNumber(existingLog.otherPartyNumber)
+                val curName = CallIdentitySanitizer.cleanName(existingLog.otherPartyName)
+                val upgradedNum = curNum.ifBlank { finalNumber }
+                val upgradedName = curName.ifBlank { finalName }
+                if ((upgradedNum.isNotBlank() && upgradedNum != curNum) || (upgradedName.isNotBlank() && upgradedName != curName)) {
+                    val outNum = upgradedNum.ifBlank { existingLog.otherPartyNumber.ifBlank { "Unknown" } }
+                    val outName = upgradedName.ifBlank { existingLog.otherPartyName.ifBlank { "Unknown Caller" } }
+                    _callLogs.value = _callLogs.value.map {
+                        if (it.id == existingLogId || it.callId == callId) {
+                            it.copy(
+                                otherPartyNumber = outNum,
+                                otherPartyName = outName,
+                                callerNumber = if (direction == CallDirection.INCOMING && outNum != "Unknown") outNum else it.callerNumber,
+                                calleeNumber = if (direction == CallDirection.OUTGOING && outNum != "Unknown") outNum else it.calleeNumber
+                            )
+                        } else it
+                    }
+                    if (_isFirebaseConfigured.value) {
+                        val updates = mutableMapOf<String, Any>()
+                        if (outNum != "Unknown") {
+                            updates["otherPartyNumber"] = outNum
+                            updates[if (direction == CallDirection.INCOMING) "callerNumber" else "calleeNumber"] = outNum
+                        }
+                        if (outName != "Unknown Caller") {
+                            updates["otherPartyName"] = outName
+                        }
+                        if (updates.isNotEmpty()) {
+                            FirebaseFirestore.getInstance()
+                                .collection("users").document(userPhone)
+                                .collection("callLogs").document(existingLogId)
+                                .update(updates)
+                        }
+                    }
+                }
+            }
+            if (finalNumber.isBlank() || finalName.isBlank()) {
+                scheduleCallLogIdentityBackfill(callId, existingLogId, userPhone, direction)
+            }
+            return
+        }
+
         val logId = UUID.randomUUID().toString()
         activeCallLogIds[callId] = logId
-
-        var finalNumber = otherPartyNumber.trim()
-        var finalName = otherPartyName.trim()
-
-        if (finalNumber.isBlank() && callId.isNotBlank()) {
-            val candidate = callId.substringBefore('_')
-            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
-                finalNumber = candidate
-            }
-        }
-        if (finalNumber.isBlank()) {
-            finalNumber = "Unknown"
-        }
-        if (finalName.isBlank() || finalName == finalNumber) {
-            val lookedUp = if (finalNumber != "Unknown") lookupUserByNumber(finalNumber)?.displayName ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, finalNumber) }?.name else null
-            finalName = lookedUp?.ifBlank { null } ?: if (finalNumber != "Unknown") finalNumber else "Unknown Caller"
-        }
 
         val initialLog = CallLogDto(
             id = logId,
             callId = callId,
             direction = direction,
-            otherPartyNumber = finalNumber,
-            otherPartyName = finalName,
+            otherPartyNumber = resolvedNumberOrPlaceholder,
+            otherPartyName = resolvedNameOrPlaceholder,
             callType = callType,
             status = CallStatus.ANSWERED,
             startedAt = System.currentTimeMillis(),
             durationSeconds = 0,
-            callerNumber = if (direction == CallDirection.INCOMING) finalNumber else userPhone,
-            calleeNumber = if (direction == CallDirection.OUTGOING) finalNumber else userPhone
+            callerNumber = if (direction == CallDirection.INCOMING) resolvedNumberOrPlaceholder else userPhone,
+            calleeNumber = if (direction == CallDirection.OUTGOING) resolvedNumberOrPlaceholder else userPhone
         )
         if (_callLogs.value.none { it.callId == callId }) {
             _callLogs.value = listOf(initialLog) + _callLogs.value
@@ -1259,6 +1452,10 @@ class FirebaseManager private constructor(private val context: Context) {
                 .addOnSuccessListener {
                     Log.d(TAG, "Call started log written to Firestore: callId=$callId logId=$logId")
                 }
+        }
+
+        if (resolvedNumberOrPlaceholder == "Unknown" || resolvedNameOrPlaceholder == "Unknown Caller") {
+            scheduleCallLogIdentityBackfill(callId, logId, userPhone, direction)
         }
     }
 
@@ -1317,35 +1514,47 @@ class FirebaseManager private constructor(private val context: Context) {
     ) {
         val userPhone = getEffectiveUserPhone() ?: return
         val logId = activeCallLogIds.remove(callId)
+            ?: _callLogs.value.find { it.callId == callId }?.id
+        val (bubbleNum, bubbleName) = resolveIdentityFromBubble(callId)
 
         if (logId != null) {
             var updatedNumber = ""
             var updatedName = ""
+            var effectiveDirection = fallbackDirection ?: CallDirection.INCOMING
 
             _callLogs.value = _callLogs.value.map { log ->
                 if (log.id == logId || log.callId == callId) {
-                    val resolvedNumber = log.otherPartyNumber.ifBlank {
-                        fallbackOtherNumber.orEmpty().ifBlank {
-                            val candidate = callId.substringBefore('_')
-                            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
-                        }
-                    }.ifBlank { "Unknown" }
+                    effectiveDirection = log.direction
+                    val existingCleanNum = CallIdentitySanitizer.cleanNumber(log.otherPartyNumber)
+                        .ifBlank { CallIdentitySanitizer.cleanNumber(log.resolveOtherPartyNumber()) }
+                    val fallbackCleanNum = CallIdentitySanitizer.cleanNumber(fallbackOtherNumber)
+                        .ifBlank { bubbleNum }
+                        .ifBlank { extractPhoneFromCallId(callId) }
 
-                    val resolvedName = log.otherPartyName.ifBlank {
-                        fallbackOtherName?.ifBlank { null }
-                            ?: (if (resolvedNumber != "Unknown") lookupUserByNumber(resolvedNumber)?.displayName else null)
-                            ?: (if (resolvedNumber != "Unknown") _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber) }?.name else null)
-                            ?: resolvedNumber
-                    }.ifBlank { "Unknown Caller" }
+                    val resolvedNumber = existingCleanNum
+                        .ifBlank { fallbackCleanNum }
+                        .ifBlank { "Unknown" }
+
+                    val existingCleanName = CallIdentitySanitizer.cleanName(log.otherPartyName)
+                    val fallbackCleanName = CallIdentitySanitizer.cleanName(fallbackOtherName)
+                        .ifBlank { bubbleName }
+
+                    val lookedUpName = if (resolvedNumber != "Unknown") resolveDisplayNameForNumber(resolvedNumber) else null
+                    val resolvedName = existingCleanName
+                        .ifBlank { fallbackCleanName }
+                        .ifBlank { lookedUpName.orEmpty() }
+                        .ifBlank { if (resolvedNumber != "Unknown") resolvedNumber else "Unknown Caller" }
 
                     updatedNumber = resolvedNumber
                     updatedName = resolvedName
 
                     log.copy(
                         status = status,
-                        durationSeconds = durationSeconds,
+                        durationSeconds = maxOf(log.durationSeconds, durationSeconds),
                         otherPartyNumber = resolvedNumber,
                         otherPartyName = resolvedName,
+                        callerNumber = if (log.direction == CallDirection.INCOMING && resolvedNumber != "Unknown") resolvedNumber else log.callerNumber,
+                        calleeNumber = if (log.direction == CallDirection.OUTGOING && resolvedNumber != "Unknown") resolvedNumber else log.calleeNumber,
                         recordingPath = recordingPath ?: log.recordingPath
                     )
                 } else log
@@ -1359,10 +1568,11 @@ class FirebaseManager private constructor(private val context: Context) {
                 if (!recordingPath.isNullOrBlank()) {
                     updates["recordingPath"] = recordingPath
                 }
-                if (updatedNumber.isNotBlank() && updatedNumber != "Unknown") {
+                if (updatedNumber.isNotBlank() && !CallIdentitySanitizer.isPlaceholderNumber(updatedNumber)) {
                     updates["otherPartyNumber"] = updatedNumber
+                    updates[if (effectiveDirection == CallDirection.INCOMING) "callerNumber" else "calleeNumber"] = updatedNumber
                 }
-                if (updatedName.isNotBlank() && updatedName != "Unknown Caller") {
+                if (updatedName.isNotBlank() && !CallIdentitySanitizer.isPlaceholderName(updatedName)) {
                     updates["otherPartyName"] = updatedName
                 }
                 FirebaseFirestore.getInstance()
@@ -1373,24 +1583,21 @@ class FirebaseManager private constructor(private val context: Context) {
                         Log.d(TAG, "Call ended log updated in Firestore: callId=$callId")
                     }
             }
+            if (updatedNumber == "Unknown" || updatedName == "Unknown Caller") {
+                scheduleCallLogIdentityBackfill(callId, logId, userPhone, effectiveDirection)
+            }
         } else {
             // No prior started log exists (e.g. rejected, missed, cancelled before answer)
             if (fallbackDirection != null) {
-                var effNumber = fallbackOtherNumber.orEmpty().trim()
-                var effName = fallbackOtherName.orEmpty().trim()
-
-                if (effNumber.isBlank() && callId.isNotBlank()) {
-                    val candidate = callId.substringBefore('_')
-                    if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
-                        effNumber = candidate
-                    }
-                }
+                val effNumber = CallIdentitySanitizer.cleanNumber(fallbackOtherNumber)
+                    .ifBlank { bubbleNum }
+                    .ifBlank { extractPhoneFromCallId(callId) }
+                var effName = CallIdentitySanitizer.cleanName(fallbackOtherName)
+                    .ifBlank { bubbleName }
 
                 if (effNumber.isNotBlank()) {
                     if (effName.isBlank() || effName == effNumber) {
-                        effName = lookupUserByNumber(effNumber)?.displayName?.ifBlank { null }
-                            ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, effNumber) }?.name?.ifBlank { null }
-                            ?: effNumber
+                        effName = resolveDisplayNameForNumber(effNumber) ?: effNumber
                     }
                     logCall(
                         direction = fallbackDirection,
@@ -1406,23 +1613,15 @@ class FirebaseManager private constructor(private val context: Context) {
                     FirebaseFirestore.getInstance().collection("calls").document(callId).get()
                         .addOnSuccessListener { doc ->
                             if (doc != null && doc.exists()) {
-                                val cCaller = doc.getString("callerNumber").orEmpty()
-                                val cCallee = doc.getString("calleeNumber").orEmpty()
-                                val cCallerName = doc.getString("callerName").orEmpty()
-                                val cCalleeName = doc.getString("calleeName").orEmpty()
+                                val cCaller = CallIdentitySanitizer.cleanNumber(doc.getString("callerNumber"))
+                                val cCallee = CallIdentitySanitizer.cleanNumber(doc.getString("calleeNumber"))
+                                val cCallerName = CallIdentitySanitizer.cleanName(doc.getString("callerName"))
+                                val cCalleeName = CallIdentitySanitizer.cleanName(doc.getString("calleeName"))
                                 val isOutgoing = fallbackDirection == CallDirection.OUTGOING
-                                val fetchedNumber = if (isOutgoing) {
-                                    cCallee.ifBlank { cCaller }
-                                } else {
-                                    cCaller.ifBlank { cCallee }
-                                }
-                                val fetchedName = if (isOutgoing) {
-                                    cCalleeName.ifBlank { cCallerName }
-                                } else {
-                                    cCallerName.ifBlank { cCalleeName }
-                                }.ifBlank {
-                                    lookupUserByNumber(fetchedNumber)?.displayName ?: fetchedNumber
-                                }
+                                val fetchedNumber = if (isOutgoing) cCallee.ifBlank { cCaller } else cCaller.ifBlank { cCallee }
+                                val fetchedName = (if (isOutgoing) cCalleeName.ifBlank { cCallerName } else cCallerName.ifBlank { cCalleeName })
+                                    .ifBlank { effName }
+                                    .ifBlank { resolveDisplayNameForNumber(fetchedNumber) ?: fetchedNumber }
                                 logCall(
                                     direction = fallbackDirection,
                                     otherPartyNumber = fetchedNumber.ifBlank { "Unknown" },
@@ -1437,7 +1636,7 @@ class FirebaseManager private constructor(private val context: Context) {
                                 logCall(
                                     direction = fallbackDirection,
                                     otherPartyNumber = "Unknown",
-                                    otherPartyName = "Unknown Caller",
+                                    otherPartyName = effName.ifBlank { "Unknown Caller" },
                                     callType = fallbackCallType,
                                     status = status,
                                     durationSeconds = durationSeconds,
@@ -1450,7 +1649,7 @@ class FirebaseManager private constructor(private val context: Context) {
                             logCall(
                                 direction = fallbackDirection,
                                 otherPartyNumber = "Unknown",
-                                otherPartyName = "Unknown Caller",
+                                otherPartyName = effName.ifBlank { "Unknown Caller" },
                                 callType = fallbackCallType,
                                 status = status,
                                 durationSeconds = durationSeconds,
@@ -1462,7 +1661,7 @@ class FirebaseManager private constructor(private val context: Context) {
                     logCall(
                         direction = fallbackDirection,
                         otherPartyNumber = "Unknown",
-                        otherPartyName = "Unknown Caller",
+                        otherPartyName = effName.ifBlank { "Unknown Caller" },
                         callType = fallbackCallType,
                         status = status,
                         durationSeconds = durationSeconds,
@@ -1487,40 +1686,55 @@ class FirebaseManager private constructor(private val context: Context) {
         val userPhone = getEffectiveUserPhone() ?: return
         val resolvedCallId = callId ?: "${userPhone}_${System.currentTimeMillis()}"
 
-        // Deduplication: if already tracked in activeCallLogIds, update instead
+        // Deduplication: if already tracked in activeCallLogIds, update instead and preserve peer identity
         if (activeCallLogIds.containsKey(resolvedCallId)) {
-            recordCallEnded(resolvedCallId, status, durationSeconds, recordingPath = recordingPath)
+            recordCallEnded(
+                callId = resolvedCallId,
+                status = status,
+                durationSeconds = durationSeconds,
+                fallbackDirection = direction,
+                fallbackOtherNumber = otherPartyNumber,
+                fallbackOtherName = otherPartyName,
+                fallbackCallType = callType,
+                recordingPath = recordingPath
+            )
             return
         }
 
-        var finalNumber = otherPartyNumber.trim()
-        var finalName = otherPartyName.trim()
+        val (bubbleNum, bubbleName) = resolveIdentityFromBubble(resolvedCallId)
+        val finalNumber = CallIdentitySanitizer.cleanNumber(otherPartyNumber)
+            .ifBlank { bubbleNum }
+            .ifBlank { extractPhoneFromCallId(resolvedCallId) }
+            .ifBlank { "Unknown" }
 
-        if (finalNumber.isBlank() && resolvedCallId.isNotBlank()) {
-            val candidate = resolvedCallId.substringBefore('_')
-            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) {
-                finalNumber = candidate
-            }
-        }
-        if (finalNumber.isBlank()) {
-            finalNumber = "Unknown"
-        }
+        var finalName = CallIdentitySanitizer.cleanName(otherPartyName)
+            .ifBlank { bubbleName }
+
         if (finalName.isBlank() || finalName == finalNumber) {
-            val lookedUp = if (finalNumber != "Unknown") lookupUserByNumber(finalNumber)?.displayName ?: _syncedContacts.value.find { ContactsHelper.numbersMatch(it.phoneNumber, finalNumber) }?.name else null
-            finalName = lookedUp?.ifBlank { null } ?: if (finalNumber != "Unknown") finalNumber else "Unknown Caller"
+            val lookedUp = if (finalNumber != "Unknown") resolveDisplayNameForNumber(finalNumber) else null
+            finalName = lookedUp ?: if (finalNumber != "Unknown") finalNumber else finalName.ifBlank { "Unknown Caller" }
         }
 
         // Deduplication: check if already in local list with same callId
         val existingIndex = _callLogs.value.indexOfFirst { it.callId == resolvedCallId }
         if (existingIndex >= 0) {
             val existingLog = _callLogs.value[existingIndex]
-            val resolvedNum = existingLog.otherPartyNumber.ifBlank { finalNumber }
-            val resolvedNm = existingLog.otherPartyName.ifBlank { finalName }
+            val existingNum = CallIdentitySanitizer.cleanNumber(existingLog.otherPartyNumber)
+                .ifBlank { CallIdentitySanitizer.cleanNumber(existingLog.resolveOtherPartyNumber()) }
+            val resolvedNum = existingNum
+                .ifBlank { CallIdentitySanitizer.cleanNumber(finalNumber) }
+                .ifBlank { "Unknown" }
+            val existingNm = CallIdentitySanitizer.cleanName(existingLog.otherPartyName)
+            val resolvedNm = existingNm
+                .ifBlank { CallIdentitySanitizer.cleanName(finalName) }
+                .ifBlank { if (resolvedNum != "Unknown") resolveDisplayNameForNumber(resolvedNum) ?: resolvedNum else "Unknown Caller" }
             val updated = existingLog.copy(
                 status = status,
-                durationSeconds = durationSeconds,
+                durationSeconds = maxOf(existingLog.durationSeconds, durationSeconds),
                 otherPartyNumber = resolvedNum,
                 otherPartyName = resolvedNm,
+                callerNumber = if (existingLog.direction == CallDirection.INCOMING && resolvedNum != "Unknown") resolvedNum else existingLog.callerNumber,
+                calleeNumber = if (existingLog.direction == CallDirection.OUTGOING && resolvedNum != "Unknown") resolvedNum else existingLog.calleeNumber,
                 recordingPath = recordingPath ?: existingLog.recordingPath
             )
             val mutable = _callLogs.value.toMutableList()
@@ -1529,10 +1743,15 @@ class FirebaseManager private constructor(private val context: Context) {
             if (_isFirebaseConfigured.value) {
                 val updates = mutableMapOf<String, Any>(
                     "status" to status.name,
-                    "durationSeconds" to durationSeconds
+                    "durationSeconds" to updated.durationSeconds
                 )
-                if (resolvedNum.isNotBlank() && resolvedNum != "Unknown") updates["otherPartyNumber"] = resolvedNum
-                if (resolvedNm.isNotBlank() && resolvedNm != "Unknown Caller") updates["otherPartyName"] = resolvedNm
+                if (resolvedNum.isNotBlank() && !CallIdentitySanitizer.isPlaceholderNumber(resolvedNum)) {
+                    updates["otherPartyNumber"] = resolvedNum
+                    updates[if (existingLog.direction == CallDirection.INCOMING) "callerNumber" else "calleeNumber"] = resolvedNum
+                }
+                if (resolvedNm.isNotBlank() && !CallIdentitySanitizer.isPlaceholderName(resolvedNm)) {
+                    updates["otherPartyName"] = resolvedNm
+                }
                 if (!recordingPath.isNullOrBlank()) {
                     updates["recordingPath"] = recordingPath
                 }
@@ -1540,6 +1759,9 @@ class FirebaseManager private constructor(private val context: Context) {
                     .collection("users").document(userPhone)
                     .collection("callLogs").document(existingLog.id)
                     .update(updates)
+            }
+            if (resolvedNum == "Unknown" || resolvedNm == "Unknown Caller") {
+                scheduleCallLogIdentityBackfill(resolvedCallId, existingLog.id, userPhone, existingLog.direction)
             }
             return
         }
@@ -1572,6 +1794,10 @@ class FirebaseManager private constructor(private val context: Context) {
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Error saving call log to Firestore: ${e.message}")
                 }
+        }
+
+        if (finalNumber == "Unknown" || finalName == "Unknown Caller") {
+            scheduleCallLogIdentityBackfill(resolvedCallId, logId, userPhone, direction)
         }
     }
 
@@ -1611,15 +1837,16 @@ class FirebaseManager private constructor(private val context: Context) {
     ) {
         if (calleeNumber.isBlank()) return
 
-        var effCallerNumber = callerNumber.trim()
+        var effCallerNumber = CallIdentitySanitizer.cleanNumber(callerNumber)
         if (effCallerNumber.isBlank()) {
-            effCallerNumber = getEffectiveUserPhone().orEmpty()
+            effCallerNumber = CallIdentitySanitizer.cleanNumber(getEffectiveUserPhone())
         }
+        val cleanCallerName = CallIdentitySanitizer.cleanName(callerName)
 
         fun saveLog(num: String, name: String) {
-            val validNumber = num.ifBlank { "Unknown" }
-            val validName = name.ifBlank {
-                if (validNumber != "Unknown") lookupUserByNumber(validNumber)?.displayName ?: validNumber
+            val validNumber = CallIdentitySanitizer.cleanNumber(num).ifBlank { "Unknown" }
+            val validName = CallIdentitySanitizer.cleanName(name).ifBlank {
+                if (validNumber != "Unknown") resolveDisplayNameForNumber(validNumber) ?: validNumber
                 else "Unknown Caller"
             }
 
@@ -1656,17 +1883,17 @@ class FirebaseManager private constructor(private val context: Context) {
         if (effCallerNumber.isBlank() && !callId.isNullOrBlank() && _isFirebaseConfigured.value) {
             FirebaseFirestore.getInstance().collection("calls").document(callId).get()
                 .addOnSuccessListener { doc ->
-                    val fromDoc = doc?.getString("callerNumber").orEmpty().ifBlank {
-                        doc?.getString("calleeNumber").orEmpty()
+                    val fromDoc = CallIdentitySanitizer.cleanNumber(doc?.getString("callerNumber")).ifBlank {
+                        CallIdentitySanitizer.cleanNumber(doc?.getString("calleeNumber"))
                     }
-                    val fromDocName = doc?.getString("callerName").orEmpty()
-                    saveLog(fromDoc, fromDocName.ifBlank { callerName })
+                    val fromDocName = CallIdentitySanitizer.cleanName(doc?.getString("callerName"))
+                    saveLog(fromDoc, fromDocName.ifBlank { cleanCallerName })
                 }
                 .addOnFailureListener {
-                    saveLog("", callerName)
+                    saveLog("", cleanCallerName)
                 }
         } else {
-            saveLog(effCallerNumber, callerName)
+            saveLog(effCallerNumber, cleanCallerName)
         }
     }
 

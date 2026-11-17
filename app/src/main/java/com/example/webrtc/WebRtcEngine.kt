@@ -113,7 +113,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 val st = try { CallStatus.valueOf(str("status") ?: "IDLE") } catch (_: Exception) { CallStatus.IDLE }
                 val ct = try { CallType.valueOf(str("callType") ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
-                CallDto(
+                val dto = CallDto(
                     callId = str("callId") ?: callId,
                     callerNumber = str("callerNumber") ?: "",
                     calleeNumber = str("calleeNumber") ?: "",
@@ -130,12 +130,77 @@ class WebRtcEngine private constructor(private val context: Context) {
                     callerTuneUrl = str("callerTuneUrl"),
                     callerTuneStartMs = num("callerTuneStartMs"),
                     callerTuneEndMs = num("callerTuneEndMs"),
+                    callerFcmToken = str("callerFcmToken") ?: "",
+                    callerWebToken = str("callerWebToken") ?: "",
+                    calleeFcmToken = str("calleeFcmToken") ?: "",
+                    calleeWebToken = str("calleeWebToken") ?: "",
                     reason = str("reason"),
                     iceRestartRequested = num("iceRestartRequested")
                 )
+                if (dto.callerNumber.isNotBlank()) {
+                    cacheIncomingCallMeta(
+                        callId = dto.callId,
+                        callerNumber = dto.callerNumber,
+                        callerName = dto.callerName,
+                        callType = dto.callType.name,
+                        callerFcmToken = dto.callerFcmToken,
+                        callerWebToken = dto.callerWebToken
+                    )
+                }
+                dto
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * Direct HTTPS REST PATCH to Firestore `calls/{callId}`.
+     * Bypasses any stalled cellular gRPC stream so `status=ANSWERED`, `answerSdp`, and `calleeCandidates`
+     * reach Firestore in ~120ms even when the mobile network socket is reconnecting.
+     */
+    private fun patchCallDocViaRest(
+        callId: String,
+        stringFields: Map<String, String> = emptyMap(),
+        longFields: Map<String, Long> = emptyMap(),
+        listFields: Map<String, List<String>> = emptyMap()
+    ) {
+        if (callId.isBlank() || (stringFields.isEmpty() && longFields.isEmpty() && listFields.isEmpty())) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                val allKeys = mutableListOf<String>()
+                val fieldsObj = org.json.JSONObject()
+                for ((k, v) in stringFields) {
+                    allKeys.add(k)
+                    fieldsObj.put(k, org.json.JSONObject().put("stringValue", v))
+                }
+                for ((k, v) in longFields) {
+                    allKeys.add(k)
+                    fieldsObj.put(k, org.json.JSONObject().put("integerValue", v.toString()))
+                }
+                for ((k, list) in listFields) {
+                    allKeys.add(k)
+                    val arr = org.json.JSONArray()
+                    for (item in list) {
+                        arr.put(org.json.JSONObject().put("stringValue", item))
+                    }
+                    fieldsObj.put(k, org.json.JSONObject().put("arrayValue", org.json.JSONObject().put("values", arr)))
+                }
+                val maskQuery = allKeys.joinToString("&") { "updateMask.fieldPaths=${java.net.URLEncoder.encode(it, "UTF-8")}" }
+                val url = "https://firestore.googleapis.com/v1/projects/lks-dialer/databases/(default)/documents/calls/$callId?$maskQuery"
+                val bodyJson = org.json.JSONObject().put("fields", fieldsObj).toString()
+                val req = okhttp3.Request.Builder()
+                    .url(url)
+                    .patch(bodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                    .build()
+                pushHttpClient.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        Log.d("WebRtcEngine", "⚡ REST PATCH succeeded for call $callId (fields=${allKeys.joinToString(",")})")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.d("WebRtcEngine", "REST PATCH fallback non-fatal error for $callId: ${e.message}")
+            }
         }
     }
 
@@ -347,6 +412,154 @@ class WebRtcEngine private constructor(private val context: Context) {
         }
     }
     
+    private data class IncomingCallerMeta(
+        val callerNumber: String = "",
+        val callerName: String = "",
+        val callType: String = "AUDIO",
+        val callerFcmToken: String = "",
+        val callerWebToken: String = ""
+    )
+
+    private val incomingCallerMetaCache = java.util.concurrent.ConcurrentHashMap<String, IncomingCallerMeta>()
+    private val answeredOrFinishedCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    fun isCallAnsweredOrFinished(callId: String): Boolean {
+        if (callId.isBlank()) return false
+        if (isCallTerminated(callId) || answeredOrFinishedCallIds.contains(callId)) return true
+        val cur = _state.value
+        return cur.activeCall?.callId == callId && (
+            cur.callStatus == CallStatus.ANSWERED ||
+            cur.callStatus == CallStatus.ENDED ||
+            cur.callStatus == CallStatus.DECLINED ||
+            cur.callStatus == CallStatus.MISSED
+        )
+    }
+
+    private fun markCallAnsweredLocally(callId: String) {
+        if (callId.isNotBlank()) {
+            if (answeredOrFinishedCallIds.size > 200) answeredOrFinishedCallIds.clear()
+            answeredOrFinishedCallIds.add(callId)
+        }
+    }
+
+    fun cacheIncomingCallMeta(
+        callId: String,
+        callerNumber: String?,
+        callerName: String? = null,
+        callType: String? = null,
+        callerFcmToken: String? = null,
+        callerWebToken: String? = null
+    ) {
+        if (callId.isBlank()) return
+        val cleanNum = com.example.data.model.CallIdentitySanitizer.cleanNumber(callerNumber)
+        val cleanNm = com.example.data.model.CallIdentitySanitizer.cleanName(callerName)
+        val cleanType = callType?.takeIf { it.isNotBlank() }
+        val fcm = callerFcmToken?.trim() ?: ""
+        val web = callerWebToken?.trim() ?: ""
+
+        if (cleanNum.isNotBlank() && (fcm.isNotBlank() || web.isNotBlank())) {
+            val pair = Pair(fcm, web)
+            com.example.util.ContactsHelper.generateNumberVariations(cleanNum).forEach { pushTokenCache[it] = pair }
+        }
+
+        val existing = incomingCallerMetaCache[callId]
+        val merged = IncomingCallerMeta(
+            callerNumber = cleanNum.ifBlank { existing?.callerNumber ?: "" },
+            callerName = cleanNm.ifBlank { existing?.callerName ?: "" },
+            callType = cleanType ?: existing?.callType ?: "AUDIO",
+            callerFcmToken = fcm.ifBlank { existing?.callerFcmToken ?: "" },
+            callerWebToken = web.ifBlank { existing?.callerWebToken ?: "" }
+        )
+        if (incomingCallerMetaCache.size > 200) incomingCallerMetaCache.clear()
+        incomingCallerMetaCache[callId] = merged
+
+        // Also patch activeCall in-place if it matches callId and was missing callerNumber/callerName
+        val cur = _state.value.activeCall
+        if (cur != null && cur.callId == callId) {
+            val patchedNum = com.example.data.model.CallIdentitySanitizer.cleanNumber(cur.callerNumber).ifBlank { merged.callerNumber }
+            val patchedNm = com.example.data.model.CallIdentitySanitizer.cleanName(cur.callerName).ifBlank { merged.callerName }.ifBlank { patchedNum }
+            val patchedFcm = cur.callerFcmToken.ifBlank { merged.callerFcmToken }
+            val patchedWeb = cur.callerWebToken.ifBlank { merged.callerWebToken }
+            if (patchedNum != cur.callerNumber || patchedNm != cur.callerName || patchedFcm != cur.callerFcmToken) {
+                _state.value = _state.value.copy(
+                    activeCall = cur.copy(
+                        callerNumber = patchedNum,
+                        callerName = patchedNm,
+                        callerFcmToken = patchedFcm,
+                        callerWebToken = patchedWeb
+                    )
+                )
+            }
+        }
+    }
+
+    fun resolveCallerNumberForCall(callId: String, candidateNumber: String? = null): String {
+        val direct = com.example.data.model.CallIdentitySanitizer.cleanNumber(candidateNumber)
+        if (direct.isNotBlank()) return direct
+        val fromActive = _state.value.activeCall?.takeIf { it.callId == callId || callId.isBlank() }?.callerNumber
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanNumber(it) }
+        if (!fromActive.isNullOrBlank()) return fromActive
+        val fromCache = incomingCallerMetaCache[callId]?.callerNumber
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanNumber(it) }
+        if (!fromCache.isNullOrBlank()) return fromCache
+        val fromBubble = com.example.services.FloatingCallBubbleService.bubbleState.value
+            .takeIf { it.activeCallId == callId || callId.isBlank() }?.activeCallerNumber
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanNumber(it) }
+        if (!fromBubble.isNullOrBlank()) return fromBubble
+        return ""
+    }
+
+    fun resolveCallerNameForCall(callId: String, candidateName: String? = null, resolvedNumber: String = ""): String {
+        val direct = com.example.data.model.CallIdentitySanitizer.cleanName(candidateName)
+        if (direct.isNotBlank()) return direct
+        val fromActive = _state.value.activeCall?.takeIf { it.callId == callId || callId.isBlank() }?.callerName
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }
+        if (!fromActive.isNullOrBlank()) return fromActive
+        val fromCache = incomingCallerMetaCache[callId]?.callerName
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }
+        if (!fromCache.isNullOrBlank()) return fromCache
+        val fromBubble = com.example.services.FloatingCallBubbleService.bubbleState.value
+            .takeIf { it.activeCallId == callId || callId.isBlank() }?.activeCallerName
+            ?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }
+        if (!fromBubble.isNullOrBlank()) return fromBubble
+        val num = resolvedNumber.ifBlank { resolveCallerNumberForCall(callId) }
+        if (num.isNotBlank()) {
+            val fbMgr = com.example.data.repository.FirebaseManager.getInstance(context)
+            val contactNm = fbMgr.syncedContacts.value.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, num) }?.name
+                ?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }
+            if (!contactNm.isNullOrBlank()) return contactNm
+            val userNm = fbMgr.lookupUserByNumber(num)?.displayName
+                ?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }
+            if (!userNm.isNullOrBlank()) return userNm
+            return num
+        }
+        return ""
+    }
+
+    fun resolveCallTypeForCall(callId: String, candidateType: String? = null): String {
+        if (!candidateType.isNullOrBlank()) return candidateType
+        _state.value.activeCall?.takeIf { it.callId == callId }?.callType?.name?.let { return it }
+        incomingCallerMetaCache[callId]?.callType?.takeIf { it.isNotBlank() }?.let { return it }
+        return "AUDIO"
+    }
+
+    private fun resolveCallerTokensForCall(callId: String, callerNumber: String, activeCall: CallDto? = _state.value.activeCall): Pair<String, String> {
+        val meta = incomingCallerMetaCache[callId]
+        var fcm = activeCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: meta?.callerFcmToken?.takeIf { it.isNotBlank() } ?: ""
+        var web = activeCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: meta?.callerWebToken?.takeIf { it.isNotBlank() } ?: ""
+        if (fcm.isBlank() && web.isBlank() && callerNumber.isNotBlank()) {
+            for (v in com.example.util.ContactsHelper.generateNumberVariations(callerNumber)) {
+                val pair = pushTokenCache[v]
+                if (pair != null && (pair.first.isNotBlank() || pair.second.isNotBlank())) {
+                    fcm = pair.first
+                    web = pair.second
+                    break
+                }
+            }
+        }
+        return Pair(fcm, web)
+    }
+
     private val seenCallIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private fun recordSeenCall(callId: String) {
         if (callId.isNotBlank()) {
@@ -955,6 +1168,13 @@ class WebRtcEngine private constructor(private val context: Context) {
                 callStatus = CallStatus.ANSWERED,
                 connectionStatusText = if (hasAnswer) "Connected" else "Connecting P2P..."
             )
+            com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+                callId = currentCall.callId,
+                direction = com.example.data.model.CallDirection.OUTGOING,
+                otherPartyNumber = currentCall.calleeNumber,
+                otherPartyName = currentCall.calleeName,
+                callType = if (isDirectVideoCall) CallType.VIDEO else currentCall.callType
+            )
             scheduleZeroDelayPostAnswerAudioVerification(callId)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 try {
@@ -1292,25 +1512,28 @@ class WebRtcEngine private constructor(private val context: Context) {
                     sendIceCandidate(callId, candidate, isCaller)
 
                     // ⚡ Worldwide Cross-Network Fix:
-                    // Sync Caller's gathered candidates (prioritizing TURN relay & srflx) into the main `calls/{callId}`
-                    // document AND push TURN relay candidates via FCM so the Callee has them in RAM before answering!
-                    if (isCaller) {
-                        val prioritizedCallerCands = localGatheredCandidates
-                            .sortedBy { c ->
-                                when {
-                                    c.contains("typ relay") -> 0
-                                    c.contains("typ srflx") -> 1
-                                    else -> 2
-                                }
+                    // Sync gathered candidates (prioritizing TURN relay & srflx) into the main `calls/{callId}`
+                    // document AND push TURN relay / srflx candidates via FCM on BOTH Caller and Callee!
+                    val prioritizedLocalCands = localGatheredCandidates
+                        .sortedBy { c ->
+                            when {
+                                c.contains("typ relay") -> 0
+                                c.contains("typ srflx") -> 1
+                                else -> 2
                             }
-                            .take(15)
+                        }
+                        .take(15)
+                    if (isCaller) {
                         if (candType == "relay" || candType == "srflx" || localGatheredCandidates.size <= 6) {
                             try {
                                 firestore.collection("calls").document(callId)
-                                    .set(mapOf("callerCandidates" to prioritizedCallerCands), com.google.firebase.firestore.SetOptions.merge())
+                                    .set(mapOf("callerCandidates" to prioritizedLocalCands), com.google.firebase.firestore.SetOptions.merge())
                             } catch (_: Exception) {}
+                            if (candType == "relay" || candType == "srflx") {
+                                patchCallDocViaRest(callId, listFields = mapOf("callerCandidates" to prioritizedLocalCands))
+                            }
                         }
-                        if (candType == "relay") {
+                        if (candType == "relay" || candType == "srflx") {
                             val activeCall = _state.value.activeCall
                             val calleeNum = activeCall?.calleeNumber ?: ""
                             if (calleeNum.isNotBlank() && !isCallTerminated(callId)) {
@@ -1319,6 +1542,36 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 val myPhoneNum = getEffectivePhoneNumber()
                                 triggerPushNotification(
                                     calleeNumber = calleeNum,
+                                    callerName = myPhoneNum,
+                                    callerNumber = myPhoneNum,
+                                    callType = (activeCall?.callType ?: CallType.AUDIO).name,
+                                    callId = callId,
+                                    type = "call_candidates",
+                                    explicitFcmToken = tFcm,
+                                    explicitWebToken = tWeb,
+                                    candidates = compact
+                                )
+                            }
+                        }
+                    } else {
+                        // Callee side: sync calleeCandidates to calls/{callId} via SDK + REST and push relay/srflx to Caller via FCM
+                        if (candType == "relay" || candType == "srflx" || localGatheredCandidates.size <= 6) {
+                            try {
+                                firestore.collection("calls").document(callId)
+                                    .set(mapOf("calleeCandidates" to prioritizedLocalCands), com.google.firebase.firestore.SetOptions.merge())
+                            } catch (_: Exception) {}
+                            if (candType == "relay" || candType == "srflx") {
+                                patchCallDocViaRest(callId, listFields = mapOf("calleeCandidates" to prioritizedLocalCands))
+                            }
+                        }
+                        if (candType == "relay" || candType == "srflx") {
+                            val activeCall = _state.value.activeCall
+                            val callerNum = resolveCallerNumberForCall(callId, activeCall?.callerNumber)
+                            if (callerNum.isNotBlank() && !isCallTerminated(callId)) {
+                                val (tFcm, tWeb) = resolveCallerTokensForCall(callId, callerNum, activeCall)
+                                val myPhoneNum = getEffectivePhoneNumber()
+                                triggerPushNotification(
+                                    calleeNumber = callerNum,
                                     callerName = myPhoneNum,
                                     callerNumber = myPhoneNum,
                                     callType = (activeCall?.callType ?: CallType.AUDIO).name,
@@ -1722,11 +1975,23 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Industry Standard: Initial call document set with retry for network resilience
             firestore.collection("calls").document(newCall.callId).set(newCall)
                 .addOnFailureListener { e ->
-                    Log.w("WebRtcEngine", "Initial call doc set failed: ${e.message}, retrying once in 500ms...")
+                    Log.w("WebRtcEngine", "Initial call doc set failed: ${e.message}, retrying merge in 500ms...")
                     scope.launch {
                         delay(500)
                         if (_state.value.activeCall?.callId == newCall.callId) {
-                            firestore.collection("calls").document(newCall.callId).set(newCall)
+                            val retryIdentityMap = mapOf(
+                                "callId" to newCall.callId,
+                                "callerNumber" to newCall.callerNumber,
+                                "callerName" to newCall.callerName,
+                                "calleeNumber" to newCall.calleeNumber,
+                                "calleeName" to newCall.calleeName,
+                                "callType" to newCall.callType.name,
+                                "createdAt" to newCall.createdAt,
+                                "callerFcmToken" to newCall.callerFcmToken,
+                                "callerWebToken" to newCall.callerWebToken
+                            )
+                            firestore.collection("calls").document(newCall.callId)
+                                .set(retryIdentityMap, com.google.firebase.firestore.SetOptions.merge())
                         }
                     }
                 }
@@ -2002,10 +2267,25 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
 
                 // Filter for FRESH incoming calls (<120s old, clock-skew tolerant) not initiated by self
-                val incomingCall = activeCalls
+                val rawIncomingCall = activeCalls
                     .filter { (it.status == CallStatus.CALLING || it.status == CallStatus.RINGING) && (Math.abs(now - it.createdAt) <= 120_000L || it.createdAt == 0L) }
                     .filter { it.callerNumber != myPhoneNumber && it.callerNumber.replace(Regex("[^0-9]"), "") != cleanDigits }
                     .maxByOrNull { it.createdAt }
+
+                val incomingCall = rawIncomingCall?.let { raw ->
+                    val resolvedNum = resolveCallerNumberForCall(raw.callId, raw.callerNumber)
+                    val resolvedNm = resolveCallerNameForCall(raw.callId, raw.callerName, resolvedNum)
+                    val (fcm, web) = resolveCallerTokensForCall(raw.callId, resolvedNum, raw)
+                    com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(
+                        incoming = raw.copy(
+                            callerNumber = resolvedNum.ifBlank { raw.callerNumber },
+                            callerName = resolvedNm.ifBlank { raw.callerName },
+                            callerFcmToken = raw.callerFcmToken.ifBlank { fcm },
+                            callerWebToken = raw.callerWebToken.ifBlank { web }
+                        ),
+                        existing = _state.value.activeCall?.takeIf { it.callId == raw.callId }
+                    )
+                }
 
                 // 1. Industry Standard: Call Glare / Collision Resolution (Both parties call each other simultaneously)
                 if (incomingCall != null && currentActive != null && _state.value.callStatus == CallStatus.CALLING &&
@@ -2064,8 +2344,16 @@ class WebRtcEngine private constructor(private val context: Context) {
                     _state.value.activeCall == null ||
                     (incomingCall != null && _state.value.activeCall?.callId != incomingCall.callId)
 
-                if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds && !isCallTerminated(incomingCall.callId)) {
+                if (incomingCall != null && isReadyForNewCall && incomingCall.callId !in seenCallIds && !isCallAnsweredOrFinished(incomingCall.callId)) {
                     recordSeenCall(incomingCall.callId)
+                    cacheIncomingCallMeta(
+                        callId = incomingCall.callId,
+                        callerNumber = incomingCall.callerNumber,
+                        callerName = incomingCall.callerName,
+                        callType = incomingCall.callType.name,
+                        callerFcmToken = incomingCall.callerFcmToken,
+                        callerWebToken = incomingCall.callerWebToken
+                    )
 
                     val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
                     if (firebaseMgr.isDndEnabled() || firebaseMgr.isNumberBlocked(incomingCall.callerNumber)) {
@@ -2212,33 +2500,31 @@ class WebRtcEngine private constructor(private val context: Context) {
             return
         }
 
+        recordSeenCall(callId)
+        markCallAnsweredLocally(callId)
         activeCallSessionId = callId
         resetIdleJob?.cancel()
         resetIdleJob = null
         reconnectJob?.cancel()
         reconnectJob = null
 
-        val type = try { CallType.valueOf(callTypeStr ?: "AUDIO") } catch (_: Exception) { CallType.AUDIO }
+        val resolvedTypeStr = resolveCallTypeForCall(callId, callTypeStr)
+        val type = try { CallType.valueOf(resolvedTypeStr) } catch (_: Exception) { CallType.AUDIO }
         if (type == CallType.VIDEO) {
             isDirectVideoCall = true
         }
 
-        // 0. Prepare caller tokens for instant in-band push when answerSdp is produced
-        val currentCall = _state.value.activeCall
-        val callerNum = callerNumber ?: currentCall?.callerNumber ?: ""
-        val targetFcm = currentCall?.callerFcmToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.first ?: ""
-        val targetWeb = currentCall?.callerWebToken?.takeIf { it.isNotBlank() } ?: pushTokenCache[callerNum]?.second ?: ""
+        // 0. Prepare caller identity and tokens for instant in-band push and accurate call logs
+        val fbMgr = com.example.data.repository.FirebaseManager.getInstance(context)
+        val currentCall = _state.value.activeCall?.takeIf { it.callId == callId }
+        val callerNum = resolveCallerNumberForCall(callId, callerNumber)
+        val callerNm = resolveCallerNameForCall(callId, callerName, callerNum)
+        cacheIncomingCallMeta(callId, callerNum, callerNm, type.name)
+        val (targetFcm, targetWeb) = resolveCallerTokensForCall(callId, callerNum, currentCall)
         val myEffectiveNum = getEffectivePhoneNumber()
         val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
             peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
             peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
-
-        // ⚡ Zero-Delay Atomic Write:
-        // Do NOT write a hollow 'status=ANSWERED' without answerSdp here.
-        // Writing to the same Firestore document multiple times within 200ms triggers Firestore's
-        // 1-write-per-second server-side concurrency throttle, stalling the actual answerSdp write
-        // for 1.5 seconds! Instead, processOfferSdpIfAvailable() commits status + answerSdp + candidates
-        // in ONE single atomic write (<50ms) with zero queue delay.
 
         // 2. Ensure real-time active call & ICE listeners are attached immediately
         listenToActiveCall(callId, isCaller = false)
@@ -2247,37 +2533,41 @@ class WebRtcEngine private constructor(private val context: Context) {
         // 3. Fast-path: Check if WebRtcEngine already has this call cached with offerSdp!
         val offerFromMem = currentCall?.offerSdp ?: cachedIncomingOfferSdp
         if (!offerFromMem.isNullOrBlank()) {
-            if (_state.value.activeCall == null || _state.value.activeCall?.callId != callId) {
-                _state.value = _state.value.copy(
-                    activeCall = CallDto(
-                        callId = callId,
-                        callerName = callerName ?: "LKS User",
-                        callerNumber = callerNumber ?: "",
-                        calleeNumber = myEffectiveNum,
-                        callType = type,
-                        status = CallStatus.ANSWERED,
-                        offerSdp = offerFromMem
-                    ),
-                    callStatus = CallStatus.ANSWERED,
-                    callType = type,
-                    isCaller = false,
-                    connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
-                )
-            } else {
-                _state.value = _state.value.copy(
-                    activeCall = _state.value.activeCall?.copy(offerSdp = offerFromMem, status = CallStatus.ANSWERED),
-                    callStatus = CallStatus.ANSWERED,
-                    connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
-                )
-            }
+            val baseCall = CallDto(
+                callId = callId,
+                callerName = callerNm,
+                callerNumber = callerNum,
+                calleeNumber = myEffectiveNum,
+                callType = type,
+                status = CallStatus.ANSWERED,
+                offerSdp = offerFromMem,
+                callerFcmToken = targetFcm,
+                callerWebToken = targetWeb
+            )
+            val mergedActive = com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(
+                incoming = baseCall,
+                existing = _state.value.activeCall?.takeIf { it.callId == callId }
+            ).copy(status = CallStatus.ANSWERED, offerSdp = offerFromMem)
+            _state.value = _state.value.copy(
+                activeCall = mergedActive,
+                callStatus = CallStatus.ANSWERED,
+                callType = if (mergedActive.callType == CallType.VIDEO) CallType.VIDEO else type,
+                isCaller = false,
+                connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
+            )
             Log.i("WebRtcEngine", "⚡ Fast-path answer: call $callId already cached with offerSdp in RAM -> answering immediately")
             answerCall()
             return
         }
 
-        // ⚡ Direct Fast-Ack FCM Push: Only needed when offerSdp is NOT yet in RAM (0.1% edge case).
+        // ⚡ Direct Fast-Ack FCM Push + REST Patch when offerSdp is not yet in RAM:
         // Immediately inform Caller that Callee pressed answer (<100ms) to stop ringing while fetching offer.
-        if (callerNum.isNotBlank() && (targetFcm.isNotBlank() || targetWeb.isNotBlank())) {
+        patchCallDocViaRest(
+            callId = callId,
+            stringFields = mapOf("status" to CallStatus.ANSWERED.name),
+            longFields = mapOf("answeredAt" to System.currentTimeMillis())
+        )
+        if (callerNum.isNotBlank()) {
             triggerPushNotification(
                 calleeNumber = callerNum,
                 callerName = myEffectiveNum,
@@ -2293,21 +2583,33 @@ class WebRtcEngine private constructor(private val context: Context) {
 
         // 4. Immediate background answer path (offerSdp being fetched or arriving):
         Log.i("WebRtcEngine", "⚡ Immediate answering in background for call $callId (offer pending)")
-        val optimisticCall = currentCall?.takeIf { it.callId == callId } ?: CallDto(
+        val optimisticBase = CallDto(
             callId = callId,
-            callerName = callerName ?: "LKS User",
-            callerNumber = callerNumber ?: "",
+            callerName = callerNm,
+            callerNumber = callerNum,
             calleeNumber = myEffectiveNum,
             callType = type,
             status = CallStatus.ANSWERED
         )
+        val optimisticCall = com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(
+            incoming = optimisticBase,
+            existing = currentCall
+        ).copy(status = CallStatus.ANSWERED)
 
         _state.value = _state.value.copy(
-            activeCall = optimisticCall.copy(status = CallStatus.ANSWERED),
+            activeCall = optimisticCall,
             callStatus = CallStatus.ANSWERED,
             callType = type,
             isCaller = false,
             connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
+        )
+
+        fbMgr.recordCallStarted(
+            callId = callId,
+            direction = com.example.data.model.CallDirection.INCOMING,
+            otherPartyNumber = optimisticCall.callerNumber,
+            otherPartyName = optimisticCall.callerName,
+            callType = type
         )
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
@@ -2380,11 +2682,18 @@ class WebRtcEngine private constructor(private val context: Context) {
                             Log.i("WebRtcEngine", "⚡ Offer SDP retrieved via fast fetch (attempt $attempt) for $callId -> processing SDP answer")
                             withContext(Dispatchers.Main) {
                                 if (!isCallTerminated(callId)) {
-                                    _state.value = _state.value.copy(
-                                        activeCall = (resolvedCall ?: _state.value.activeCall)?.copy(
-                                            status = CallStatus.ANSWERED,
-                                            offerSdp = docOffer
-                                        )
+                                    val existingActive = _state.value.activeCall?.takeIf { it.callId == callId }
+                                    val merged = com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(
+                                        incoming = resolvedCall ?: existingActive ?: CallDto(callId = callId),
+                                        existing = existingActive
+                                    ).copy(status = CallStatus.ANSWERED, offerSdp = docOffer)
+                                    _state.value = _state.value.copy(activeCall = merged)
+                                    fbMgr.recordCallStarted(
+                                        callId = callId,
+                                        direction = com.example.data.model.CallDirection.INCOMING,
+                                        otherPartyNumber = merged.callerNumber,
+                                        otherPartyName = merged.callerName,
+                                        callType = merged.callType
                                     )
                                     if (!hasProcessedOffer) {
                                         processOfferSdpIfAvailable()
@@ -2418,6 +2727,9 @@ class WebRtcEngine private constructor(private val context: Context) {
             return
         }
 
+        recordSeenCall(callId)
+        cacheIncomingCallMeta(callId, callerNumber, callerName, callTypeStr)
+
         resetIdleJob?.cancel()
         resetIdleJob = null
         reconnectJob?.cancel()
@@ -2428,9 +2740,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             prebuiltAnswerSdp = null
             preWarmDone = false
         }
+        val resolvedCallerNum = resolveCallerNumberForCall(callId, callerNumber)
+        val resolvedCallerNm = resolveCallerNameForCall(callId, callerName, resolvedCallerNum)
+        val resolvedTypeStr = resolveCallTypeForCall(callId, callTypeStr)
         val firebaseMgr = com.example.data.repository.FirebaseManager.getInstance(context)
-        if (firebaseMgr.isDndEnabled() || (callerNumber != null && firebaseMgr.isNumberBlocked(callerNumber))) {
-            Log.d("WebRtcEngine", "attachToCall auto-declined by DND or Blocklist: $callId from $callerNumber")
+        if (firebaseMgr.isDndEnabled() || (resolvedCallerNum.isNotBlank() && firebaseMgr.isNumberBlocked(resolvedCallerNum))) {
+            Log.d("WebRtcEngine", "attachToCall auto-declined by DND or Blocklist: $callId from $resolvedCallerNum")
             try {
                 firestore.collection("calls").document(callId).update("status", CallStatus.DECLINED.name)
             } catch (_: Exception) {}
@@ -2462,20 +2777,23 @@ class WebRtcEngine private constructor(private val context: Context) {
         } else cachedIncomingOfferSdp
 
         // Optimistically show the call screen if we have the data
-        if (callerName != null && callerNumber != null && callTypeStr != null && isNotCurrentlyInCall) {
-            val type = try { CallType.valueOf(callTypeStr) } catch(e: Exception) { CallType.AUDIO }
+        if ((resolvedCallerNm.isNotBlank() || resolvedCallerNum.isNotBlank()) && isNotCurrentlyInCall) {
+            val type = try { CallType.valueOf(resolvedTypeStr) } catch(e: Exception) { CallType.AUDIO }
             if (type == CallType.VIDEO) {
                 isDirectVideoCall = true
             }
+            val (fcm, web) = resolveCallerTokensForCall(callId, resolvedCallerNum, null)
             _state.value = WebRtcState(
                 activeCall = CallDto(
                     callId = callId,
-                    callerName = callerName,
-                    callerNumber = callerNumber,
-                    calleeNumber = myPhoneNumber,
+                    callerName = resolvedCallerNm.ifBlank { resolvedCallerNum },
+                    callerNumber = resolvedCallerNum,
+                    calleeNumber = getEffectivePhoneNumber(),
                     callType = type,
                     status = CallStatus.RINGING,
-                    offerSdp = existingOfferSdp
+                    offerSdp = existingOfferSdp,
+                    callerFcmToken = fcm,
+                    callerWebToken = web
                 ),
                 callStatus = CallStatus.RINGING,
                 callType = type,
@@ -2560,8 +2878,12 @@ class WebRtcEngine private constructor(private val context: Context) {
                 return@addOnSuccessListener
             }
             val rawCall = doc.toObject(CallDto::class.java)
-            val call = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
-            if (call != null) {
+            val rawWithId = rawCall?.let { if (it.callId.isBlank()) it.copy(callId = doc.id.ifBlank { callId }) else it }
+            if (rawWithId != null) {
+                val call = com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(
+                    incoming = rawWithId,
+                    existing = _state.value.activeCall?.takeIf { it.callId == callId }
+                )
                 call.callerCandidates.forEach { addCandidateDirect(it) }
                 if (call.callType == CallType.VIDEO) {
                     isDirectVideoCall = true
@@ -2587,8 +2909,14 @@ class WebRtcEngine private constructor(private val context: Context) {
                     _state.value.callStatus == CallStatus.MISSED
 
                 if (_state.value.callStatus == CallStatus.ANSWERED && _state.value.activeCall?.callId == callId) {
-                    _state.value = _state.value.copy(
-                        activeCall = call.copy(status = CallStatus.ANSWERED, offerSdp = mergedOffer)
+                    val upgradedCall = call.copy(status = CallStatus.ANSWERED, offerSdp = mergedOffer)
+                    _state.value = _state.value.copy(activeCall = upgradedCall)
+                    com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+                        callId = callId,
+                        direction = com.example.data.model.CallDirection.INCOMING,
+                        otherPartyNumber = upgradedCall.callerNumber,
+                        otherPartyName = upgradedCall.callerName,
+                        callType = upgradedCall.callType
                     )
                     listenToActiveCall(callId, isCaller = false)
                     listenForIceCandidates(callId, isCaller = false)
@@ -2621,7 +2949,19 @@ class WebRtcEngine private constructor(private val context: Context) {
     }
 
     fun answerCall() {
-        val call = _state.value.activeCall ?: return
+        val rawCall = _state.value.activeCall ?: return
+        recordSeenCall(rawCall.callId)
+        markCallAnsweredLocally(rawCall.callId)
+        val resolvedCallerNum = resolveCallerNumberForCall(rawCall.callId, rawCall.callerNumber)
+        val resolvedCallerNm = resolveCallerNameForCall(rawCall.callId, rawCall.callerName, resolvedCallerNum)
+        val (targetFcm, targetWeb) = resolveCallerTokensForCall(rawCall.callId, resolvedCallerNum, rawCall)
+        val call = rawCall.copy(
+            callerNumber = resolvedCallerNum.ifBlank { rawCall.callerNumber },
+            callerName = resolvedCallerNm.ifBlank { rawCall.callerName },
+            callerFcmToken = rawCall.callerFcmToken.ifBlank { targetFcm },
+            callerWebToken = rawCall.callerWebToken.ifBlank { targetWeb },
+            status = CallStatus.ANSWERED
+        )
         if (call.callType == CallType.VIDEO) {
             isDirectVideoCall = true
         }
@@ -2632,15 +2972,12 @@ class WebRtcEngine private constructor(private val context: Context) {
             mapOf("callId" to call.callId, "caller" to call.callerNumber, "callType" to call.callType.name)
         )
 
-        // 0. Cache caller tokens for instant in-band push when answerSdp is ready
-        val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-        val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
-
         val isPcConnected = peerConnection?.connectionState() == PeerConnection.PeerConnectionState.CONNECTED ||
             peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.CONNECTED ||
             peerConnection?.iceConnectionState() == PeerConnection.IceConnectionState.COMPLETED
 
         _state.value = _state.value.copy(
+            activeCall = call,
             callStatus = CallStatus.ANSWERED,
             isCaller = false,
             connectionStatusText = if (isPcConnected) "Connected" else "Connecting P2P..."
@@ -2671,11 +3008,17 @@ class WebRtcEngine private constructor(private val context: Context) {
             prebuiltCallId = null
             preWarmDone = false
 
-            // Write status + answerSdp atomically in one Firestore document set
+            val nowAnsweredAt = System.currentTimeMillis()
+            // Write status + answerSdp atomically in one Firestore document set + direct HTTPS REST patch
             val prebuiltMap = mapOf(
                 "status" to CallStatus.ANSWERED.name,
-                "answeredAt" to System.currentTimeMillis(),
+                "answeredAt" to nowAnsweredAt,
                 "answerSdp" to cachedAnswer
+            )
+            patchCallDocViaRest(
+                callId = call.callId,
+                stringFields = mapOf("status" to CallStatus.ANSWERED.name, "answerSdp" to cachedAnswer),
+                longFields = mapOf("answeredAt" to nowAnsweredAt)
             )
             firestore.collection("calls").document(call.callId).set(
                 prebuiltMap,
@@ -2694,8 +3037,6 @@ class WebRtcEngine private constructor(private val context: Context) {
             }
 
             // ⚡ In-Band Push Answer: Forward complete pre-warmed answerSdp directly to Caller via high-priority push!
-            val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-            val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
             if (call.callerNumber.isNotBlank()) {
                 val myPhoneNum = getEffectivePhoneNumber()
                 val initialCands = localGatheredCandidates.take(12).joinToString(";;;").ifBlank { null }
@@ -2722,10 +3063,31 @@ class WebRtcEngine private constructor(private val context: Context) {
             preWarmDone = false
             hasProcessedOffer = false
 
-            // ⚡ Zero-Delay Atomic Write:
-            // Do NOT write a hollow 'status=ANSWERED' without answerSdp here.
-            // processOfferSdpIfAvailable() commits status + answerSdp + candidates in ONE atomic write,
-            // bypassing Firestore's 1-write/sec concurrency throttle so answerSdp reaches caller in <50ms.
+            // ⚡ 0ms Fast-Ack to Caller:
+            // Immediately dispatch high-priority `call_answered` push + HTTPS REST status=ANSWERED patch
+            // BEFORE createPeerConnection / createAnswer (~600-850ms on Android hardware) so the Caller's screen
+            // exits "Ringing..." and stops the caller tune in <120ms!
+            // Then `processOfferSdpIfAvailable()` sends the second `call_answered` push with `answerSdp` + candidates.
+            val nowAnsweredAt = System.currentTimeMillis()
+            patchCallDocViaRest(
+                callId = call.callId,
+                stringFields = mapOf("status" to CallStatus.ANSWERED.name),
+                longFields = mapOf("answeredAt" to nowAnsweredAt)
+            )
+            if (call.callerNumber.isNotBlank()) {
+                val myPhoneNum = getEffectivePhoneNumber()
+                triggerPushNotification(
+                    calleeNumber = call.callerNumber,
+                    callerName = myPhoneNum,
+                    callerNumber = myPhoneNum,
+                    callType = call.callType.name,
+                    callId = call.callId,
+                    type = "call_answered",
+                    explicitFcmToken = targetFcm,
+                    explicitWebToken = targetWeb
+                )
+                Log.i("WebRtcEngine", "⚡ Dispatched 0ms fast-ack call_answered push to caller ${call.callerNumber} while creating answer SDP")
+            }
 
             createPeerConnection(isCaller = false, callId = call.callId)
 
@@ -2740,27 +3102,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                 }
                 processOfferSdpIfAvailable()
             } else {
-                Log.w("WebRtcEngine", "offerSdp not yet in memory at answer time — immediately notifying caller of ANSWERED status and polling offer")
-                // Immediately write status=ANSWERED so caller leaves "Ringing..." screen without waiting for offer fetch
+                Log.w("WebRtcEngine", "offerSdp not yet in memory at answer time — polling offer while caller already notified")
                 try {
                     firestore.collection("calls").document(call.callId)
-                        .set(mapOf("status" to CallStatus.ANSWERED.name), com.google.firebase.firestore.SetOptions.merge())
+                        .set(mapOf("status" to CallStatus.ANSWERED.name, "answeredAt" to nowAnsweredAt), com.google.firebase.firestore.SetOptions.merge())
                 } catch (_: Exception) {}
-                if (call.callerNumber.isNotBlank()) {
-                    val myPhoneNum = getEffectivePhoneNumber()
-                    val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-                    val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
-                    triggerPushNotification(
-                        calleeNumber = call.callerNumber,
-                        callerName = myPhoneNum,
-                        callerNumber = myPhoneNum,
-                        callType = call.callType.name,
-                        callId = call.callId,
-                        type = "call_answered",
-                        explicitFcmToken = targetFcm,
-                        explicitWebToken = targetWeb
-                    )
-                }
                 scope.launch(Dispatchers.IO) {
                     for (attempt in 1..80) {
                         if (hasProcessedOffer || isCallTerminated(call.callId) || _state.value.callStatus == CallStatus.ENDED || _state.value.callStatus == CallStatus.DECLINED) break
@@ -2824,12 +3170,18 @@ class WebRtcEngine private constructor(private val context: Context) {
             startVideoCaptureIfNeeded()
         }
 
+        val bubbleFallback = com.example.services.FloatingCallBubbleService.bubbleState.value.takeIf { it.activeCallId == call.callId }
+        val logCallerNum = com.example.data.model.CallIdentitySanitizer.cleanNumber(call.callerNumber)
+            .ifBlank { com.example.data.model.CallIdentitySanitizer.cleanNumber(bubbleFallback?.activeCallerNumber) }
+        val logCallerNm = com.example.data.model.CallIdentitySanitizer.cleanName(call.callerName)
+            .ifBlank { com.example.data.model.CallIdentitySanitizer.cleanName(bubbleFallback?.activeCallerName) }
+
         // Phase 3: Reliable call logs — record call start immediately on answer
         com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
             callId = call.callId,
             direction = com.example.data.model.CallDirection.INCOMING,
-            otherPartyNumber = call.callerNumber,
-            otherPartyName = call.callerName,
+            otherPartyNumber = logCallerNum,
+            otherPartyName = logCallerNm,
             callType = call.callType
         )
 
@@ -2895,24 +3247,48 @@ class WebRtcEngine private constructor(private val context: Context) {
                                 override fun onSetSuccess() {
                                     Log.i("WebRtcEngine", "⚡ Local answer SDP set successfully, preparing zero-delay in-band push & Firestore sync")
                                     scope.launch(Dispatchers.IO) {
-                                        // ⚡ ZERO-DELAY CANDIDATE GATHERING:
-                                        // Host candidates are already gathered (<2ms).
-                                        // Dispatch answerSdp and initial candidates to Caller IMMEDIATELY (0ms delay).
-                                        // Any additional TURN relay candidates trickle continuously via FCM and Firestore below.
+                                        val effectiveCallerNum = resolveCallerNumberForCall(call.callId, call.callerNumber)
+                                        val effectiveCallerNm = resolveCallerNameForCall(call.callId, call.callerName, effectiveCallerNum)
+                                        val (targetFcm, targetWeb) = resolveCallerTokensForCall(call.callId, effectiveCallerNum, call)
+                                        val nowAnsweredAt = System.currentTimeMillis()
+
                                         val candidatesList = localGatheredCandidates.take(12).toList()
                                         val calleeCandidatesStr = candidatesList.joinToString(";;;").ifBlank { null }
 
                                         val answerMap = mutableMapOf<String, Any>(
                                             "answerSdp" to tunedSdp,
                                             "status" to CallStatus.ANSWERED.name,
-                                            "answeredAt" to System.currentTimeMillis()
+                                            "answeredAt" to nowAnsweredAt
                                         )
+                                        if (effectiveCallerNum.isNotBlank()) {
+                                            answerMap["callerNumber"] = effectiveCallerNum
+                                        }
+                                        if (effectiveCallerNm.isNotBlank()) {
+                                            answerMap["callerName"] = effectiveCallerNm
+                                        }
                                         if (isVideo) {
                                             answerMap["callType"] = CallType.VIDEO.name
                                         }
                                         if (candidatesList.isNotEmpty()) {
                                             answerMap["calleeCandidates"] = candidatesList
                                         }
+
+                                        // ⚡ Direct HTTPS REST PATCH bypasses stalled mobile data gRPC sockets (<150ms)
+                                        val restStrings = mutableMapOf(
+                                            "answerSdp" to tunedSdp,
+                                            "status" to CallStatus.ANSWERED.name
+                                        ).apply {
+                                            if (effectiveCallerNum.isNotBlank()) put("callerNumber", effectiveCallerNum)
+                                            if (effectiveCallerNm.isNotBlank()) put("callerName", effectiveCallerNm)
+                                            if (isVideo) put("callType", CallType.VIDEO.name)
+                                        }
+                                        val restLists = if (candidatesList.isNotEmpty()) mapOf("calleeCandidates" to candidatesList) else emptyMap()
+                                        patchCallDocViaRest(
+                                            callId = call.callId,
+                                            stringFields = restStrings,
+                                            longFields = mapOf("answeredAt" to nowAnsweredAt),
+                                            listFields = restLists
+                                        )
 
                                         try {
                                             firestore.collection("calls").document(call.callId)
@@ -2933,12 +3309,10 @@ class WebRtcEngine private constructor(private val context: Context) {
                                         } catch (_: Exception) {}
 
                                         // ⚡ In-Band Push Answer: Forward complete answerSdp AND initial candidates directly to Caller via high-priority push
-                                        val targetFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-                                        val targetWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
-                                        if (call.callerNumber.isNotBlank()) {
+                                        if (effectiveCallerNum.isNotBlank()) {
                                             val myPhoneNum = getEffectivePhoneNumber()
                                             triggerPushNotification(
-                                                calleeNumber = call.callerNumber,
+                                                calleeNumber = effectiveCallerNum,
                                                 callerName = myPhoneNum,
                                                 callerNumber = myPhoneNum,
                                                 callType = call.callType.name,
@@ -2949,27 +3323,43 @@ class WebRtcEngine private constructor(private val context: Context) {
                                                 answerSdp = tunedSdp,
                                                 candidates = calleeCandidatesStr
                                             )
+                                            Log.i("WebRtcEngine", "⚡ Dispatched in-band answerSdp push to caller $effectiveCallerNum for ${call.callId}")
+                                        } else {
+                                            Log.w("WebRtcEngine", "⚠️ Could not resolve callerNumber at answer time for ${call.callId}; relying on Firestore + REST patch")
                                         }
-                                        // ⚡ Continuous TURN relay push: after initial answer, keep watching for new relay candidates
-                                        // and push them immediately via FCM (don't rely on Firestore which is slow on cellular)
+                                        // ⚡ Continuous TURN relay + srflx push: after initial answer, keep watching for new candidates
+                                        // and push them immediately via FCM & REST (don't rely on Firestore gRPC which can stall on cellular)
                                         scope.launch(Dispatchers.IO) {
                                             val alreadySent = localGatheredCandidates.toMutableSet()
                                             val watchEnd = System.currentTimeMillis() + 8000L // watch for up to 8s
                                             while (System.currentTimeMillis() < watchEnd && !isCallTerminated(call.callId)) {
-                                                delay(100)
-                                                val newRelayCands = localGatheredCandidates.filter { 
-                                                    it.contains("typ relay") && !alreadySent.contains(it) 
+                                                delay(120)
+                                                val newImportantCands = localGatheredCandidates.filter {
+                                                    (it.contains("typ relay") || it.contains("typ srflx")) && !alreadySent.contains(it)
                                                 }
-                                                if (newRelayCands.isNotEmpty()) {
-                                                    alreadySent.addAll(newRelayCands)
-                                                    val newCandsStr = newRelayCands.joinToString(";;;")
-                                                    Log.i("WebRtcEngine", "⚡ Pushing ${newRelayCands.size} new TURN relay candidates to caller via FCM")
-                                                    if (call.callerNumber.isNotBlank()) {
-                                                        val tFcm = call.callerFcmToken.ifBlank { pushTokenCache[call.callerNumber]?.first ?: "" }
-                                                        val tWeb = call.callerWebToken.ifBlank { pushTokenCache[call.callerNumber]?.second ?: "" }
+                                                if (newImportantCands.isNotEmpty()) {
+                                                    alreadySent.addAll(newImportantCands)
+                                                    val newCandsStr = newImportantCands.joinToString(";;;")
+                                                    val callerNumNow = resolveCallerNumberForCall(call.callId, _state.value.activeCall?.callerNumber ?: call.callerNumber)
+                                                    val prioritizedAll = localGatheredCandidates
+                                                        .sortedBy { c ->
+                                                            when {
+                                                                c.contains("typ relay") -> 0
+                                                                c.contains("typ srflx") -> 1
+                                                                else -> 2
+                                                            }
+                                                        }
+                                                        .take(15)
+                                                    patchCallDocViaRest(
+                                                        callId = call.callId,
+                                                        listFields = mapOf("calleeCandidates" to prioritizedAll)
+                                                    )
+                                                    Log.i("WebRtcEngine", "⚡ Pushing ${newImportantCands.size} new TURN/SRFLX candidates to caller $callerNumNow via FCM")
+                                                    if (callerNumNow.isNotBlank()) {
+                                                        val (tFcm, tWeb) = resolveCallerTokensForCall(call.callId, callerNumNow, _state.value.activeCall ?: call)
                                                         val myPhoneNum = getEffectivePhoneNumber()
                                                         triggerPushNotification(
-                                                            calleeNumber = call.callerNumber,
+                                                            calleeNumber = callerNumNow,
                                                             callerName = myPhoneNum,
                                                             callerNumber = myPhoneNum,
                                                             callType = call.callType.name,
@@ -3172,7 +3562,7 @@ class WebRtcEngine private constructor(private val context: Context) {
             // Strictly enforce monotonic call state progression:
             // IDLE -> CALLING -> RINGING -> ANSWERED -> ENDED.
             // If the local call is already ANSWERED, NEVER revert activeCall.status to RINGING or CALLING
-            val baseCall = safeCall
+            val baseCall = com.example.data.model.CallIdentitySanitizer.mergeCallPreservingIdentity(safeCall, currentCall)
             val effectiveCall = if (_state.value.callStatus == CallStatus.ANSWERED && 
                 baseCall.status != CallStatus.ENDED && baseCall.status != CallStatus.DECLINED) {
                 baseCall.copy(callId = baseCall.callId.ifBlank { effectiveCallId }, status = CallStatus.ANSWERED, offerSdp = mergedOffer)
@@ -3185,6 +3575,15 @@ class WebRtcEngine private constructor(private val context: Context) {
                 effectiveCall
             }
             _state.value = _state.value.copy(activeCall = finalEffectiveCall)
+            if (!isCaller && _state.value.callStatus == CallStatus.ANSWERED) {
+                com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
+                    callId = finalEffectiveCall.callId,
+                    direction = com.example.data.model.CallDirection.INCOMING,
+                    otherPartyNumber = finalEffectiveCall.callerNumber,
+                    otherPartyName = finalEffectiveCall.callerName,
+                    callType = finalEffectiveCall.callType
+                )
+            }
             
             // Once the call is ANSWERED or ENDED, NEVER process RINGING or replay ringback tones!
             if (isCaller && call.status == CallStatus.RINGING &&
@@ -3330,11 +3729,11 @@ class WebRtcEngine private constructor(private val context: Context) {
                 unmuteAllAudioTracks()
                 // Phase 3: Reliable call logs — record outgoing call start immediately on answer
                 com.example.data.repository.FirebaseManager.getInstance(context).recordCallStarted(
-                    callId = call.callId,
+                    callId = finalEffectiveCall.callId,
                     direction = com.example.data.model.CallDirection.OUTGOING,
-                    otherPartyNumber = call.calleeNumber,
-                    otherPartyName = call.calleeName,
-                    callType = if (isDirectVideoCall) CallType.VIDEO else call.callType
+                    otherPartyNumber = finalEffectiveCall.calleeNumber,
+                    otherPartyName = finalEffectiveCall.calleeName,
+                    callType = if (isDirectVideoCall) CallType.VIDEO else finalEffectiveCall.callType
                 )
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try {
@@ -4285,18 +4684,33 @@ class WebRtcEngine private constructor(private val context: Context) {
                     } else {
                         com.example.data.model.CallDirection.INCOMING
                     }
-                    val otherNumber = if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
-                    val otherName = if (isCaller) prevCall.calleeName else prevCall.callerName
-                    // If still blank, try the reverse field (sometimes calleeNumber is in callerNumber for video)
-                    val effectiveOtherNumber = otherNumber.ifBlank { 
-                        if (isCaller) prevCall.callerNumber else prevCall.calleeNumber 
-                    }.ifBlank {
-                        val candidate = prevCall.callId.substringBefore('_')
-                        if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
-                    }
-                    val effectiveOtherName = otherName.ifBlank {
+                    val otherNumber = com.example.data.model.CallIdentitySanitizer.cleanNumber(
+                        if (isCaller) prevCall.calleeNumber else prevCall.callerNumber
+                    )
+                    val otherName = com.example.data.model.CallIdentitySanitizer.cleanName(
+                        if (isCaller) prevCall.calleeName else prevCall.callerName
+                    )
+                    val reverseNumber = com.example.data.model.CallIdentitySanitizer.cleanNumber(
+                        if (isCaller) prevCall.callerNumber else prevCall.calleeNumber
+                    ).takeUnless { userPhone.isNotBlank() && com.example.util.ContactsHelper.numbersMatch(it, userPhone) } ?: ""
+                    val reverseName = com.example.data.model.CallIdentitySanitizer.cleanName(
                         if (isCaller) prevCall.callerName else prevCall.calleeName
-                    }.ifBlank { effectiveOtherNumber }
+                    )
+                    val bubbleEndFallback = com.example.services.FloatingCallBubbleService.bubbleState.value
+                        .takeIf { it.activeCallId == prevCall.callId }
+                    val effectiveOtherNumber = otherNumber
+                        .ifBlank { reverseNumber }
+                        .ifBlank { if (!isCaller) resolveCallerNumberForCall(prevCall.callId, prevCall.callerNumber) else "" }
+                        .ifBlank { com.example.data.model.CallIdentitySanitizer.cleanNumber(bubbleEndFallback?.activeCallerNumber) }
+                        .ifBlank {
+                            val candidate = prevCall.callId.substringBefore('_')
+                            if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) candidate else ""
+                        }
+                    val effectiveOtherName = otherName
+                        .ifBlank { reverseName }
+                        .ifBlank { if (!isCaller) resolveCallerNameForCall(prevCall.callId, prevCall.callerName, effectiveOtherNumber) else "" }
+                        .ifBlank { com.example.data.model.CallIdentitySanitizer.cleanName(bubbleEndFallback?.activeCallerName) }
+                        .ifBlank { effectiveOtherNumber }
                     com.example.data.repository.FirebaseManager.getInstance(context).recordCallEnded(
                         callId = prevCall.callId,
                         status = status,
@@ -4321,7 +4735,7 @@ class WebRtcEngine private constructor(private val context: Context) {
                 try { com.example.services.LksConnectionService.disconnectCall() } catch (_: Throwable) {}
             }
             try { com.example.services.ActiveCallService.stop(context) } catch (_: Throwable) {}
-            try { com.example.services.FloatingCallBubbleService.hide(context) } catch (_: Throwable) {}
+            try { com.example.services.FloatingCallBubbleService.hide(context, prevCall?.callId) } catch (_: Throwable) {}
 
             if (status != CallStatus.IDLE) {
                 try {

@@ -275,6 +275,52 @@ data class IceCandidateDto(
     val type: String = "" // "offerCandidate" or "answerCandidate"
 )
 
+object CallIdentitySanitizer {
+    private val placeholderNumbers = setOf("unknown", "unknown caller", "lks user", "lks caller", "null", "lks", "active call", "me", "none")
+    private val placeholderNames = setOf("unknown", "unknown caller", "lks user", "lks caller", "lks", "me", "active call", "null", "none")
+
+    fun isPlaceholderNumber(value: String?): Boolean {
+        val trimmed = value?.trim().orEmpty()
+        return trimmed.isEmpty() || trimmed.lowercase() in placeholderNumbers || trimmed.none { it.isDigit() }
+    }
+
+    fun isPlaceholderName(value: String?): Boolean {
+        val trimmed = value?.trim().orEmpty()
+        return trimmed.isEmpty() || trimmed.lowercase() in placeholderNames
+    }
+
+    fun cleanNumber(value: String?): String =
+        value?.trim()?.takeUnless { isPlaceholderNumber(it) }.orEmpty()
+
+    fun cleanName(value: String?): String =
+        value?.trim()?.takeUnless { isPlaceholderName(it) }.orEmpty()
+
+    fun mergeCallPreservingIdentity(incoming: CallDto, existing: CallDto?): CallDto {
+        if (existing == null) return incoming
+        if (existing.callId.isNotBlank() && incoming.callId.isNotBlank() && existing.callId != incoming.callId) {
+            return incoming
+        }
+        return incoming.copy(
+            callId = incoming.callId.ifBlank { existing.callId },
+            callerNumber = cleanNumber(incoming.callerNumber).ifBlank { cleanNumber(existing.callerNumber) },
+            calleeNumber = cleanNumber(incoming.calleeNumber).ifBlank { cleanNumber(existing.calleeNumber) },
+            callerName = cleanName(incoming.callerName).ifBlank { cleanName(existing.callerName) },
+            calleeName = cleanName(incoming.calleeName).ifBlank { cleanName(existing.calleeName) },
+            callerProfilePic = incoming.callerProfilePic.ifBlank { existing.callerProfilePic },
+            calleeProfilePic = incoming.calleeProfilePic.ifBlank { existing.calleeProfilePic },
+            offerSdp = incoming.offerSdp?.takeIf { it.isNotBlank() } ?: existing.offerSdp,
+            answerSdp = incoming.answerSdp?.takeIf { it.isNotBlank() } ?: existing.answerSdp,
+            createdAt = if (incoming.createdAt > 0L) incoming.createdAt else existing.createdAt,
+            callerFcmToken = incoming.callerFcmToken.ifBlank { existing.callerFcmToken },
+            callerWebToken = incoming.callerWebToken.ifBlank { existing.callerWebToken },
+            calleeFcmToken = incoming.calleeFcmToken.ifBlank { existing.calleeFcmToken },
+            calleeWebToken = incoming.calleeWebToken.ifBlank { existing.calleeWebToken },
+            callerCandidates = incoming.callerCandidates.ifEmpty { existing.callerCandidates },
+            calleeCandidates = incoming.calleeCandidates.ifEmpty { existing.calleeCandidates }
+        )
+    }
+}
+
 enum class CallDirection {
     OUTGOING, INCOMING, MISSED
 }
@@ -295,24 +341,29 @@ data class CallLogDto(
     val calleeNumber: String = ""
 ) {
     fun resolveOtherPartyNumber(): String {
-        if (otherPartyNumber.isNotBlank()) return otherPartyNumber
+        val direct = CallIdentitySanitizer.cleanNumber(otherPartyNumber)
+        if (direct.isNotBlank()) return direct
+        val cleanCallee = CallIdentitySanitizer.cleanNumber(calleeNumber)
+        val cleanCaller = CallIdentitySanitizer.cleanNumber(callerNumber)
         if (direction == CallDirection.OUTGOING) {
-            if (calleeNumber.isNotBlank()) return calleeNumber
-            if (callerNumber.isNotBlank()) return callerNumber
+            if (cleanCallee.isNotBlank()) return cleanCallee
+            if (cleanCaller.isNotBlank()) return cleanCaller
         } else {
-            if (callerNumber.isNotBlank()) return callerNumber
-            if (calleeNumber.isNotBlank()) return calleeNumber
+            if (cleanCaller.isNotBlank()) return cleanCaller
+            if (cleanCallee.isNotBlank()) return cleanCallee
         }
-        val candidate = callId.substringBefore('_')
+        val candidate = callId.substringBefore('_').trim()
         if (candidate.matches(Regex("^[+]?[0-9]{7,15}$"))) return candidate
         return ""
     }
 
     fun resolveOtherPartyName(): String {
-        if (otherPartyName.isNotBlank() && otherPartyName != otherPartyNumber && otherPartyName != "Unknown") return otherPartyName
+        val cleanNm = CallIdentitySanitizer.cleanName(otherPartyName)
         val num = resolveOtherPartyNumber()
+        if (cleanNm.isNotBlank() && cleanNm != num) return cleanNm
         if (num.isNotBlank()) return num
-        return if (otherPartyName.isNotBlank()) otherPartyName else "Unknown"
+        if (cleanNm.isNotBlank()) return cleanNm
+        return "Unknown"
     }
 }
 

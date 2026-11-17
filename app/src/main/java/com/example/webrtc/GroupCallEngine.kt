@@ -1236,6 +1236,8 @@ class GroupCallEngine(
                 }
             }
         }
+
+        fun getInstanceIfCreated(): GroupCallEngine? = INSTANCE
     }
 }
 

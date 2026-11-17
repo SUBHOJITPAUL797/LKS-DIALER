@@ -153,8 +153,11 @@ class FloatingCallBubbleService : Service() {
             )
         }
 
-        fun clearIncomingCallInfo() {
-            _bubbleState.value = FloatingBubbleState.Hidden
+        fun clearIncomingCallInfo(expectedCallId: String? = null) {
+            val currentCallId = _bubbleState.value.activeCallId
+            if (expectedCallId.isNullOrBlank() || currentCallId.isBlank() || currentCallId == expectedCallId) {
+                _bubbleState.value = FloatingBubbleState.Hidden
+            }
         }
 
         fun showIncoming(
@@ -229,16 +232,26 @@ class FloatingCallBubbleService : Service() {
             }
         }
 
-        fun hide(context: Context) {
-            clearIncomingCallInfo()
+        fun hide(context: Context, expectedCallId: String? = null) {
+            val currentCallId = _bubbleState.value.activeCallId
+            if (!expectedCallId.isNullOrBlank() && currentCallId.isNotBlank() && currentCallId != expectedCallId) {
+                Log.d(TAG, "Ignoring stale bubble hide for old callId=$expectedCallId (active=$currentCallId)")
+                return
+            }
+            clearIncomingCallInfo(expectedCallId)
             val intent = Intent(context, FloatingCallBubbleService::class.java).apply {
                 action = ACTION_HIDE
+                if (!expectedCallId.isNullOrBlank()) {
+                    putExtra(EXTRA_CALL_ID, expectedCallId)
+                }
             }
             try {
                 context.startService(intent)
             } catch (_: Exception) {}
         }
     }
+
+    private var boundCallId: String = ""
 
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
@@ -383,7 +396,10 @@ class FloatingCallBubbleService : Service() {
         super.onDestroy()
         instance = null
         isShowingPill = false
-        _bubbleState.value = FloatingBubbleState.Hidden
+        val currentStateCallId = _bubbleState.value.activeCallId
+        if (currentStateCallId.isBlank() || currentStateCallId == boundCallId) {
+            _bubbleState.value = FloatingBubbleState.Hidden
+        }
         val activeStatus = WebRtcEngine.getInstanceIfCreated()?.state?.value?.callStatus
         if (activeStatus != CallStatus.RINGING) {
             stopRinging()
@@ -469,6 +485,12 @@ class FloatingCallBubbleService : Service() {
         val action = intent?.action ?: return START_NOT_STICKY
 
         if (action == ACTION_HIDE) {
+            val hideCallId = intent.getStringExtra(EXTRA_CALL_ID) ?: ""
+            val activeStateCallId = _bubbleState.value.activeCallId
+            if (hideCallId.isNotBlank() && activeStateCallId.isNotBlank() && hideCallId != activeStateCallId) {
+                Log.d(TAG, "ACTION_HIDE ignored for stale callId=$hideCallId (active=$activeStateCallId)")
+                return START_NOT_STICKY
+            }
             // Only remove the floating overlay UI, do NOT stop ringtone here.
             stateObserverJob?.cancel()
             removeFloatingView()
@@ -477,12 +499,22 @@ class FloatingCallBubbleService : Service() {
         }
 
         val incomingCallId = intent.getStringExtra(EXTRA_CALL_ID) ?: ""
+        if (incomingCallId.isNotBlank()) {
+            boundCallId = incomingCallId
+        }
         if (action == ACTION_SHOW_INCOMING && this.callId != incomingCallId) {
             lastPillX = Int.MIN_VALUE
             lastPillY = Int.MIN_VALUE
         }
-        val parsedName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "LKS User"
-        val parsedNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
+        val parsedNumber = com.example.data.model.CallIdentitySanitizer.cleanNumber(intent.getStringExtra(EXTRA_CALLER_NUMBER))
+            .ifBlank {
+                _bubbleState.value.takeIf { it.activeCallId == incomingCallId }?.activeCallerNumber.orEmpty()
+            }
+        val parsedName = com.example.data.model.CallIdentitySanitizer.cleanName(intent.getStringExtra(EXTRA_CALLER_NAME))
+            .ifBlank {
+                _bubbleState.value.takeIf { it.activeCallId == incomingCallId }?.activeCallerName.orEmpty()
+            }
+            .ifBlank { parsedNumber }
         val typeStr = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
         val parsedType = try { CallType.valueOf(typeStr) } catch (_: Exception) { CallType.AUDIO }
 
@@ -504,7 +536,13 @@ class FloatingCallBubbleService : Service() {
             startRinging(ringNumber)
             try {
                 val engine = WebRtcEngine.getInstanceIfCreated() ?: WebRtcEngine.getInstance(applicationContext)
-                engine.attachToCall(incomingCallId, autoAnswer = false, parsedName, parsedNumber, parsedType.name)
+                engine.attachToCall(
+                    incomingCallId,
+                    autoAnswer = false,
+                    parsedName.ifBlank { null },
+                    parsedNumber.ifBlank { null },
+                    parsedType.name
+                )
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to pre-attach WebRtcEngine: ${e.message}")
             }
@@ -911,16 +949,17 @@ class FloatingCallBubbleService : Service() {
             orientation = LinearLayout.VERTICAL
         }
 
-        // Resolve the OTHER party's name accurately so outgoing calls never show the local user's own name ("Me")
-        val resolvedPeerName = run {
+        val resolvedPeerPair = run {
             val activeCall = engine?.state?.value?.activeCall
             val fb = try { FirebaseManager.getInstance(applicationContext) } catch (_: Exception) { null }
             val myPhone = fb?.currentUser?.value?.phoneNumber ?: ""
             val isOutgoing = engine?.state?.value?.isCaller == true ||
                 (myPhone.isNotBlank() && activeCall != null && com.example.util.ContactsHelper.numbersMatch(activeCall.callerNumber, myPhone))
-            val peerNum = if (activeCall != null) {
-                if (isOutgoing) activeCall.calleeNumber else activeCall.callerNumber
-            } else callerNumber
+            val peerNum = com.example.data.model.CallIdentitySanitizer.cleanNumber(
+                if (activeCall != null) {
+                    if (isOutgoing) activeCall.calleeNumber else activeCall.callerNumber
+                } else callerNumber
+            ).ifBlank { com.example.data.model.CallIdentitySanitizer.cleanNumber(callerNumber) }
             val rawPeerName = if (activeCall != null) {
                 if (isOutgoing) activeCall.calleeName else activeCall.callerName
             } else callerName
@@ -930,16 +969,22 @@ class FloatingCallBubbleService : Service() {
             val regUserName = if (peerNum.isNotBlank()) {
                 fb?.lookupUserByNumber(peerNum)?.displayName
             } else null
-            contactName?.takeIf { it.isNotBlank() }
-                ?: regUserName?.takeIf { it.isNotBlank() }
-                ?: rawPeerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
-                ?: callerName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
+            val bestName = contactName?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                ?: regUserName?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                ?: rawPeerName.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                ?: callerName.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
                 ?: peerNum.ifBlank { "Active Call" }
+            bestName to peerNum
+        }
+        val resolvedPeerName = resolvedPeerPair.first
+        val resolvedPeerNumber = resolvedPeerPair.second
+        if (callId.isNotBlank()) {
+            boundCallId = callId
         }
         _bubbleState.value = FloatingBubbleState.Active(
             callId = callId,
             callerName = resolvedPeerName,
-            callerNumber = callerNumber,
+            callerNumber = resolvedPeerNumber,
             callType = callType,
             startedAtMs = callStartTime
         )

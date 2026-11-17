@@ -124,6 +124,15 @@ class MainActivity : ComponentActivity() {
         @Volatile
         var isInPipMode: Boolean = false
             private set
+
+        @Volatile
+        var lastUserInteractionAtMillis: Long = 0L
+            private set
+    }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        lastUserInteractionAtMillis = System.currentTimeMillis()
+        return super.dispatchTouchEvent(ev)
     }
 
     // Needed so FLAG_ACTIVITY_SINGLE_TOP re-delivers the intent
@@ -551,7 +560,9 @@ class MainActivity : ComponentActivity() {
                 }
                 
                 val gitHubUpdater = remember { GitHubUpdater(context) }
-                var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+                var pendingAutoUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+                var explicitUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+                var visibleUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
                 val downloadState by gitHubUpdater.downloadState.collectAsState()
 
                 val permissions = mutableListOf(
@@ -623,7 +634,7 @@ class MainActivity : ComponentActivity() {
                     }
                     
                     // Resilient update check for mobile data users:
-                    // Checks immediately, and retries after 4 seconds if mobile data radio was still cold/connecting
+                    // Checks silently in background and queues into pendingAutoUpdateInfo (only shown when user is idle & not in a call)
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         try {
                             var info = gitHubUpdater.checkForUpdates()
@@ -633,7 +644,7 @@ class MainActivity : ComponentActivity() {
                             }
                             if (info != null) {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    updateInfo = info
+                                    pendingAutoUpdateInfo = info
                                 }
                             }
                         } catch (e: Exception) {
@@ -643,19 +654,19 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Listen for network connectivity (e.g. mobile data turning on or reconnecting)
-                // to automatically display update prompts when connectivity is established
+                // to silently queue update prompts when connectivity is established
                 DisposableEffect(Unit) {
                     val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
                     val callback = object : android.net.ConnectivityManager.NetworkCallback() {
                         override fun onAvailable(network: android.net.Network) {
-                            if (updateInfo == null) {
+                            if (pendingAutoUpdateInfo == null && visibleUpdateInfo == null) {
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                                     try {
                                         kotlinx.coroutines.delay(1200) // Brief link stabilization
                                         val info = gitHubUpdater.checkForUpdates()
                                         if (info != null) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                updateInfo = info
+                                                pendingAutoUpdateInfo = info
                                             }
                                         }
                                     } catch (_: Exception) {}
@@ -785,7 +796,7 @@ class MainActivity : ComponentActivity() {
                             val notes = incoming.getStringExtra("update_notes") ?: ""
                             val url = incoming.getStringExtra("update_url") ?: ""
                             if (url.isNotBlank() && version.isNotBlank()) {
-                                updateInfo = UpdateInfo(
+                                explicitUpdateInfo = UpdateInfo(
                                     isUpdateAvailable = true,
                                     latestVersion = version,
                                     releaseNotes = notes,
@@ -950,7 +961,11 @@ class MainActivity : ComponentActivity() {
                 val activeCallerNorm = com.example.util.ContactsHelper.normalizePhoneNumber(activeCall?.callerNumber ?: "")
                 val isOutgoingCall = rtcState.isCaller || (myPhoneNorm.isNotBlank() && activeCallerNorm == myPhoneNorm)
                 val isIncoming = !isOutgoingCall
-                val otherPartyNumber = if (isIncoming) (activeCall?.callerNumber ?: "") else (activeCall?.calleeNumber ?: "")
+                val otherPartyNumber = if (isIncoming) {
+                    webRtcEngine.resolveCallerNumberForCall(activeCall?.callId ?: "", activeCall?.callerNumber)
+                } else {
+                    com.example.data.model.CallIdentitySanitizer.cleanNumber(activeCall?.calleeNumber)
+                }
                 val otherPartyContact = remember(otherPartyNumber, syncedContacts) {
                     if (otherPartyNumber.isNotBlank()) {
                         syncedContacts.find { com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, otherPartyNumber) }
@@ -959,11 +974,15 @@ class MainActivity : ComponentActivity() {
                 val otherPartyUser = remember(otherPartyNumber, registeredUsers) {
                     if (otherPartyNumber.isNotBlank()) firebaseManager.lookupUserByNumber(otherPartyNumber) else null
                 }
-                val otherPartyName = if (isIncoming) (activeCall?.callerName ?: "") else (activeCall?.calleeName ?: "")
-                val otherPartyDisplayName = otherPartyContact?.name?.takeIf { it.isNotBlank() }
-                    ?: otherPartyUser?.displayName?.takeIf { it.isNotBlank() }
-                    ?: otherPartyName.takeIf { it.isNotBlank() && !it.equals("Me", ignoreCase = true) }
-                    ?: otherPartyNumber
+                val otherPartyName = if (isIncoming) {
+                    webRtcEngine.resolveCallerNameForCall(activeCall?.callId ?: "", activeCall?.callerName, otherPartyNumber)
+                } else {
+                    com.example.data.model.CallIdentitySanitizer.cleanName(activeCall?.calleeName)
+                }
+                val otherPartyDisplayName = otherPartyContact?.name?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }?.takeIf { it.isNotBlank() }
+                    ?: otherPartyUser?.displayName?.let { com.example.data.model.CallIdentitySanitizer.cleanName(it) }?.takeIf { it.isNotBlank() }
+                    ?: otherPartyName.takeIf { it.isNotBlank() }
+                    ?: otherPartyNumber.ifBlank { "Connecting..." }
                 val otherPartyProfilePic = otherPartyUser?.profilePictureUrl?.ifBlank { null }
                     ?: otherPartyContact?.profilePictureUrl
                     ?: ""
@@ -1349,7 +1368,7 @@ class MainActivity : ComponentActivity() {
                                 CallStatus.CALLING -> {
                                     OutgoingCallScreen(
                                         calleeName = otherPartyDisplayName,
-                                        calleeNumber = activeCall.calleeNumber,
+                                        calleeNumber = otherPartyNumber,
                                         profilePicUrl = otherPartyProfilePic,
                                         callType = activeCall.callType,
                                         statusText = rtcState.connectionStatusText,
@@ -1358,7 +1377,7 @@ class MainActivity : ComponentActivity() {
                                         onEndCall = {
                                             firebaseManager.logCall(
                                                 direction = CallDirection.OUTGOING,
-                                                otherPartyNumber = activeCall.calleeNumber,
+                                                otherPartyNumber = otherPartyNumber,
                                                 otherPartyName = otherPartyDisplayName,
                                                 callType = activeCall.callType,
                                                 status = CallStatus.ENDED,
@@ -1373,28 +1392,28 @@ class MainActivity : ComponentActivity() {
                                     if (isIncoming) {
                                         IncomingCallOverlay(
                                             callerName = otherPartyDisplayName,
-                                            callerNumber = activeCall.callerNumber,
+                                            callerNumber = otherPartyNumber,
                                             profilePicUrl = otherPartyProfilePic,
                                             callType = activeCall.callType,
-                                            isSpam = firebaseManager.isNumberSpam(activeCall.callerNumber),
+                                            isSpam = firebaseManager.isNumberSpam(otherPartyNumber),
                                             onAnswer = { webRtcEngine.answerCall() },
                                             onDecline = {
                                                 firebaseManager.logCall(
                                                     direction = CallDirection.INCOMING,
-                                                    otherPartyNumber = activeCall.callerNumber,
+                                                    otherPartyNumber = otherPartyNumber,
                                                     otherPartyName = otherPartyDisplayName,
                                                     callType = activeCall.callType,
                                                     status = CallStatus.DECLINED,
                                                     durationSeconds = rtcState.callDurationSeconds,
                                                     callId = activeCall.callId
                                                 )
-                                                 webRtcEngine.declineCall(activeCall.callId, activeCall.callerNumber)
+                                                webRtcEngine.declineCall(activeCall.callId, otherPartyNumber)
                                             }
                                         )
                                     } else {
                                         OutgoingCallScreen(
                                             calleeName = otherPartyDisplayName,
-                                            calleeNumber = activeCall.calleeNumber,
+                                            calleeNumber = otherPartyNumber,
                                             profilePicUrl = otherPartyProfilePic,
                                             callType = activeCall.callType,
                                             statusText = rtcState.connectionStatusText,
@@ -1403,7 +1422,7 @@ class MainActivity : ComponentActivity() {
                                             onEndCall = {
                                                 firebaseManager.logCall(
                                                     direction = CallDirection.OUTGOING,
-                                                    otherPartyNumber = activeCall.calleeNumber,
+                                                    otherPartyNumber = otherPartyNumber,
                                                     otherPartyName = otherPartyDisplayName,
                                                     callType = activeCall.callType,
                                                     status = CallStatus.ENDED,
@@ -1576,22 +1595,93 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                     
-                    // Show Update Dialog if needed
-                    updateInfo?.let { info ->
-                        UpdateDialog(
-                            updateInfo = info,
-                            downloadState = downloadState,
-                            onDownloadClick = {
-                                gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
-                            },
-                            onInstallClick = { uri ->
-                                gitHubUpdater.installApk(uri)
-                            },
-                            onDismissRequest = {
-                                gitHubUpdater.dismissUpdate(info.latestVersion)
-                                updateInfo = null
+                    // Smart Non-Intrusive Update Window Gating:
+                    // 1) Never show or keep UpdateDialog open during an active 1-to-1 call, group call, or incoming invite.
+                    // 2) Only auto-surface when the user is on the Main hub route, no modal/sheet is open, and after a calm idle check.
+                    val isAnyCallBusy = isCallActive || groupCallState.isActive || groupCallState.incomingInviteRoom != null
+                    val hasActiveModal = showOemAutostartDialog ||
+                        _showShakeDialog.value ||
+                        groupCallPickerState !is GroupCallPickerState.Hidden ||
+                        shareIntakeState !is ShareIntakeState.None
+
+                    LaunchedEffect(
+                        pendingAutoUpdateInfo,
+                        explicitUpdateInfo,
+                        isAnyCallBusy,
+                        currentRoute,
+                        hasActiveModal
+                    ) {
+                        if (isAnyCallBusy) {
+                            // Immediately defer any open update dialog if a call starts or rings
+                            if (visibleUpdateInfo != null && downloadState !is com.example.util.DownloadState.Downloading) {
+                                if (pendingAutoUpdateInfo == null) {
+                                    pendingAutoUpdateInfo = visibleUpdateInfo
+                                }
+                                visibleUpdateInfo = null
                             }
-                        )
+                            return@LaunchedEffect
+                        }
+
+                        // Explicit tap on the update notification shows immediately as long as no call is active
+                        val explicit = explicitUpdateInfo
+                        if (explicit != null) {
+                            visibleUpdateInfo = explicit
+                            explicitUpdateInfo = null
+                            return@LaunchedEffect
+                        }
+
+                        val candidate = pendingAutoUpdateInfo ?: return@LaunchedEffect
+                        if (gitHubUpdater.isUpdateSnoozed(candidate.latestVersion)) {
+                            pendingAutoUpdateInfo = null
+                            return@LaunchedEffect
+                        }
+
+                        while (visibleUpdateInfo == null && pendingAutoUpdateInfo != null) {
+                            val sinceTouch = if (lastUserInteractionAtMillis == 0L) Long.MAX_VALUE
+                            else (System.currentTimeMillis() - lastUserInteractionAtMillis).coerceAtLeast(0L)
+                            val canShow = com.example.util.UpdatePromptPolicy.shouldShowAutoUpdateDialog(
+                                hasPendingUpdate = true,
+                                isVersionSnoozed = gitHubUpdater.isUpdateSnoozed(candidate.latestVersion),
+                                isOneToOneCallActive = isCallActive,
+                                isGroupCallActive = groupCallState.isActive,
+                                hasIncomingGroupInvite = groupCallState.incomingInviteRoom != null,
+                                isOnMainHubRoute = currentRoute is AppRoute.Main,
+                                hasActiveModalOrSheet = hasActiveModal,
+                                millisSinceLastUserInteraction = sinceTouch,
+                                minIdleWindowMs = 2500L
+                            )
+                            if (canShow) {
+                                visibleUpdateInfo = candidate
+                                break
+                            }
+                            kotlinx.coroutines.delay(1500L)
+                        }
+                    }
+
+                    if (!isAnyCallBusy) {
+                        visibleUpdateInfo?.let { info ->
+                            UpdateDialog(
+                                updateInfo = info,
+                                downloadState = downloadState,
+                                onDownloadClick = {
+                                    gitHubUpdater.downloadUpdate(info.downloadUrl, info.latestVersion)
+                                },
+                                onInstallClick = { uri ->
+                                    gitHubUpdater.installApk(uri)
+                                },
+                                onDismissRequest = {
+                                    gitHubUpdater.dismissUpdate(info.latestVersion)
+                                    visibleUpdateInfo = null
+                                    pendingAutoUpdateInfo = null
+                                    explicitUpdateInfo = null
+                                },
+                                onMinimizeToBackground = {
+                                    visibleUpdateInfo = null
+                                    pendingAutoUpdateInfo = null
+                                    explicitUpdateInfo = null
+                                }
+                            )
+                        }
                     }
 
                     // Show Shake-to-Report Crash & Diagnostic Dialog

@@ -92,11 +92,33 @@ class LksConnectionService : ConnectionService() {
             } catch (_: Exception) {}
         }
 
-        val extras = request?.extras ?: Bundle()
-        val callId = extras.getString("call_id") ?: ""
-        val callerName = extras.getString("caller_name") ?: "LKS Caller"
-        val callerNumber = extras.getString("caller_number") ?: ""
-        val callTypeStr = extras.getString("call_type") ?: "AUDIO"
+        val topExtras = request?.extras ?: Bundle()
+        val nestedExtras = topExtras.getBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS)
+        val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+        val rawCallId = topExtras.getString("call_id")?.takeIf { it.isNotBlank() }
+            ?: nestedExtras?.getString("call_id")?.takeIf { it.isNotBlank() }
+            ?: engine?.state?.value?.activeCall?.callId
+            ?: ""
+        val uriNum = request?.address?.schemeSpecificPart?.takeIf { it.isNotBlank() && !it.equals("LKS", ignoreCase = true) }
+            ?: topExtras.getParcelable<Uri>(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS)?.schemeSpecificPart?.takeIf { it.isNotBlank() && !it.equals("LKS", ignoreCase = true) }
+        val rawCallerNumber = topExtras.getString("caller_number")?.takeIf { it.isNotBlank() }
+            ?: nestedExtras?.getString("caller_number")?.takeIf { it.isNotBlank() }
+            ?: uriNum
+            ?: ""
+        val callerNumber = engine?.resolveCallerNumberForCall(rawCallId, rawCallerNumber)
+            ?.ifBlank { com.example.data.model.CallIdentitySanitizer.cleanNumber(rawCallerNumber) }
+            ?: com.example.data.model.CallIdentitySanitizer.cleanNumber(rawCallerNumber)
+        val rawCallerName = topExtras.getString("caller_name")?.takeIf { it.isNotBlank() }
+            ?: nestedExtras?.getString("caller_name")?.takeIf { it.isNotBlank() }
+            ?: ""
+        val callerName = engine?.resolveCallerNameForCall(rawCallId, rawCallerName, callerNumber)
+            ?.ifBlank { callerNumber.ifBlank { "LKS Caller" } }
+            ?: com.example.data.model.CallIdentitySanitizer.cleanName(rawCallerName).ifBlank { callerNumber.ifBlank { "LKS Caller" } }
+        val callId = rawCallId
+        val callTypeStr = topExtras.getString("call_type")?.takeIf { it.isNotBlank() }
+            ?: nestedExtras?.getString("call_type")?.takeIf { it.isNotBlank() }
+            ?: engine?.resolveCallTypeForCall(callId)
+            ?: "AUDIO"
         val callType = try { CallType.valueOf(callTypeStr) } catch (_: Exception) { CallType.AUDIO }
 
         val connection = LksCallConnection(this, callId, callerName, callerNumber, callType, isIncoming = true)
@@ -104,7 +126,7 @@ class LksConnectionService : ConnectionService() {
         val addressUri = Uri.fromParts(PhoneAccount.SCHEME_SIP, callerNumber.ifBlank { "LKS" }, null)
         connection.setAddress(addressUri, TelecomManager.PRESENTATION_ALLOWED)
         connection.setRinging()
-        connection.extras = extras
+        connection.extras = topExtras
 
         activeConnection = connection
         return connection

@@ -54,11 +54,48 @@ sealed class DownloadState {
     data class Error(val message: String) : DownloadState()
 }
 
+/**
+ * Pure, testable policy determining when an automatic app update prompt or notification
+ * is allowed to surface without interrupting active calls or focused user workflows.
+ */
+object UpdatePromptPolicy {
+    fun shouldShowAutoUpdateDialog(
+        hasPendingUpdate: Boolean,
+        isVersionSnoozed: Boolean,
+        isOneToOneCallActive: Boolean,
+        isGroupCallActive: Boolean,
+        hasIncomingGroupInvite: Boolean,
+        isOnMainHubRoute: Boolean,
+        hasActiveModalOrSheet: Boolean,
+        millisSinceLastUserInteraction: Long,
+        minIdleWindowMs: Long = 2500L
+    ): Boolean {
+        if (!hasPendingUpdate || isVersionSnoozed) return false
+        if (isOneToOneCallActive || isGroupCallActive || hasIncomingGroupInvite) return false
+        if (!isOnMainHubRoute || hasActiveModalOrSheet) return false
+        if (millisSinceLastUserInteraction in 0 until minIdleWindowMs) return false
+        return true
+    }
+
+    fun shouldPostUpdateNotification(
+        force: Boolean,
+        isVersionSnoozed: Boolean,
+        isOneToOneCallActive: Boolean,
+        isGroupCallActive: Boolean,
+        hasIncomingGroupInvite: Boolean
+    ): Boolean {
+        if (isOneToOneCallActive || isGroupCallActive || hasIncomingGroupInvite) return false
+        if (!force && isVersionSnoozed) return false
+        return true
+    }
+}
+
 class GitHubUpdater(context: Context) {
     companion object {
         const val UPDATE_CHANNEL_ID = "lks_app_updates"
         const val UPDATE_NOTIFICATION_ID = 2001
         const val UPDATE_DOWNLOAD_NOTIFICATION_ID = 2002
+        const val SNOOZE_COOLDOWN_MS = 24 * 60 * 60 * 1000L // 24 hours snooze when user taps Later
     }
 
     private val context = context.applicationContext
@@ -81,12 +118,43 @@ class GitHubUpdater(context: Context) {
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
 
+    fun isUpdateSnoozed(version: String): Boolean {
+        if (version.isBlank()) return false
+        val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
+        val dismissedVersion = prefs.getString("dismissed_version", "") ?: ""
+        val dismissedTime = prefs.getLong("dismissed_time", 0L)
+        return dismissedVersion == version && (System.currentTimeMillis() - dismissedTime) < SNOOZE_COOLDOWN_MS
+    }
+
+    private fun isAnyCallCurrentlyActive(): Triple<Boolean, Boolean, Boolean> {
+        val rtcState = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()?.state?.value
+        val oneToOneActive = rtcState != null && (
+            rtcState.callStatus == com.example.data.model.CallStatus.CALLING ||
+            rtcState.callStatus == com.example.data.model.CallStatus.RINGING ||
+            rtcState.callStatus == com.example.data.model.CallStatus.ANSWERED
+        )
+        val grpState = com.example.webrtc.GroupCallEngine.getInstanceIfCreated()?.state?.value
+        val groupActive = grpState?.isActive == true
+        val groupInvite = grpState?.incomingInviteRoom != null
+        return Triple(oneToOneActive, groupActive, groupInvite)
+    }
+
     fun dismissUpdate(version: String) {
         val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("dismissed_version", version)
-            .putLong("dismissed_time", System.currentTimeMillis())
-            .apply()
+        if (version.isNotBlank()) {
+            prefs.edit()
+                .putString("dismissed_version", version)
+                .putLong("dismissed_time", System.currentTimeMillis())
+                .apply()
+        }
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(UPDATE_NOTIFICATION_ID)
+        } catch (_: Exception) {}
+        val currentDiscovered = (_discoveryState.value as? UpdateDiscoveryState.Available)?.info
+        if (currentDiscovered != null) {
+            _discoveryState.value = UpdateDiscoveryState.SuppressedWithinCooldown(currentDiscovered)
+        }
     }
 
     suspend fun checkForUpdates(currentVersion: String? = null, force: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
@@ -97,11 +165,6 @@ class GitHubUpdater(context: Context) {
             } catch (_: Exception) { null }
             val resolvedLocalVersion = currentVersion ?: "v${pInfo?.versionName ?: BuildConfig.VERSION_NAME}"
 
-            // Check if user previously dismissed this release (suppress for 6 hours unless force == true)
-            val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
-            val dismissedVersion = prefs.getString("dismissed_version", "") ?: ""
-            val dismissedTime = prefs.getLong("dismissed_time", 0L)
-
             // Tier 1: Try GitHub REST API (detailed release notes + asset metadata)
             // Tier 2: Direct GitHub Web Redirect (Bypasses the 60 req/hr rate limit on mobile carrier CGNAT IPs)
             val discovered = checkViaGitHubApi(resolvedLocalVersion) ?: run {
@@ -110,12 +173,23 @@ class GitHubUpdater(context: Context) {
             }
 
             if (discovered != null) {
-                showUpdateAvailableNotification(discovered)
-                val withinCooldown = !force &&
-                    dismissedVersion == discovered.latestVersion &&
-                    (System.currentTimeMillis() - dismissedTime) < 6 * 60 * 60 * 1000L
-                if (withinCooldown) {
-                    Log.d(TAG, "Update ${discovered.latestVersion} was dismissed by user within 6 hours — suppressing dialog")
+                val withinCooldown = isUpdateSnoozed(discovered.latestVersion)
+                val (oneToOneActive, groupActive, groupInvite) = isAnyCallCurrentlyActive()
+                if (UpdatePromptPolicy.shouldPostUpdateNotification(
+                        force = force,
+                        isVersionSnoozed = withinCooldown,
+                        isOneToOneCallActive = oneToOneActive,
+                        isGroupCallActive = groupActive,
+                        hasIncomingGroupInvite = groupInvite
+                    )
+                ) {
+                    showUpdateAvailableNotification(discovered)
+                } else {
+                    Log.d(TAG, "Suppressing update notification (callActive=${oneToOneActive || groupActive || groupInvite}, snoozed=$withinCooldown)")
+                }
+
+                if (!force && withinCooldown) {
+                    Log.d(TAG, "Update ${discovered.latestVersion} was snoozed by user ('Later') within 24 hours — suppressing auto dialog")
                     _discoveryState.value = UpdateDiscoveryState.SuppressedWithinCooldown(discovered)
                     return@withContext null
                 }
@@ -364,6 +438,11 @@ class GitHubUpdater(context: Context) {
 
     fun showUpdateAvailableNotification(info: UpdateInfo) {
         if (!info.isUpdateAvailable) return
+        val (oneToOneActive, groupActive, groupInvite) = isAnyCallCurrentlyActive()
+        if (oneToOneActive || groupActive || groupInvite) {
+            Log.d(TAG, "Skipping update notification because a call is currently active")
+            return
+        }
 
         val prefs = context.getSharedPreferences("app_updates", Context.MODE_PRIVATE)
         val lastNotifiedVersion = prefs.getString("last_notified_version", "") ?: ""
@@ -405,6 +484,18 @@ class GitHubUpdater(context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
 
+        // "Later" action button: snoozes the update and dismisses the notification
+        val snoozeIntent = Intent(context, com.example.services.UpdateDownloadReceiver::class.java).apply {
+            action = "ACTION_SNOOZE_UPDATE"
+            putExtra("update_version", info.latestVersion)
+        }
+        val snoozePendingIntent = PendingIntent.getBroadcast(
+            context,
+            UPDATE_NOTIFICATION_ID + 2,
+            snoozeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+
         val cleanNotes = if (info.releaseNotes.isNotBlank() && info.releaseNotes != "null") {
             info.releaseNotes.take(200).replace(Regex("[#*`-]"), " ").trim()
         } else {
@@ -414,15 +505,14 @@ class GitHubUpdater(context: Context) {
         val notification = androidx.core.app.NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle("🚀 Update Available: ${info.latestVersion}")
-            .setContentText("A new version of LKS-DIALER is ready to install!")
+            .setContentText("Tap to update now, or choose Later to snooze.")
             .setStyle(
                 androidx.core.app.NotificationCompat.BigTextStyle()
                     .setBigContentTitle("🚀 LKS-DIALER ${info.latestVersion} Available")
-                    .bigText("A new version is available with the latest features and bug fixes:\n\n$cleanNotes\n\nTap to download & install now.")
+                    .bigText("A new version is available with the latest features and bug fixes:\n\n$cleanNotes\n\nTap to download & install now, or tap Later.")
                     .setSummaryText("Update Available")
             )
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
-            .setDefaults(androidx.core.app.NotificationCompat.DEFAULT_ALL)
+            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .setContentIntent(contentPendingIntent)
             .addAction(
@@ -431,9 +521,9 @@ class GitHubUpdater(context: Context) {
                 downloadPendingIntent
             )
             .addAction(
-                android.R.drawable.ic_menu_info_details,
-                "Details",
-                contentPendingIntent
+                android.R.drawable.ic_menu_recent_history,
+                "Later",
+                snoozePendingIntent
             )
             .setColor(0xFF00ADB5.toInt())
             .build()

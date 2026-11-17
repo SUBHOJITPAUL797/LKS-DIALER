@@ -23,9 +23,23 @@ class CallNotificationReceiver : BroadcastReceiver() {
 
         when (action) {
             ACTION_ACCEPT -> {
-                val callerName = intent.getStringExtra("caller_name") ?: "LKS User"
-                val callerNumber = intent.getStringExtra("caller_number") ?: ""
-                val callTypeStr = intent.getStringExtra("call_type") ?: "AUDIO"
+                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated()
+                    ?: com.example.webrtc.WebRtcEngine.getInstance(context)
+                val activeCall = engine.state.value.activeCall?.takeIf { it.callId == callId }
+                val bubble = FloatingCallBubbleService.bubbleState.value.takeIf { it.activeCallId == callId }
+                val callerNumber = intent.getStringExtra("caller_number")
+                    ?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderNumber(it) }
+                    ?: activeCall?.callerNumber?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderNumber(it) }
+                    ?: bubble?.activeCallerNumber?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderNumber(it) }
+                    ?: ""
+                val callerName = intent.getStringExtra("caller_name")
+                    ?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                    ?: activeCall?.callerName?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                    ?: bubble?.activeCallerName?.takeUnless { com.example.data.model.CallIdentitySanitizer.isPlaceholderName(it) }
+                    ?: callerNumber
+                val callTypeStr = intent.getStringExtra("call_type")
+                    ?: activeCall?.callType?.name
+                    ?: "AUDIO"
                 val callType = try { com.example.data.model.CallType.valueOf(callTypeStr) } catch (_: Exception) { com.example.data.model.CallType.AUDIO }
 
                 com.example.util.LksIncomingRingtonePlayer.stop()
@@ -33,9 +47,7 @@ class CallNotificationReceiver : BroadcastReceiver() {
 
                 // ⚡ ULTRA-FAST BACKGROUND ANSWER (<100ms):
                 // Do not wait for MainActivity to launch; establish WebRTC audio & peer connection immediately!
-                val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
-                    ?: com.example.webrtc.WebRtcEngine.getInstance(context)
-                engine.answerIncomingCall(callId, callerName, callerNumber, callTypeStr)
+                engine.answerIncomingCall(callId, callerName.ifBlank { null }, callerNumber.ifBlank { null }, callTypeStr)
 
                 val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
                 val isLocked = keyguardManager?.isKeyguardLocked == true
@@ -47,6 +59,9 @@ class CallNotificationReceiver : BroadcastReceiver() {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
                         putExtra("incoming_call", true)
                         putExtra("call_id", callId)
+                        putExtra("caller_name", callerName)
+                        putExtra("caller_number", callerNumber)
+                        putExtra("call_type", callTypeStr)
                         putExtra("auto_answer", false)
                     }
                     context.startActivity(launchIntent)
@@ -75,7 +90,7 @@ class CallNotificationReceiver : BroadcastReceiver() {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     try { LksConnectionService.disconnectCall() } catch (_: Exception) {}
                 }
-                FloatingCallBubbleService.hide(context)
+                FloatingCallBubbleService.hide(context, callId)
                 com.example.util.LksIncomingRingtonePlayer.stop()
                 com.example.util.CallSoundEffectsManager.stopRingbackTone()
             }
@@ -85,7 +100,7 @@ class CallNotificationReceiver : BroadcastReceiver() {
                 try { notificationManager.cancel(2001) } catch (_: Exception) {}
                 try { notificationManager.cancel(2002) } catch (_: Exception) {}
                 ActiveCallService.stop(context)
-                FloatingCallBubbleService.hide(context)
+                FloatingCallBubbleService.hide(context, callId)
                 val engine = com.example.webrtc.WebRtcEngine.getInstanceIfCreated() 
                     ?: com.example.webrtc.WebRtcEngine.getInstance(context)
                 engine.endCall(callId)

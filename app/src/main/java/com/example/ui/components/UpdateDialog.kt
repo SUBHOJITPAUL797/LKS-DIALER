@@ -197,8 +197,10 @@ fun UpdateDialog(
     downloadState: DownloadState,
     onDownloadClick: () -> Unit,
     onInstallClick: (android.net.Uri) -> Unit = {},
-    onDismissRequest: () -> Unit
+    onDismissRequest: () -> Unit,
+    onMinimizeToBackground: () -> Unit = onDismissRequest
 ) {
+    val isDownloading = downloadState is DownloadState.Downloading
     val infiniteTransition = rememberInfiniteTransition(label = "update_modal_anim")
     val badgeScale by infiniteTransition.animateFloat(
         initialValue = 0.95f,
@@ -221,13 +223,15 @@ fun UpdateDialog(
 
     Dialog(
         onDismissRequest = {
-            if (!updateInfo.isMandatory && downloadState !is DownloadState.Downloading) {
+            if (isDownloading) {
+                onMinimizeToBackground()
+            } else {
                 onDismissRequest()
             }
         },
         properties = DialogProperties(
-            dismissOnBackPress = !updateInfo.isMandatory,
-            dismissOnClickOutside = !updateInfo.isMandatory,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = !isDownloading,
             usePlatformDefaultWidth = false
         )
     ) {
@@ -326,24 +330,6 @@ fun UpdateDialog(
                     color = Color.White,
                     textAlign = TextAlign.Center
                 )
-
-                if (updateInfo.isMandatory) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Surface(
-                        color = CrimsonAlert.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, CrimsonAlert)
-                    ) {
-                        Text(
-                            text = "CRITICAL SECURITY UPDATE",
-                            fontFamily = JetBrainsMonoFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = CrimsonAlert,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
-                }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
@@ -479,6 +465,24 @@ fun UpdateDialog(
                                 }
                             }
                         }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = onMinimizeToBackground,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
+                        ) {
+                            Text(
+                                text = "Later / Continue in Background",
+                                fontFamily = SpaceGroteskFontFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                color = Color(0xFFE2E8F0)
+                            )
+                        }
                     }
 
                     is DownloadState.Downloaded -> {
@@ -586,7 +590,7 @@ fun UpdateDialog(
                     }
 
                     is DownloadState.Downloading -> {
-                        // Progress is displayed above
+                        // Progress and Continue in Background button displayed above
                     }
 
                     else -> {
@@ -613,32 +617,41 @@ fun UpdateDialog(
                     }
                 }
 
-                if (!updateInfo.isMandatory && downloadState !is DownloadState.Downloading) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                if (!isDownloading) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = onDismissRequest,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
                     ) {
-                        val context = androidx.compose.ui.platform.LocalContext.current
-                        TextButton(
-                            onClick = {
-                                try {
-                                    val browserIntent = android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        android.net.Uri.parse(updateInfo.downloadUrl)
-                                    ).apply {
-                                        flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                                    }
-                                    context.startActivity(browserIntent)
-                                } catch (_: Exception) {}
-                            }
-                        ) {
-                            Text("Open in Browser", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                        Text(
+                            text = "Update Later",
+                            fontFamily = SpaceGroteskFontFamily,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
+                            color = Color(0xFFE2E8F0)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    TextButton(
+                        onClick = {
+                            try {
+                                val browserIntent = android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(updateInfo.downloadUrl)
+                                ).apply {
+                                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(browserIntent)
+                            } catch (_: Exception) {}
                         }
-                        TextButton(onClick = onDismissRequest) {
-                            Text("Remind Me Later", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                        }
+                    ) {
+                        Text("Open in Browser", color = Color(0xFF94A3B8), fontSize = 12.sp)
                     }
                 }
             }
