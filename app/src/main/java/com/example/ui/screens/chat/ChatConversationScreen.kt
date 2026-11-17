@@ -255,6 +255,17 @@ private sealed interface ChatOverlay {
     data class MediaReview(val photos: List<File>) : ChatOverlay
 }
 
+private sealed interface ComposerLinkPreviewState {
+    data object None : ComposerLinkPreviewState
+    data class Loaded(val url: String, val data: LinkPreviewData) : ComposerLinkPreviewState
+    data class Dismissed(val url: String) : ComposerLinkPreviewState
+}
+
+private sealed interface InChatSearchState {
+    data object Closed : InChatSearchState
+    data class Active(val query: String = "", val currentMatchIndex: Int = 0) : InChatSearchState
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Main Screen
 // ──────────────────────────────────────────────────────────────────────────────
@@ -342,21 +353,31 @@ fun ChatConversationScreen(
     }
 
     var inputText by remember { mutableStateOf(if (initialSharedPhotos.isNullOrEmpty()) (initialSharedText ?: "") else "") }
-    var dismissedTypingUrl by remember { mutableStateOf<String?>(null) }
     val currentTypingUrl = remember(inputText) { LinkPreviewHelper.extractFirstUrl(inputText) }
-    var typingPreviewData by remember { mutableStateOf<com.example.util.LinkPreviewData?>(null) }
+    var linkPreviewState by remember { mutableStateOf<ComposerLinkPreviewState>(ComposerLinkPreviewState.None) }
+    val typingPreviewData = (linkPreviewState as? ComposerLinkPreviewState.Loaded)
+        ?.takeIf { it.url == currentTypingUrl }
+        ?.data
 
-    LaunchedEffect(currentTypingUrl, dismissedTypingUrl) {
-        if (currentTypingUrl == null || currentTypingUrl == dismissedTypingUrl) {
-            typingPreviewData = null
-        } else {
+    LaunchedEffect(currentTypingUrl, linkPreviewState) {
+        val dismissedUrl = (linkPreviewState as? ComposerLinkPreviewState.Dismissed)?.url
+        if (currentTypingUrl == null) {
+            if (linkPreviewState !is ComposerLinkPreviewState.None) {
+                linkPreviewState = ComposerLinkPreviewState.None
+            }
+        } else if (currentTypingUrl != dismissedUrl) {
             val cached = LinkPreviewHelper.getCachedPreview(currentTypingUrl)
             if (cached != null) {
-                typingPreviewData = cached
+                linkPreviewState = ComposerLinkPreviewState.Loaded(currentTypingUrl, cached)
             }
             LinkPreviewHelper.getPreviewFlow(currentTypingUrl).collect { preview ->
-                if (currentTypingUrl != dismissedTypingUrl) {
-                    typingPreviewData = preview
+                val latestDismissed = (linkPreviewState as? ComposerLinkPreviewState.Dismissed)?.url
+                if (currentTypingUrl != latestDismissed) {
+                    linkPreviewState = if (preview != null) {
+                        ComposerLinkPreviewState.Loaded(currentTypingUrl, preview)
+                    } else {
+                        ComposerLinkPreviewState.None
+                    }
                 }
             }
         }
@@ -446,16 +467,11 @@ fun ChatConversationScreen(
     }
 
     // ── In-Chat Message Search state ──────────────────────────────────────────
-    var isSearching by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
-    var currentSearchIdx by remember { mutableIntStateOf(0) }
+    var searchState by remember { mutableStateOf<InChatSearchState>(InChatSearchState.Closed) }
+    val isSearching = searchState is InChatSearchState.Active
+    val searchQuery = (searchState as? InChatSearchState.Active)?.query.orEmpty()
+    val currentSearchIdx = (searchState as? InChatSearchState.Active)?.currentMatchIndex ?: 0
     val searchFocusRequester = remember { FocusRequester() }
-
-    BackHandler(enabled = isSearching) {
-        isSearching = false
-        searchQuery = ""
-        currentSearchIdx = 0
-    }
 
     val matchingIndices = remember(timelineItems, searchQuery) {
         if (searchQuery.isBlank()) emptyList<Int>()
@@ -653,9 +669,7 @@ fun ChatConversationScreen(
             activeOverlay !is ChatOverlay.None -> activeOverlay = ChatOverlay.None
             trayState != ComposerTrayState.NONE -> trayState = ComposerTrayState.NONE
             isSearching -> {
-                isSearching = false
-                searchQuery = ""
-                currentSearchIdx = 0
+                searchState = InChatSearchState.Closed
             }
             composerMode is ComposerMode.Editing -> {
                 composerMode = ComposerMode.Normal
@@ -844,8 +858,7 @@ fun ChatConversationScreen(
                         TextField(
                             value = searchQuery,
                             onValueChange = {
-                                searchQuery = it
-                                currentSearchIdx = 0
+                                searchState = InChatSearchState.Active(query = it, currentMatchIndex = 0)
                             },
                             placeholder = {
                                 Text(
@@ -870,9 +883,7 @@ fun ChatConversationScreen(
                     },
                     navigationIcon = {
                         IconButton(onClick = {
-                            isSearching = false
-                            searchQuery = ""
-                            currentSearchIdx = 0
+                            searchState = InChatSearchState.Closed
                         }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
                         }
@@ -888,7 +899,10 @@ fun ChatConversationScreen(
                             IconButton(
                                 onClick = {
                                     if (matchingIndices.isNotEmpty()) {
-                                        currentSearchIdx = (currentSearchIdx + 1) % matchingIndices.size
+                                        searchState = InChatSearchState.Active(
+                                            query = searchQuery,
+                                            currentMatchIndex = (currentSearchIdx + 1) % matchingIndices.size
+                                        )
                                     }
                                 },
                                 enabled = matchingIndices.isNotEmpty()
@@ -898,7 +912,11 @@ fun ChatConversationScreen(
                             IconButton(
                                 onClick = {
                                     if (matchingIndices.isNotEmpty()) {
-                                        currentSearchIdx = if (currentSearchIdx - 1 < 0) matchingIndices.size - 1 else currentSearchIdx - 1
+                                        val prevIdx = if (currentSearchIdx - 1 < 0) matchingIndices.size - 1 else currentSearchIdx - 1
+                                        searchState = InChatSearchState.Active(
+                                            query = searchQuery,
+                                            currentMatchIndex = prevIdx
+                                        )
                                     }
                                 },
                                 enabled = matchingIndices.isNotEmpty()
@@ -906,8 +924,7 @@ fun ChatConversationScreen(
                                 Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Next match (newer)")
                             }
                             IconButton(onClick = {
-                                searchQuery = ""
-                                currentSearchIdx = 0
+                                searchState = InChatSearchState.Active(query = "", currentMatchIndex = 0)
                             }) {
                                 Icon(Icons.Default.Close, contentDescription = "Clear search")
                             }
@@ -1004,7 +1021,7 @@ fun ChatConversationScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { isSearching = true }) {
+                        IconButton(onClick = { searchState = InChatSearchState.Active() }) {
                             Icon(Icons.Default.Search, contentDescription = "Search messages")
                         }
                         if (!isGroup) {
@@ -1146,7 +1163,7 @@ fun ChatConversationScreen(
                                     iconTint = Color(0xFF0EA5E9),
                                     onClick = {
                                         activeOverlay = ChatOverlay.None
-                                        isSearching = true
+                                        searchState = InChatSearchState.Active()
                                     }
                                 )
 
@@ -1696,7 +1713,7 @@ fun ChatConversationScreen(
 
             // ── Live Typing Link Preview Banner (WhatsApp style) ───────────────
             AnimatedVisibility(
-                visible = typingPreviewData != null && currentTypingUrl != null && currentTypingUrl != dismissedTypingUrl,
+                visible = typingPreviewData != null,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut()
             ) {
@@ -1788,8 +1805,11 @@ fun ChatConversationScreen(
                             // Dismiss 'X' Button
                             IconButton(
                                 onClick = {
-                                    dismissedTypingUrl = currentTypingUrl
-                                    typingPreviewData = null
+                                    linkPreviewState = if (currentTypingUrl != null) {
+                                        ComposerLinkPreviewState.Dismissed(currentTypingUrl)
+                                    } else {
+                                        ComposerLinkPreviewState.None
+                                    }
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
@@ -2206,7 +2226,7 @@ fun ChatConversationScreen(
                                                 inputText = ""
                                                 composerMode = ComposerMode.Normal
                                                 trayState = ComposerTrayState.NONE
-                                                dismissedTypingUrl = null
+                                                linkPreviewState = ComposerLinkPreviewState.None
                                                 chatRepository.setTyping(normPeer, false)
                                                 coroutineScope.launch {
                                                     val payload = if (currentReply != null) {

@@ -668,8 +668,9 @@ fun PhoneInputScreen(
         mutableStateOf(detectedSimNumber?.takeLast(10) ?: "")
     }
     var showCountryPicker by remember { mutableStateOf(false) }
-    var isCheckingSecurity by remember { mutableStateOf(false) }
-    var blockedErrorMessage by remember { mutableStateOf<String?>(null) }
+    var verificationPhase by remember { mutableStateOf<PhoneVerificationPhase>(PhoneVerificationPhase.Idle) }
+    val isCheckingSecurity = verificationPhase is PhoneVerificationPhase.Verifying
+    val blockedErrorMessage = (verificationPhase as? PhoneVerificationPhase.Blocked)?.message
 
     if (showCountryPicker) {
         CountryCodePickerModal(
@@ -913,7 +914,9 @@ fun PhoneInputScreen(
             OutlinedTextField(
                 value = phoneNumberInput,
                 onValueChange = {
-                    blockedErrorMessage = null
+                    if (verificationPhase is PhoneVerificationPhase.Blocked) {
+                        verificationPhase = PhoneVerificationPhase.Idle
+                    }
                     if (it.length <= 15) phoneNumberInput = it.filter { ch -> ch.isDigit() }
                 },
                 modifier = Modifier
@@ -1053,24 +1056,25 @@ fun PhoneInputScreen(
             Button(
                 onClick = {
                     scope.launch {
-                        blockedErrorMessage = null
-                        isCheckingSecurity = true
+                        verificationPhase = PhoneVerificationPhase.Verifying
                         delay(350)
 
                         val fullNumber = CountryCodes.formatPhoneNumber(selectedCountry.dialCode, phoneNumberInput)
                         val result = firebaseManager.verifyAndRegisterNumberAsync(fullNumber, currentDeviceId)
 
-                        isCheckingSecurity = false
-
                         when (result) {
                             is RegisterResult.Success -> {
+                                verificationPhase = PhoneVerificationPhase.Idle
                                 onLoginSuccess(result.user)
                             }
                             is RegisterResult.NewUser -> {
+                                verificationPhase = PhoneVerificationPhase.Idle
                                 onNewUser(result.phoneNumber, currentDeviceId)
                             }
                             is RegisterResult.DeviceBlocked -> {
-                                blockedErrorMessage = "This phone number (${result.phoneNumber}) is already registered on another device. For your security, another device cannot sign in with this number."
+                                verificationPhase = PhoneVerificationPhase.Blocked(
+                                    "This phone number (${result.phoneNumber}) is already registered on another device. For your security, another device cannot sign in with this number."
+                                )
                             }
                         }
                     }
@@ -1121,6 +1125,12 @@ fun PhoneInputScreen(
             }
         }
     }
+}
+
+private sealed interface PhoneVerificationPhase {
+    data object Idle : PhoneVerificationPhase
+    data object Verifying : PhoneVerificationPhase
+    data class Blocked(val message: String) : PhoneVerificationPhase
 }
 
 @Composable

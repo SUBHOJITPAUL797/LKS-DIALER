@@ -100,6 +100,20 @@ private sealed interface GroupCallPickerState {
     data class Open(val preselectedPeer: ContactDto? = null) : GroupCallPickerState
 }
 
+private sealed interface UpdateModalPresentationState {
+    data object Hidden : UpdateModalPresentationState
+    data class DeferredAuto(val info: UpdateInfo) : UpdateModalPresentationState
+    data class VisibleAuto(val info: UpdateInfo) : UpdateModalPresentationState
+    data class VisibleExplicit(val info: UpdateInfo) : UpdateModalPresentationState
+
+    val visibleInfo: UpdateInfo?
+        get() = when (this) {
+            is VisibleAuto -> info
+            is VisibleExplicit -> info
+            else -> null
+        }
+}
+
 private fun com.example.util.SharedIncomingPayload.toReadyShareState(): ShareIntakeState.ReadyForChat =
     when (type) {
         com.example.util.SharedPayloadType.IMAGES -> ShareIntakeState.ReadyForChat(
@@ -560,9 +574,7 @@ class MainActivity : ComponentActivity() {
                 }
                 
                 val gitHubUpdater = remember { GitHubUpdater(context) }
-                var pendingAutoUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-                var explicitUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-                var visibleUpdateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+                var updateModalState by remember { mutableStateOf<UpdateModalPresentationState>(UpdateModalPresentationState.Hidden) }
                 val downloadState by gitHubUpdater.downloadState.collectAsState()
 
                 val permissions = mutableListOf(
@@ -644,7 +656,9 @@ class MainActivity : ComponentActivity() {
                             }
                             if (info != null) {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    pendingAutoUpdateInfo = info
+                                    if (updateModalState is UpdateModalPresentationState.Hidden) {
+                                        updateModalState = UpdateModalPresentationState.DeferredAuto(info)
+                                    }
                                 }
                             }
                         } catch (e: Exception) {
@@ -659,14 +673,16 @@ class MainActivity : ComponentActivity() {
                     val cm = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
                     val callback = object : android.net.ConnectivityManager.NetworkCallback() {
                         override fun onAvailable(network: android.net.Network) {
-                            if (pendingAutoUpdateInfo == null && visibleUpdateInfo == null) {
+                            if (updateModalState is UpdateModalPresentationState.Hidden) {
                                 kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                                     try {
                                         kotlinx.coroutines.delay(1200) // Brief link stabilization
                                         val info = gitHubUpdater.checkForUpdates()
                                         if (info != null) {
                                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                pendingAutoUpdateInfo = info
+                                                if (updateModalState is UpdateModalPresentationState.Hidden) {
+                                                    updateModalState = UpdateModalPresentationState.DeferredAuto(info)
+                                                }
                                             }
                                         }
                                     } catch (_: Exception) {}
@@ -796,12 +812,14 @@ class MainActivity : ComponentActivity() {
                             val notes = incoming.getStringExtra("update_notes") ?: ""
                             val url = incoming.getStringExtra("update_url") ?: ""
                             if (url.isNotBlank() && version.isNotBlank()) {
-                                explicitUpdateInfo = UpdateInfo(
-                                    isUpdateAvailable = true,
-                                    latestVersion = version,
-                                    releaseNotes = notes,
-                                    downloadUrl = url,
-                                    isMandatory = false
+                                updateModalState = UpdateModalPresentationState.VisibleExplicit(
+                                    UpdateInfo(
+                                        isUpdateAvailable = true,
+                                        latestVersion = version,
+                                        releaseNotes = notes,
+                                        downloadUrl = url,
+                                        isMandatory = false
+                                    )
                                 )
                             }
                         }
@@ -1605,38 +1623,29 @@ class MainActivity : ComponentActivity() {
                         shareIntakeState !is ShareIntakeState.None
 
                     LaunchedEffect(
-                        pendingAutoUpdateInfo,
-                        explicitUpdateInfo,
+                        updateModalState,
                         isAnyCallBusy,
                         currentRoute,
                         hasActiveModal
                     ) {
+                        val currentModal = updateModalState
                         if (isAnyCallBusy) {
                             // Immediately defer any open update dialog if a call starts or rings
-                            if (visibleUpdateInfo != null && downloadState !is com.example.util.DownloadState.Downloading) {
-                                if (pendingAutoUpdateInfo == null) {
-                                    pendingAutoUpdateInfo = visibleUpdateInfo
-                                }
-                                visibleUpdateInfo = null
+                            val activeInfo = currentModal.visibleInfo
+                            if (activeInfo != null && downloadState !is com.example.util.DownloadState.Downloading) {
+                                updateModalState = UpdateModalPresentationState.DeferredAuto(activeInfo)
                             }
                             return@LaunchedEffect
                         }
 
-                        // Explicit tap on the update notification shows immediately as long as no call is active
-                        val explicit = explicitUpdateInfo
-                        if (explicit != null) {
-                            visibleUpdateInfo = explicit
-                            explicitUpdateInfo = null
-                            return@LaunchedEffect
-                        }
-
-                        val candidate = pendingAutoUpdateInfo ?: return@LaunchedEffect
+                        if (currentModal !is UpdateModalPresentationState.DeferredAuto) return@LaunchedEffect
+                        val candidate = currentModal.info
                         if (gitHubUpdater.isUpdateSnoozed(candidate.latestVersion)) {
-                            pendingAutoUpdateInfo = null
+                            updateModalState = UpdateModalPresentationState.Hidden
                             return@LaunchedEffect
                         }
 
-                        while (visibleUpdateInfo == null && pendingAutoUpdateInfo != null) {
+                        while (updateModalState is UpdateModalPresentationState.DeferredAuto) {
                             val sinceTouch = if (lastUserInteractionAtMillis == 0L) Long.MAX_VALUE
                             else (System.currentTimeMillis() - lastUserInteractionAtMillis).coerceAtLeast(0L)
                             val canShow = com.example.util.UpdatePromptPolicy.shouldShowAutoUpdateDialog(
@@ -1651,7 +1660,7 @@ class MainActivity : ComponentActivity() {
                                 minIdleWindowMs = 2500L
                             )
                             if (canShow) {
-                                visibleUpdateInfo = candidate
+                                updateModalState = UpdateModalPresentationState.VisibleAuto(candidate)
                                 break
                             }
                             kotlinx.coroutines.delay(1500L)
@@ -1659,7 +1668,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (!isAnyCallBusy) {
-                        visibleUpdateInfo?.let { info ->
+                        updateModalState.visibleInfo?.let { info ->
                             UpdateDialog(
                                 updateInfo = info,
                                 downloadState = downloadState,
@@ -1671,14 +1680,10 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onDismissRequest = {
                                     gitHubUpdater.dismissUpdate(info.latestVersion)
-                                    visibleUpdateInfo = null
-                                    pendingAutoUpdateInfo = null
-                                    explicitUpdateInfo = null
+                                    updateModalState = UpdateModalPresentationState.Hidden
                                 },
                                 onMinimizeToBackground = {
-                                    visibleUpdateInfo = null
-                                    pendingAutoUpdateInfo = null
-                                    explicitUpdateInfo = null
+                                    updateModalState = UpdateModalPresentationState.Hidden
                                 }
                             )
                         }

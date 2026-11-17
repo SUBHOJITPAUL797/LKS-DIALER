@@ -79,7 +79,7 @@ fun CallHistoryScreen(
     val registeredUsers by firebaseManager.registeredUsers.collectAsState()
     val blockedNumbers by firebaseManager.blockedNumbers.collectAsState()
     val spamNumbers by firebaseManager.spamNumbers.collectAsState()
-    var selectedFilter by remember { mutableStateOf("ALL") }
+    var selectedFilter by remember { mutableStateOf(CallHistoryFilter.ALL) }
     var overlay by remember { mutableStateOf<CallHistoryOverlay>(CallHistoryOverlay.None) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -130,13 +130,13 @@ fun CallHistoryScreen(
 
     val filteredLogs = remember(callLogs, selectedFilter) {
         when (selectedFilter) {
-            "MISSED" -> callLogs.filter { it.direction == CallDirection.MISSED }
-            "INCOMING" -> callLogs.filter { it.direction == CallDirection.INCOMING }
-            "OUTGOING" -> callLogs.filter { it.direction == CallDirection.OUTGOING }
-            "RECORDINGS" -> callLogs.filter {
+            CallHistoryFilter.ALL -> callLogs
+            CallHistoryFilter.MISSED -> callLogs.filter { it.direction == CallDirection.MISSED }
+            CallHistoryFilter.INCOMING -> callLogs.filter { it.direction == CallDirection.INCOMING }
+            CallHistoryFilter.OUTGOING -> callLogs.filter { it.direction == CallDirection.OUTGOING }
+            CallHistoryFilter.RECORDINGS -> callLogs.filter {
                 com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
             }
-            else -> callLogs
         }
     }
 
@@ -593,6 +593,11 @@ fun CallHistoryScreen(
                     com.example.util.CallAudioRecorder.getInstance(context).findRecordingFile(it.callId, it.recordingPath) != null
                 }
             }
+            LaunchedEffect(recordedCount, selectedFilter) {
+                if (selectedFilter == CallHistoryFilter.RECORDINGS && recordedCount == 0) {
+                    selectedFilter = CallHistoryFilter.ALL
+                }
+            }
 
             Row(
                 modifier = Modifier
@@ -603,9 +608,9 @@ fun CallHistoryScreen(
             ) {
                 // 1. All Calls
                 FilterChip(
-                    selected = selectedFilter == "ALL",
+                    selected = selectedFilter == CallHistoryFilter.ALL,
                     onClick = {
-                        selectedFilter = "ALL"
+                        selectedFilter = CallHistoryFilter.ALL
                         lastInteractionTime = System.currentTimeMillis()
                     },
                     label = {
@@ -621,7 +626,7 @@ fun CallHistoryScreen(
                     shape = RoundedCornerShape(12.dp),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
-                        selected = selectedFilter == "ALL",
+                        selected = selectedFilter == CallHistoryFilter.ALL,
                         borderColor = HudBorderSubtle,
                         selectedBorderColor = SignalAmber,
                         selectedBorderWidth = 1.5.dp
@@ -636,9 +641,9 @@ fun CallHistoryScreen(
 
                 // 2. Missed
                 FilterChip(
-                    selected = selectedFilter == "MISSED",
+                    selected = selectedFilter == CallHistoryFilter.MISSED,
                     onClick = {
-                        selectedFilter = "MISSED"
+                        selectedFilter = CallHistoryFilter.MISSED
                         lastInteractionTime = System.currentTimeMillis()
                     },
                     label = {
@@ -655,14 +660,14 @@ fun CallHistoryScreen(
                             imageVector = Icons.AutoMirrored.Filled.CallMissed,
                             contentDescription = null,
                             modifier = Modifier.size(15.dp),
-                            tint = if (selectedFilter == "MISSED") CrimsonAlert else HudTextSecondary
+                            tint = if (selectedFilter == CallHistoryFilter.MISSED) CrimsonAlert else HudTextSecondary
                         )
                     },
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
-                        selected = selectedFilter == "MISSED",
+                        selected = selectedFilter == CallHistoryFilter.MISSED,
                         borderColor = HudBorderSubtle,
                         selectedBorderColor = CrimsonAlert,
                         selectedBorderWidth = 1.5.dp
@@ -677,9 +682,9 @@ fun CallHistoryScreen(
 
                 // 3. Incoming
                 FilterChip(
-                    selected = selectedFilter == "INCOMING",
+                    selected = selectedFilter == CallHistoryFilter.INCOMING,
                     onClick = {
-                        selectedFilter = "INCOMING"
+                        selectedFilter = CallHistoryFilter.INCOMING
                         lastInteractionTime = System.currentTimeMillis()
                     },
                     label = {
@@ -696,14 +701,14 @@ fun CallHistoryScreen(
                             imageVector = Icons.AutoMirrored.Filled.CallReceived,
                             contentDescription = null,
                             modifier = Modifier.size(15.dp),
-                            tint = if (selectedFilter == "INCOMING") CyberMint else HudTextSecondary
+                            tint = if (selectedFilter == CallHistoryFilter.INCOMING) CyberMint else HudTextSecondary
                         )
                     },
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
-                        selected = selectedFilter == "INCOMING",
+                        selected = selectedFilter == CallHistoryFilter.INCOMING,
                         borderColor = HudBorderSubtle,
                         selectedBorderColor = CyberMint,
                         selectedBorderWidth = 1.5.dp
@@ -718,9 +723,9 @@ fun CallHistoryScreen(
 
                 // 4. Outgoing
                 FilterChip(
-                    selected = selectedFilter == "OUTGOING",
+                    selected = selectedFilter == CallHistoryFilter.OUTGOING,
                     onClick = {
-                        selectedFilter = "OUTGOING"
+                        selectedFilter = CallHistoryFilter.OUTGOING
                         lastInteractionTime = System.currentTimeMillis()
                     },
                     label = {
@@ -737,14 +742,14 @@ fun CallHistoryScreen(
                             imageVector = Icons.AutoMirrored.Filled.CallMade,
                             contentDescription = null,
                             modifier = Modifier.size(15.dp),
-                            tint = if (selectedFilter == "OUTGOING") TelemetryBlue else HudTextSecondary
+                            tint = if (selectedFilter == CallHistoryFilter.OUTGOING) TelemetryBlue else HudTextSecondary
                         )
                     },
                     modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
-                        selected = selectedFilter == "OUTGOING",
+                        selected = selectedFilter == CallHistoryFilter.OUTGOING,
                         borderColor = HudBorderSubtle,
                         selectedBorderColor = TelemetryBlue,
                         selectedBorderWidth = 1.5.dp
@@ -760,9 +765,9 @@ fun CallHistoryScreen(
                 // 5. Recordings
                 if (recordedCount > 0) {
                     FilterChip(
-                        selected = selectedFilter == "RECORDINGS",
+                        selected = selectedFilter == CallHistoryFilter.RECORDINGS,
                         onClick = {
-                            selectedFilter = "RECORDINGS"
+                            selectedFilter = CallHistoryFilter.RECORDINGS
                             lastInteractionTime = System.currentTimeMillis()
                         },
                         label = {
@@ -779,14 +784,14 @@ fun CallHistoryScreen(
                                 imageVector = Icons.Default.Mic,
                                 contentDescription = null,
                                 modifier = Modifier.size(14.dp),
-                                tint = if (selectedFilter == "RECORDINGS") PurplePrimary else HudTextSecondary
+                                tint = if (selectedFilter == CallHistoryFilter.RECORDINGS) PurplePrimary else HudTextSecondary
                             )
                         },
                         modifier = Modifier.defaultMinSize(minHeight = 48.dp),
                         shape = RoundedCornerShape(12.dp),
                         border = FilterChipDefaults.filterChipBorder(
                             enabled = true,
-                            selected = selectedFilter == "RECORDINGS",
+                            selected = selectedFilter == CallHistoryFilter.RECORDINGS,
                             borderColor = HudBorderSubtle,
                             selectedBorderColor = PurplePrimary,
                             selectedBorderWidth = 1.5.dp
@@ -968,7 +973,7 @@ fun CallHistoryScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        if (selectedFilter == "RECORDINGS") Icons.Default.Mic else Icons.Default.History,
+                        if (selectedFilter == CallHistoryFilter.RECORDINGS) Icons.Default.Mic else Icons.Default.History,
                         contentDescription = null,
                         modifier = Modifier.size(56.dp),
                         tint = HudTextSecondary.copy(alpha = 0.5f)
@@ -976,8 +981,8 @@ fun CallHistoryScreen(
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
                         text = when (selectedFilter) {
-                            "MISSED" -> "No missed calls recorded"
-                            "RECORDINGS" -> "No recorded calls yet"
+                            CallHistoryFilter.MISSED -> "No missed calls recorded"
+                            CallHistoryFilter.RECORDINGS -> "No recorded calls yet"
                             else -> "No matching call logs"
                         },
                         fontFamily = SpaceGroteskFontFamily,
@@ -1516,25 +1521,27 @@ fun CallRecordingPlayerCard(
     onDeleted: () -> Unit
 ) {
     val context = LocalContext.current
-    var isPlaying by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableStateOf(0) }
-    var totalDurationMs by remember { mutableStateOf(0) }
-    var playbackSpeed by remember { mutableStateOf(1.0f) }
+    var uiState by remember(file) { mutableStateOf(RecordingPlayerUiState()) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
 
     DisposableEffect(file) {
         val player = MediaPlayer().apply {
             try {
                 setDataSource(file.absolutePath)
                 prepare()
-                totalDurationMs = duration
+                uiState = uiState.copy(
+                    phase = RecordingPlaybackPhase.READY,
+                    totalDurationMs = duration
+                )
             } catch (e: Exception) {
                 android.util.Log.w("CallRecPlayer", "Failed to prepare MediaPlayer: ${e.message}")
+                uiState = uiState.copy(phase = RecordingPlaybackPhase.ERROR)
             }
             setOnCompletionListener {
-                isPlaying = false
-                currentPositionMs = 0
+                uiState = uiState.copy(
+                    phase = RecordingPlaybackPhase.READY,
+                    currentPositionMs = 0
+                )
             }
         }
         mediaPlayer = player
@@ -1548,27 +1555,29 @@ fun CallRecordingPlayerCard(
         }
     }
 
+    val isPlaying = uiState.phase == RecordingPlaybackPhase.PLAYING
+
     // Position tracking loop while playing
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             mediaPlayer?.let { player ->
                 if (player.isPlaying) {
-                    currentPositionMs = player.currentPosition
+                    uiState = uiState.copy(currentPositionMs = player.currentPosition)
                 }
             }
             delay(200)
         }
     }
 
-    if (showDeleteConfirm) {
+    if (uiState.showDeleteConfirm) {
         AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
+            onDismissRequest = { uiState = uiState.copy(showDeleteConfirm = false) },
             title = { Text("Delete Call Recording?") },
             text = { Text("This will permanently remove the recorded audio file (${file.name}).") },
             confirmButton = {
                 TextButton(onClick = {
                     com.example.util.CallAudioRecorder.getInstance(context).deleteRecording(file)
-                    showDeleteConfirm = false
+                    uiState = uiState.copy(showDeleteConfirm = false)
                     onDeleted()
                     Toast.makeText(context, "Recording deleted", Toast.LENGTH_SHORT).show()
                 }) {
@@ -1576,7 +1585,7 @@ fun CallRecordingPlayerCard(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) {
+                TextButton(onClick = { uiState = uiState.copy(showDeleteConfirm = false) }) {
                     Text("Cancel")
                 }
             }
@@ -1612,13 +1621,15 @@ fun CallRecordingPlayerCard(
                     // Playback Speed Button (1.0x -> 1.5x -> 2.0x)
                     Surface(
                         onClick = {
-                            val newSpeed = when (playbackSpeed) {
+                            val newSpeed = when (uiState.playbackSpeed) {
                                 1.0f -> 1.5f
                                 1.5f -> 2.0f
                                 else -> 1.0f
                             }
-                            playbackSpeed = newSpeed
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                            uiState = uiState.copy(playbackSpeed = newSpeed)
+                            // Only apply playbackParams immediately if currently playing!
+                            // Calling setPlaybackParams while paused causes Android MediaPlayer to auto-start playback.
+                            if (isPlaying && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
                                 mediaPlayer?.let { player ->
                                     try {
                                         val params = player.playbackParams
@@ -1632,7 +1643,7 @@ fun CallRecordingPlayerCard(
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            text = "${playbackSpeed}x",
+                            text = "${uiState.playbackSpeed}x",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
@@ -1671,7 +1682,7 @@ fun CallRecordingPlayerCard(
 
                     // Delete Button
                     IconButton(
-                        onClick = { showDeleteConfirm = true },
+                        onClick = { uiState = uiState.copy(showDeleteConfirm = true) },
                         modifier = Modifier.size(32.dp)
                     ) {
                         Icon(
@@ -1695,11 +1706,22 @@ fun CallRecordingPlayerCard(
                     onClick = {
                         mediaPlayer?.let { player ->
                             if (isPlaying) {
-                                player.pause()
-                                isPlaying = false
-                            } else {
-                                player.start()
-                                isPlaying = true
+                                try {
+                                    player.pause()
+                                } catch (_: Exception) {}
+                                uiState = uiState.copy(phase = RecordingPlaybackPhase.PAUSED)
+                            } else if (uiState.phase != RecordingPlaybackPhase.ERROR) {
+                                try {
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                        val params = player.playbackParams
+                                        params.speed = uiState.playbackSpeed
+                                        player.playbackParams = params
+                                    }
+                                    if (!player.isPlaying) {
+                                        player.start()
+                                    }
+                                    uiState = uiState.copy(phase = RecordingPlaybackPhase.PLAYING)
+                                } catch (_: Exception) {}
                             }
                         }
                     },
@@ -1720,10 +1742,12 @@ fun CallRecordingPlayerCard(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Slider(
-                        value = if (totalDurationMs > 0) (currentPositionMs.toFloat() / totalDurationMs).coerceIn(0f, 1f) else 0f,
+                        value = if (uiState.totalDurationMs > 0) {
+                            (uiState.currentPositionMs.toFloat() / uiState.totalDurationMs).coerceIn(0f, 1f)
+                        } else 0f,
                         onValueChange = { fraction ->
-                            val target = (fraction * totalDurationMs).toInt()
-                            currentPositionMs = target
+                            val target = (fraction * uiState.totalDurationMs).toInt()
+                            uiState = uiState.copy(currentPositionMs = target)
                             mediaPlayer?.seekTo(target)
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -1738,12 +1762,12 @@ fun CallRecordingPlayerCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = formatMs(currentPositionMs),
+                            text = formatMs(uiState.currentPositionMs),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = formatMs(totalDurationMs),
+                            text = formatMs(uiState.totalDurationMs),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1752,6 +1776,29 @@ fun CallRecordingPlayerCard(
             }
         }
     }
+}
+
+private enum class RecordingPlaybackPhase {
+    READY,
+    PLAYING,
+    PAUSED,
+    ERROR
+}
+
+private data class RecordingPlayerUiState(
+    val phase: RecordingPlaybackPhase = RecordingPlaybackPhase.READY,
+    val currentPositionMs: Int = 0,
+    val totalDurationMs: Int = 0,
+    val playbackSpeed: Float = 1.0f,
+    val showDeleteConfirm: Boolean = false
+)
+
+private enum class CallHistoryFilter {
+    ALL,
+    MISSED,
+    INCOMING,
+    OUTGOING,
+    RECORDINGS
 }
 
 private fun formatMs(ms: Int): String {

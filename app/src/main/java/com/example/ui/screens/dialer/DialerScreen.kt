@@ -61,10 +61,8 @@ fun DialerScreen(
     var selectedCountry by remember { mutableStateOf(CountryCodes.defaultCountry) }
     var activePickerModal by remember { mutableStateOf<DialerPickerModal>(DialerPickerModal.None) }
 
-    // Progressive Disclosure States (OFF by default so optional features never clutter core work)
-    var showFieldHudTools by remember { mutableStateOf(false) }
-    var showQuickGuideOverride by remember { mutableStateOf(false) }
-    var isFirstTimeGuideDismissed by remember { mutableStateOf(false) }
+    // Progressive Disclosure Drawer State (OFF by default so optional features never clutter core work)
+    var activeHudDrawer by remember { mutableStateOf(DialerHudDrawer.NONE) }
 
     val activeSims = remember { SimManager.getActiveSimCards(context) }
     val clipboardManager = LocalClipboardManager.current
@@ -147,16 +145,21 @@ fun DialerScreen(
                 }
 
                 for (log in callLogs) {
-                    val cleanPhone = log.otherPartyNumber.filter { it.isDigit() }
-                    val t9Name = nameToT9(log.otherPartyName)
+                    val resolvedNumber = log.resolveOtherPartyNumber()
+                    if (resolvedNumber.isBlank()) continue
+                    val resolvedName = log.resolveOtherPartyName()
+                    val cleanPhone = resolvedNumber.filter { it.isDigit() }
+                    val t9Name = nameToT9(resolvedName)
                     if (cleanPhone.contains(queryDigits) || t9Name.contains(queryDigits)) {
-                        val norm = com.example.util.ContactsHelper.normalizePhoneNumber(log.otherPartyNumber)
-                        if (seenNumbers.add(norm)) {
+                        val norm = com.example.util.ContactsHelper.normalizePhoneNumber(resolvedNumber)
+                        if (norm.isNotBlank() && seenNumbers.add(norm)) {
                             result.add(
                                 T9MatchItem(
-                                    name = log.otherPartyName.ifBlank { log.otherPartyNumber },
-                                    phoneNumber = log.otherPartyNumber,
-                                    isLksUser = registeredUsers.any { it.phoneNumber == norm },
+                                    name = resolvedName.ifBlank { resolvedNumber },
+                                    phoneNumber = resolvedNumber,
+                                    isLksUser = registeredUsers.any {
+                                        com.example.util.ContactsHelper.numbersMatch(it.phoneNumber, resolvedNumber)
+                                    },
                                     profilePic = log.otherPartyProfilePic
                                 )
                             )
@@ -267,7 +270,13 @@ fun DialerScreen(
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 IconButton(
-                    onClick = { showFieldHudTools = !showFieldHudTools },
+                    onClick = {
+                        activeHudDrawer = if (activeHudDrawer == DialerHudDrawer.SECURITY_HUD) {
+                            DialerHudDrawer.NONE
+                        } else {
+                            DialerHudDrawer.SECURITY_HUD
+                        }
+                    },
                     modifier = Modifier
                         .size(44.dp)
                         .testTag("toggle_field_hud")
@@ -275,14 +284,17 @@ fun DialerScreen(
                     Icon(
                         Icons.Default.Radar,
                         contentDescription = "Connection Status",
-                        tint = if (showFieldHudTools) SignalAmber else HudTextSecondary,
+                        tint = if (activeHudDrawer == DialerHudDrawer.SECURITY_HUD) SignalAmber else HudTextSecondary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
                 IconButton(
                     onClick = {
-                        showQuickGuideOverride = !showQuickGuideOverride
-                        if (showQuickGuideOverride) isFirstTimeGuideDismissed = false
+                        activeHudDrawer = if (activeHudDrawer == DialerHudDrawer.QUICK_GUIDE) {
+                            DialerHudDrawer.NONE
+                        } else {
+                            DialerHudDrawer.QUICK_GUIDE
+                        }
                     },
                     modifier = Modifier
                         .size(44.dp)
@@ -291,7 +303,7 @@ fun DialerScreen(
                     Icon(
                         Icons.Default.HelpOutline,
                         contentDescription = "Quick Guide",
-                        tint = if (showQuickGuideOverride) CyberMint else HudTextSecondary,
+                        tint = if (activeHudDrawer == DialerHudDrawer.QUICK_GUIDE) CyberMint else HudTextSecondary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -382,9 +394,16 @@ fun DialerScreen(
                                             activePickerModal = DialerPickerModal.SimPicker()
                                         }
                                     } else {
-                                        val lastCalled = callLogs.firstOrNull()?.otherPartyNumber
+                                        val lastCalled = callLogs.firstNotNullOfOrNull {
+                                            it.resolveOtherPartyNumber().takeIf { num -> num.isNotBlank() }
+                                        }
                                         if (!lastCalled.isNullOrBlank()) {
-                                            dialNumber = lastCalled.filter { it.isDigit() || it == '+' }
+                                            val stripped = if (lastCalled.startsWith(selectedCountry.dialCode)) {
+                                                lastCalled.removePrefix(selectedCountry.dialCode)
+                                            } else {
+                                                lastCalled
+                                            }
+                                            dialNumber = stripped.filter { it.isDigit() }
                                         } else {
                                             onNavigateToContacts()
                                         }
@@ -585,7 +604,7 @@ fun DialerScreen(
 
                 // Optional Progressive Disclosure Panel: Security Status & DND Shield (OFF by default)
                 AnimatedVisibility(
-                    visible = showFieldHudTools,
+                    visible = activeHudDrawer == DialerHudDrawer.SECURITY_HUD,
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically()
                 ) {
@@ -669,9 +688,8 @@ fun DialerScreen(
                 }
 
                 // 4. OPTIONAL QUICK START GUIDE (Only shown when explicitly toggled by user)
-                val shouldShowQuickGuide = showQuickGuideOverride
                 AnimatedVisibility(
-                    visible = shouldShowQuickGuide,
+                    visible = activeHudDrawer == DialerHudDrawer.QUICK_GUIDE,
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically()
                 ) {
@@ -705,8 +723,7 @@ fun DialerScreen(
                                 if (syncedContacts.isEmpty() && nonLksContacts.isEmpty()) {
                                     firebaseManager.syncNativeContacts()
                                 }
-                                isFirstTimeGuideDismissed = true
-                                showQuickGuideOverride = false
+                                activeHudDrawer = DialerHudDrawer.NONE
                             }
                         )
                     }
@@ -1303,3 +1320,10 @@ private sealed interface DialerPickerModal {
     data object CountryPicker : DialerPickerModal
     data class SimPicker(val targetName: String? = null) : DialerPickerModal
 }
+
+private enum class DialerHudDrawer {
+    NONE,
+    SECURITY_HUD,
+    QUICK_GUIDE
+}
+

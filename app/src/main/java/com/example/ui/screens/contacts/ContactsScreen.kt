@@ -65,6 +65,16 @@ private enum class ContactFilterTab(val title: String) {
     INVITE("Invite")
 }
 
+private enum class ContactsSwipeDemoPhase {
+    HIDDEN,
+    IDLE,
+    SWIPE_AUDIO,
+    SWIPE_VIDEO;
+
+    val isVisible: Boolean get() = this != HIDDEN
+    val isAnimating: Boolean get() = this == SWIPE_AUDIO || this == SWIPE_VIDEO
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactsScreen(
@@ -86,7 +96,7 @@ fun ContactsScreen(
     // 5-Second Inactivity Swipe Demo State
     var lastInteractionTime by remember { mutableStateOf(System.currentTimeMillis()) }
     var lastCallClickTime by remember { mutableStateOf(0L) }
-    var showSwipeHint by remember { mutableStateOf(false) }
+    var swipeDemoPhase by remember { mutableStateOf(ContactsSwipeDemoPhase.HIDDEN) }
     val demoSwipeOffset = remember { Animatable(0f) }
 
     // Overlays (Per-Contact Ringtone Sheet, Song Trimmer, Dual SIM Picker)
@@ -197,15 +207,17 @@ fun ContactsScreen(
         if (filteredLksContacts.isNotEmpty()) {
             delay(5000)
             if (System.currentTimeMillis() - lastInteractionTime >= 4900) {
-                showSwipeHint = true
+                swipeDemoPhase = ContactsSwipeDemoPhase.SWIPE_AUDIO
                 // Run smooth demonstration swipe sequence on the first contact
                 demoSwipeOffset.animateTo(75f, animationSpec = tween(700, easing = FastOutSlowInEasing))
                 delay(1000)
                 demoSwipeOffset.animateTo(0f, animationSpec = tween(400, easing = FastOutSlowInEasing))
                 delay(300)
+                swipeDemoPhase = ContactsSwipeDemoPhase.SWIPE_VIDEO
                 demoSwipeOffset.animateTo(-75f, animationSpec = tween(700, easing = FastOutSlowInEasing))
                 delay(1000)
                 demoSwipeOffset.animateTo(0f, animationSpec = tween(400, easing = FastOutSlowInEasing))
+                swipeDemoPhase = ContactsSwipeDemoPhase.IDLE
             }
         }
     }
@@ -234,7 +246,7 @@ fun ContactsScreen(
                 awaitEachGesture {
                     awaitFirstDown()
                     lastInteractionTime = System.currentTimeMillis()
-                    showSwipeHint = false
+                    swipeDemoPhase = ContactsSwipeDemoPhase.HIDDEN
                     coroutineScope.launch { demoSwipeOffset.snapTo(0f) }
                 }
             }
@@ -488,7 +500,7 @@ fun ContactsScreen(
 
         // Animated Swipe Feature Tip Banner
         AnimatedVisibility(
-            visible = showSwipeHint && filteredLksContacts.isNotEmpty(),
+            visible = swipeDemoPhase.isVisible && filteredLksContacts.isNotEmpty(),
             enter = fadeIn() + slideInVertically(),
             exit = fadeOut() + slideOutVertically()
         ) {
@@ -627,7 +639,7 @@ fun ContactsScreen(
                         val userInfo = registeredUsers.find { it.phoneNumber == contact.phoneNumber }
                         val isOnline = com.example.data.repository.FirebaseManager.isUserOnline(userInfo)
                         val isFirstItem = index == 0
-                        val currentOffset = if (isFirstItem && showSwipeHint) demoSwipeOffset.value else 0f
+                        val currentOffset = if (isFirstItem && swipeDemoPhase.isAnimating) demoSwipeOffset.value else 0f
 
                         SwipeableContactItem(
                             contact = contact.copy(

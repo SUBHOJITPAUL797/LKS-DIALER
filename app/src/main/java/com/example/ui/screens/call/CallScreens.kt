@@ -2065,6 +2065,15 @@ private enum class ActiveVideoOverlay {
     MORE_MENU
 }
 
+private enum class VideoControlsVisibility {
+    HIDDEN,
+    AUTO_HIDE_VISIBLE,
+    PINNED_VISIBLE;
+
+    val isVisible: Boolean get() = this != HIDDEN
+    val isPinned: Boolean get() = this == PINNED_VISIBLE
+}
+
 @Composable
 fun ActiveVideoCallScreen(
     state: WebRtcState,
@@ -2082,17 +2091,20 @@ fun ActiveVideoCallScreen(
     var activeOverlay by remember { mutableStateOf(ActiveVideoOverlay.NONE) }
 
     var endCallClicked by remember { mutableStateOf(false) }
-    var areControlsVisible by remember { mutableStateOf(true) }
-    var isControlsPinned by remember { mutableStateOf(false) }
+    var controlsVisibility by remember { mutableStateOf(VideoControlsVisibility.AUTO_HIDE_VISIBLE) }
+    val areControlsVisible = controlsVisibility.isVisible
+    val isControlsPinned = controlsVisibility.isPinned
     var lastInteractionTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var isSwapped by remember { mutableStateOf(false) }
     var isRemoteFirstFrameRendered by remember(state.remoteVideoTrack) { mutableStateOf(false) }
 
     // Auto-hide controls after 5.5s of inactivity unless pinned by the user
-    LaunchedEffect(areControlsVisible, isControlsPinned, lastInteractionTime) {
-        if (areControlsVisible && !isControlsPinned) {
+    LaunchedEffect(controlsVisibility, lastInteractionTime) {
+        if (controlsVisibility == VideoControlsVisibility.AUTO_HIDE_VISIBLE) {
             kotlinx.coroutines.delay(5500L)
-            areControlsVisible = false
+            if (controlsVisibility == VideoControlsVisibility.AUTO_HIDE_VISIBLE) {
+                controlsVisibility = VideoControlsVisibility.HIDDEN
+            }
         }
     }
 
@@ -2194,7 +2206,11 @@ fun ActiveVideoCallScreen(
             .background(Color.Black)
             .pointerInput(Unit) {
                 detectTapGestures {
-                    areControlsVisible = !areControlsVisible
+                    controlsVisibility = when (controlsVisibility) {
+                        VideoControlsVisibility.HIDDEN -> VideoControlsVisibility.AUTO_HIDE_VISIBLE
+                        VideoControlsVisibility.AUTO_HIDE_VISIBLE -> VideoControlsVisibility.HIDDEN
+                        VideoControlsVisibility.PINNED_VISIBLE -> VideoControlsVisibility.PINNED_VISIBLE
+                    }
                     lastInteractionTime = System.currentTimeMillis()
                 }
             }
@@ -2685,9 +2701,14 @@ fun ActiveVideoCallScreen(
                         // Pin / Unpin Controls Toggle Button
                         IconButton(
                             onClick = {
-                                isControlsPinned = !isControlsPinned
+                                val nextPinned = !controlsVisibility.isPinned
+                                controlsVisibility = if (nextPinned) {
+                                    VideoControlsVisibility.PINNED_VISIBLE
+                                } else {
+                                    VideoControlsVisibility.AUTO_HIDE_VISIBLE
+                                }
                                 lastInteractionTime = System.currentTimeMillis()
-                                val msg = if (isControlsPinned) "Controls pinned (always visible)" else "Controls unpinned (auto-hides in 5s)"
+                                val msg = if (nextPinned) "Controls pinned (always visible)" else "Controls unpinned (auto-hides in 5s)"
                                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier
@@ -2792,7 +2813,11 @@ fun ActiveVideoCallScreen(
                                     },
                                     onClick = {
                                         activeOverlay = ActiveVideoOverlay.NONE
-                                        isControlsPinned = !isControlsPinned
+                                        controlsVisibility = if (controlsVisibility.isPinned) {
+                                            VideoControlsVisibility.AUTO_HIDE_VISIBLE
+                                        } else {
+                                            VideoControlsVisibility.PINNED_VISIBLE
+                                        }
                                         lastInteractionTime = System.currentTimeMillis()
                                     }
                                 )
